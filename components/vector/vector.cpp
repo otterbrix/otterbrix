@@ -420,8 +420,8 @@ namespace components::vector {
             auto& indexing_vector = indexing();
             return child().set_value(indexing_vector.get_index(index), val);
         }
-        if (!val.is_null() && val.type().to_physical_type() != type_.to_physical_type()) {
-            set_value(index, val.cast_as(type_));
+        if (!val.is_null() && val.type() != type_) {
+            assert(false && "value has to be casted to vector's type before set_value");
             return;
         }
 
@@ -539,6 +539,7 @@ namespace components::vector {
                 } else {
                     auto& val_children = val.children();
                     for (uint64_t i = 0; i < array_size; i++) {
+                        // narrow per-element physical width (e.g. BIGINT literal into INT[N] slot)
                         child.set_value(index * array_size + i, val_children[i]);
                     }
                 }
@@ -624,8 +625,33 @@ namespace components::vector {
                 return types::logical_value_t(vector->resource(), reinterpret_cast<int32_t*>(vector->data_)[index]);
             case types::logical_type::BIGINT:
                 return types::logical_value_t(vector->resource(), reinterpret_cast<int64_t*>(vector->data_)[index]);
-            // case types::logical_type::DATE:
-            // 	return types::logical_value_t(vector->resource(), reinterpret_cast<date_t*>(vector->data_)[index]);
+            case types::logical_type::DATE:
+                return types::logical_value_t(vector->resource(),
+                                              reinterpret_cast<core::date::date_t*>(vector->data_)[index]);
+            case types::logical_type::TIME:
+                return types::logical_value_t(vector->resource(),
+                                              reinterpret_cast<core::date::time_t*>(vector->data_)[index]);
+            case types::logical_type::TIMESTAMP:
+                return types::logical_value_t(vector->resource(),
+                                              reinterpret_cast<core::date::timestamp_t*>(vector->data_)[index]);
+            case types::logical_type::TIMESTAMP_TZ:
+                return types::logical_value_t(vector->resource(),
+                                              reinterpret_cast<core::date::timestamptz_t*>(vector->data_)[index]);
+            case types::logical_type::TIME_TZ: {
+                auto& child_entries = vector->entries();
+                return types::logical_value_t(
+                    vector->resource(),
+                    core::date::timetz_t{reinterpret_cast<core::date::microseconds*>(child_entries[0]->data_)[index],
+                                         reinterpret_cast<core::date::seconds_i32*>(child_entries[1]->data_)[index]});
+            }
+            case types::logical_type::INTERVAL: {
+                auto& child_entries = vector->entries();
+                return types::logical_value_t(
+                    vector->resource(),
+                    core::date::interval_t{reinterpret_cast<core::date::microseconds*>(child_entries[0]->data_)[index],
+                                           reinterpret_cast<core::date::days*>(child_entries[1]->data_)[index],
+                                           reinterpret_cast<core::date::months*>(child_entries[2]->data_)[index]});
+            }
             case types::logical_type::UTINYINT:
                 return types::logical_value_t(vector->resource(), reinterpret_cast<uint8_t*>(vector->data_)[index]);
             case types::logical_type::USMALLINT:

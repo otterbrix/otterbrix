@@ -1,51 +1,47 @@
 #pragma once
 
-#include "catalog_types.hpp"
-
-#include <components/cursor/cursor.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/types/types.hpp>
 #include <core/result_wrapper.hpp>
 
+#include <cstdint>
 #include <memory_resource>
-#include <optional>
-#include <unordered_map>
+#include <string>
+#include <vector>
 
 namespace components::catalog {
+
+    using field_id_t = std::uint32_t;
+
     class schema {
     public:
-        using field_description_cref = std::reference_wrapper<const types::field_description>;
+        schema() = default;
 
         explicit schema(std::pmr::memory_resource* resource,
                         const std::vector<table::column_definition_t>& columns,
                         const std::vector<types::field_description>& descriptions,
-                        const std::pmr::vector<field_id_t>& primary_key = {});
+                        const std::pmr::vector<field_id_t>& primary_key = {})
+            : columns_(columns)
+            , descriptions_(descriptions)
+            , primary_key_(primary_key, resource) {}
 
-        [[nodiscard]] core::result_wrapper_t<types::complex_logical_type> find_field(field_id_t id) const;
-        [[nodiscard]] core::result_wrapper_t<types::complex_logical_type>
-        find_field(const std::pmr::string& name) const;
+        [[nodiscard]] const std::vector<table::column_definition_t>& columns() const { return columns_; }
+        [[nodiscard]] const std::vector<types::field_description>& descriptions() const { return descriptions_; }
+        [[nodiscard]] const std::pmr::vector<field_id_t>& primary_key() const { return primary_key_; }
 
-        [[nodiscard]] core::result_wrapper_t<field_description_cref> get_field_description(field_id_t id) const;
-        [[nodiscard]] core::result_wrapper_t<field_description_cref>
-        get_field_description(const std::pmr::string& name) const;
-
-        [[nodiscard]] const std::pmr::vector<field_id_t>& primary_key() const;
-        [[nodiscard]] const std::vector<table::column_definition_t>& columns() const;
-        [[nodiscard]] const std::vector<types::field_description>& descriptions() const;
-        [[nodiscard]] field_id_t highest_field_id() const;
-
-        [[nodiscard]] const core::error_t& error() const;
-        [[nodiscard]] std::vector<types::complex_logical_type> types() const;
+        [[nodiscard]] std::vector<types::complex_logical_type> types() const {
+            std::vector<types::complex_logical_type> out;
+            out.reserve(columns_.size());
+            for (const auto& column : columns_) {
+                out.emplace_back(column.type());
+            }
+            return out;
+        }
 
     private:
-        size_t find_idx_by_id(field_id_t id) const;
-        size_t find_idx_by_name(const std::pmr::string& name) const;
-
-        std::vector<components::table::column_definition_t> columns_;
+        std::vector<table::column_definition_t> columns_;
         std::vector<types::field_description> descriptions_;
-        std::pmr::vector<field_id_t> primary_key_field_ids_;
-        std::pmr::unordered_map<field_id_t, size_t> id_to_struct_idx_;
-        field_id_t highest_ = 0;
-        mutable core::error_t error_;
-        std::pmr::memory_resource* resource_;
+        std::pmr::vector<field_id_t> primary_key_;
     };
+
 } // namespace components::catalog

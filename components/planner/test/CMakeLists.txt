@@ -15,12 +15,14 @@ target_link_libraries(
         otterbrix::planner
         otterbrix::vector
         otterbrix::log
+        otterbrix::services
 
         absl::int128
         actor-zeta::actor-zeta
         Boost::boost
         Catch2::Catch2
         msgpackc-cxx
+        spdlog::spdlog
 )
 
 include(CTest)

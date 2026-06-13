@@ -121,6 +121,15 @@ namespace components::index {
         return nullptr;
     }
 
+    auto index_engine_t::matching(const keys_base_storage_t& query, logical_plan::index_type type) -> index_t::pointer {
+        for (const auto& idx : storage_) {
+            if (idx && idx->type() == type && idx->keys_ == query) {
+                return idx.get();
+            }
+        }
+        return nullptr;
+    }
+
     auto index_engine_t::matching(const actor_zeta::address_t& address) -> index_t::pointer {
         auto it = index_to_address_.find(address);
         if (it != index_to_address_.end()) {
@@ -142,11 +151,12 @@ namespace components::index {
     void index_engine_t::insert_row(const vector::data_chunk_t& chunk,
                                     size_t chunk_row,
                                     int64_t storage_row,
-                                    uint64_t txn_id) {
+                                    uint64_t txn_id,
+                                    core::date::timezone_offset_t local_timezone) {
         for (auto& index : storage_) {
             if (is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, chunk_row);
-                index->insert(key, storage_row, txn_id);
+                index->insert(key, storage_row, txn_id, local_timezone);
             }
         }
     }
@@ -154,11 +164,12 @@ namespace components::index {
     void index_engine_t::mark_delete_row(const vector::data_chunk_t& chunk,
                                          size_t chunk_row,
                                          int64_t storage_row,
-                                         uint64_t txn_id) {
+                                         uint64_t txn_id,
+                                         core::date::timezone_offset_t local_timezone) {
         for (auto& index : storage_) {
             if (is_match_column(index, chunk)) {
                 auto key = get_value_by_index(index, chunk, chunk_row);
-                index->mark_delete(key, storage_row, txn_id);
+                index->mark_delete(key, storage_row, txn_id, local_timezone);
             }
         }
     }
@@ -181,6 +192,12 @@ namespace components::index {
         }
     }
 
+    void index_engine_t::revert_delete(uint64_t txn_id) {
+        for (auto& index : storage_) {
+            index->revert_delete(txn_id);
+        }
+    }
+
     void index_engine_t::cleanup_versions(uint64_t lowest_active) {
         for (auto& index : storage_) {
             index->cleanup_versions(lowest_active);
@@ -191,6 +208,20 @@ namespace components::index {
         std::pmr::vector<keys_base_storage_t> result(resource_);
         for (const auto& [keys, _] : mapper_) {
             result.push_back(keys);
+        }
+        return result;
+    }
+
+    auto index_engine_t::all_indexed_descriptions() const -> std::pmr::vector<index_description_t> {
+        std::pmr::vector<index_description_t> result(resource_);
+        result.reserve(storage_.size());
+        for (const auto& idx : storage_) {
+            index_description_t desc{keys_base_storage_t(resource_), idx->type()};
+            auto [it, end] = idx->keys();
+            for (; it != end; ++it) {
+                desc.keys.push_back(*it);
+            }
+            result.push_back(std::move(desc));
         }
         return result;
     }

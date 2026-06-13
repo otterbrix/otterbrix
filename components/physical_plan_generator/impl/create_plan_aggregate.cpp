@@ -3,6 +3,7 @@
 #include "create_plan_select.hpp"
 #include "create_plan_sort.hpp"
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_limit.hpp>
@@ -30,8 +31,7 @@ namespace services::planner::impl {
             }
         }
 
-        auto coll_name = node->collection_full_name();
-        auto* plan_resource = context.has_collection(coll_name) ? context.resource : node->resource();
+        auto* plan_resource = context.has_table_oid(node->table_oid()) ? context.resource : node->resource();
 
         // projected_cols is populated by the column_pruning optimizer rule
         // (components/planner/optimizer/rules/column_pruning.cpp). Empty means
@@ -88,9 +88,32 @@ namespace services::planner::impl {
                 executor = std::move(match_op);
             }
         } else {
+            // Build projected_cols (storage chunk column indices) for transfer_scan.
+            // For relkind='g' we read live columns by their chunk_position (resolved at
+            // resolve-table time). For relkind='r' we read column_pruning output from
+            // node_aggregate_t::projected_cols(). Empty → pass-through (read all cols).
+            std::vector<size_t> projected_cols;
+            if (const auto* md = context.table_metadata_for(node->table_oid())) {
+                if (md->relkind == components::catalog::relkind::computed) {
+                    projected_cols.reserve(md->columns.size());
+                    for (const auto& col : md->columns) {
+                        if (col.chunk_position >= 0) {
+                            projected_cols.push_back(static_cast<size_t>(col.chunk_position));
+                        }
+                    }
+                } else {
+                    const auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
+                    if (!agg->projected_cols().empty()) {
+                        projected_cols.assign(agg->projected_cols().begin(), agg->projected_cols().end());
+                    }
+                }
+            }
             executor = match_op ? std::move(match_op)
                                 : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                                      new components::operators::transfer_scan(plan_resource, coll_name, scan_limit, projected_cols)));
+                                      new components::operators::transfer_scan(plan_resource,
+                                                                               node->table_oid(),
+                                                                               scan_limit,
+                                                                               std::move(projected_cols))));
         }
         if (group_op) {
             group_op->set_children(std::move(executor));
@@ -108,7 +131,7 @@ namespace services::planner::impl {
         // Check if DISTINCT flag is set on the aggregate node
         if (agg_node->is_distinct()) {
             auto distinct_op =
-                context.has_collection(coll_name)
+                context.has_table_oid(node->table_oid())
                     ? boost::intrusive_ptr(
                           new components::operators::operator_distinct_t(context.resource, context.log.clone()))
                     : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));

@@ -1,16 +1,21 @@
 #pragma once
 
+#include <optional>
+#include <vector>
+
 #include <core/result_wrapper.hpp>
 
 #include <components/expressions/key.hpp>
-#include <components/logical_plan/node.hpp>
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_data.hpp>
-#include <components/logical_plan/param_storage.hpp>
+#include <components/logical_plan/node_limit.hpp>
 
 namespace components::sql::transform {
-    struct result_view {
-        logical_plan::node_ptr node;
-        logical_plan::parameter_node_ptr params;
+
+    struct deferred_limit_t {
+        logical_plan::node_limit_t* node{nullptr};
+        std::optional<core::parameter_id_t> limit_param;
+        std::optional<core::parameter_id_t> offset_param;
     };
 
     class transform_result {
@@ -21,11 +26,11 @@ namespace components::sql::transform {
         using insert_rows_t = vector::data_chunk_t;
 
         transform_result(std::pmr::memory_resource* resource,
-                         logical_plan::node_ptr&& node,
-                         logical_plan::parameter_node_ptr&& params,
+                         logical_plan::execution_plan_t&& plan,
                          parameter_map_t&& param_map,
                          insert_map_t&& param_insert_map,
-                         insert_rows_t&& param_insert_rows);
+                         insert_rows_t&& param_insert_rows,
+                         std::vector<deferred_limit_t> deferred_limits = {});
         transform_result(std::pmr::memory_resource* resource, core::error_t&& error);
         transform_result(const transform_result&) = delete;
         transform_result& operator=(const transform_result&) = delete;
@@ -47,7 +52,7 @@ namespace components::sql::transform {
 
         bool all_bound() const;
 
-        core::result_wrapper_t<result_view> finalize();
+        core::result_wrapper_t<logical_plan::execution_plan_t> finalize();
 
         [[nodiscard]] bool has_error() const noexcept;
 
@@ -57,11 +62,11 @@ namespace components::sql::transform {
         using key_translation_t = std::pmr::vector<std::pair<expressions::key_t, expressions::key_t>>;
 
         std::pmr::memory_resource* resource_;
-        logical_plan::node_ptr node_;
-        logical_plan::parameter_node_ptr params_;
+        logical_plan::execution_plan_t plan_;
         parameter_map_t param_map_;
         insert_map_t param_insert_map_;
         insert_rows_t param_insert_rows_;
+        std::vector<deferred_limit_t> deferred_limits_;
 
         logical_plan::storage_parameters taken_params_;
         std::pmr::unordered_map<size_t, bool> bound_flags_;

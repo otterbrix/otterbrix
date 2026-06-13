@@ -29,29 +29,38 @@ namespace components::index {
     single_field_index_t::impl_t::impl_t(const_iterator iterator)
         : iterator_(iterator) {}
 
-    auto single_field_index_t::insert_impl(value_t key, index_value_t value) -> void {
-        storage_.insert({key, std::move(value)});
+    auto single_field_index_t::insert_impl(value_t key,
+                                           index_value_t value,
+                                           core::date::timezone_offset_t local_timezone) -> void {
+        if (stored_type_ == types::logical_type::NA) {
+            stored_type_ = key.type();
+        }
+        storage_.insert({key.cast_as(stored_type_, local_timezone), std::move(value)});
     }
 
-    auto single_field_index_t::remove_impl(components::index::value_t key) -> void {
-        auto it = storage_.find(key);
+    auto single_field_index_t::remove_impl(components::index::value_t key, core::date::timezone_offset_t local_timezone)
+        -> void {
+        auto it = storage_.find(key.cast_as(stored_type_, local_timezone));
         if (it != storage_.end()) {
             storage_.erase(it);
         }
     }
 
-    index_t::range single_field_index_t::find_impl(const value_t& value) const {
-        auto range = storage_.equal_range(value);
+    index_t::range single_field_index_t::find_impl(const value_t& value,
+                                                   core::date::timezone_offset_t local_timezone) const {
+        auto range = storage_.equal_range(value.cast_as(stored_type_, local_timezone));
         return std::make_pair(iterator(new impl_t(range.first)), iterator(new impl_t(range.second)));
     }
 
-    index_t::range single_field_index_t::lower_bound_impl(const value_t& value) const {
-        auto it = storage_.lower_bound(value);
+    index_t::range single_field_index_t::lower_bound_impl(const value_t& value,
+                                                          core::date::timezone_offset_t local_timezone) const {
+        auto it = storage_.lower_bound(value.cast_as(stored_type_, local_timezone));
         return std::make_pair(cbegin(), index_t::iterator(new impl_t(it)));
     }
 
-    index_t::range single_field_index_t::upper_bound_impl(const value_t& value) const {
-        auto it = storage_.upper_bound(value);
+    index_t::range single_field_index_t::upper_bound_impl(const value_t& value,
+                                                          core::date::timezone_offset_t local_timezone) const {
+        auto it = storage_.upper_bound(value.cast_as(stored_type_, local_timezone));
         return std::make_pair(index_t::iterator(new impl_t(it)), cend());
     }
 
@@ -61,18 +70,29 @@ namespace components::index {
 
     index_t::iterator single_field_index_t::cend_impl() const { return index_t::iterator(new impl_t(storage_.cend())); }
 
-    void single_field_index_t::insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id) {
+    void single_field_index_t::insert_txn_impl(value_t key,
+                                               int64_t row_index,
+                                               uint64_t txn_id,
+                                               core::date::timezone_offset_t local_timezone) {
         index_value_t val(row_index, txn_id, table::NOT_DELETED_ID);
-        pending_inserts_[txn_id].emplace_back(key, row_index);
-        storage_.insert({std::move(key), std::move(val)});
+        if (stored_type_ == types::logical_type::NA) {
+            stored_type_ = key.type();
+        }
+        auto casted_key = key.cast_as(stored_type_, local_timezone);
+        pending_inserts_[txn_id].emplace_back(casted_key, row_index);
+        storage_.insert({std::move(casted_key), std::move(val)});
     }
 
-    void single_field_index_t::mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id) {
-        auto range = storage_.equal_range(key);
+    void single_field_index_t::mark_delete_impl(value_t key,
+                                                int64_t row_index,
+                                                uint64_t txn_id,
+                                                core::date::timezone_offset_t local_timezone) {
+        auto casted_key = key.cast_as(stored_type_, local_timezone);
+        auto range = storage_.equal_range(casted_key);
         for (auto it = range.first; it != range.second; ++it) {
             if (it->second.row_index == row_index && it->second.delete_id == table::NOT_DELETED_ID) {
                 it->second.delete_id = txn_id;
-                pending_deletes_[txn_id].emplace_back(key, row_index);
+                pending_deletes_[txn_id].emplace_back(casted_key, row_index);
                 return;
             }
         }
@@ -124,6 +144,22 @@ namespace components::index {
             }
         }
         pending_inserts_.erase(it);
+    }
+
+    void single_field_index_t::revert_delete_impl(uint64_t txn_id) {
+        auto it = pending_deletes_.find(txn_id);
+        if (it == pending_deletes_.end())
+            return;
+        for (const auto& [key, row_index] : it->second) {
+            auto range = storage_.equal_range(key);
+            for (auto sit = range.first; sit != range.second; ++sit) {
+                if (sit->second.row_index == row_index && sit->second.delete_id == txn_id) {
+                    sit->second.delete_id = table::NOT_DELETED_ID;
+                    break;
+                }
+            }
+        }
+        pending_deletes_.erase(it);
     }
 
     void single_field_index_t::cleanup_versions_impl(uint64_t lowest_active) {

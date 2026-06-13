@@ -40,6 +40,15 @@ namespace components::table {
         return total;
     }
 
+    bool collection_t::has_version_above(uint64_t watermark) const {
+        for (auto* rg = row_groups_->root_segment(); rg; rg = row_groups_->next_segment(rg)) {
+            if (rg->has_version_above(watermark)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     const std::pmr::vector<types::complex_logical_type>& collection_t::types() const { return types_; }
 
     void collection_t::adopt_types(std::pmr::vector<types::complex_logical_type> types) {
@@ -279,6 +288,12 @@ namespace components::table {
     void collection_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
         for (auto& rg : row_groups_->segments()) {
             rg.commit_all_deletes(txn_id, commit_id);
+        }
+    }
+
+    void collection_t::revert_all_deletes(uint64_t txn_id) {
+        for (auto& rg : row_groups_->segments()) {
+            rg.revert_all_deletes(txn_id);
         }
     }
 

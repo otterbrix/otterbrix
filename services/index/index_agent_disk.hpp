@@ -1,6 +1,17 @@
 #pragma once
 
+// drop / clear stay unique_future<void> (no recoverable failure on those
+// paths). insert_many / remove_many return unique_future<core::error_t> (M3.5):
+// the bitcask txn-log write path can fail on a file open / write / sync, and
+// that error is now surfaced rather than aborting the process. The btree /
+// non-txn (txn_id==0) branches are still assert+abort terminal and return
+// no_error(). manager_index_t commit_inserts/commit_deletes co_await these and
+// fold the first error into their returned core::error_t.
+
 #include "index_disk.hpp"
+#include "disk_hash_table.hpp"
+
+#include <core/result_wrapper.hpp>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -10,19 +21,28 @@
 
 #include <core/executor.hpp>
 
-#include <components/base/collection_full_name.hpp>
-#include <components/expressions/compare_expression.hpp>
+#include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
 #include <core/btree/btree.hpp>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <memory_resource>
+#include <set>
 
 namespace services::index {
 
     using index_name_t = std::string;
 
+    // Owns its bitcask + btree state exclusively; callers reach it only via
+    // mailbox sends to its address (no shared mutable state across the actor
+    // boundary).
+    //
+    // No DROP TABLE GC handler here: on-disk index files sit alongside table
+    // files and are unlinked by manager_disk_t's on_horizon_advanced sweep.
     class index_agent_disk_t final : public actor_zeta::basic_actor<index_agent_disk_t> {
         using path_t = std::filesystem::path;
         using session_id_t = ::components::session::session_id_t;
@@ -32,38 +52,47 @@ namespace services::index {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
+        // committed_txn_ids: the WAL-replay set of committed transaction ids,
+        // forwarded to the bitcask index txn-log recover gate (M1.1). Fresh,
+        // post-bootstrap agents pass an EMPTY set (a fresh dir has no txn-log to
+        // gate). The btree / disk_hash branches ignore it (no txn log).
         index_agent_disk_t(std::pmr::memory_resource* resource,
                            const path_t& path_db,
-                           collection_full_name_t collection_name,
+                           components::catalog::oid_t table_oid,
                            const index_name_t& index_name,
                            components::logical_plan::index_type type,
                            uint64_t bitcask_flush_threshold,
                            uint64_t bitcask_segment_record_limit,
                            uint64_t btree_flush_threshold,
-                           log_t& log);
+                           log_t& log,
+                           std::pmr::set<std::uint64_t> committed_txn_ids,
+                           disk_hash_table_ptr shared_hash_index);
         ~index_agent_disk_t();
 
-        const collection_full_name_t& collection_name() const { return collection_name_; }
-        bool is_dropped() const;
+        components::catalog::oid_t table_oid() const { return table_oid_; }
 
         unique_future<void> drop(session_id_t session);
-        unique_future<void> insert(session_id_t session, value_t key, size_t row_id);
-        unique_future<void> insert_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<void> remove(session_id_t session, value_t key, size_t row_id);
-        unique_future<void> remove_many(session_id_t session, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<index_disk_t::result>
-        find(session_id_t session, value_t value, components::expressions::compare_type compare);
+        // Wipe the agent's stored index data while keeping the agent alive and
+        // writable (bitcask: segments + hash + txn-log + applied-offset
+        // sidecar; btree: tree contents/file). NOT the terminal drop. Used by
+        // the runtime repopulate path: txn_id==0 re-inserts then take the
+        // direct (non-txn-log) write path.
+        unique_future<void> clear(session_id_t session);
+        unique_future<core::error_t>
+        insert_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
+        unique_future<core::error_t>
+        remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
+
+        // Mailbox flush handler — fanned out by manager_index_t::flush_all_indexes.
+        // Guards on is_dropped_ internally (a dropped agent has no backing), then
+        // forces the backend to persist. Ordered behind any pending insert/remove
+        // ops in this agent's FIFO, so it never races an in-flight write.
         unique_future<void> force_flush(session_id_t session);
 
-        // Synchronous flush — bypasses actor mailbox, safe to call from owning manager
-        void force_flush_sync();
-
         using dispatch_traits = actor_zeta::dispatch_traits<&index_agent_disk_t::drop,
-                                                            &index_agent_disk_t::insert,
+                                                            &index_agent_disk_t::clear,
                                                             &index_agent_disk_t::insert_many,
-                                                            &index_agent_disk_t::remove,
                                                             &index_agent_disk_t::remove_many,
-                                                            &index_agent_disk_t::find,
                                                             &index_agent_disk_t::force_flush>;
 
         auto make_type() const noexcept -> const char*;
@@ -72,7 +101,7 @@ namespace services::index {
     private:
         log_t log_;
         std::unique_ptr<index_disk_t> index_disk_;
-        collection_full_name_t collection_name_;
+        components::catalog::oid_t table_oid_;
         bool is_dropped_{false};
     };
 

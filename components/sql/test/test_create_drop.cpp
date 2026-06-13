@@ -15,7 +15,7 @@ using namespace components::sql::transform;
         auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                              \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
-        auto node = result.value().node;                                                                               \
+        auto node = result.value().sub_queries.back();                                                                 \
         REQUIRE(node->to_string() == EXPECTED);                                                                        \
     }
 
@@ -30,7 +30,7 @@ using namespace components::sql::transform;
         auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
-        auto node = result.value().node;                                                                               \
+        auto node = result.value().sub_queries.back();                                                                 \
         auto data = reinterpret_cast<node_create_collection_ptr&>(node);                                               \
         const auto& schema = data->schema();                                                                           \
         CHECK_FN(schema);                                                                                              \
@@ -48,13 +48,16 @@ TEST_CASE("components::sql::database") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;          ", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; -- comment", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", R"_($create_database: db_name)_");
-    TEST_TRANSFORMER_OK("DROP DATABASE db_name;", R"_($drop_database: db_name)_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;          ", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; -- comment", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", R"_($sequence[2])_");
+    // DROP DATABASE is wrapped by the transformer in sequence_t(resolve_ns, drop)
+    // so result.sub_queries.back()->to_string() returns the sequence wrapper. Underlying drop_database
+    // carries only namespace_oid (INVALID_OID/0 at parse time).
+    TEST_TRANSFORMER_OK("DROP DATABASE db_name;", R"_($sequence[2])_");
 }
 
 TEST_CASE("components::sql::table") {
@@ -64,47 +67,50 @@ TEST_CASE("components::sql::table") {
 
     SECTION("create with uuid") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE uuid.db_name.schema.table_name()")->lst.front().data;
-        auto result = transformer.transform(pg_cell_to_node_cast(create)).finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-        REQUIRE(node->to_string() == R"_($create_collection: db_name.table_name)_");
-        REQUIRE(node->collection_full_name().unique_identifier == "uuid");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[2])_");
     }
 
     SECTION("create with schema") {
         auto create = raw_parser(&arena_resource, "CREATE TABLE db_name.schema.table_name()")->lst.front().data;
-        auto result = transformer.transform(pg_cell_to_node_cast(create)).finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-        REQUIRE(node->to_string() == R"_($create_collection: db_name.table_name)_");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[2])_");
     }
 
-    TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", R"_($create_collection: db_name.table_name)_");
-    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", R"_($create_collection: .table_name)_");
+    TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", R"_($sequence[2])_");
+    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", R"_($create_collection: table_name)_");
 
+    // DROP TABLE is wrapped in sequence_t(resolve_ns?, resolve_table?, drop_collection).
+    // The drop node itself carries no user-typed names; routing is OID-only
+    // after enrich stamps namespace_oid + table_oid.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE uuid.db_name.schema.table_name")->lst.front().data;
-        auto result = transformer.transform(pg_cell_to_node_cast(drop)).finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-        REQUIRE(node->to_string() == R"_($drop_collection: db_name.table_name)_");
-        REQUIRE(node->collection_full_name().unique_identifier == "uuid");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
+        // result.sub_queries.back() is the wrapping sequence_t: 1 resolve_ns + 1 resolve_table + 1 drop = 3 children.
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP TABLE db_name.schema.table_name")->lst.front().data;
-        auto result = transformer.transform(pg_cell_to_node_cast(drop)).finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-        REQUIRE(node->to_string() == R"_($drop_collection: db_name.table_name)_");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
     }
 
-    TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", R"_($drop_collection: db_name.table_name)_");
-    TEST_TRANSFORMER_OK("DROP TABLE table_name", R"_($drop_collection: .table_name)_");
+    TEST_TRANSFORMER_OK("DROP TABLE db_name.table_name", R"_($sequence[3])_");
+    // No db prefix → only resolve_table sibling (no resolve_namespace), so 2 children.
+    TEST_TRANSFORMER_OK("DROP TABLE table_name", R"_($sequence[2])_");
 
     TEST_TRANSFORMER_EXPECT_SCHEMA("CREATE TABLE table_name(test integer, test1 string)",
                                    [](const std::pmr::vector<complex_logical_type>& sch) {
@@ -118,7 +124,7 @@ TEST_CASE("components::sql::table") {
                                    });
 
     TEST_TRANSFORMER_EXPECT_SCHEMA(
-        "CREATE TABLE table_name(t1 blob, t2 uint, t3 uhugeint, t4 timestamp_sec, t5 decimal(5, 4))",
+        "CREATE TABLE table_name(t1 blob, t2 uint, t3 uhugeint, t4 timestamp, t5 decimal(5, 4))",
         [](const std::pmr::vector<complex_logical_type>& sch) {
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
                 return t.alias() == "t1" && t.type() == logical_type::BLOB;
@@ -130,7 +136,7 @@ TEST_CASE("components::sql::table") {
                 return t.alias() == "t3" && t.type() == logical_type::UHUGEINT;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
-                return t.alias() == "t4" && t.type() == logical_type::TIMESTAMP_SEC;
+                return t.alias() == "t4" && t.type() == logical_type::TIMESTAMP;
             }));
             REQUIRE(contains(sch, [](const complex_logical_type& t) {
                 if (t.type() != logical_type::DECIMAL)
@@ -147,7 +153,7 @@ TEST_CASE("components::sql::table") {
                 if (type.type() != logical_type::ARRAY)
                     return false;
                 auto array = static_cast<array_logical_type_extension*>(type.extension());
-                if (array->internal_type() != logical_type::DECIMAL)
+                if (array->internal_type().type() != logical_type::DECIMAL)
                     return false;
                 auto decimal = static_cast<decimal_logical_type_extension*>(array->internal_type().extension());
                 return type.alias() == "t1" && decimal->width() == 21 && decimal->scale() == 3 && array->size() == 10;
@@ -183,6 +189,35 @@ TEST_CASE("components::sql::table") {
                                        }));
                                    });
 
+    TEST_TRANSFORMER_EXPECT_SCHEMA("CREATE TABLE table_name("
+                                   "  t1 DATE,"
+                                   "  t2 TIME,"
+                                   "  t3 TIME WITH TIME ZONE,"
+                                   "  t4 TIMESTAMP,"
+                                   "  t5 TIMESTAMP WITH TIME ZONE,"
+                                   "  t6 INTERVAL"
+                                   ")",
+                                   [](const std::pmr::vector<complex_logical_type>& sch) {
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t1" && t.type() == logical_type::DATE;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t2" && t.type() == logical_type::TIME;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t3" && t.type() == logical_type::TIME_TZ;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t4" && t.type() == logical_type::TIMESTAMP;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t5" && t.type() == logical_type::TIMESTAMP_TZ;
+                                       }));
+                                       REQUIRE(contains(sch, [](const complex_logical_type& t) {
+                                           return t.alias() == "t6" && t.type() == logical_type::INTERVAL;
+                                       }));
+                                   });
+
     SECTION("incorrect types") {
         TEST_TRANSFORMER_ERROR("CREATE TABLE table_name (just_name decimal)",
                                R"_(Incorrect modifiers for DECIMAL, width and scale required)_");
@@ -206,47 +241,46 @@ TEST_CASE("components::sql::index") {
     SECTION("create with uuid") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
-        auto result = transformer.transform(pg_cell_to_node_cast(create)).finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-        REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
-        REQUIRE(node->collection_full_name().unique_identifier == "uuid");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
     }
 
     SECTION("create with schema") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
-        auto result = transformer.transform(pg_cell_to_node_cast(create)).finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-        REQUIRE(node->to_string() == R"_($create_index: db.table name:some_idx[ field ] type:single)_");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[3])_");
     }
 
-    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);",
-                        R"_($create_index: db.table name:some_idx[ field ] type:single)_");
+    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", R"_($sequence[3])_");
 
+    // DROP INDEX is wrapped in sequence_t(resolve_ns, resolve_table_parent,
+    // resolve_table_index, drop_index). The drop node carries no user-typed names.
     SECTION("drop with uuid") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
-        auto result = transformer.transform(pg_cell_to_node_cast(drop)).finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-        REQUIRE(node->to_string() == R"_($drop_index: db.table name:some_idx)_");
-        REQUIRE(node->collection_full_name().unique_identifier == "uuid");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[4])_");
     }
 
     SECTION("drop with schema") {
         auto drop = raw_parser(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
-        auto result = transformer.transform(pg_cell_to_node_cast(drop)).finalize();
-        REQUIRE(!result.has_error());
-        auto node = result.value().node;
-        REQUIRE(node->to_string() == R"_($drop_index: db.table name:some_idx)_");
-        REQUIRE(node->collection_full_name().schema == "schema");
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(drop)).finalize()));
+        REQUIRE(result.sub_queries.back()->to_string() == R"_($sequence[4])_");
     }
 
-    TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", R"_($drop_index: db.table name:some_idx)_");
+    TEST_TRANSFORMER_OK("DROP INDEX db.table.some_idx", R"_($sequence[4])_");
 }
 
 TEST_CASE("components::sql::types") {
@@ -254,16 +288,18 @@ TEST_CASE("components::sql::types") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);",
-                        R"_($create_type: name: custom_type_name, fields:[ f1 f2 ])_");
+    // CREATE TYPE is wrapped in sequence_t(resolve_ns?, resolve_field_types..., create_type).
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);", R"_($sequence[3])_");
 
-    TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');",
-                        R"_($create_type: name: custom_enum, fields:[ f1=0 f2=1 f3=2 ])_");
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');", R"_($sequence[3])_");
 
-    TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", R"_($drop_type: name: custom_type_name)_");
+    // DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
+    TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", R"_($sequence[3])_");
 
-    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", R"_($create_collection: .table_)_");
+    // CREATE TABLE with a custom type is wrapped in sequence_t(resolve_type, create_collection).
+    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", R"_($sequence[2])_");
 
-    TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))",
-                        R"_($insert: {$raw_data: {$rows: 1}})_");
+    // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
+    // insert) — no dbname so no resolve_namespace.
+    TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))", R"_($sequence[3])_");
 }

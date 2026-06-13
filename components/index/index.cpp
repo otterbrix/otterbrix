@@ -3,47 +3,49 @@
 
 namespace components::index {
 
-    std::pmr::vector<int64_t> index_t::search(expressions::compare_type compare, const value_t& value) const {
+    std::pmr::vector<int64_t> index_t::search(expressions::compare_type compare,
+                                              const value_t& value,
+                                              core::date::timezone_offset_t local_timezone) const {
         std::pmr::vector<int64_t> result(resource_);
 
         switch (compare) {
             case expressions::compare_type::eq: {
-                auto range = find(value);
+                auto range = find(value, local_timezone);
                 for (auto iter = range.first; iter != range.second; ++iter) {
                     result.push_back(iter->row_index);
                 }
                 break;
             }
             case expressions::compare_type::lt: {
-                auto range = lower_bound(value);
+                auto range = lower_bound(value, local_timezone);
                 for (auto iter = range.first; iter != range.second; ++iter) {
                     result.push_back(iter->row_index);
                 }
                 break;
             }
             case expressions::compare_type::lte: {
-                auto ub = upper_bound(value);
+                auto ub = upper_bound(value, local_timezone);
                 for (auto iter = cbegin(); iter != ub.first; ++iter) {
                     result.push_back(iter->row_index);
                 }
                 break;
             }
             case expressions::compare_type::gt: {
-                auto range = upper_bound(value);
+                auto range = upper_bound(value, local_timezone);
                 for (auto iter = range.first; iter != range.second; ++iter) {
                     result.push_back(iter->row_index);
                 }
                 break;
             }
             case expressions::compare_type::gte: {
-                auto lb = lower_bound(value);
+                auto lb = lower_bound(value, local_timezone);
                 for (auto iter = lb.second; iter != cend(); ++iter) {
                     result.push_back(iter->row_index);
                 }
                 break;
             }
             case expressions::compare_type::ne: {
-                auto eq_range = find(value);
+                auto eq_range = find(value, local_timezone);
                 for (auto iter = cbegin(); iter != cend(); ++iter) {
                     bool in_eq = false;
                     for (auto eq_it = eq_range.first; eq_it != eq_range.second; ++eq_it) {
@@ -76,21 +78,33 @@ namespace components::index {
         assert(resource != nullptr);
     }
 
-    index_t::range index_t::find(const value_t& value) const { return find_impl(value); }
+    index_t::range index_t::find(const value_t& value, core::date::timezone_offset_t local_timezone) const {
+        return find_impl(value, local_timezone);
+    }
 
-    index_t::range index_t::lower_bound(const value_t& value) const { return lower_bound_impl(value); }
+    index_t::range index_t::lower_bound(const value_t& value, core::date::timezone_offset_t local_timezone) const {
+        return lower_bound_impl(value, local_timezone);
+    }
 
-    index_t::range index_t::upper_bound(const value_t& value) const { return upper_bound_impl(value); }
+    index_t::range index_t::upper_bound(const value_t& value, core::date::timezone_offset_t local_timezone) const {
+        return upper_bound_impl(value, local_timezone);
+    }
 
     index_t::iterator index_t::cbegin() const { return cbegin_impl(); }
 
     index_t::iterator index_t::cend() const { return cend_impl(); }
 
-    auto index_t::insert(value_t key, index_value_t value) -> void { return insert_impl(key, std::move(value)); }
+    auto index_t::insert(value_t key, index_value_t value, core::date::timezone_offset_t local_timezone) -> void {
+        return insert_impl(key, std::move(value), local_timezone);
+    }
 
-    auto index_t::insert(value_t key, int64_t row_index) -> void { return insert_impl(key, index_value_t(row_index)); }
+    auto index_t::insert(value_t key, int64_t row_index, core::date::timezone_offset_t local_timezone) -> void {
+        return insert_impl(key, index_value_t(row_index), local_timezone);
+    }
 
-    auto index_t::remove(value_t key) -> void { remove_impl(key); }
+    auto index_t::remove(value_t key, core::date::timezone_offset_t local_timezone) -> void {
+        remove_impl(key, local_timezone);
+    }
 
     auto index_t::keys() -> std::pair<std::pmr::vector<key_t>::iterator, std::pmr::vector<key_t>::iterator> {
         return std::make_pair(keys_.begin(), keys_.end());
@@ -116,7 +130,8 @@ namespace components::index {
     std::pmr::vector<int64_t> index_t::search(expressions::compare_type compare,
                                               const value_t& value,
                                               uint64_t start_time,
-                                              uint64_t txn_id) const {
+                                              uint64_t txn_id,
+                                              core::date::timezone_offset_t local_timezone) const {
         std::pmr::vector<int64_t> result(resource_);
 
         auto filter = [&](auto begin, auto end) {
@@ -129,32 +144,32 @@ namespace components::index {
 
         switch (compare) {
             case expressions::compare_type::eq: {
-                auto range = find(value);
+                auto range = find(value, local_timezone);
                 filter(range.first, range.second);
                 break;
             }
             case expressions::compare_type::lt: {
-                auto range = lower_bound(value);
+                auto range = lower_bound(value, local_timezone);
                 filter(range.first, range.second);
                 break;
             }
             case expressions::compare_type::lte: {
-                auto ub = upper_bound(value);
+                auto ub = upper_bound(value, local_timezone);
                 filter(cbegin(), ub.first);
                 break;
             }
             case expressions::compare_type::gt: {
-                auto range = upper_bound(value);
+                auto range = upper_bound(value, local_timezone);
                 filter(range.first, range.second);
                 break;
             }
             case expressions::compare_type::gte: {
-                auto lb = lower_bound(value);
+                auto lb = lower_bound(value, local_timezone);
                 filter(lb.second, cend());
                 break;
             }
             case expressions::compare_type::ne: {
-                auto eq_range = find(value);
+                auto eq_range = find(value, local_timezone);
                 for (auto iter = cbegin(); iter != cend(); ++iter) {
                     if (!index_entry_visible(*iter, start_time, txn_id)) {
                         continue;
@@ -179,12 +194,15 @@ namespace components::index {
         return result;
     }
 
-    auto index_t::insert(value_t key, int64_t row_index, uint64_t txn_id) -> void {
-        insert_txn_impl(std::move(key), row_index, txn_id);
+    auto index_t::insert(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone)
+        -> void {
+        insert_txn_impl(std::move(key), row_index, txn_id, local_timezone);
     }
 
-    auto index_t::mark_delete(value_t key, int64_t row_index, uint64_t txn_id) -> void {
-        mark_delete_impl(std::move(key), row_index, txn_id);
+    auto
+    index_t::mark_delete(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone)
+        -> void {
+        mark_delete_impl(std::move(key), row_index, txn_id, local_timezone);
     }
 
     void index_t::commit_insert(uint64_t txn_id, uint64_t commit_id) { commit_insert_impl(txn_id, commit_id); }
@@ -192,6 +210,8 @@ namespace components::index {
     void index_t::commit_delete(uint64_t txn_id, uint64_t commit_id) { commit_delete_impl(txn_id, commit_id); }
 
     void index_t::revert_insert(uint64_t txn_id) { revert_insert_impl(txn_id); }
+
+    void index_t::revert_delete(uint64_t txn_id) { revert_delete_impl(txn_id); }
 
     void index_t::cleanup_versions(uint64_t lowest_active) { cleanup_versions_impl(lowest_active); }
 

@@ -48,7 +48,7 @@ namespace components::logical_plan {
         }
 
         template<class Value>
-        core::parameter_id_t add_parameter(Value&& value) {
+        [[nodiscard]] core::parameter_id_t add_parameter(Value&& value) {
             auto id = next_id();
             add_parameter(id, std::forward<Value>(value));
             return id;
@@ -59,9 +59,6 @@ namespace components::logical_plan {
         void set_parameter(core::parameter_id_t id, expr_value_t value) {
             values_.parameters.insert_or_assign(id, std::move(value));
         }
-
-        void serialize(serializer::msgpack_serializer_t* serializer) const;
-        static boost::intrusive_ptr<parameter_node_t> deserialize(serializer::msgpack_deserializer_t* deserilizer);
 
     private:
         uint16_t counter_{0};

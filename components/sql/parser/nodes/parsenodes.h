@@ -20,6 +20,8 @@
 *-------------------------------------------------------------------------
 */
 #pragma once
+#include <string_view>
+
 #include "attrnum.h"
 #include "bitmapset.h"
 #include "nodes.h"
@@ -313,6 +315,39 @@ typedef struct A_Const {
 } A_Const;
 
 /*
+* ExtensionNode - otterbrix parser-extension AST node
+*
+* A grammar extension (see components/sql/parser/extension.hpp) emits this for
+* its own, non-core syntax.
+*/
+typedef struct ExtensionNode {
+    NodeTag type;             /* T_ExtensionNode */
+    const char* extension_id; /* owning extension's name */
+    void* data;               /* extension payload, arena-allocated */
+} ExtensionNode;
+
+/*
+* make_extension_node - build the ExtensionNode envelope a grammar emits for its root
+*/
+Node* make_extension_node(std::pmr::memory_resource* resource, const char* extension_id, void* data);
+
+/*
+* extension_payload - the inverse of make_extension_node: read an extension's typed payload from a parse tree
+*/
+template<typename Payload>
+[[nodiscard]] Payload* extension_payload(List* tree, std::string_view extension_id) {
+    if (tree == NIL) {
+        return nullptr;
+    }
+    ExtensionNode* node = reinterpret_cast<ExtensionNode*>(linitial(tree));
+    if (node == nullptr || nodeTag(node) != T_ExtensionNode || node->extension_id == nullptr ||
+        extension_id != node->extension_id) {
+        return nullptr;
+    }
+    return static_cast<Payload*>(node->data);
+}
+
+/*
 * TypeCast - a CAST expression
 */
 typedef struct TypeCast {
@@ -320,6 +355,10 @@ typedef struct TypeCast {
     Node* arg;          /* the expression being casted */
     TypeName* typeName; /* the target type */
     int location;       /* token location, or -1 if unknown */
+    /* '::?' type-variant selection: pick the same-named column whose physical
+     * type matches typeName (computing multi-type fields), instead of casting.
+     * false for a normal '::' cast. */
+    bool variant_select;
 } TypeCast;
 
 /*
@@ -2894,8 +2933,9 @@ typedef struct LoadStmt {
 */
 typedef struct CreatedbStmt {
     NodeTag type;
-    char* dbname;  /* name of database to create */
-    List* options; /* List of DefElem nodes */
+    char* dbname;       /* name of database to create */
+    List* options;      /* List of DefElem nodes */
+    bool if_not_exists; /* PostgreSQL: CREATE DATABASE IF NOT EXISTS — no-op if DB already exists */
 } CreatedbStmt;
 
 /* ----------------------

@@ -7,30 +7,37 @@ set( ${PROJECT_NAME}_HEADERS
 
 set(${PROJECT_NAME}_SOURCES
     # collection
-        collection/create_index.cpp
         collection/executor.cpp
 
     # disk
-        disk/catalog_storage.cpp
-        disk/command.cpp
-        disk/disk.cpp
         disk/agent_disk.cpp
         disk/manager_disk.cpp
-        disk/metadata.cpp
-        disk/result.cpp
+        disk/manager_disk_io.cpp
+        disk/manager_disk_bootstrap.cpp
+        disk/manager_disk_ddl.cpp
+        disk/manager_disk_resolve.cpp
+        disk/manager_disk_storage.cpp
 
     # dispatcher
        dispatcher/dispatcher.cpp
+       dispatcher/enrich_logical_plan.cpp
+       dispatcher/resolve_type.cpp
        dispatcher/validate_logical_plan.cpp
 
     # index
+        index/bitcask_task_executor.cpp
+        index/bitcask_hash_key_loader.cpp
         index/bitcask_index_disk.cpp
+        index/disk_hash_table.cpp
         index/btree_index_disk.cpp
         index/index_agent_disk.cpp
         index/manager_index.cpp
 
     # wal
-        wal/dto.cpp
+        wal/wal_binary.cpp
+        wal/wal_page.cpp
+        wal/wal_page_writer.cpp
+        wal/wal_page_reader.cpp
         wal/manager_wal_replicate.cpp
         wal/wal.cpp
         wal/wal_reader.cpp
@@ -47,22 +54,24 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
+        otterbrix::date
         otterbrix::file
         otterbrix::table
         otterbrix::types
         otterbrix::context
+        otterbrix::physical_plan
         otterbrix::physical_plan_generator
         otterbrix::storage
         otterbrix::catalog
         otterbrix::cursor
         otterbrix::session
         otterbrix::planner
+        otterbrix::sql
         otterbrix::index
         otterbrix::b_plus_tree
         otterbrix::log
         otterbrix::logical_plan
         otterbrix::locks
-        otterbrix::serialization
 
         absl::crc32c
         absl::int128

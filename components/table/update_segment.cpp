@@ -581,8 +581,7 @@ namespace components::table {
             auto tuples = current->tuples();
             auto it = std::lower_bound(tuples, tuples + current->N, row_index);
             if (it != tuples + current->N && *it == row_index) {
-                const auto& const_filter = filter->cast<constant_filter_t>();
-                result = const_filter.compare(info_data[it - tuples]);
+                result = table_filter_dispatch(filter, info_data[it - tuples]);
             }
         });
         return result;

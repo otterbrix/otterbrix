@@ -26,6 +26,7 @@ namespace components::index {
         explicit index_engine_t(std::pmr::memory_resource* resource);
         auto matching(id_index id) -> index_t::pointer;
         auto matching(const keys_base_storage_t& query) -> index_t::pointer;
+        auto matching(const keys_base_storage_t& query, index_type type) -> index_t::pointer;
         auto matching(const actor_zeta::address_t& address) -> index_t::pointer;
         auto matching(const std::string& name) -> index_t::pointer;
         auto has_index(const std::string& name)
@@ -36,15 +37,25 @@ namespace components::index {
         auto size() const -> std::size_t;
         std::pmr::memory_resource* resource() noexcept;
 
-        void insert_row(const vector::data_chunk_t& chunk, size_t chunk_row, int64_t storage_row, uint64_t txn_id);
-        void mark_delete_row(const vector::data_chunk_t& chunk, size_t chunk_row, int64_t storage_row, uint64_t txn_id);
+        void insert_row(const vector::data_chunk_t& chunk,
+                        size_t chunk_row,
+                        int64_t storage_row,
+                        uint64_t txn_id,
+                        core::date::timezone_offset_t local_timezone);
+        void mark_delete_row(const vector::data_chunk_t& chunk,
+                             size_t chunk_row,
+                             int64_t storage_row,
+                             uint64_t txn_id,
+                             core::date::timezone_offset_t local_timezone);
         void commit_insert(uint64_t txn_id, uint64_t commit_id);
         void commit_delete(uint64_t txn_id, uint64_t commit_id);
         void revert_insert(uint64_t txn_id);
+        void revert_delete(uint64_t txn_id);
         void cleanup_versions(uint64_t lowest_active);
 
         auto indexes() -> std::vector<std::string>;
         auto all_indexed_keys() const -> std::pmr::vector<keys_base_storage_t>;
+        auto all_indexed_descriptions() const -> std::pmr::vector<index_description_t>;
 
         // Call fn(disk_agent_address, key_value) for each disk-backed index matching chunk columns
         void for_each_disk_op(const vector::data_chunk_t& chunk,

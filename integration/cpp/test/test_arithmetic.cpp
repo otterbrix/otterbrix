@@ -2,7 +2,9 @@
 
 #include <catch2/catch.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <core/date/date_parse.hpp>
 #include <core/operations_helper.hpp>
 
 static const database_name_t database_name = "testdatabase";
@@ -31,27 +33,28 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(),
+            database_name,
+            collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == kNumInserts);
         }
     }
 
@@ -712,11 +715,11 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -728,11 +731,15 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         // Insert main collection data
         {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {database_name, collection_name},
-                                                      std::move(chunk));
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(),
+                database_name,
+                collection_name,
+                logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         }
@@ -804,20 +811,25 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(),
+            database_name,
+            collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -871,20 +883,25 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(),
+            database_name,
+            collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -974,20 +991,25 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(),
+            database_name,
+            collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -1039,7 +1061,7 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1152,20 +1174,25 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name, columns);
         }
     }
 
     INFO("insert test data") {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(),
+            database_name,
+            collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(session, ins);
+        auto cur =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
     }
@@ -1343,5 +1370,623 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 3);
+    }
+}
+
+// ================================================================
+// Date/time arithmetic
+// ================================================================
+
+TEST_CASE("integration::cpp::test_arithmetic::datetime") {
+    auto config = test_create_config("/tmp/test_arithmetic_datetime");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("initialization") {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection ("
+                                               "  d DATE,"
+                                               "  ts TIMESTAMP,"
+                                               "  t TIME,"
+                                               "  iv INTERVAL,"
+                                               "  tstz TIMESTAMP WITH TIME ZONE"
+                                               ");");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("insert test data") {
+        // Row 0: 2024-01-01, ts=2024-01-01 00:00:00, t=08:00:00, iv=1 day, tstz=2024-01-01 00:00:00+00
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (d, ts, t, iv, tstz) VALUES ("
+                                               "  DATE '2024-01-01',"
+                                               "  TIMESTAMP '2024-01-01 00:00:00',"
+                                               "  TIME '08:00:00',"
+                                               "  INTERVAL '1 day',"
+                                               "  TIMESTAMPTZ '2024-01-01 00:00:00+00:00'"
+                                               ");");
+            REQUIRE(cur->is_success());
+        }
+        // Row 1: 2024-03-15, ts=2024-03-15 12:30:00, t=12:30:00, iv=7 days, tstz=2024-03-15 12:30:00+00
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (d, ts, t, iv, tstz) VALUES ("
+                                               "  DATE '2024-03-15',"
+                                               "  TIMESTAMP '2024-03-15 12:30:00',"
+                                               "  TIME '12:30:00',"
+                                               "  INTERVAL '7 days',"
+                                               "  TIMESTAMPTZ '2024-03-15 12:30:00+00:00'"
+                                               ");");
+            REQUIRE(cur->is_success());
+        }
+        // Row 2: 2024-12-31, ts=2024-12-31 23:59:00, t=23:59:00, iv=30 days, tstz=2024-12-31 23:59:00+00
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (d, ts, t, iv, tstz) VALUES ("
+                                               "  DATE '2024-12-31',"
+                                               "  TIMESTAMP '2024-12-31 23:59:00',"
+                                               "  TIME '23:59:00',"
+                                               "  INTERVAL '30 days',"
+                                               "  TIMESTAMPTZ '2024-12-31 23:59:00+00:00'"
+                                               ");");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    // ================================================================
+    // N1. DATE + INTERVAL = DATE
+    // ================================================================
+    INFO("N1. DATE + INTERVAL '1 day' = DATE") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d + INTERVAL '1 day' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // 2024-01-01 + 1 day = 2024-01-02
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
+        // 2024-03-15 + 1 day = 2024-03-16
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-16"));
+        // 2024-12-31 + 1 day = 2025-01-01
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-01"));
+    }
+
+    // ================================================================
+    // N2. DATE - INTERVAL = DATE
+    // ================================================================
+    INFO("N2. DATE - INTERVAL '7 days' = DATE") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d - INTERVAL '7 days' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // 2024-01-01 - 7 = 2023-12-25
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2023-12-25"));
+        // 2024-03-15 - 7 = 2024-03-08
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-08"));
+        // 2024-12-31 - 7 = 2024-12-24
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2024-12-24"));
+    }
+
+    // ================================================================
+    // N3. DATE + column INTERVAL = DATE
+    // ================================================================
+    INFO("N3. DATE column + INTERVAL column = DATE") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d + iv AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // 2024-01-01 + 1 day = 2024-01-02
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
+        // 2024-03-15 + 7 days = 2024-03-22
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-22"));
+        // 2024-12-31 + 30 days = 2025-01-30
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-30"));
+    }
+
+    // ================================================================
+    // N4. TIMESTAMP + INTERVAL = TIMESTAMP
+    // ================================================================
+    INFO("N4. TIMESTAMP + INTERVAL '1 day' = TIMESTAMP") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT ts + INTERVAL '1 day' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY ts ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // 2024-01-01 00:00:00 + 1 day = 2024-01-02 00:00:00
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-01-02 00:00:00"));
+        // 2024-03-15 12:30:00 + 1 day = 2024-03-16 12:30:00
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-03-16 12:30:00"));
+        // 2024-12-31 23:59:00 + 1 day = 2025-01-01 23:59:00
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2025-01-01 23:59:00"));
+    }
+
+    // ================================================================
+    // N5. TIMESTAMP - INTERVAL = TIMESTAMP
+    // ================================================================
+    INFO("N5. TIMESTAMP - INTERVAL '1 day' = TIMESTAMP") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT ts - INTERVAL '1 day' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY ts ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // 2024-01-01 00:00:00 - 1 day = 2023-12-31 00:00:00
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2023-12-31 00:00:00"));
+        // 2024-03-15 12:30:00 - 1 day = 2024-03-14 12:30:00
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-03-14 12:30:00"));
+        // 2024-12-31 23:59:00 - 1 day = 2024-12-30 23:59:00
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-12-30 23:59:00"));
+    }
+
+    // ================================================================
+    // N6. TIMESTAMP + column INTERVAL = TIMESTAMP
+    // ================================================================
+    INFO("N6. TIMESTAMP column + INTERVAL column = TIMESTAMP") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT ts + iv AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY ts ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // 2024-01-01 00:00:00 + 1 day = 2024-01-02 00:00:00
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-01-02 00:00:00"));
+        // 2024-03-15 12:30:00 + 7 days = 2024-03-22 12:30:00
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-03-22 12:30:00"));
+        // 2024-12-31 23:59:00 + 30 days = 2025-01-30 23:59:00
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2025-01-30 23:59:00"));
+    }
+
+    // ================================================================
+    // N7. DATE - DATE = INTERVAL (time component = 0, only days differ)
+    // ================================================================
+    INFO("N7. DATE - DATE = INTERVAL (days difference)") {
+        auto session = otterbrix::session_id_t();
+        // 2024-03-15 - 2024-01-01 = 74 days
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d - DATE '2024-01-01' AS diff "
+                                           "FROM TestDatabase.TestCollection "
+                                           "WHERE d = DATE '2024-03-15';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto iv = cur->chunk_data().value(0, 0).value<core::date::interval_t>();
+        // 2024 is a leap year: Jan=31, Feb=29, Mar 1..15=15 → 31+29+15-1=74 days
+        REQUIRE(iv.day.count() == 74);
+        REQUIRE(iv.time.count() == 0);
+        REQUIRE(iv.month.count() == 0);
+    }
+
+    // ================================================================
+    // N8. INTERVAL + INTERVAL = INTERVAL
+    // ================================================================
+    INFO("N8. INTERVAL + INTERVAL = INTERVAL") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT iv + INTERVAL '3 days' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // iv=1 day + 3 days = 4 days
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 4);
+        // iv=7 days + 3 days = 10 days
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 10);
+        // iv=30 days + 3 days = 33 days
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 33);
+    }
+
+    // ================================================================
+    // N9. INTERVAL - INTERVAL = INTERVAL
+    // ================================================================
+    INFO("N9. INTERVAL - INTERVAL = INTERVAL") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT iv - INTERVAL '1 day' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // iv=1 day - 1 day = 0 days
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 0);
+        // iv=7 days - 1 day = 6 days
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 6);
+        // iv=30 days - 1 day = 29 days
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 29);
+    }
+
+    // ================================================================
+    // N10. DATE + INTERVAL in WHERE predicate
+    // ================================================================
+    INFO("N10. WHERE d + INTERVAL '1 day' > DATE '2024-03-15'") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d FROM TestDatabase.TestCollection "
+                                           "WHERE d + INTERVAL '1 day' > DATE '2024-03-15';");
+        REQUIRE(cur->is_success());
+        // 2024-01-02 > 2024-03-15? No. 2024-03-16 > 2024-03-15? Yes. 2025-01-01 > 2024-03-15? Yes.
+        REQUIRE(cur->size() == 2);
+    }
+
+    // ================================================================
+    // N11. TIMESTAMP - TIMESTAMP = INTERVAL
+    // ================================================================
+    INFO("N11. TIMESTAMP - TIMESTAMP = INTERVAL (microseconds difference)") {
+        auto session = otterbrix::session_id_t();
+        // 2024-03-15 12:30:00 - 2024-01-01 00:00:00
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT ts - TIMESTAMP '2024-01-01 00:00:00' AS diff "
+                                           "FROM TestDatabase.TestCollection "
+                                           "WHERE ts = TIMESTAMP '2024-03-15 12:30:00';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto iv = cur->chunk_data().value(0, 0).value<core::date::interval_t>();
+        // 74 days + 12h30m = 74*86400 + 12*3600 + 30*60 = 6393600 + 43200 + 1800 = 6438600 seconds
+        // = 6438600 * 1'000'000 microseconds stored in .time, .day = 0 since ts-ts goes into .time
+        auto expected_us =
+            int64_t{74} * 86400LL * 1'000'000LL + 12LL * 3600LL * 1'000'000LL + 30LL * 60LL * 1'000'000LL;
+        REQUIRE(iv.time.count() == expected_us);
+        REQUIRE(iv.day.count() == 0);
+        REQUIRE(iv.month.count() == 0);
+    }
+
+    // ================================================================
+    // N12. INTERVAL * integer literal = INTERVAL
+    // ================================================================
+    INFO("N12. INTERVAL column * 3 = INTERVAL") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT iv * 3 AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // iv=1 day * 3 = 3 days
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 3);
+        // iv=7 days * 3 = 21 days
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 21);
+        // iv=30 days * 3 = 90 days
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 90);
+    }
+
+    // ================================================================
+    // N13. INTERVAL / integer literal = INTERVAL
+    // ================================================================
+    INFO("N13. INTERVAL column / 2 = INTERVAL") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT iv / 2 AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // iv=1 day / 2 → llround(0.5) = 1 day
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 1);
+        // iv=7 days / 2 = 4 days (llround(3.5) = 4)
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 4);
+        // iv=30 days / 2 = 15 days
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 15);
+    }
+
+    // ================================================================
+    // N14. integer literal * INTERVAL = INTERVAL (commutative)
+    // ================================================================
+    INFO("N14. 2 * INTERVAL column = INTERVAL") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT 2 * iv AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 2);
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 14);
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 60);
+    }
+
+    // ================================================================
+    // N15. INTERVAL literal * float = INTERVAL (fractional scaling)
+    // ================================================================
+    INFO("N15. INTERVAL '10 days' * 1.5 = INTERVAL '15 days'") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT INTERVAL '10 days' * 1.5 AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "WHERE d = DATE '2024-01-01';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 15);
+    }
+
+    // ================================================================
+    // N16. TIME + INTERVAL = TIME (including wrap-around past midnight)
+    // ================================================================
+    INFO("N16. TIME + INTERVAL '1 hour' = TIME") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT t + INTERVAL '1 hour' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY t ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::time_t>() == *core::date::parse_time("09:00:00"));
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::time_t>() == *core::date::parse_time("13:30:00"));
+        // 23:59 + 1h wraps past midnight → 00:59
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::time_t>() == *core::date::parse_time("00:59:00"));
+    }
+
+    // ================================================================
+    // N17. TIME - INTERVAL = TIME
+    // ================================================================
+    INFO("N17. TIME - INTERVAL '30 minutes' = TIME") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT t - INTERVAL '30 minutes' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY t ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::time_t>() == *core::date::parse_time("07:30:00"));
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::time_t>() == *core::date::parse_time("12:00:00"));
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::time_t>() == *core::date::parse_time("23:29:00"));
+    }
+
+    // ================================================================
+    // N18. TIME - INTERVAL wrap-around below midnight
+    // ================================================================
+    INFO("N18. TIME '08:00:00' - INTERVAL '10 hours' wraps to 22:00:00") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT t - INTERVAL '10 hours' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "WHERE t = TIME '08:00:00';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        // 08:00 - 10h = -2h → wraps to 22:00
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::time_t>() == *core::date::parse_time("22:00:00"));
+    }
+
+    // ================================================================
+    // N19. TIME - TIME = INTERVAL
+    // ================================================================
+    INFO("N19. TIME column - TIME '06:00:00' = INTERVAL") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT t - TIME '06:00:00' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "WHERE t = TIME '08:00:00';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto iv = cur->chunk_data().value(0, 0).value<core::date::interval_t>();
+        // 08:00 - 06:00 = 2 hours = 2 * 3600 * 1_000_000 µs
+        REQUIRE(iv.time.count() == 2LL * 3600LL * 1'000'000LL);
+        REQUIRE(iv.day.count() == 0);
+        REQUIRE(iv.month.count() == 0);
+    }
+
+    // ================================================================
+    // N20. DATE + month-based INTERVAL = DATE
+    // ================================================================
+    INFO("N20. DATE + INTERVAL '1 month' = DATE") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d + INTERVAL '1 month' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-01"));
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-04-15"));
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-31"));
+    }
+
+    // ================================================================
+    // N21. Month-end clamping: Jan 31 + 1 month = Feb 29 (2024 is leap)
+    // ================================================================
+    INFO("N21. DATE '2024-01-31' + INTERVAL '1 month' clamps to 2024-02-29") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT DATE '2024-01-31' + INTERVAL '1 month' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "WHERE d = DATE '2024-01-01';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-29"));
+    }
+
+    // ================================================================
+    // N22. TIMESTAMP + month-based INTERVAL = TIMESTAMP
+    // ================================================================
+    INFO("N22. TIMESTAMP + INTERVAL '2 months' = TIMESTAMP") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT ts + INTERVAL '2 months' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY ts ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-03-01 00:00:00"));
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-05-15 12:30:00"));
+        // 2024-12-31 + 2 months = 2025-02-31 → clamped to 2025-02-28
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2025-02-28 23:59:00"));
+    }
+
+    // ================================================================
+    // N23. INTERVAL + DATE = DATE (commutative form, interval on left)
+    // ================================================================
+    INFO("N23. iv + d = DATE (INTERVAL column + DATE column)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT iv + d AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-22"));
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-30"));
+    }
+
+    // ================================================================
+    // N24. WHERE with temporal subtraction (exercises scalar subtract path)
+    // ================================================================
+    INFO("N24. WHERE ts - INTERVAL '1 day' > TIMESTAMP '2024-01-01 00:00:00'") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d FROM TestDatabase.TestCollection "
+                                           "WHERE ts - INTERVAL '1 day' > TIMESTAMP '2024-01-01 00:00:00';");
+        REQUIRE(cur->is_success());
+        // 2024-01-01 - 1d = 2023-12-31 > 2024-01-01? No
+        // 2024-03-15 - 1d = 2024-03-14 > 2024-01-01? Yes
+        // 2024-12-31 - 1d = 2024-12-30 > 2024-01-01? Yes
+        REQUIRE(cur->size() == 2);
+    }
+
+    // ================================================================
+    // N25. TIMESTAMP_TZ + INTERVAL = TIMESTAMP_TZ
+    // ================================================================
+    INFO("N25. TIMESTAMPTZ + INTERVAL '1 day' = TIMESTAMPTZ") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT tstz + INTERVAL '1 day' AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY tstz ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamptz_t>() ==
+                *core::date::parse_timestamptz("2024-01-02 00:00:00+00:00"));
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamptz_t>() ==
+                *core::date::parse_timestamptz("2024-03-16 12:30:00+00:00"));
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamptz_t>() ==
+                *core::date::parse_timestamptz("2025-01-01 23:59:00+00:00"));
+    }
+
+    // ================================================================
+    // N26. TIMESTAMP_TZ - TIMESTAMP_TZ = INTERVAL
+    // ================================================================
+    INFO("N26. TIMESTAMPTZ - TIMESTAMPTZ = INTERVAL (µs difference)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT tstz - TIMESTAMPTZ '2024-01-01 00:00:00+00:00' AS diff "
+                                           "FROM TestDatabase.TestCollection "
+                                           "WHERE tstz = TIMESTAMPTZ '2024-03-15 12:30:00+00:00';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto iv = cur->chunk_data().value(0, 0).value<core::date::interval_t>();
+        // same span as N11: 74 days + 12h30m = 6438600s = 6438600000000 µs
+        auto expected_us =
+            int64_t{74} * 86400LL * 1'000'000LL + 12LL * 3600LL * 1'000'000LL + 30LL * 60LL * 1'000'000LL;
+        REQUIRE(iv.time.count() == expected_us);
+        REQUIRE(iv.day.count() == 0);
+        REQUIRE(iv.month.count() == 0);
+    }
+
+    // ================================================================
+    // N27. CASE WHEN with temporal arithmetic (exercises arithmetic_eval.cpp
+    //      resolve_row_value, which evaluates arithmetic branch-by-branch)
+    // ================================================================
+    INFO("N27. CASE WHEN with DATE + INTERVAL exercises arithmetic_eval.cpp") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT CASE WHEN d = DATE '2024-01-01' "
+                                           "THEN d + INTERVAL '1 day' ELSE d END AS result "
+                                           "FROM TestDatabase.TestCollection "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // Row 0: d=2024-01-01 matches WHEN, result = 2024-01-02
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
+        // Row 1: d=2024-03-15 falls through to ELSE, result = 2024-03-15
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-15"));
+        // Row 2: d=2024-12-31 falls through to ELSE, result = 2024-12-31
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2024-12-31"));
+    }
+
+    // ================================================================
+    // N28. GROUP BY with temporal expression in SELECT (exercises
+    //      operator_group.cpp post-aggregate resolve lambda)
+    // ================================================================
+    INFO("N28. SELECT d + INTERVAL '1 month' ... GROUP BY d exercises operator_group.cpp") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d + INTERVAL '1 month' AS bucket, COUNT(*) AS cnt "
+                                           "FROM TestDatabase.TestCollection "
+                                           "GROUP BY d "
+                                           "ORDER BY d ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // Each d is unique so each group has cnt=1, bucket = d + 1 month
+        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-01"));
+        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-04-15"));
+        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-31"));
+    }
+
+    // ================================================================
+    // N29. UPDATE SET with temporal arithmetic (exercises
+    //      update_expression.cpp apply_binary_update_op)
+    // ================================================================
+    INFO("N29. UPDATE SET d = d + INTERVAL '7 days' exercises update_expression.cpp") {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "UPDATE TestDatabase.TestCollection "
+                                               "SET d = d + INTERVAL '7 days' "
+                                               "WHERE d = DATE '2024-01-01';");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        // Verify the row was updated: 2024-01-01 + 7 days = 2024-01-08
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT d FROM TestDatabase.TestCollection "
+                                               "WHERE d = DATE '2024-01-08';");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-08"));
+        }
+        // Verify old value is gone
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT d FROM TestDatabase.TestCollection "
+                                               "WHERE d = DATE '2024-01-01';");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
     }
 }

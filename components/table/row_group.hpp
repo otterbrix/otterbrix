@@ -1,8 +1,8 @@
 #pragma once
 #include "column_data.hpp"
-#include <optional>
 #include "row_version_manager.hpp"
 #include "storage/data_pointer.hpp"
+#include <optional>
 
 namespace components::vector {
     class data_chunk_t;
@@ -74,8 +74,12 @@ namespace components::table {
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
         void commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
+        void revert_all_deletes(uint64_t txn_id);
 
         uint64_t committed_row_count();
+        // True when any version stamp in this row group is above `watermark`
+        // (pending txn id or commit id newer than the visible-to-all horizon).
+        bool has_version_above(uint64_t watermark);
 
         void initialize_append(row_group_append_state& append_state);
         void append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
@@ -105,13 +109,10 @@ namespace components::table {
         uint64_t calculate_size();
 
     private:
-        uint64_t indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
         uint64_t indexing_vector(transaction_data txn,
                                  uint64_t vector_idx,
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
-        uint64_t
-        commited_indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count);
         std::shared_ptr<row_version_manager_t> get_or_create_version_info_internal();
         row_version_manager_t* version_info();
         void set_version_info(std::shared_ptr<row_version_manager_t> version);

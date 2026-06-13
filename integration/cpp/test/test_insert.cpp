@@ -13,6 +13,7 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_update.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/operations_helper.hpp>
 #include <variant>
@@ -68,11 +69,16 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                                                false,
                                                types::logical_value_t{dispatcher->resource(), types::logical_type::NA});
         }
+        // Fill loop for columns_value_defaults. Without it the CREATE TABLE
+        // call gets an empty column vector → relkind='g' (computing) table,
+        // and the subsequent explicit-column INSERTs fail validation
+        // because the catalog has UNKNOWN types until the first INSERT
+        // registers pg_computed_column rows.
         for (const auto& type : types) {
             columns_value_defaults.emplace_back(type.alias(),
-                                               type,
-                                               false,
-                                               types::logical_value_t{dispatcher->resource(), type});
+                                                type,
+                                                false,
+                                                types::logical_value_t{dispatcher->resource(), type});
         }
         for (const auto& type : types) {
             columns_value_defaults_not_null.emplace_back(type.alias(),
@@ -86,12 +92,12 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         auto create_collection = [&](const collection_name_t& collection,
                                      const std::vector<table::column_definition_t>& columns) {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, table_database_name, collection, columns);
+            test_create_collection(dispatcher, session, table_database_name, collection, columns);
         };
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, table_database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name + ";");
         }
         create_collection(table_collection_name_simple, columns_simple);
         create_collection(table_collection_name_not_null, columns_not_null);
@@ -104,11 +110,15 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         // is the same for all
         auto full_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
-                                                      std::move(chunk));
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(),
+                table_database_name,
+                collection,
+                logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -127,11 +137,15 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto reordered_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, swapped_types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
-                                                      std::move(chunk));
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(),
+                table_database_name,
+                collection,
+                logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -150,11 +164,15 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto insert_with_conversion = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, changed_types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
-                                                      std::move(chunk));
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(),
+                table_database_name,
+                collection,
+                logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
         };
@@ -178,12 +196,17 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto partial_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, partial_types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
-                                                      std::move(chunk),
-                                                      std::pmr::vector<expressions::key_t>{fields});
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(),
+                table_database_name,
+                collection,
+                logical_plan::make_node_insert(dispatcher->resource(),
+                                               std::move(chunk),
+                                               std::pmr::vector<expressions::key_t>{fields}));
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_plan(session, ins);
+            return dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         };
         auto select_all = [&](const collection_name_t& collection) {
             auto session = otterbrix::session_id_t();
@@ -248,14 +271,20 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 auto cur = partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts);
-                // column[1] will be filled with the value default (not null)
+                // column[1] will be filled with 100 default values (PostgreSQL
+                // semantic: DEFAULT applies for omitted columns regardless of
+                // nullability — see test_persistence::disk_partial_insert).
             }
             {
                 auto cur = select_all(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 4);
-                for (size_t i = 0; i < kNumInserts * 4; i++) {
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
                     REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
+                    REQUIRE(cur->chunk_data().value(1, i) == val);
                 }
             }
         }
@@ -294,12 +323,17 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto reversed_partial_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, reversed_partial_types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
-                                                      std::move(chunk),
-                                                      std::pmr::vector<expressions::key_t>{fields});
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(),
+                table_database_name,
+                collection,
+                logical_plan::make_node_insert(dispatcher->resource(),
+                                               std::move(chunk),
+                                               std::pmr::vector<expressions::key_t>{fields}));
             auto session = otterbrix::session_id_t();
-            return dispatcher->execute_plan(session, ins);
+            return dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         };
         auto select_all = [&](const collection_name_t& collection) {
             auto session = otterbrix::session_id_t();
@@ -364,14 +398,18 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 auto cur = reversed_partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts);
-                // column[1] will be filled with the value default (not null)
+                // column[1] gets default value for omitted (PostgreSQL semantic).
             }
             {
                 auto cur = select_all(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 5);
-                for (size_t i = 0; i < kNumInserts * 5; i++) {
+                for (size_t i = 0; i < kNumInserts * 3; i++) {
                     REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                }
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
+                for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
+                    REQUIRE(cur->chunk_data().value(1, i) == val);
                 }
             }
         }
@@ -407,12 +445,17 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         auto invalid_keys_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
-            auto ins = logical_plan::make_node_insert(dispatcher->resource(),
-                                                      {table_database_name, collection},
-                                                      std::move(chunk),
-                                                      std::pmr::vector<expressions::key_t>{fields});
+            auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+                dispatcher->resource(),
+                table_database_name,
+                collection,
+                logical_plan::make_node_insert(dispatcher->resource(),
+                                               std::move(chunk),
+                                               std::pmr::vector<expressions::key_t>{fields}));
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_plan(session, ins);
+            auto cur = dispatcher->execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_error());
         };
 

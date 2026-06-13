@@ -29,28 +29,31 @@ namespace components::index {
     hash_single_field_index_t::impl_t::impl_t(const_iterator iterator)
         : iterator_(iterator) {}
 
-    auto hash_single_field_index_t::insert_impl(value_t key, index_value_t value) -> void {
+    auto hash_single_field_index_t::insert_impl(value_t key, index_value_t value, core::date::timezone_offset_t)
+        -> void {
         storage_.emplace(std::move(key), std::move(value));
     }
 
-    auto hash_single_field_index_t::remove_impl(components::index::value_t key) -> void {
+    auto hash_single_field_index_t::remove_impl(components::index::value_t key, core::date::timezone_offset_t) -> void {
         auto range = storage_.equal_range(key);
         if (range.first != range.second) {
             storage_.erase(range.first);
         }
     }
 
-    index_t::range hash_single_field_index_t::find_impl(const value_t& value) const {
+    index_t::range hash_single_field_index_t::find_impl(const value_t& value, core::date::timezone_offset_t) const {
         auto range = storage_.equal_range(value);
         return std::make_pair(iterator(new impl_t(range.first)), iterator(new impl_t(range.second)));
     }
 
-    index_t::range hash_single_field_index_t::lower_bound_impl(const value_t&) const {
-        throw "not supported"; // todo
+    index_t::range hash_single_field_index_t::lower_bound_impl(const value_t&,
+                                                               core::date::timezone_offset_t /*local_timezone*/) const {
+        throw "not supported"; // not supported
     }
 
-    index_t::range hash_single_field_index_t::upper_bound_impl(const value_t&) const {
-        throw "not supported"; // todo
+    index_t::range hash_single_field_index_t::upper_bound_impl(const value_t&,
+                                                               core::date::timezone_offset_t /*local_timezone*/) const {
+        throw "not supported"; // not supported
     }
 
     index_t::iterator hash_single_field_index_t::cbegin_impl() const {
@@ -61,13 +64,19 @@ namespace components::index {
         return index_t::iterator(new impl_t(storage_.cend()));
     }
 
-    void hash_single_field_index_t::insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id) {
+    void hash_single_field_index_t::insert_txn_impl(value_t key,
+                                                    int64_t row_index,
+                                                    uint64_t txn_id,
+                                                    core::date::timezone_offset_t) {
         index_value_t val(row_index, txn_id, table::NOT_DELETED_ID);
         pending_inserts_[txn_id].emplace_back(key, row_index);
         storage_.emplace(std::move(key), std::move(val));
     }
 
-    void hash_single_field_index_t::mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id) {
+    void hash_single_field_index_t::mark_delete_impl(value_t key,
+                                                     int64_t row_index,
+                                                     uint64_t txn_id,
+                                                     core::date::timezone_offset_t) {
         auto range = storage_.equal_range(key);
         for (auto it = range.first; it != range.second; ++it) {
             if (it->second.row_index == row_index && it->second.delete_id == table::NOT_DELETED_ID) {
@@ -126,6 +135,22 @@ namespace components::index {
         pending_inserts_.erase(it);
     }
 
+    void hash_single_field_index_t::revert_delete_impl(uint64_t txn_id) {
+        auto it = pending_deletes_.find(txn_id);
+        if (it == pending_deletes_.end())
+            return;
+        for (const auto& [key, row_index] : it->second) {
+            auto range = storage_.equal_range(key);
+            for (auto sit = range.first; sit != range.second; ++sit) {
+                if (sit->second.row_index == row_index && sit->second.delete_id == txn_id) {
+                    sit->second.delete_id = table::NOT_DELETED_ID;
+                    break;
+                }
+            }
+        }
+        pending_deletes_.erase(it);
+    }
+
     void hash_single_field_index_t::cleanup_versions_impl(uint64_t lowest_active) {
         for (auto it = storage_.begin(); it != storage_.end();) {
             if (it->second.delete_id < lowest_active && it->second.delete_id < table::TRANSACTION_ID_START) {
@@ -144,10 +169,9 @@ namespace components::index {
         }
     }
 
-    void
-    hash_single_field_index_t::for_each_pending_insert_impl(uint64_t txn_id,
-                                                            const std::function<void(const value_t&, int64_t)>& fn)
-        const {
+    void hash_single_field_index_t::for_each_pending_insert_impl(
+        uint64_t txn_id,
+        const std::function<void(const value_t&, int64_t)>& fn) const {
         auto it = pending_inserts_.find(txn_id);
         if (it == pending_inserts_.end())
             return;
@@ -156,10 +180,9 @@ namespace components::index {
         }
     }
 
-    void
-    hash_single_field_index_t::for_each_pending_delete_impl(uint64_t txn_id,
-                                                            const std::function<void(const value_t&, int64_t)>& fn)
-        const {
+    void hash_single_field_index_t::for_each_pending_delete_impl(
+        uint64_t txn_id,
+        const std::function<void(const value_t&, int64_t)>& fn) const {
         auto it = pending_deletes_.find(txn_id);
         if (it == pending_deletes_.end())
             return;

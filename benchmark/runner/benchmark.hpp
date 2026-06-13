@@ -10,6 +10,8 @@
 
 #include <integration/cpp/wrapper_dispatcher.hpp>
 
+#include "benchmark_configuration.hpp"
+
 namespace otterbrix::benchmark {
 
 using components::session::session_id_t;
@@ -17,6 +19,8 @@ using components::session::session_id_t;
 struct benchmark_state_t {
     wrapper_dispatcher_t* dispatcher = nullptr;
     session_id_t session;
+    bool failed = false;
+    benchmark_io_options_t io;
 };
 
 struct benchmark_result_t {
@@ -52,6 +56,19 @@ struct benchmark_result_t {
             return (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0;
         }
         return sorted[n / 2];
+    }
+
+    double quantile_ms(double percentile) const {
+        if (timings_ms.empty()) return 0.0;
+        if (percentile <= 0.0) return min_ms();
+        if (percentile >= 100.0) return max_ms();
+        auto sorted = timings_ms;
+        std::sort(sorted.begin(), sorted.end());
+        const double pos = (percentile / 100.0) * static_cast<double>(sorted.size() - 1);
+        const auto lo = static_cast<size_t>(pos);
+        const auto hi = std::min(lo + 1, sorted.size() - 1);
+        const double frac = pos - static_cast<double>(lo);
+        return sorted[lo] * (1.0 - frac) + sorted[hi] * frac;
     }
 };
 

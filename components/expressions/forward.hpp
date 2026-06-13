@@ -60,7 +60,14 @@ namespace components::expressions {
         coalesce,
         case_when,
         unary_minus,
-        star_expand
+        star_expand,
+        // JSONB table-valued operators on computing tables. Both carry a path
+        // prefix in the expression key; validate_logical_plan expands them into
+        // get_field columns against the resolved schema:
+        //   jsonb_expand — '->' / '#>' : columns under the prefix, rerooted
+        //   jsonb_delete — '-'  / '#-' : all columns EXCEPT those under the prefix
+        jsonb_expand,
+        jsonb_delete
     };
 
     enum class sort_order : std::int8_t

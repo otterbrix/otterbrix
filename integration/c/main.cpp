@@ -1,7 +1,20 @@
 #include "otterbrix.h"
 
+#include <components/cursor/cursor.hpp>
+#include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_drop_collection.hpp>
+#include <components/logical_plan/node_drop_database.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
+#include <core/result_wrapper.hpp>
 #include <integration/cpp/base_spaces.hpp>
+
+#include <exception>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 using cursor_t = components::cursor::cursor_t;
 using logical_value_t = components::types::logical_value_t;
@@ -55,23 +68,72 @@ namespace {
         assert(storage->state == state_t::created);
         return storage;
     }
+
+    cursor_ptr store_cursor(components::cursor::cursor_t_ptr c) {
+        auto storage = std::make_unique<cursor_storage_t>();
+        storage->cursor = std::move(c);
+        storage->state = state_t::created;
+        return reinterpret_cast<cursor_ptr>(storage.release());
+    }
+
+    cursor_ptr exception_cursor(pod_space_t* pod, const std::exception& ex) {
+        if (pod == nullptr || pod->space == nullptr) {
+            return nullptr;
+        }
+        auto* resource = pod->space->dispatcher()->resource();
+        try {
+            return store_cursor(components::cursor::make_cursor(
+                resource,
+                core::error_t(core::error_code_t::other_error, std::pmr::string{ex.what(), resource})));
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    cursor_ptr unknown_exception_cursor(pod_space_t* pod) {
+        if (pod == nullptr || pod->space == nullptr) {
+            return nullptr;
+        }
+        auto* resource = pod->space->dispatcher()->resource();
+        try {
+            return store_cursor(components::cursor::make_cursor(
+                resource,
+                core::error_t(core::error_code_t::other_error, std::pmr::string{"unknown C++ exception", resource})));
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    std::string string_view_to_string(string_view_t sv) {
+        if (sv.size == 0) {
+            return {};
+        }
+        if (sv.data == nullptr) {
+            throw std::invalid_argument("string_view_t: non-zero size with null data");
+        }
+        return std::string(sv.data, sv.size);
+    }
 } // namespace
 
 extern "C" otterbrix_ptr otterbrix_create(config_t cfg) {
-    auto config = create_config();
-    config.log.level = static_cast<log_t::level>(cfg.level);
-    config.log.path = std::pmr::string(cfg.log_path.data, cfg.log_path.size);
-    config.wal.path = std::pmr::string(cfg.wal_path.data, cfg.wal_path.size);
-    config.disk.path = std::pmr::string(cfg.disk_path.data, cfg.disk_path.size);
-    config.main_path = std::pmr::string(cfg.main_path.data, cfg.main_path.size);
-    config.wal.on = cfg.wal_on;
-    config.wal.sync_to_disk = cfg.sync_to_disk;
-    config.disk.on = cfg.disk_on;
+    try {
+        auto config = create_config();
+        config.log.level = static_cast<log_t::level>(cfg.level);
+        config.log.path = std::pmr::string(cfg.log_path.data, cfg.log_path.size);
+        config.wal.path = std::pmr::string(cfg.wal_path.data, cfg.wal_path.size);
+        config.disk.path = std::pmr::string(cfg.disk_path.data, cfg.disk_path.size);
+        config.main_path = std::pmr::string(cfg.main_path.data, cfg.main_path.size);
+        config.wal.on = cfg.wal_on;
+        config.wal.sync_to_disk = cfg.sync_to_disk;
+        config.disk.on = cfg.disk_on;
 
-    auto pod_space = std::make_unique<pod_space_t>();
-    pod_space->space = std::make_unique<spaces_t>(config);
-    pod_space->state = state_t::created;
-    return reinterpret_cast<void*>(pod_space.release());
+        auto pod_space = std::make_unique<pod_space_t>();
+        pod_space->space = std::make_unique<spaces_t>(config);
+        pod_space->state = state_t::created;
+        return reinterpret_cast<void*>(pod_space.release());
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 extern "C" void otterbrix_destroy(otterbrix_ptr ptr) {
@@ -82,40 +144,155 @@ extern "C" void otterbrix_destroy(otterbrix_ptr ptr) {
 }
 
 extern "C" cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query_raw) {
-    auto pod_space = convert_otterbrix(ptr);
-    assert(query_raw.data != nullptr);
-    auto session = otterbrix::session_id_t();
-    std::string query(query_raw.data, query_raw.size);
-    auto cursor = pod_space->space->dispatcher()->execute_sql(session, query);
-    auto cursor_storage = std::make_unique<cursor_storage_t>();
-    cursor_storage->cursor = cursor;
-    cursor_storage->state = state_t::created;
-    return reinterpret_cast<void*>(cursor_storage.release());
+    pod_space_t* pod_space = nullptr;
+    try {
+        pod_space = convert_otterbrix(ptr);
+        auto session = otterbrix::session_id_t();
+        std::string query = string_view_to_string(query_raw);
+        auto cursor = pod_space->space->dispatcher()->execute_sql(session, query);
+        return store_cursor(std::move(cursor));
+    } catch (const std::exception& ex) {
+        return exception_cursor(pod_space, ex);
+    } catch (...) {
+        return unknown_exception_cursor(pod_space);
+    }
+}
+
+extern "C" cursor_ptr
+execute_sql_params(otterbrix_ptr ptr, string_view_t query_raw, const sql_param_t* params, size_t param_count) {
+    pod_space_t* pod_space = nullptr;
+    try {
+        pod_space = convert_otterbrix(ptr);
+        auto session = otterbrix::session_id_t();
+        std::string query = string_view_to_string(query_raw);
+        auto* resource = pod_space->space->dispatcher()->resource();
+        std::vector<std::pair<size_t, logical_value_t>> bound;
+        bound.reserve(param_count);
+        for (size_t i = 0; i < param_count; ++i) {
+            const sql_param_t& p = params[i];
+            if (p.index < 1) {
+                throw std::invalid_argument("sql_param_t: index must be >= 1 (e.g. $1 -> 1)");
+            }
+            const size_t id = static_cast<size_t>(p.index);
+            switch (p.kind) {
+                case SQL_PARAM_NULL:
+                    bound.emplace_back(id, logical_value_t(resource, nullptr));
+                    break;
+                case SQL_PARAM_BOOL:
+                    bound.emplace_back(id, logical_value_t(resource, p.bool_value != 0));
+                    break;
+                case SQL_PARAM_INT64:
+                    bound.emplace_back(id, logical_value_t(resource, p.int64_value));
+                    break;
+                case SQL_PARAM_UINT64:
+                    bound.emplace_back(id, logical_value_t(resource, p.uint64_value));
+                    break;
+                case SQL_PARAM_DOUBLE:
+                    bound.emplace_back(id, logical_value_t(resource, p.double_value));
+                    break;
+                case SQL_PARAM_STRING: {
+                    std::string s = string_view_to_string(p.string_value);
+                    bound.emplace_back(id, logical_value_t(resource, std::move(s)));
+                    break;
+                }
+                default:
+                    throw std::invalid_argument("sql_param_t: unknown kind");
+            }
+        }
+        auto cursor = pod_space->space->dispatcher()->execute_sql_with_params(session, query, bound);
+        return store_cursor(std::move(cursor));
+    } catch (const std::exception& ex) {
+        return exception_cursor(pod_space, ex);
+    } catch (...) {
+        return unknown_exception_cursor(pod_space);
+    }
 }
 
 extern "C" cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_name) {
-    auto pod_space = convert_otterbrix(ptr);
-    assert(database_name.data != nullptr);
-    auto session = otterbrix::session_id_t();
-    std::string database(database_name.data, database_name.size);
-    auto cursor = pod_space->space->dispatcher()->create_database(session, database);
-    auto cursor_storage = std::make_unique<cursor_storage_t>();
-    cursor_storage->cursor = cursor;
-    cursor_storage->state = state_t::created;
-    return reinterpret_cast<void*>(cursor_storage.release());
+    pod_space_t* pod_space = nullptr;
+    try {
+        pod_space = convert_otterbrix(ptr);
+        auto session = otterbrix::session_id_t();
+        std::string database = string_view_to_string(database_name);
+        auto cursor = pod_space->space->dispatcher()->execute_sql(session, "CREATE DATABASE " + database + ";");
+        return store_cursor(std::move(cursor));
+    } catch (const std::exception& ex) {
+        return exception_cursor(pod_space, ex);
+    } catch (...) {
+        return unknown_exception_cursor(pod_space);
+    }
 }
 
 extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name) {
-    auto pod_space = convert_otterbrix(ptr);
-    assert(database_name.data != nullptr);
-    auto session = otterbrix::session_id_t();
-    std::string database(database_name.data, database_name.size);
-    std::string collection(collection_name.data, collection_name.size);
-    auto cursor = pod_space->space->dispatcher()->create_collection(session, database, collection);
-    auto cursor_storage = std::make_unique<cursor_storage_t>();
-    cursor_storage->cursor = cursor;
-    cursor_storage->state = state_t::created;
-    return reinterpret_cast<void*>(cursor_storage.release());
+    pod_space_t* pod_space = nullptr;
+    try {
+        pod_space = convert_otterbrix(ptr);
+        auto session = otterbrix::session_id_t();
+        std::string database = string_view_to_string(database_name);
+        std::string collection = string_view_to_string(collection_name);
+        auto* dispatcher = pod_space->space->dispatcher();
+        auto node = components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(
+            dispatcher->resource(),
+            database,
+            components::logical_plan::make_node_create_collection(dispatcher->resource(),
+                                                                  core::relname_t{collection},
+                                                                  {},
+                                                                  {}));
+        auto cursor = dispatcher->execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        return store_cursor(std::move(cursor));
+    } catch (const std::exception& ex) {
+        return exception_cursor(pod_space, ex);
+    } catch (...) {
+        return unknown_exception_cursor(pod_space);
+    }
+}
+
+extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_name) {
+    pod_space_t* pod_space = nullptr;
+    try {
+        pod_space = convert_otterbrix(ptr);
+        auto session = otterbrix::session_id_t();
+        std::string database = string_view_to_string(database_name);
+        auto* dispatcher = pod_space->space->dispatcher();
+        auto node = components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(
+            dispatcher->resource(),
+            database,
+            components::logical_plan::make_node_drop_database(dispatcher->resource()));
+        auto cursor = dispatcher->execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        return store_cursor(std::move(cursor));
+    } catch (const std::exception& ex) {
+        return exception_cursor(pod_space, ex);
+    } catch (...) {
+        return unknown_exception_cursor(pod_space);
+    }
+}
+
+extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name) {
+    pod_space_t* pod_space = nullptr;
+    try {
+        pod_space = convert_otterbrix(ptr);
+        auto session = otterbrix::session_id_t();
+        std::string database = string_view_to_string(database_name);
+        std::string collection = string_view_to_string(collection_name);
+        auto* dispatcher = pod_space->space->dispatcher();
+        auto node = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(),
+            database,
+            collection,
+            components::logical_plan::make_node_drop_collection(dispatcher->resource()));
+        auto cursor = dispatcher->execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        return store_cursor(std::move(cursor));
+    } catch (const std::exception& ex) {
+        return exception_cursor(pod_space, ex);
+    } catch (...) {
+        return unknown_exception_cursor(pod_space);
+    }
 }
 
 extern "C" void release_cursor(cursor_ptr ptr) {
@@ -134,6 +311,20 @@ extern "C" int32_t cursor_column_count(cursor_ptr ptr) {
     return static_cast<int32_t>(storage->cursor->chunk_data().column_count());
 }
 
+extern "C" int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index) {
+    try {
+        auto storage = convert_cursor(ptr);
+        const auto& chunk = storage->cursor->chunk_data();
+        auto types = chunk.types();
+        if (column_index < 0 || static_cast<size_t>(column_index) >= types.size()) {
+            return -1;
+        }
+        return static_cast<int32_t>(types[static_cast<size_t>(column_index)].type());
+    } catch (...) {
+        return -1;
+    }
+}
+
 extern "C" bool cursor_has_next(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
     return storage->cursor->has_next();
@@ -150,27 +341,35 @@ extern "C" bool cursor_is_error(cursor_ptr ptr) {
 }
 
 extern "C" error_message cursor_get_error(cursor_ptr ptr) {
-    auto storage = convert_cursor(ptr);
-    auto error = storage->cursor->get_error();
-    error_message msg;
-    msg.code = static_cast<int32_t>(error.type);
-    std::string str = std::string{error.what};
-    msg.message = new char[str.size() + 1];
-    std::strcpy(msg.message, str.data());
-    return msg;
+    try {
+        auto storage = convert_cursor(ptr);
+        auto error = storage->cursor->get_error();
+        error_message msg;
+        msg.code = static_cast<int32_t>(error.type);
+        std::string str = std::string{error.what};
+        msg.message = new char[str.size() + 1];
+        std::strcpy(msg.message, str.data());
+        return msg;
+    } catch (...) {
+        return error_message{static_cast<int32_t>(core::error_code_t::other_error), nullptr};
+    }
 }
 
 extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
-    auto storage = convert_cursor(ptr);
-    const auto& chunk = storage->cursor->chunk_data();
-    auto types = chunk.types();
-    if (static_cast<size_t>(column_index) < types.size()) {
-        auto name = types[static_cast<size_t>(column_index)].alias();
-        char* str_ptr = new char[name.size() + 1];
-        std::strcpy(str_ptr, std::string(name).data());
-        return str_ptr;
+    try {
+        auto storage = convert_cursor(ptr);
+        const auto& chunk = storage->cursor->chunk_data();
+        auto types = chunk.types();
+        if (static_cast<size_t>(column_index) < types.size()) {
+            auto name = types[static_cast<size_t>(column_index)].alias();
+            char* str_ptr = new char[name.size() + 1];
+            std::strcpy(str_ptr, std::string(name).data());
+            return str_ptr;
+        }
+        return nullptr;
+    } catch (...) {
+        return nullptr;
     }
-    return nullptr;
 }
 
 extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t column_index) {
@@ -291,10 +490,16 @@ extern "C" double value_get_double(value_ptr ptr) {
 }
 
 extern "C" char* value_get_string(value_ptr ptr) {
-    auto storage = convert_value(ptr);
-    auto sv = storage->value.value<std::string_view>();
-    char* str_ptr = new char[sv.size() + 1];
-    std::memcpy(str_ptr, sv.data(), sv.size());
-    str_ptr[sv.size()] = '\0';
-    return str_ptr;
+    try {
+        auto storage = convert_value(ptr);
+        auto sv = storage->value.value<std::string_view>();
+        char* str_ptr = new char[sv.size() + 1];
+        std::memcpy(str_ptr, sv.data(), sv.size());
+        str_ptr[sv.size()] = '\0';
+        return str_ptr;
+    } catch (...) {
+        return nullptr;
+    }
 }
+
+extern "C" void otterbrix_free_string(char* str) { delete[] str; }

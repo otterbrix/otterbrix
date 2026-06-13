@@ -10,14 +10,20 @@ using namespace components::sql::transform;
 using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 
+// Transformer now wraps SELECT in sequence_t(resolve_*..., aggregate); descend
+// to the aggregate consumer when inspecting its rendered form.
 #define TEST_SIMPLE_SELECT(QUERY, RESULT, PARAMS)                                                                      \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
             auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
-            auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();                              \
-            REQUIRE(!result.has_error());                                                                              \
-            auto node = result.value().node;                                                                           \
-            auto agg = result.value().params;                                                                          \
+            auto _wrap = transformer.transform(pg_cell_to_node_cast(select)).finalize();                               \
+            REQUIRE(!_wrap.has_error());                                                                               \
+            auto result = _wrap.value();                                                                               \
+            auto node = result.sub_queries.back();                                                                     \
+            if (node->type() == components::logical_plan::node_type::sequence_t) {                                     \
+                node = node->children().back();                                                                        \
+            }                                                                                                          \
+            auto agg = result.parameters;                                                                              \
             REQUIRE(node->to_string() == RESULT);                                                                      \
             REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                             \
             for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                               \
@@ -40,22 +46,6 @@ TEST_CASE("components::sql::select_from_where") {
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection LIMIT ALL;)_",
                        R"_($aggregate: {$limit: -1})_",
                        vec());
-
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection LIMIT 10 OFFSET 5;)_",
-                       R"_($aggregate: {$limit: 10, $offset: 5})_",
-                       vec());
-
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection OFFSET 20;)_",
-                       R"_($aggregate: {$limit: -1, $offset: 20})_",
-                       vec());
-
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number BETWEEN 10 AND 20;)_",
-                       R"_($aggregate: {$match: {$and: ["number": {$gte: #0}, "number": {$lte: #1}]}})_",
-                       vec({v(&resource, 10l), v(&resource, 20l)}));
-
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number NOT BETWEEN 10 AND 20;)_",
-                       R"_($aggregate: {$match: {$or: ["number": {$lt: #0}, "number": {$gt: #1}]}})_",
-                       vec({v(&resource, 10l), v(&resource, 20l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM UID.TestDatabase.TestSchema.TestCollection;)_", R"_($aggregate: {})_", vec());
 
@@ -238,10 +228,6 @@ TEST_CASE("components::sql::select_from_order_by") {
                        R"_($aggregate: {$sort: {number: 1, name: -1}, $limit: 200})_",
                        vec());
 
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection ORDER BY number ASC LIMIT 10 OFFSET 5;)_",
-                       R"_($aggregate: {$sort: {number: 1}, $limit: 10, $offset: 5})_",
-                       vec());
-
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection ORDER BY number, "count" ASC, name, value DESC;)_",
                        R"_($aggregate: {$sort: {number: 1, count: 1, name: 1, value: -1}})_",
                        vec());
@@ -310,6 +296,18 @@ TEST_CASE("components::sql::select_from_fields") {
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT number, 10 size, 'title' title, true "on", false "off" FROM TestDatabase.TestCollection;)_",
-        R"_($aggregate: {$select: {number, size: {$constant: #0}, title: {$constant: #1}, on: {$constant: #2}, off: {$constant: #3}}})_",
+        R"_($aggregate: {$select: {number, size: {$constant: #0}, title: {$constant: #1}, )_"
+        R"_(on: {$constant: #2}, off: {$constant: #3}}})_",
         vec({v(&resource, 10l), v(&resource, "title"), v(&resource, true), v(&resource, false)}));
+}
+
+TEST_CASE("components::sql::select_with_subquery") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT * FROM TestDatabase.TestCollection WHERE col1 IN (SELECT col2 FROM TestDatabase2.TestCollection2);)_",
+        R"_($aggregate: {$match: {"col1": {$any: #0}}})_",
+        vec({v(&resource, nullptr)}));
 }

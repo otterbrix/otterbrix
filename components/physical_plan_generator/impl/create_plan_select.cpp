@@ -41,6 +41,10 @@ namespace services::planner::impl {
                                      : std::get<components::expressions::key_t>(expr->params().front());
                     col.key.type = components::operators::group_key_t::kind::column;
                     col.key.full_path = field.path();
+                    // Validation always resolves a concrete side; carry it so a
+                    // joined DELETE/UPDATE RETURNING can pick the correct input
+                    // chunk. (Ignored when the operator feeds a single chunk.)
+                    col.key.side = field.side();
                     // If alias was set but name is still empty, use field name
                     if (col.key.name.empty() && !field.storage().empty()) {
                         col.key.name = std::pmr::string(field.storage().back(), resource);
@@ -179,11 +183,26 @@ namespace services::planner::impl {
 
     } // namespace
 
+    std::pmr::vector<components::operators::select_column_t>
+    build_returning_columns(std::pmr::memory_resource* resource,
+                            const std::pmr::vector<components::expressions::expression_ptr>& returning,
+                            const components::logical_plan::storage_parameters* params) {
+        std::pmr::vector<components::operators::select_column_t> columns(resource);
+        columns.reserve(returning.size());
+        for (const auto& expr : returning) {
+            if (expr && expr->group() == expression_group::scalar) {
+                auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
+                columns.push_back(make_select_column_scalar(resource, scalar_expr, params));
+            }
+        }
+        return columns;
+    }
+
     components::operators::operator_ptr create_plan_select(const context_storage_t& context,
                                                            const components::logical_plan::node_ptr& node,
                                                            const components::logical_plan::storage_parameters* params) {
-        auto coll_name = node->collection_full_name();
-        bool known = context.has_collection(coll_name);
+        auto table_oid = node->table_oid();
+        bool known = context.has_table_oid(table_oid);
         auto plan_resource = known ? context.resource : node->resource();
         auto plan_log = known ? context.log.clone() : log_t{};
 

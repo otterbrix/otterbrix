@@ -1,5 +1,7 @@
 #include "substrait_type_mapping.hpp"
 
+#include <memory_resource>
+
 namespace components::logical_plan::substrait_adapter {
 
     substrait::Type make_bool_type() {
@@ -127,14 +129,9 @@ namespace components::logical_plan::substrait_adapter {
             case logical_type::BIT:
             case logical_type::UUID:
                 return make_binary_type();
-            case logical_type::TIMESTAMP_SEC:
-                return make_timestamp_type(0);
-            case logical_type::TIMESTAMP_MS:
-                return make_timestamp_type(3);
-            case logical_type::TIMESTAMP_US:
+            case logical_type::TIMESTAMP:
+            case logical_type::TIMESTAMP_TZ:
                 return make_timestamp_type(6);
-            case logical_type::TIMESTAMP_NS:
-                return make_timestamp_type(9);
             case logical_type::LIST:
             case logical_type::ARRAY:
                 return make_list_type(to_substrait_type(type.child_type()));
@@ -200,19 +197,8 @@ namespace components::logical_plan::substrait_adapter {
                 return complex_logical_type::create_decimal(static_cast<uint8_t>(type.decimal().precision()),
                                                             static_cast<uint8_t>(type.decimal().scale()),
                                                             std::move(alias));
-            case substrait::Type::kPrecisionTimestamp: {
-                const auto precision = type.precision_timestamp().precision();
-                if (precision <= 0) {
-                    return complex_logical_type(logical_type::TIMESTAMP_SEC, std::move(alias));
-                }
-                if (precision <= 3) {
-                    return complex_logical_type(logical_type::TIMESTAMP_MS, std::move(alias));
-                }
-                if (precision <= 6) {
-                    return complex_logical_type(logical_type::TIMESTAMP_US, std::move(alias));
-                }
-                return complex_logical_type(logical_type::TIMESTAMP_NS, std::move(alias));
-            }
+            case substrait::Type::kPrecisionTimestamp:
+                return complex_logical_type(logical_type::TIMESTAMP, std::move(alias));
             case substrait::Type::kList:
                 return complex_logical_type::create_list(from_substrait_type(type.list().type()), std::move(alias));
             case substrait::Type::kMap:
@@ -220,7 +206,7 @@ namespace components::logical_plan::substrait_adapter {
                                                         from_substrait_type(type.map().value()),
                                                         std::move(alias));
             case substrait::Type::kStruct: {
-                std::vector<complex_logical_type> children;
+                std::pmr::vector<complex_logical_type> children(std::pmr::get_default_resource());
                 children.reserve(static_cast<size_t>(type.struct_().types_size()));
                 for (const auto& child : type.struct_().types()) {
                     children.emplace_back(from_substrait_type(child));

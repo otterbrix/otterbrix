@@ -5,7 +5,6 @@
 #include "substrait_function_mapping.hpp"
 
 #include <components/expressions/expression.hpp>
-#include <components/serialization/deserializer.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <string>

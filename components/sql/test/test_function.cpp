@@ -10,14 +10,21 @@ using namespace components::sql::transform;
 using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 
+// Transformer now wraps SELECT in sequence_t(resolve_*..., aggregate); descend
+// to the aggregate consumer when inspecting its rendered form.
 #define TEST_SIMPLE_FUNCTION(QUERY, RESULT, PARAMS)                                                                    \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
             auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
-            auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();                              \
-            REQUIRE(!result.has_error());                                                                              \
-            auto node = result.value().node;                                                                           \
-            auto agg = result.value().params;                                                                          \
+            auto result = ([](auto _w) {                                                                               \
+                REQUIRE_FALSE(_w.has_error());                                                                         \
+                return _w.value();                                                                                     \
+            }(transformer.transform(pg_cell_to_node_cast(select)).finalize()));                                        \
+            auto node = result.sub_queries.back();                                                                     \
+            if (node->type() == components::logical_plan::node_type::sequence_t) {                                     \
+                node = node->children().back();                                                                        \
+            }                                                                                                          \
+            auto agg = result.parameters;                                                                              \
             REQUIRE(node->to_string() == RESULT);                                                                      \
             REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                             \
             for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                               \
@@ -37,7 +44,7 @@ TEST_CASE("components::sql::functions") {
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM some_udf(5, 10);)_",
                          R"_($aggregate: {$function: {name: {"some_udf"}, args: {#0, #1}}})_",
-                         vec({v(&resource, 5), v(&resource, 10)}));
+                         vec({v(&resource, 5l), v(&resource, 10l)}));
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM users WHERE is_active_user(id);)_",
                          R"_($aggregate: {$match: {$function: {name: {"is_active_user"}, args: {"id"}}}})_",
@@ -55,11 +62,11 @@ TEST_CASE("components::sql::functions") {
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT *, some_udf_1(foo_name) FROM some_udf_2(1) AS some_alias;)_",
         R"_($aggregate: {$function: {name: {"some_udf_2"}, args: {#0}}, $group: {some_udf_1: {$some_udf_1: "foo_name"}}, $select: {*, some_udf_1}})_",
-        vec({v(&resource, 1)}));
+        vec({v(&resource, 1l)}));
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT some_udf(5, 10);)_",
                          R"_($aggregate: {$group: {some_udf: {$some_udf: [#0, #1]}}, $select: {some_udf}})_",
-                         vec({v(&resource, 5), v(&resource, 10)}));
+                         vec({v(&resource, 5l), v(&resource, 10l)}));
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT name, some_udf(name, number) AS some_alias;)_",

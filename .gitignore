@@ -414,6 +414,7 @@ luac.out
 
 .idea
 cmake-build-*
+**/target/
 venv/
 conan_paths.cmake
 conanbuildinfo.cmake
@@ -426,3 +427,13 @@ build
 *.wal
 *.txt.user
 benchmark/data/
+
+# Local Rust integration
+integration/rust/.cargo/
+
+CMakeUserPresets.json
+
+# local build trees (TSAN/ASAN side builds) and session-local agent settings
+build-tsan/
+build-*/
+.claude/

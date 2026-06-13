@@ -4,26 +4,30 @@
 
 namespace components::logical_plan {
 
-    node_drop_index_t::node_drop_index_t(std::pmr::memory_resource* resource,
-                                         const collection_full_name_t& collection,
-                                         const std::string& name)
-        : node_t(resource, node_type::drop_index_t, collection)
-        , name_(name) {}
+    node_drop_index_t::node_drop_index_t(std::pmr::memory_resource* resource)
+        : node_t(resource, node_type::drop_index_t) {}
 
-    const std::string& node_drop_index_t::name() const noexcept { return name_; }
-
-    hash_t node_drop_index_t::hash_impl() const { return 0; }
+    hash_t node_drop_index_t::hash_impl() const {
+        return static_cast<hash_t>(namespace_oid_) ^ static_cast<hash_t>(index_oid_) ^ static_cast<hash_t>(table_oid());
+    }
 
     std::string node_drop_index_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$drop_index: " << database_name() << "." << collection_name() << " name:" << name();
+        stream << "$drop_index: <oid:" << static_cast<std::uint64_t>(index_oid_) << ">";
         return stream.str();
+    }
+
+    node_drop_index_ptr make_node_drop_index(std::pmr::memory_resource* resource) {
+        return {new node_drop_index_t{resource}};
     }
 
     node_drop_index_ptr make_node_drop_index(std::pmr::memory_resource* resource,
                                              const collection_full_name_t& collection,
-                                             const std::string& name) {
-        return {new node_drop_index_t{resource, collection, name}};
+                                             std::string index_name) {
+        auto node = make_node_drop_index(resource);
+        node->set_collection_full_name(collection);
+        node->set_runtime_index_name(std::move(index_name));
+        return node;
     }
 
 } // namespace components::logical_plan

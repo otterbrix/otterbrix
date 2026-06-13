@@ -28,7 +28,8 @@ namespace {
                                                               scalar_expr->type(),
                                                               scalar_expr->params(),
                                                               chunk,
-                                                              pipeline_context->parameters);
+                                                              pipeline_context->parameters,
+                                                              pipeline_context->session_tz);
                     if (res.has_error()) {
                         op.set_error(res.error());
                         return false;
@@ -128,7 +129,7 @@ namespace components::operators::aggregate {
 
     core::result_wrapper_t<types::logical_value_t>
     operator_func_t::aggregate_impl(pipeline::context_t* pipeline_context) {
-        auto result = types::logical_value_t(std::pmr::null_memory_resource(), types::logical_type::NA);
+        auto result = types::logical_value_t(resource_, types::logical_type::NA);
         if (left_ && left_->output()) {
             auto& chunk = left_->output()->data_chunk();
 
@@ -171,6 +172,12 @@ namespace components::operators::aggregate {
         arg_chunks.reserve(batch_chunks.size());
 
         for (auto& chunk : batch_chunks) {
+            // resolve_columns appends computed expression columns to the chunk so
+            // they can be referenced like regular columns. The batch may be shared
+            // across aggregators (gather-once group fallback), so the chunk is
+            // restored to its original column set once the argument chunk is built
+            // (build_arg_chunk shares the column buffers, not the chunk slots).
+            const size_t base_column_count = chunk.data.size();
             std::vector<vector::vector_t> computed_vecs;
             if (!compute_expression_args(resource_, args_, chunk, *this, pipeline_context, computed_vecs)) {
                 // error already set — return empty
@@ -188,6 +195,10 @@ namespace components::operators::aggregate {
                     apply_distinct(resource_, c, types);
                 }
                 arg_chunks.push_back(std::move(c));
+            }
+            if (chunk.data.size() > base_column_count) {
+                chunk.data.erase(chunk.data.begin() + static_cast<std::ptrdiff_t>(base_column_count),
+                                 chunk.data.end());
             }
         }
 

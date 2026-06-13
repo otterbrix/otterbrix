@@ -39,19 +39,26 @@ namespace components::index {
             const_iterator iterator_;
         };
 
-        auto insert_impl(value_t, index_value_t value) -> void final;
-        auto remove_impl(value_t key) -> void final;
-        range find_impl(const value_t& value) const final;
-        range lower_bound_impl(const value_t& value) const final;
-        range upper_bound_impl(const value_t& value) const final;
+        auto insert_impl(value_t, index_value_t value, core::date::timezone_offset_t local_timezone) -> void final;
+        auto remove_impl(value_t key, core::date::timezone_offset_t local_timezone) -> void final;
+        range find_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const final;
+        range lower_bound_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const final;
+        range upper_bound_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const final;
         iterator cbegin_impl() const final;
         iterator cend_impl() const final;
 
-        void insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id) final;
-        void mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id) final;
+        void insert_txn_impl(value_t key,
+                             int64_t row_index,
+                             uint64_t txn_id,
+                             core::date::timezone_offset_t local_timezone) final;
+        void mark_delete_impl(value_t key,
+                              int64_t row_index,
+                              uint64_t txn_id,
+                              core::date::timezone_offset_t local_timezone) final;
         void commit_insert_impl(uint64_t txn_id, uint64_t commit_id) final;
         void commit_delete_impl(uint64_t txn_id, uint64_t commit_id) final;
         void revert_insert_impl(uint64_t txn_id) final;
+        void revert_delete_impl(uint64_t txn_id) final;
         void cleanup_versions_impl(uint64_t lowest_active) final;
         void for_each_pending_insert_impl(uint64_t txn_id,
                                           const std::function<void(const value_t&, int64_t)>& fn) const final;

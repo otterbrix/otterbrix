@@ -1,4 +1,5 @@
 #include "predicate.hpp"
+#include "core/date/timezones.hpp"
 #include "function_predicate.hpp"
 #include "simple_predicate.hpp"
 
@@ -45,14 +46,21 @@ namespace components::operators::predicates {
                                    const expressions::expression_ptr& expr,
                                    const std::pmr::vector<types::complex_logical_type>& types_left,
                                    const std::pmr::vector<types::complex_logical_type>& types_right,
-                                   const logical_plan::storage_parameters* parameters) {
+                                   const logical_plan::storage_parameters* parameters,
+                                   core::date::timezone_offset_t session_tz) {
         if (expr->group() == expressions::expression_group::function) {
             const auto& func_expr = reinterpret_cast<const expressions::function_expression_ptr&>(expr);
             return create_function_predicate(resource, function_registry, func_expr, parameters);
         } else {
             assert(expr->group() == expressions::expression_group::compare);
             const auto& comp_expr = reinterpret_cast<const expressions::compare_expression_ptr&>(expr);
-            return create_simple_predicate(resource, function_registry, comp_expr, types_left, types_right, parameters);
+            return create_simple_predicate(resource,
+                                           function_registry,
+                                           comp_expr,
+                                           types_left,
+                                           types_right,
+                                           parameters,
+                                           session_tz);
         }
     }
 
@@ -62,7 +70,8 @@ namespace components::operators::predicates {
                                        make_compare_expression(resource, expressions::compare_type::all_true),
                                        {},
                                        {},
-                                       nullptr);
+                                       nullptr,
+                                       core::date::timezone_offset_t{});
     }
 
     core::result_wrapper_t<std::vector<bool>> batch_check_1vN(const predicate_ptr& pred,

@@ -127,18 +127,6 @@ namespace components::vector::arrow {
             case logical_type::STRING_LITERAL:
                 child.format = "U";
                 break;
-            case logical_type::TIMESTAMP_US:
-                child.format = "tsu:";
-                break;
-            case logical_type::TIMESTAMP_SEC:
-                child.format = "tss:";
-                break;
-            case logical_type::TIMESTAMP_NS:
-                child.format = "tsn:";
-                break;
-            case logical_type::TIMESTAMP_MS:
-                child.format = "tsm:";
-                break;
             case logical_type::DECIMAL: {
                 auto* decimal_extension = static_cast<types::decimal_logical_type_extension*>(type.extension());
                 uint8_t width = decimal_extension->width(), scale = decimal_extension->scale();
@@ -148,6 +136,25 @@ namespace components::vector::arrow {
                 child.format = root_holder.owned_type_names.back().get();
                 break;
             }
+            case logical_type::DATE:
+                child.format = "tdD";
+                break;
+            case logical_type::TIME:
+                child.format = "ttu";
+                break;
+            case logical_type::TIMESTAMP: {
+                root_holder.owned_type_names.push_back(add_name("tsu:"));
+                child.format = root_holder.owned_type_names.back().get();
+                break;
+            }
+            case logical_type::TIMESTAMP_TZ: {
+                root_holder.owned_type_names.push_back(add_name("tsu:UTC"));
+                child.format = root_holder.owned_type_names.back().get();
+                break;
+            }
+            case logical_type::INTERVAL:
+                child.format = "tin";
+                break;
             case logical_type::NA: {
                 child.format = "n";
                 break;
@@ -260,7 +267,9 @@ namespace components::vector::arrow {
         }
     }
 
-    void populate_arrow_table_schema(arrow_table_schema_t& arrow_table, const ArrowSchema& arrow_schema) {
+    void populate_arrow_table_schema(std::pmr::memory_resource* resource,
+                                     arrow_table_schema_t& arrow_table,
+                                     const ArrowSchema& arrow_schema) {
         std::vector<std::string> names;
         for (uint64_t col_idx = 0; col_idx < static_cast<uint64_t>(arrow_schema.n_children); col_idx++) {
             const auto& schema = *arrow_schema.children[col_idx];
@@ -280,16 +289,16 @@ namespace components::vector::arrow {
             if (!schema.release) {
                 throw std::logic_error("arrow_scan: released schema passed");
             }
-            auto arrow_type = arrow_logical_type(schema);
+            auto arrow_type = arrow_logical_type(resource, schema);
             arrow_table.add_column(col_idx, std::move(arrow_type), names[col_idx]);
         }
     }
 
-    arrow_table_schema_t schema_from_arrow(ArrowSchema* schema) {
+    arrow_table_schema_t schema_from_arrow(std::pmr::memory_resource* resource, ArrowSchema* schema) {
         std::vector<std::string> names;
-        arrow_table_schema_t arrow_table;
+        arrow_table_schema_t arrow_table(resource);
         std::vector<types::logical_type> return_types;
-        populate_arrow_table_schema(arrow_table, *schema);
+        populate_arrow_table_schema(resource, arrow_table, *schema);
         return arrow_table;
     }
 

@@ -1,6 +1,8 @@
 #include "arrow_type.hpp"
 #include "arrow_type_extension.hpp"
 
+#include <charconv>
+
 namespace components::vector::arrow {
 
     void arrow_table_schema_t::add_column(size_t index, std::shared_ptr<arrow_type> type, const std::string& name) {
@@ -57,7 +59,8 @@ namespace components::vector::arrow {
         switch (id) {
             case types::logical_type::STRUCT: {
                 auto struct_info = reinterpret_cast<arrow_struct_info*>(type_info_.get());
-                std::vector<types::complex_logical_type> new_children;
+                std::pmr::vector<types::complex_logical_type> new_children(type_.child_types().get_allocator());
+                new_children.reserve(struct_info->child_count());
                 for (size_t i = 0; i < struct_info->child_count(); i++) {
                     auto& child = struct_info->get_child(i);
                     auto& child_name = type_.child_name(i);
@@ -80,7 +83,8 @@ namespace components::vector::arrow {
             }
             case types::logical_type::UNION: {
                 auto union_info = reinterpret_cast<arrow_struct_info*>(type_info_.get());
-                std::vector<types::complex_logical_type> new_children;
+                std::pmr::vector<types::complex_logical_type> new_children(type_.child_types().get_allocator());
+                new_children.reserve(union_info->child_count());
                 for (size_t i = 0; i < union_info->child_count(); i++) {
                     auto& child = union_info->get_child(i);
                     auto& child_name = type_.child_types()[i].alias();
@@ -147,12 +151,19 @@ namespace components::vector::arrow {
                 throw std::runtime_error(
                     "Decimal format of Arrow object is incomplete, it is missing the scale or width");
             }
-            uint64_t width = std::stoull(parameters[0]);
-            uint64_t scale = std::stoull(parameters[1]);
+            uint64_t width{};
+            uint64_t scale{};
             uint64_t bitwidth = 128;
-            if (parameters.size() == 3) {
+            auto parse_u64 = [](const std::string& s, uint64_t& out) {
+                auto [p, ec] = std::from_chars(s.data(), s.data() + s.size(), out);
+                return ec == std::errc{};
+            };
+            if (!parse_u64(parameters[0], width) || !parse_u64(parameters[1], scale)) {
+                return nullptr;
+            }
+            if (parameters.size() == 3 && !parse_u64(parameters[2], bitwidth)) {
                 // We have a bit-width defined
-                bitwidth = std::stoull(parameters[2]);
+                return nullptr;
             }
             if (width > 38 || bitwidth > 128) {
                 throw std::runtime_error("Unsupported Internal Arrow Type for Decimal");
@@ -191,14 +202,28 @@ namespace components::vector::arrow {
         } else if (format == "vu") {
             return std::make_unique<arrow_type>(types::logical_type::STRING_LITERAL,
                                                 std::make_unique<arrow_string_info>(arrow_variable_size_type::VIEW));
-        } else if (format == "tsn:") {
-            return std::make_unique<arrow_type>(types::logical_type::TIMESTAMP_NS);
-        } else if (format == "tsu:") {
-            return std::make_unique<arrow_type>(types::logical_type::TIMESTAMP_US);
-        } else if (format == "tsm:") {
-            return std::make_unique<arrow_type>(types::logical_type::TIMESTAMP_MS);
-        } else if (format == "tss:") {
-            return std::make_unique<arrow_type>(types::logical_type::TIMESTAMP_SEC);
+        } else if (format == "tdD") {
+            return std::make_unique<arrow_type>(types::logical_type::DATE,
+                                                std::make_unique<arrow_date_time_info>(arrow_date_time_type::DAYS));
+        } else if (format == "tdm") {
+            return std::make_unique<arrow_type>(
+                types::logical_type::DATE,
+                std::make_unique<arrow_date_time_info>(arrow_date_time_type::MILLISECONDS));
+        } else if (format == "tts") {
+            return std::make_unique<arrow_type>(types::logical_type::TIME,
+                                                std::make_unique<arrow_date_time_info>(arrow_date_time_type::SECONDS));
+        } else if (format == "ttm") {
+            return std::make_unique<arrow_type>(
+                types::logical_type::TIME,
+                std::make_unique<arrow_date_time_info>(arrow_date_time_type::MILLISECONDS));
+        } else if (format == "ttu") {
+            return std::make_unique<arrow_type>(
+                types::logical_type::TIME,
+                std::make_unique<arrow_date_time_info>(arrow_date_time_type::MICROSECONDS));
+        } else if (format == "ttn") {
+            return std::make_unique<arrow_type>(
+                types::logical_type::TIME,
+                std::make_unique<arrow_date_time_info>(arrow_date_time_type::NANOSECONDS));
         } else if (format == "tDs") {
             return std::make_unique<arrow_type>(types::logical_type::INTERVAL,
                                                 std::make_unique<arrow_date_time_info>(arrow_date_time_type::SECONDS));
@@ -235,62 +260,75 @@ namespace components::vector::arrow {
             return std::make_unique<arrow_type>(types::logical_type::BLOB, std::move(type_info));
         } else if (format[0] == 'w') {
             std::string parameters = format.substr(format.find(':') + 1);
-            auto fixed_size = static_cast<size_t>(std::stoi(parameters));
+            int fixed_size_raw{};
+            auto [p, ec] = std::from_chars(parameters.data(), parameters.data() + parameters.size(), fixed_size_raw);
+            if (ec != std::errc{}) {
+                return nullptr;
+            }
+            auto fixed_size = static_cast<size_t>(fixed_size_raw);
             auto type_info = std::make_unique<arrow_string_info>(fixed_size);
             return std::make_unique<arrow_type>(types::logical_type::BLOB, std::move(type_info));
-        } else if (format[0] == 't' && format[1] == 's') {
-            if (format[2] == 'n') {
-                return std::make_unique<arrow_type>(
-                    types::logical_type::TIMESTAMP_NS,
-                    std::make_unique<arrow_date_time_info>(arrow_date_time_type::NANOSECONDS));
-            } else if (format[2] == 'u') {
-                return std::make_unique<arrow_type>(
-                    types::logical_type::TIMESTAMP_US,
-                    std::make_unique<arrow_date_time_info>(arrow_date_time_type::MICROSECONDS));
-            } else if (format[2] == 'm') {
-                return std::make_unique<arrow_type>(
-                    types::logical_type::TIMESTAMP_MS,
-                    std::make_unique<arrow_date_time_info>(arrow_date_time_type::MILLISECONDS));
-            } else if (format[2] == 's') {
-                return std::make_unique<arrow_type>(
-                    types::logical_type::TIMESTAMP_SEC,
-                    std::make_unique<arrow_date_time_info>(arrow_date_time_type::SECONDS));
-            } else {
-                throw std::runtime_error(" Timestamp precision of not accepted");
+        } else if (format.size() >= 3 && format[0] == 't' && format[1] == 's') {
+            arrow_date_time_type prec;
+            switch (format[2]) {
+                case 's':
+                    prec = arrow_date_time_type::SECONDS;
+                    break;
+                case 'm':
+                    prec = arrow_date_time_type::MILLISECONDS;
+                    break;
+                case 'u':
+                    prec = arrow_date_time_type::MICROSECONDS;
+                    break;
+                case 'n':
+                    prec = arrow_date_time_type::NANOSECONDS;
+                    break;
+                default:
+                    throw std::runtime_error("Unknown timestamp precision in Arrow format: " + format);
             }
+            // "tsX:" with empty timezone → TIMESTAMP; "tsX:UTC" or similar → TIMESTAMP_TZ
+            bool has_tz = format.size() > 4 && format[3] == ':' && !format.substr(4).empty();
+            auto logical = has_tz ? types::logical_type::TIMESTAMP_TZ : types::logical_type::TIMESTAMP;
+            return std::make_unique<arrow_type>(logical, std::make_unique<arrow_date_time_info>(prec));
         }
         return nullptr;
     }
 
-    std::unique_ptr<arrow_type> type_from_format(ArrowSchema& schema, std::string& format) {
+    std::unique_ptr<arrow_type>
+    type_from_format(std::pmr::memory_resource* resource, ArrowSchema& schema, std::string& format) {
         auto type = type_from_format(format);
         if (type) {
             return type;
         }
         if (format == "+l") {
-            return create_list_type(*schema.children[0], arrow_variable_size_type::NORMAL, false);
+            return create_list_type(resource, *schema.children[0], arrow_variable_size_type::NORMAL, false);
         } else if (format == "+L") {
-            return create_list_type(*schema.children[0], arrow_variable_size_type::SUPER_SIZE, false);
+            return create_list_type(resource, *schema.children[0], arrow_variable_size_type::SUPER_SIZE, false);
         } else if (format == "+vl") {
-            return create_list_type(*schema.children[0], arrow_variable_size_type::NORMAL, true);
+            return create_list_type(resource, *schema.children[0], arrow_variable_size_type::NORMAL, true);
         } else if (format == "+vL") {
-            return create_list_type(*schema.children[0], arrow_variable_size_type::SUPER_SIZE, true);
+            return create_list_type(resource, *schema.children[0], arrow_variable_size_type::SUPER_SIZE, true);
         } else if (format[0] == '+' && format[1] == 'w') {
             std::string parameters = format.substr(format.find(':') + 1);
-            auto fixed_size = static_cast<size_t>(std::stoi(parameters));
-            auto child_type = arrow_logical_type(*schema.children[0]);
+            int fixed_size_raw{};
+            auto [p, ec] = std::from_chars(parameters.data(), parameters.data() + parameters.size(), fixed_size_raw);
+            if (ec != std::errc{}) {
+                return nullptr;
+            }
+            auto fixed_size = static_cast<size_t>(fixed_size_raw);
+            auto child_type = arrow_logical_type(resource, *schema.children[0]);
 
             auto array_type = types::complex_logical_type::create_array(child_type->type(), fixed_size);
             auto type_info = std::make_unique<arrow_array_info>(std::move(child_type), fixed_size);
             return std::make_unique<arrow_type>(array_type, std::move(type_info));
         } else if (format == "+s") {
-            std::vector<types::complex_logical_type> child_types;
+            std::pmr::vector<types::complex_logical_type> child_types(resource);
             std::vector<std::shared_ptr<arrow_type>> children;
             if (schema.n_children == 0) {
                 throw std::runtime_error("Attempted to convert a STRUCT with no fields which is not supported");
             }
             for (size_t type_idx = 0; type_idx < static_cast<size_t>(schema.n_children); type_idx++) {
-                children.emplace_back(arrow_logical_type(*schema.children[type_idx]));
+                children.emplace_back(arrow_logical_type(resource, *schema.children[type_idx]));
                 child_types.emplace_back(children.back()->type());
                 child_types.back().set_alias(schema.children[type_idx]->name);
             }
@@ -308,7 +346,7 @@ namespace components::vector::arrow {
             std::string prefix = "+us:";
             auto type_ids = split_string(format.substr(prefix.size()), ',');
 
-            std::vector<types::complex_logical_type> members;
+            std::pmr::vector<types::complex_logical_type> members(resource);
             std::vector<std::shared_ptr<arrow_type>> children;
             if (schema.n_children == 0) {
                 throw std::runtime_error("Attempted to convert a UNION with no fields  which is not supported");
@@ -316,7 +354,7 @@ namespace components::vector::arrow {
             for (size_t type_idx = 0; type_idx < static_cast<size_t>(schema.n_children); type_idx++) {
                 auto type = schema.children[type_idx];
 
-                children.emplace_back(arrow_logical_type(*type));
+                children.emplace_back(arrow_logical_type(resource, *type));
                 members.emplace_back(children.back()->type());
                 members.back().set_alias(type->name);
             }
@@ -327,7 +365,7 @@ namespace components::vector::arrow {
                                              std::move(type_info));
             return union_type;
         } else if (format == "+r") {
-            std::vector<types::complex_logical_type> members;
+            std::pmr::vector<types::complex_logical_type> members(resource);
             std::vector<std::shared_ptr<arrow_type>> children;
             size_t n_children = static_cast<size_t>(schema.n_children);
             assert(n_children == 2);
@@ -335,7 +373,7 @@ namespace components::vector::arrow {
             assert(std::string(schema.children[1]->name) == "values");
             for (size_t i = 0; i < n_children; i++) {
                 auto type = schema.children[i];
-                children.emplace_back(arrow_logical_type(*type));
+                children.emplace_back(arrow_logical_type(resource, *type));
                 members.emplace_back(children.back()->type());
                 members.back().set_alias(type->name);
             }
@@ -349,9 +387,9 @@ namespace components::vector::arrow {
         } else if (format == "+m") {
             auto& arrow_struct_type = *schema.children[0];
             assert(arrow_struct_type.n_children == 2);
-            auto key_type = arrow_logical_type(*arrow_struct_type.children[0]);
-            auto value_type = arrow_logical_type(*arrow_struct_type.children[1]);
-            std::vector<types::complex_logical_type> key_value;
+            auto key_type = arrow_logical_type(resource, *arrow_struct_type.children[0]);
+            auto value_type = arrow_logical_type(resource, *arrow_struct_type.children[1]);
+            std::pmr::vector<types::complex_logical_type> key_value(resource);
             key_value.emplace_back(key_type->type());
             key_value.back().set_alias("key");
             key_value.emplace_back(value_type->type());
@@ -372,8 +410,11 @@ namespace components::vector::arrow {
         throw std::runtime_error("Unsupported Internal Arrow Type");
     }
 
-    std::unique_ptr<arrow_type> create_list_type(ArrowSchema& child, arrow_variable_size_type size_type, bool view) {
-        auto child_type = arrow_logical_type(child);
+    std::unique_ptr<arrow_type> create_list_type(std::pmr::memory_resource* resource,
+                                                 ArrowSchema& child,
+                                                 arrow_variable_size_type size_type,
+                                                 bool view) {
+        auto child_type = arrow_logical_type(resource, child);
 
         std::unique_ptr<arrow_type_info> type_info;
         auto type = types::complex_logical_type::create_list(child_type->type());
@@ -384,20 +425,20 @@ namespace components::vector::arrow {
         }
         return std::make_unique<arrow_type>(type, std::move(type_info));
     }
-    std::unique_ptr<arrow_type> arrow_logical_type(ArrowSchema& schema) {
-        auto arrow_type = type_from_schema(schema);
+    std::unique_ptr<arrow_type> arrow_logical_type(std::pmr::memory_resource* resource, ArrowSchema& schema) {
+        auto arrow_type = type_from_schema(resource, schema);
         if (schema.dictionary) {
-            auto dictionary = arrow_logical_type(*schema.dictionary);
+            auto dictionary = arrow_logical_type(resource, *schema.dictionary);
             arrow_type->set_dictionary(std::move(dictionary));
         }
         return arrow_type;
     }
 
-    std::unique_ptr<arrow_type> type_from_schema(ArrowSchema& schema) {
+    std::unique_ptr<arrow_type> type_from_schema(std::pmr::memory_resource* resource, ArrowSchema& schema) {
         auto format = std::string(schema.format);
         arrow_schema_metadata_t schema_metadata(schema.metadata);
 
-        return type_from_format(schema, format);
+        return type_from_format(resource, schema, format);
     }
 
     types::complex_logical_type arrow_type_extension_data_t::internal_type() const { return internal_type_; }

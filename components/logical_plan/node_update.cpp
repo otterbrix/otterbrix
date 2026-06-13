@@ -6,15 +6,13 @@
 namespace components::logical_plan {
 
     node_update_t::node_update_t(std::pmr::memory_resource* resource,
-                                 const collection_full_name_t& collection_to,
-                                 const collection_full_name_t& collection_from,
                                  const node_match_ptr& match,
                                  const node_limit_ptr& limit,
                                  const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                  bool upsert)
-        : node_t(resource, node_type::update_t, collection_to)
-        , collection_from_(collection_from)
+        : node_t(resource, node_type::update_t)
         , update_expressions_(updates)
+        , returning_(resource)
         , upsert_(upsert) {
         append_child(match);
         append_child(limit);
@@ -24,28 +22,28 @@ namespace components::logical_plan {
 
     bool node_update_t::upsert() const { return upsert_; }
 
-    const collection_full_name_t& node_update_t::collection_from() const { return collection_from_; }
+    std::pmr::vector<expressions::expression_ptr>& node_update_t::returning() { return returning_; }
+    const std::pmr::vector<expressions::expression_ptr>& node_update_t::returning() const { return returning_; }
 
     hash_t node_update_t::hash_impl() const { return 0; }
 
     std::string node_update_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$update: {";
-        // TODO: sort fields in to_json() method for consistent results
-        // phisical field order in document is random, and to_json is too unreliable for testing with multiple fields
-        // stream << update_->to_json() << ", ";
-        stream << "$upsert: " << upsert_ << ", ";
-        bool is_first = true;
-        for (auto child : children()) {
-            if (!is_first) {
-                stream << ", ";
-            } else {
-                is_first = false;
-            }
-            stream << child;
+        stream << "$update: <oid:" << static_cast<std::uint64_t>(table_oid()) << "> {";
+        stream << "$upsert: " << upsert_;
+        for (const auto& child : children()) {
+            stream << ", " << child->to_string();
         }
         stream << "}";
         return stream.str();
+    }
+
+    node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
+                                          const node_match_ptr& match,
+                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                          bool upsert) {
+        auto limit = make_node_limit(resource, core::dbname_t{}, core::relname_t{}, limit_t::unlimit());
+        return {new node_update_t{resource, match, limit, updates, upsert}};
     }
 
     node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
@@ -53,28 +51,26 @@ namespace components::logical_plan {
                                           const node_match_ptr& match,
                                           const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                           bool upsert) {
-        return {new node_update_t{resource,
-                                  collection,
-                                  {},
-                                  match,
-                                  make_node_limit(resource, collection, limit_t::unlimit()),
-                                  updates,
-                                  upsert}};
+        auto limit = make_node_limit(resource, collection, limit_t::unlimit());
+        return make_node_update(resource, collection, match, limit, updates, upsert);
     }
 
     node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
-                                          const collection_full_name_t& collection_to,
+                                          const collection_full_name_t& collection,
                                           const collection_full_name_t& collection_from,
                                           const node_match_ptr& match,
                                           const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                           bool upsert) {
-        return {new node_update_t{resource,
-                                  collection_to,
-                                  collection_from,
-                                  match,
-                                  make_node_limit(resource, collection_to, limit_t::unlimit()),
-                                  updates,
-                                  upsert}};
+        auto limit = make_node_limit(resource, collection, limit_t::unlimit());
+        return make_node_update(resource, collection, collection_from, match, limit, updates, upsert);
+    }
+
+    node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
+                                         const node_match_ptr& match,
+                                         const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                         bool upsert) {
+        auto limit = make_node_limit(resource, core::dbname_t{}, core::relname_t{}, limit_t::limit_one());
+        return {new node_update_t{resource, match, limit, updates, upsert}};
     }
 
     node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
@@ -82,28 +78,16 @@ namespace components::logical_plan {
                                          const node_match_ptr& match,
                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                          bool upsert) {
-        return {new node_update_t{resource,
-                                  collection,
-                                  {},
-                                  match,
-                                  make_node_limit(resource, collection, limit_t::limit_one()),
-                                  updates,
-                                  upsert}};
+        auto limit = make_node_limit(resource, collection, limit_t::limit_one());
+        return make_node_update(resource, collection, match, limit, updates, upsert);
     }
 
-    node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
-                                         const collection_full_name_t& collection_to,
-                                         const collection_full_name_t& collection_from,
-                                         const node_match_ptr& match,
-                                         const std::pmr::vector<expressions::update_expr_ptr>& updates,
-                                         bool upsert) {
-        return {new node_update_t{resource,
-                                  collection_to,
-                                  collection_from,
-                                  match,
-                                  make_node_limit(resource, collection_to, limit_t::limit_one()),
-                                  updates,
-                                  upsert}};
+    node_update_ptr make_node_update(std::pmr::memory_resource* resource,
+                                     const node_match_ptr& match,
+                                     const node_limit_ptr& limit,
+                                     const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                     bool upsert) {
+        return {new node_update_t{resource, match, limit, updates, upsert}};
     }
 
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
@@ -112,17 +96,21 @@ namespace components::logical_plan {
                                      const node_limit_ptr& limit,
                                      const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                      bool upsert) {
-        return {new node_update_t{resource, collection, {}, match, limit, updates, upsert}};
+        auto node = make_node_update(resource, match, limit, updates, upsert);
+        node->set_collection_full_name(collection);
+        return node;
     }
 
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
-                                     const collection_full_name_t& collection_to,
+                                     const collection_full_name_t& collection,
                                      const collection_full_name_t& collection_from,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,
                                      const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                      bool upsert) {
-        return {new node_update_t{resource, collection_to, collection_from, match, limit, updates, upsert}};
+        auto node = make_node_update(resource, collection, match, limit, updates, upsert);
+        node->set_collection_from(collection_from);
+        return node;
     }
 
 } // namespace components::logical_plan

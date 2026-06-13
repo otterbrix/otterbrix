@@ -4,7 +4,7 @@
 namespace components::logical_plan {
 
     node_create_type_t::node_create_type_t(std::pmr::memory_resource* resource, types::complex_logical_type&& type)
-        : node_t(resource, node_type::create_type_t, {})
+        : node_t(resource, node_type::create_type_t)
         , type_(std::move(type)) {}
 
     types::complex_logical_type& node_create_type_t::type() noexcept { return type_; }

@@ -3,6 +3,8 @@
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
+#include <cstdlib>
+#include <limits>
 #include <vector/data_chunk.hpp>
 
 #include "collection.hpp"
@@ -53,10 +55,9 @@ namespace components::table {
             assert(is_loaded_[c]);
             return *columns_[c];
         }
-        if (column_pointers_.size() != columns_.size()) {
-            throw std::logic_error("Lazy loading a column but the pointer was not set");
-        }
-        throw std::runtime_error("row_group_t::get_column: unknown error");
+        assert(column_pointers_.size() == columns_.size() && "Lazy loading a column but the pointer was not set");
+        assert(false && "row_group_t::get_column: unknown error");
+        std::abort();
     }
 
     storage::block_manager_t& row_group_t::block_manager() { return collection_->block_manager(); }
@@ -126,9 +127,9 @@ namespace components::table {
 
         uint64_t rows_to_write = count;
         if (rows_to_write > 0) {
-            const types::logical_value_t fill_value = default_value.has_value()
-                                                          ? *default_value
-                                                          : types::logical_value_t{collection_->resource(), new_column.type()};
+            const types::logical_value_t fill_value =
+                default_value.has_value() ? *default_value
+                                          : types::logical_value_t{collection_->resource(), new_column.type()};
             column_append_state state;
             added_column->initialize_append(state);
             for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {
@@ -208,7 +209,8 @@ namespace components::table {
                 return true;
             }
             case expressions::compare_type::invalid: {
-                throw std::logic_error("invalid type for filter selection");
+                assert(false && "invalid type for filter selection");
+                std::abort();
             }
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
@@ -222,11 +224,11 @@ namespace components::table {
                 return filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;
             }
             default: {
-                auto& constant_filter = filter->cast<constant_filter_t>();
-                column_data_t* column = &get_column(constant_filter.table_indices.front());
-                for (size_t i = 1; i < constant_filter.table_indices.size(); i++) {
-                    column =
-                        static_cast<struct_column_data_t*>(column)->sub_columns[constant_filter.table_indices[i]].get();
+                // Works for both constant_filter_t and set_membership_filter_t.
+                const auto& indices = table_filter_table_indices(filter);
+                column_data_t* column = &get_column(indices.front());
+                for (size_t i = 1; i < indices.size(); i++) {
+                    column = static_cast<struct_column_data_t*>(column)->sub_columns[indices[i]].get();
                 }
                 return column->check_predicate(row_id, filter);
             }
@@ -242,9 +244,10 @@ namespace components::table {
         if (f->filter_type == expressions::compare_type::eq || f->filter_type == expressions::compare_type::gt ||
             f->filter_type == expressions::compare_type::gte || f->filter_type == expressions::compare_type::lt ||
             f->filter_type == expressions::compare_type::lte) {
-            auto& cf = f->cast<constant_filter_t>();
-            if (!cf.table_indices.empty()) {
-                auto col_idx = cf.table_indices.front();
+            // Support both constant_filter_t and set_membership_filter_t for zonemap pruning.
+            const auto& cf_indices = table_filter_table_indices(f);
+            if (!cf_indices.empty()) {
+                auto col_idx = cf_indices.front();
                 if (col_idx < get_column_count()) {
                     auto& col = get_column(col_idx);
                     column_scan_state dummy;
@@ -278,8 +281,7 @@ namespace components::table {
 
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
-        constexpr bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES &&
-                                       TYPE != table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED;
+        constexpr bool ALLOW_UPDATES = TYPE != table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES;
         const auto& column_ids = state.column_ids();
         auto* filter = state.filter();
         // Sync result_offset with current chunk cardinality (handles chunk reset between calls)
@@ -299,18 +301,10 @@ namespace components::table {
 
             uint64_t count;
             if (TYPE == table_scan_type::REGULAR) {
-                count = (state.txn.transaction_id != 0 || state.txn.start_time != 0)
-                            ? state.row_group->indexing_vector(state.txn,
-                                                               state.vector_index,
-                                                               state.valid_indexing,
-                                                               max_count)
-                            : state.row_group->indexing_vector(state.vector_index, state.valid_indexing, max_count);
-                if (count == 0) {
-                    next_vector(state);
-                    continue;
-                }
-            } else if (TYPE == table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED) {
-                count = state.row_group->commited_indexing_vector(state.vector_index, state.valid_indexing, max_count);
+                // REGULAR scans have no see-all fallback: state.txn must be a real
+                // transaction_data, as its snapshot fields drive MVCC visibility.
+                count =
+                    state.row_group->indexing_vector(state.txn, state.vector_index, state.valid_indexing, max_count);
                 if (count == 0) {
                     next_vector(state);
                     continue;
@@ -414,12 +408,10 @@ namespace components::table {
                 state.valid_indexing = indexing;
             }
             auto* row_ids_data = result.row_ids.data<int64_t>();
-            const int64_t row_id_base =
-                static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
+            const int64_t row_id_base = static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
             const uint64_t write_start = result.size();
             for (uint64_t i = 0; i < count; i++) {
-                row_ids_data[write_start + i] =
-                    row_id_base + static_cast<int64_t>(state.valid_indexing.get_index(i));
+                row_ids_data[write_start + i] = row_id_base + static_cast<int64_t>(state.valid_indexing.get_index(i));
             }
             result.set_cardinality(result.size() + count);
             state.vector_index++;
@@ -442,12 +434,12 @@ namespace components::table {
             case table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES:
                 templated_scan<table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES>(state, result);
                 break;
-            case table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED:
             case table_scan_type::LATEST_COMMITTED_ROWS:
-                templated_scan<table_scan_type::COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED>(state, result);
+                templated_scan<table_scan_type::COMMITTED_ROWS>(state, result);
                 break;
             default:
-                throw std::logic_error("Unrecognized table scan type");
+                assert(false && "Unrecognized table scan type");
+                std::abort();
         }
     }
 
@@ -561,9 +553,18 @@ namespace components::table {
     uint64_t row_group_t::committed_row_count() {
         auto* vi = version_info_.load();
         if (vi) {
-            return count - vi->commited_deleted_count(count);
+            return count - vi->committed_deleted_count(count);
         }
         return count;
+    }
+
+    bool row_group_t::has_version_above(uint64_t watermark) {
+        auto* vi = version_info_.load();
+        if (!vi) {
+            // No version info — every row is plain committed, visible to all.
+            return false;
+        }
+        return vi->has_version_above(watermark, count);
     }
 
     bool row_group_t::has_unloaded_deletes() const {
@@ -612,11 +613,15 @@ namespace components::table {
     };
 
     uint64_t row_group_t::delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count) {
-        return get_or_create_version_info().delete_rows(vector_idx, ++current_version_, rows, count);
+        const auto delete_id = ++current_version_;
+        auto deleted = get_or_create_version_info().delete_rows(vector_idx, delete_id, rows, count);
+        ++current_version_;
+        return deleted;
     }
 
     uint64_t row_group_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
-        version_delete_state del_state(*this, transaction_id, table, start, true);
+        const bool is_txn = transaction_id != 0;
+        version_delete_state del_state(*this, transaction_id, table, start, is_txn);
 
         for (uint64_t i = 0; i < count; i++) {
             assert(ids[i] >= 0);
@@ -640,10 +645,20 @@ namespace components::table {
             vinfo->commit_all_deletes(txn_id, commit_id);
         }
         // Advance current_version_ past commit_id so that committed deletes
-        // are visible to scans using commited_version_operator
+        // are visible to scans using committed_version_operator
         if (commit_id >= current_version_) {
             current_version_ = commit_id + 1;
         }
+    }
+
+    void row_group_t::revert_all_deletes(uint64_t txn_id) {
+        auto vinfo = version_info();
+        if (vinfo) {
+            vinfo->revert_all_deletes(txn_id);
+        }
+        // No current_version_ advance: revert un-marks pending deletes back to
+        // NOT_DELETED_ID, restoring visibility. Unlike commit there is no new
+        // commit_id to publish, so the version watermark stays where it was.
     }
 
     row_version_manager_t& row_group_t::get_or_create_version_info() {
@@ -664,16 +679,11 @@ namespace components::table {
 
     uint64_t row_group_t::calculate_size() {
         vector::indexing_vector_t temp_indexing(collection().resource(), count);
-        return indexing_vector(index, temp_indexing, count);
-    }
-
-    uint64_t
-    row_group_t::indexing_vector(uint64_t vector_idx, vector::indexing_vector_t& indexing_vector, uint64_t max_count) {
-        auto vinfo = version_info();
-        if (!vinfo) {
-            return max_count;
-        }
-        return vinfo->indexing_vector({current_version_, current_version_}, vector_idx, indexing_vector, max_count);
+        // Metadata accounting, not a user scan: a UINT64_MAX horizon + empty
+        // in_flight set is a see-all snapshot covering every committed row.
+        transaction_data td(0, 0);
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        return indexing_vector(td, index, temp_indexing, count);
     }
 
     uint64_t row_group_t::indexing_vector(transaction_data txn,
@@ -685,20 +695,6 @@ namespace components::table {
             return max_count;
         }
         return vinfo->indexing_vector(txn, vector_idx, indexing_vector, max_count);
-    }
-
-    uint64_t row_group_t::commited_indexing_vector(uint64_t vector_idx,
-                                                   vector::indexing_vector_t& indexing_vector,
-                                                   uint64_t max_count) {
-        auto vinfo = version_info();
-        if (!vinfo) {
-            return max_count;
-        }
-        return vinfo->commited_indexing_vector(current_version_,
-                                               current_version_,
-                                               vector_idx,
-                                               indexing_vector,
-                                               max_count);
     }
 
     std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {

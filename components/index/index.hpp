@@ -85,12 +85,12 @@ namespace components::index {
         using iterator = iterator_t;
         using range = std::pair<iterator, iterator>;
 
-        void insert(value_t, index_value_t);
-        void insert(value_t, int64_t row_index);
-        void remove(value_t);
-        range find(const value_t& value) const;
-        range lower_bound(const value_t& value) const;
-        range upper_bound(const value_t& value) const;
+        void insert(value_t, index_value_t, core::date::timezone_offset_t local_timezone);
+        void insert(value_t, int64_t row_index, core::date::timezone_offset_t local_timezone);
+        void remove(value_t, core::date::timezone_offset_t local_timezone);
+        range find(const value_t& value, core::date::timezone_offset_t local_timezone) const;
+        range lower_bound(const value_t& value, core::date::timezone_offset_t local_timezone) const;
+        range upper_bound(const value_t& value, core::date::timezone_offset_t local_timezone) const;
         iterator cbegin() const;
         iterator cend() const;
         auto keys() -> std::pair<keys_base_storage_t::iterator, keys_base_storage_t::iterator>;
@@ -103,15 +103,26 @@ namespace components::index {
         const actor_zeta::address_t& disk_manager() const noexcept;
         void set_disk_agent(actor_zeta::address_t agent, actor_zeta::address_t manager) noexcept;
 
-        std::pmr::vector<int64_t> search(expressions::compare_type compare, const value_t& value) const;
-        std::pmr::vector<int64_t>
-        search(expressions::compare_type compare, const value_t& value, uint64_t start_time, uint64_t txn_id) const;
+        std::pmr::vector<int64_t> search(expressions::compare_type compare,
+                                         const value_t& value,
+                                         core::date::timezone_offset_t local_timezone) const;
+        std::pmr::vector<int64_t> search(expressions::compare_type compare,
+                                         const value_t& value,
+                                         uint64_t start_time,
+                                         uint64_t txn_id,
+                                         core::date::timezone_offset_t local_timezone) const;
 
-        void insert(value_t key, int64_t row_index, uint64_t txn_id);
-        void mark_delete(value_t key, int64_t row_index, uint64_t txn_id);
+        void insert(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone);
+        void mark_delete(value_t key, int64_t row_index, uint64_t txn_id, core::date::timezone_offset_t local_timezone);
         void commit_insert(uint64_t txn_id, uint64_t commit_id);
         void commit_delete(uint64_t txn_id, uint64_t commit_id);
         void revert_insert(uint64_t txn_id);
+        // Mirror of revert_insert for the delete side: discards this txn's
+        // PENDING delete bucket and restores each touched entry's delete_id back
+        // to NOT_DELETED_ID (mark_delete only stamped delete_id=txn_id; the row
+        // itself was never removed, so reverting just un-stamps it). In-memory
+        // only — pending deletes never reach disk before commit_delete.
+        void revert_delete(uint64_t txn_id);
         void cleanup_versions(uint64_t lowest_active);
 
         // Iterate pending entries for disk mirroring (must be called before commit clears them)
@@ -126,19 +137,26 @@ namespace components::index {
                 std::string name,
                 const keys_base_storage_t& keys);
 
-        virtual void insert_impl(value_t, index_value_t) = 0;
-        virtual void remove_impl(value_t value_key) = 0;
-        virtual range find_impl(const value_t& value) const = 0;
-        virtual range lower_bound_impl(const value_t& value) const = 0;
-        virtual range upper_bound_impl(const value_t& value) const = 0;
+        virtual void insert_impl(value_t, index_value_t, core::date::timezone_offset_t local_timezone) = 0;
+        virtual void remove_impl(value_t value_key, core::date::timezone_offset_t local_timezone) = 0;
+        virtual range find_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const = 0;
+        virtual range lower_bound_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const = 0;
+        virtual range upper_bound_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const = 0;
         virtual iterator cbegin_impl() const = 0;
         virtual iterator cend_impl() const = 0;
 
-        virtual void insert_txn_impl(value_t key, int64_t row_index, uint64_t txn_id) = 0;
-        virtual void mark_delete_impl(value_t key, int64_t row_index, uint64_t txn_id) = 0;
+        virtual void insert_txn_impl(value_t key,
+                                     int64_t row_index,
+                                     uint64_t txn_id,
+                                     core::date::timezone_offset_t local_timezone) = 0;
+        virtual void mark_delete_impl(value_t key,
+                                      int64_t row_index,
+                                      uint64_t txn_id,
+                                      core::date::timezone_offset_t local_timezone) = 0;
         virtual void commit_insert_impl(uint64_t txn_id, uint64_t commit_id) = 0;
         virtual void commit_delete_impl(uint64_t txn_id, uint64_t commit_id) = 0;
         virtual void revert_insert_impl(uint64_t txn_id) = 0;
+        virtual void revert_delete_impl(uint64_t txn_id) = 0;
         virtual void cleanup_versions_impl(uint64_t lowest_active) = 0;
         virtual void for_each_pending_insert_impl(uint64_t txn_id,
                                                   const std::function<void(const value_t&, int64_t)>& fn) const = 0;

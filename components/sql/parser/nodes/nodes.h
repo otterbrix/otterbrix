@@ -574,6 +574,8 @@ typedef enum NodeTag
     T_GpPolicy,                  /* in catalog/gp_policy.h */
     T_RetrieveStmt,
 
+    /* otterbrix: parser-extension AST node (components/sql/parser/extension.hpp) */
+    T_ExtensionNode,
 } NodeTag;
 
 /*

@@ -33,6 +33,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/expressions/update_expression.hpp>
+#include <core/date/date_types.hpp>
 
 #include <google/protobuf/struct.pb.h>
 #include <google/protobuf/util/json_util.h>
@@ -215,17 +216,11 @@ namespace components::logical_plan::substrait_adapter {
                     literal->set_binary(std::string(bytes.data(), bytes.size()));
                     break;
                 }
-                case logical_type::TIMESTAMP_SEC:
-                    literal->set_i64(value.value<std::chrono::seconds>().count());
+                case logical_type::TIMESTAMP:
+                    literal->set_i64(value.value<core::date::timestamp_t>().value.count());
                     break;
-                case logical_type::TIMESTAMP_MS:
-                    literal->set_i64(value.value<std::chrono::milliseconds>().count());
-                    break;
-                case logical_type::TIMESTAMP_US:
-                    literal->set_i64(value.value<std::chrono::microseconds>().count());
-                    break;
-                case logical_type::TIMESTAMP_NS:
-                    literal->set_i64(value.value<std::chrono::nanoseconds>().count());
+                case logical_type::TIMESTAMP_TZ:
+                    literal->set_i64(value.value<core::date::timestamptz_t>().value.count());
                     break;
                 case logical_type::LIST:
                 case logical_type::ARRAY: {

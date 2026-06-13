@@ -9,22 +9,21 @@ constexpr size_t num_threads = 4;
 constexpr size_t work_per_thread = doc_num / num_threads;
 
 TEST_CASE("integration::cpp::test_otterbrix_multithread") {
-    auto config = test_create_config("/tmp/test_connectors");
+    auto config = test_create_config("/tmp/test_otterbrix_multithread");
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
-    config.wal.sync_to_disk = false;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     INFO("initialization") {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
     }
 
@@ -50,10 +49,6 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
         std::vector<std::thread> threads;
         threads.reserve(num_threads);
 
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == 0);
-        }
         for (size_t i = 0; i < num_threads; i++) {
             threads.emplace_back(append_func, i);
         }
@@ -62,10 +57,6 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
         }
         for (bool res : results) {
             REQUIRE(res);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->size(session, database_name, collection_name) == doc_num);
         }
     }
 
@@ -92,18 +83,17 @@ TEST_CASE("integration::cpp::test_connectors") {
     test_clear_directory(config);
     config.disk.on = false;
     config.wal.on = false;
-    config.wal.sync_to_disk = false;
     auto otterbrix = otterbrix::make_otterbrix(config);
 
     INFO("initialization") {
         auto* dispatcher = otterbrix->dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_collection(session, database_name, collection_name);
+            test_create_collection(dispatcher, session, database_name, collection_name);
         }
     }
 
@@ -133,10 +123,6 @@ TEST_CASE("integration::cpp::test_connectors") {
         std::vector<std::thread> threads;
         threads.reserve(num_threads);
 
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(otterbrix->dispatcher()->size(session, database_name, collection_name) == 0);
-        }
         for (size_t i = 0; i < num_threads; i++) {
             threads.emplace_back(append_func, i);
         }
@@ -145,10 +131,6 @@ TEST_CASE("integration::cpp::test_connectors") {
         }
         for (bool res : results) {
             REQUIRE(res);
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(otterbrix->dispatcher()->size(session, database_name, collection_name) == doc_num);
         }
     }
 

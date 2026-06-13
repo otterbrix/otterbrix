@@ -160,7 +160,6 @@ namespace components::compute {
             if (func_.doc().options_required && !options && !func_.default_options()) {
                 return core::error_t(
                     core::error_code_t::kernel_error,
-
                     std::pmr::string{"Function " + func_.name() + " cannot be executed without options",
                                      kernel_ctx_.value().exec_context().resource()});
             }
@@ -331,6 +330,14 @@ namespace components::compute {
         return default_registry_.get();
     }
 
+    void function_registry_t::reset_default() {
+        // Ensure init_flag_ has fired (so get_default() won't later overwrite our
+        // fresh instance), then replace with a clean builtins-only registry.
+        (void) get_default();
+        default_registry_ = std::make_unique<function_registry_t>(std::pmr::get_default_resource());
+        default_registry_->register_builtin_functions();
+    }
+
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (!function) {
             core::error_t(core::error_code_t::function_registry_error,
@@ -343,6 +350,21 @@ namespace components::compute {
         return uid;
     }
 
+    core::result_wrapper_t<function_uid> function_registry_t::add_function_with_uid(function_uid uid,
+                                                                                    function_ptr function) {
+        if (!function) {
+            return core::error_t(core::error_code_t::function_registry_error,
+                                 std::pmr::string{"Cannot add null function", resource_});
+        }
+        functions_[uid] = std::move(function);
+        // Keep the auto-increment counter past any caller-stamped UID so future
+        // add_function() calls won't collide with already-registered entries.
+        if (uid >= current_uid_) {
+            current_uid_ = uid + 1;
+        }
+        return uid;
+    }
+
     function* function_registry_t::get_function(function_uid uid) const {
         auto it = functions_.find(uid);
         if (it == functions_.end()) {
@@ -350,6 +372,24 @@ namespace components::compute {
         }
 
         return it->second.get();
+    }
+
+    bool function_registry_t::remove_function(function_uid uid) { return functions_.erase(uid) > 0; }
+
+    bool
+    function_registry_t::remove_function_by_signature(const std::string& name,
+                                                      const std::pmr::vector<types::complex_logical_type>& inputs) {
+        for (auto it = functions_.begin(); it != functions_.end(); ++it) {
+            if (!it->second || it->second->name() != name)
+                continue;
+            for (auto& sig : it->second->get_signatures()) {
+                if (sig.matches_inputs(inputs)) {
+                    functions_.erase(it);
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     std::vector<std::pair<std::string, function_uid>> function_registry_t::get_functions() const {

@@ -21,16 +21,30 @@ namespace {
         template<typename T>
         auto operator()(const vector_t& v, size_t count) const {
             auto raw_sum = T();
+            bool has_any = false;
             for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
                 raw_sum += v.data<T>()[i];
+                has_any = true;
+            }
+            if (!has_any) {
+                return logical_value_t(v.resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), raw_sum};
         }
         template<typename T, typename U>
         auto operator()(const vector_t& v, size_t count) const {
             auto raw_sum = T();
+            bool has_any = false;
             for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
                 raw_sum += T(v.data<U>()[i]);
+                has_any = true;
+            }
+            if (!has_any) {
+                return logical_value_t(v.resource(), logical_type::NA);
             }
             return logical_value_t{v.resource(), raw_sum};
         }
@@ -52,14 +66,45 @@ namespace {
     struct min_operator_t<void> {
         template<typename T>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{v.resource(), *std::min_element(v.data<T>(), v.data<T>() + count)};
+            auto* data = v.data<T>();
+            T best = T();
+            bool has_any = false;
+            for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
+                if (!has_any || data[i] < best) {
+                    best = data[i];
+                    has_any = true;
+                }
+            }
+            if (!has_any) {
+                return logical_value_t(v.resource(), logical_type::NA);
+            }
+            return logical_value_t{v.resource(), best};
         }
         template<typename T, typename U>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{v.resource(), T(*std::min_element(v.data<U>(), v.data<U>() + count))};
+            auto* data = v.data<U>();
+            U best = U();
+            bool has_any = false;
+            for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
+                if (!has_any || data[i] < best) {
+                    best = data[i];
+                    has_any = true;
+                }
+            }
+            if (!has_any) {
+                return logical_value_t(v.resource(), logical_type::NA);
+            }
+            return logical_value_t{v.resource(), T(best)};
         }
         template<typename T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            if (v1.type().type() == logical_type::NA) {
+                return v2;
+            }
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
@@ -67,6 +112,9 @@ namespace {
         }
         template<typename T, typename U>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            if (v1.type().type() == logical_type::NA) {
+                return v2;
+            }
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
@@ -78,14 +126,45 @@ namespace {
     struct max_operator_t<void> {
         template<typename T>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{v.resource(), *std::max_element(v.data<T>(), v.data<T>() + count)};
+            auto* data = v.data<T>();
+            T best = T();
+            bool has_any = false;
+            for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
+                if (!has_any || best < data[i]) {
+                    best = data[i];
+                    has_any = true;
+                }
+            }
+            if (!has_any) {
+                return logical_value_t(v.resource(), logical_type::NA);
+            }
+            return logical_value_t{v.resource(), best};
         }
         template<typename T, typename U>
         auto operator()(const vector_t& v, size_t count) const {
-            return logical_value_t{v.resource(), T(*std::max_element(v.data<U>(), v.data<U>() + count))};
+            auto* data = v.data<U>();
+            U best = U();
+            bool has_any = false;
+            for (size_t i = 0; i < count; i++) {
+                if (v.is_null(i))
+                    continue;
+                if (!has_any || best < data[i]) {
+                    best = data[i];
+                    has_any = true;
+                }
+            }
+            if (!has_any) {
+                return logical_value_t(v.resource(), logical_type::NA);
+            }
+            return logical_value_t{v.resource(), T(best)};
         }
         template<typename T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            if (v1.type().type() == logical_type::NA) {
+                return v2;
+            }
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
@@ -93,6 +172,9 @@ namespace {
         }
         template<typename T, typename U>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            if (v1.type().type() == logical_type::NA) {
+                return v2;
+            }
             if (v2.type().type() == logical_type::NA) {
                 return v1;
             }
@@ -126,14 +208,6 @@ namespace {
                 return op.template operator()<uint64_t>(v, count);
             case logical_type::UHUGEINT:
                 return op.template operator()<uint128_t>(v, count);
-            case logical_type::TIMESTAMP_SEC:
-                return op.template operator()<std::chrono::seconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_MS:
-                return op.template operator()<std::chrono::milliseconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_US:
-                return op.template operator()<std::chrono::microseconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_NS:
-                return op.template operator()<std::chrono::nanoseconds, int64_t>(v, count);
             case logical_type::DECIMAL: {
                 // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
@@ -173,7 +247,7 @@ namespace {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+        return logical_value_t(v.resource(), logical_type::NA);
     }
 
     template<template<typename...> class OP>
@@ -202,14 +276,6 @@ namespace {
                 return op.template operator()<uint64_t>(v1, v2);
             case logical_type::UHUGEINT:
                 return op.template operator()<uint128_t>(v1, v2);
-            case logical_type::TIMESTAMP_SEC:
-                return op.template operator()<std::chrono::seconds, int64_t>(v1, v2);
-            case logical_type::TIMESTAMP_MS:
-                return op.template operator()<std::chrono::milliseconds, int64_t>(v1, v2);
-            case logical_type::TIMESTAMP_US:
-                return op.template operator()<std::chrono::microseconds, int64_t>(v1, v2);
-            case logical_type::TIMESTAMP_NS:
-                return op.template operator()<std::chrono::nanoseconds, int64_t>(v1, v2);
             case logical_type::DECIMAL: {
                 // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
@@ -249,7 +315,7 @@ namespace {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+        return logical_value_t(v1.resource(), logical_type::NA);
     }
 
     template<template<typename...> class OP>
@@ -278,14 +344,6 @@ namespace {
                 return op.template operator()<uint64_t>(v, count);
             case logical_type::UHUGEINT:
                 return op.template operator()<uint128_t>(v, count);
-            case logical_type::TIMESTAMP_SEC:
-                return op.template operator()<std::chrono::seconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_MS:
-                return op.template operator()<std::chrono::milliseconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_US:
-                return op.template operator()<std::chrono::microseconds, int64_t>(v, count);
-            case logical_type::TIMESTAMP_NS:
-                return op.template operator()<std::chrono::nanoseconds, int64_t>(v, count);
             case logical_type::DECIMAL: {
                 // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
@@ -325,7 +383,7 @@ namespace {
             default:
                 throw std::runtime_error("operators::aggregate::sum unable to process given types");
         }
-        return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+        return logical_value_t(v.resource(), logical_type::NA);
     }
 
     logical_value_t sum(const vector_t& v, size_t count) { return operator_switch<sum_operator_t>(v, count); }
@@ -335,12 +393,13 @@ namespace {
     logical_value_t max(const vector_t& v, size_t count) { return operator_switch<max_operator_t>(v, count); }
 
     struct sum_kernel_state : kernel_state {
-        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
+        explicit sum_kernel_state(std::pmr::memory_resource* resource)
+            : value(resource, logical_type::NA) {}
+        logical_value_t value;
     };
 
-    static core::result_wrapper_t<kernel_state_ptr> sum_init(kernel_context&, kernel_init_args) {
-        auto c = std::make_unique<sum_kernel_state>();
-        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
+    static core::result_wrapper_t<kernel_state_ptr> sum_init(kernel_context& ctx, kernel_init_args) {
+        auto c = std::make_unique<sum_kernel_state>(ctx.exec_context().resource());
         return c;
     }
 
@@ -358,12 +417,13 @@ namespace {
     static core::error_t sum_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
 
     struct min_kernel_state : kernel_state {
-        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
+        explicit min_kernel_state(std::pmr::memory_resource* resource)
+            : value(resource, logical_type::NA) {}
+        logical_value_t value;
     };
 
-    static core::result_wrapper_t<kernel_state_ptr> min_init(kernel_context&, kernel_init_args) {
-        auto c = std::make_unique<min_kernel_state>();
-        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
+    static core::result_wrapper_t<kernel_state_ptr> min_init(kernel_context& ctx, kernel_init_args) {
+        auto c = std::make_unique<min_kernel_state>(ctx.exec_context().resource());
         return c;
     }
 
@@ -381,12 +441,13 @@ namespace {
     static core::error_t min_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
 
     struct max_kernel_state : kernel_state {
-        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
+        explicit max_kernel_state(std::pmr::memory_resource* resource)
+            : value(resource, logical_type::NA) {}
+        logical_value_t value;
     };
 
-    static core::result_wrapper_t<kernel_state_ptr> max_init(kernel_context&, kernel_init_args) {
-        auto c = std::make_unique<max_kernel_state>();
-        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
+    static core::result_wrapper_t<kernel_state_ptr> max_init(kernel_context& ctx, kernel_init_args) {
+        auto c = std::make_unique<max_kernel_state>(ctx.exec_context().resource());
         return c;
     }
 
@@ -437,26 +498,35 @@ namespace {
     static core::error_t count_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
 
     struct avg_kernel_state : kernel_state {
+        explicit avg_kernel_state(std::pmr::memory_resource* resource)
+            : count(0)
+            , value(resource, logical_type::NA) {}
         size_t count;
-        logical_value_t value{std::pmr::null_memory_resource(), logical_type::NA};
+        logical_value_t value;
     };
 
-    static core::result_wrapper_t<kernel_state_ptr> avg_init(kernel_context&, kernel_init_args) {
-        auto c = std::make_unique<avg_kernel_state>();
-        c->count = size_t{0};
-        c->value = logical_value_t{std::pmr::null_memory_resource(), logical_type::NA};
+    static core::result_wrapper_t<kernel_state_ptr> avg_init(kernel_context& ctx, kernel_init_args) {
+        auto c = std::make_unique<avg_kernel_state>(ctx.exec_context().resource());
         return c;
     }
 
     static core::error_t avg_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<avg_kernel_state*>(ctx.state());
-        acc->count = in.size();
+        size_t valid = 0;
+        for (size_t i = 0; i < in.size(); i++) {
+            valid += !in.data[0].is_null(i);
+        }
+        acc->count = valid;
         acc->value = sum(in.data[0], in.size());
         return core::error_t::no_error();
     }
 
     static core::error_t avg_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
         auto& s = static_cast<avg_kernel_state&>(from);
+        if (s.count == 0) {
+            ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), logical_type::NA);
+            return core::error_t::no_error();
+        }
         ctx.batch_results.push_back(operator_switch<divide_operator_t>(s.value, s.count));
         return core::error_t::no_error();
     }
@@ -582,6 +652,7 @@ namespace components::compute {
                                             "avg",
                                             "Return data size",
                                             "Results in a single number of the same type as input"));
+        register_string_functions(r);
     }
 
 } // namespace components::compute

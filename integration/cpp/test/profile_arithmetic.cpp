@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 #include <iostream>
 
@@ -30,21 +31,24 @@ int main() {
     // Setup
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->create_database(s, database_name);
+        dispatcher->execute_sql(s, "CREATE DATABASE " + database_name + ";");
     }
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->create_collection(s, database_name, collection_name, columns);
+        test_create_collection(dispatcher, s, database_name, collection_name, columns);
     }
 
     // Insert 1000 rows
     constexpr int kRows = 1000;
     {
         auto chunk = gen_data_chunk(kRows, dispatcher->resource());
-        auto ins =
-            logical_plan::make_node_insert(dispatcher->resource(), {database_name, collection_name}, std::move(chunk));
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
+            dispatcher->resource(),
+            database_name,
+            collection_name,
+            logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto s = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_plan(s, ins);
+        auto cur = dispatcher->execute_plan(s, logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         if (!cur->is_success()) {
             std::cerr << "Insert failed\n";
             return 1;

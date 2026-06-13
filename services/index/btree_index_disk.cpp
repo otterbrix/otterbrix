@@ -181,4 +181,17 @@ namespace services::index {
         core::filesystem::remove_directory(fs_, path_);
     }
 
+    void btree_index_disk_t::clear() {
+        // Wipe tree contents in place but keep the index writable: drop the
+        // on-disk tree directory, then re-create an empty btree at the same
+        // path. load() on a freshly created directory yields an empty tree,
+        // so subsequent inserts repopulate cleanly. Unlike drop(), the
+        // instance stays alive and usable.
+        db_.reset();
+        core::filesystem::remove_directory(fs_, path_);
+        db_ = std::make_unique<btree_t>(resource_, fs_, path_, item_key_getter);
+        db_->load();
+        reset_flush_state();
+    }
+
 } // namespace services::index

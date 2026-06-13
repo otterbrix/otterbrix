@@ -50,6 +50,7 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
         otterbrix::expressions
         otterbrix::file
+        otterbrix::session
         otterbrix::types
         otterbrix::vector
 
@@ -65,3 +66,11 @@ target_include_directories(
 if (DEV_MODE)
     add_subdirectory(test)
 endif ()
+
+install(TARGETS
+        otterbrix_${PROJECT_NAME}
+
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib
+)

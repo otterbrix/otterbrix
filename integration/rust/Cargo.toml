@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "otterbrix-sys",
+    "otterbrix",
+    "seaorm-otterbrix",
+    "sqlx-otterbrix",
+]
+resolver = "2"
+
+[workspace.package]
+rust-version = "1.86"

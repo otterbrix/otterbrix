@@ -23,7 +23,16 @@ namespace components::cursor {
         : size_(chunk.size())
         , table_data_(std::move(chunk))
         , type_data_(resource)
-        , error_(core::error_t::no_error()) {}
+        , error_(core::error_t::no_error()) {
+        // Strip placeholder columns (created by projected_cols scans to keep
+        // storage indices stable for downstream operators). User-facing
+        // iteration via chunk_data() should only see real data.
+        table_data_.drop_unprojected_placeholders();
+        // Mirror final column shape into type_data_ so callers querying the
+        // result's typed-column descriptor see one entry per output column.
+        const auto& chunk_types = table_data_.types();
+        type_data_.assign(chunk_types.begin(), chunk_types.end());
+    }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks)
         : table_data_(resource, std::pmr::vector<types::complex_logical_type>{resource})
@@ -39,7 +48,16 @@ namespace components::cursor {
         }
         if (chunks.size() == 1) {
             table_data_ = std::move(chunks.front());
+            table_data_.drop_unprojected_placeholders();
+            const auto& chunk_types = table_data_.types();
+            type_data_.assign(chunk_types.begin(), chunk_types.end());
             return;
+        }
+        // For multi-chunk combine, drop placeholders from each chunk first so the
+        // combined chunk only has real columns. All chunks share the same shape
+        // (same scan), so dropping is consistent.
+        for (auto& c : chunks) {
+            c.drop_unprojected_placeholders();
         }
         auto types = chunks.front().types();
         vector::data_chunk_t combined(resource, types, total == 0 ? 1 : total);
@@ -56,6 +74,8 @@ namespace components::cursor {
         }
         combined.set_cardinality(total);
         table_data_ = std::move(combined);
+        const auto& combined_types = table_data_.types();
+        type_data_.assign(combined_types.begin(), combined_types.end());
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource,

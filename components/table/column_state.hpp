@@ -1,5 +1,6 @@
 #pragma once
 #include <components/types/types.hpp>
+#include <core/operations_helper.hpp>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -7,8 +8,8 @@
 
 #include <components/table/storage/buffer_handle.hpp>
 
-#include <expressions/forward.hpp>
-#include <types/logical_value.hpp>
+#include <components/expressions/forward.hpp>
+#include <components/types/logical_value.hpp>
 
 namespace components::table {
     class row_group_t;
@@ -107,8 +108,71 @@ namespace components::table {
 
     template<typename T>
     bool constant_filter_t::compare(T value) const {
-        // TODO: do a proper template here:
-        return compare(types::logical_value_t(constant.resource(), value));
+        T predicate;
+        if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+            auto const_type = constant.type().type();
+            if (const_type == types::logical_type::DOUBLE) {
+                predicate = static_cast<T>(constant.value<double>());
+            } else if (const_type == types::logical_type::FLOAT) {
+                predicate = static_cast<T>(constant.value<float>());
+            } else if constexpr (sizeof(T) == 4) {
+                // INT32 column (DATE = days since epoch). Widen to µs when constant is a µs-based duration.
+                if (const_type == types::logical_type::TIMESTAMP || const_type == types::logical_type::TIMESTAMP_TZ) {
+                    const int64_t as_us = static_cast<int64_t>(value) * int64_t{86400} * int64_t{1000000};
+                    return compare(as_us);
+                }
+                predicate = constant.value<T>();
+            } else if constexpr (sizeof(T) == 8) {
+                // INT64 column (TIME/TIMESTAMP/TIMESTAMP_TZ = µs). Convert DATE constant (days) to µs.
+                if (const_type == types::logical_type::DATE) {
+                    predicate = static_cast<T>(constant.value<int32_t>()) * T{86400} * T{1000000};
+                } else {
+                    predicate = constant.value<T>();
+                }
+            } else {
+                predicate = constant.value<T>();
+            }
+        } else if constexpr (std::is_floating_point_v<T>) {
+            auto const_type = constant.type().type();
+            if (const_type != types::logical_type::DOUBLE && const_type != types::logical_type::FLOAT) {
+                predicate = static_cast<T>(constant.value<int64_t>());
+            } else {
+                predicate = constant.value<T>();
+            }
+        } else {
+            predicate = constant.value<T>();
+        }
+        if (core::is_equals(value, predicate)) {
+            switch (filter_type) {
+                case expressions::compare_type::eq:
+                case expressions::compare_type::gte:
+                case expressions::compare_type::lte:
+                case expressions::compare_type::all_true:
+                    return true;
+                default:
+                    return false;
+            }
+        } else if (value < predicate) {
+            switch (filter_type) {
+                case expressions::compare_type::ne:
+                case expressions::compare_type::lt:
+                case expressions::compare_type::lte:
+                case expressions::compare_type::all_true:
+                    return true;
+                default:
+                    return false;
+            }
+        } else {
+            switch (filter_type) {
+                case expressions::compare_type::ne:
+                case expressions::compare_type::gt:
+                case expressions::compare_type::gte:
+                case expressions::compare_type::all_true:
+                    return true;
+                default:
+                    return false;
+            }
+        }
     }
 
     class is_null_filter_t : public table_filter_t {
@@ -124,6 +188,75 @@ namespace components::table {
 
         std::pmr::vector<uint64_t> table_indices;
     };
+
+    // IN-list filter ("col IN (v1, v2, ...)") used by S5 batch resolve in M4.
+    // Treats the membership test as compare_type::EQUALS with multiple constants — every
+    // existing constant_filter_t dispatch site falls back to a linear contains() check until
+    // the dispatch sites are widened (M4 Risk: filter_dispatch_sites_pending).
+    // Rationale (doc §5 lines 1032+): one batch scan beats N individual EQUAL scans when
+    // resolving a query plan that touches many tables / functions at once.
+    class set_membership_filter_t : public table_filter_t {
+    public:
+        set_membership_filter_t(std::pmr::vector<types::logical_value_t> values,
+                                std::pmr::vector<uint64_t> table_indices)
+            : table_filter_t(expressions::compare_type::eq)
+            , values(std::move(values))
+            , table_indices(std::move(table_indices)) {}
+
+        bool contains(const types::logical_value_t& value) const {
+            for (const auto& v : values) {
+                if (v == value) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        std::unique_ptr<table_filter_t> copy() const override {
+            return std::make_unique<set_membership_filter_t>(values, table_indices);
+        }
+        bool equals(const table_filter_t& other) const override {
+            if (!table_filter_t::equals(other))
+                return false;
+            const auto& o = static_cast<const set_membership_filter_t&>(other);
+            if (values.size() != o.values.size())
+                return false;
+            for (size_t i = 0; i < values.size(); i++) {
+                if (!(values[i] == o.values[i]))
+                    return false;
+            }
+            return true;
+        }
+
+        std::pmr::vector<types::logical_value_t> values;
+        std::pmr::vector<uint64_t> table_indices;
+    };
+
+    // Dispatch helper used by all storage filter sites. Replaces the
+    //     `filter->cast<constant_filter_t>().compare(value)` pattern with one that handles
+    // set_membership_filter_t too. Constructs a temporary logical_value_t on the default
+    // pmr resource for the membership probe — fine for a 1-shot bool, no escape.
+    // Templated on the value type (fixed-width T, bool for validity, string_view).
+    template<typename T>
+    inline bool table_filter_dispatch(const table_filter_t* filter, T value) {
+        if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
+            return set->contains(types::logical_value_t{std::pmr::get_default_resource(), value});
+        }
+        return filter->cast<constant_filter_t>().compare(value);
+    }
+
+    // Helper: both constant_filter_t and set_membership_filter_t expose table_indices
+    // (the column path within a struct/list); is_null_filter_t too. This unifies access
+    // for sites that need to navigate sub-columns regardless of which filter kind landed.
+    inline const std::pmr::vector<uint64_t>& table_filter_table_indices(const table_filter_t* filter) {
+        if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
+            return set->table_indices;
+        }
+        if (auto* nul = dynamic_cast<const is_null_filter_t*>(filter)) {
+            return nul->table_indices;
+        }
+        return filter->cast<constant_filter_t>().table_indices;
+    }
 
     class conjunction_filter_t : public table_filter_t {
     public:

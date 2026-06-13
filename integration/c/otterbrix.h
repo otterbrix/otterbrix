@@ -45,12 +45,37 @@ void otterbrix_destroy(otterbrix_ptr);
 
 cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query);
 
+typedef enum sql_param_kind_t
+{
+    SQL_PARAM_NULL = 0,
+    SQL_PARAM_BOOL,
+    SQL_PARAM_INT64,
+    SQL_PARAM_UINT64,
+    SQL_PARAM_DOUBLE,
+    SQL_PARAM_STRING,
+} sql_param_kind_t;
+
+typedef struct sql_param_t {
+    int32_t index;
+    sql_param_kind_t kind;
+    uint8_t bool_value;
+    int64_t int64_value;
+    uint64_t uint64_value;
+    double double_value;
+    string_view_t string_value;
+} sql_param_t;
+
+cursor_ptr execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* params, size_t param_count);
+
 cursor_ptr create_database(otterbrix_ptr ptr, string_view_t database_name);
 cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name);
+cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_name);
+cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_name, string_view_t collection_name);
 
 void release_cursor(cursor_ptr ptr);
 int32_t cursor_size(cursor_ptr ptr);
 int32_t cursor_column_count(cursor_ptr ptr);
+int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index);
 bool cursor_has_next(cursor_ptr ptr);
 bool cursor_is_success(cursor_ptr ptr);
 bool cursor_is_error(cursor_ptr ptr);
@@ -75,6 +100,8 @@ int64_t value_get_int(value_ptr ptr);
 uint64_t value_get_uint(value_ptr ptr);
 double value_get_double(value_ptr ptr);
 char* value_get_string(value_ptr ptr);
+
+void otterbrix_free_string(char* str);
 
 #ifdef __cplusplus
 }

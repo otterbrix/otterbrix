@@ -1,0 +1,5 @@
+*.bak
+.idea
+
+file_0001.json
+file_0001_filtered.json

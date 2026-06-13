@@ -3,7 +3,7 @@
 namespace components::logical_plan {
 
     node_checkpoint_t::node_checkpoint_t(std::pmr::memory_resource* resource)
-        : node_t(resource, node_type::checkpoint_t, collection_full_name_t{}) {}
+        : node_t(resource, node_type::checkpoint_t) {}
 
     hash_t node_checkpoint_t::hash_impl() const { return 0; }
 

@@ -41,6 +41,9 @@ namespace components::table {
 
         uint64_t total_rows() const;
         uint64_t committed_row_count() const;
+        // True when any row group holds a version stamp above `watermark` —
+        // i.e. some version is NOT visible-to-all snapshots at/below it.
+        bool has_version_above(uint64_t watermark) const;
 
         bool is_empty() const;
 
@@ -76,6 +79,7 @@ namespace components::table {
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
         void revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
+        void revert_all_deletes(uint64_t txn_id);
         void cleanup_append(int64_t start, uint64_t count);
 
         void merge_storage(collection_t& data);

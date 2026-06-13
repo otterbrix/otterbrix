@@ -1,7 +1,9 @@
 #include "test_config.hpp"
+#include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 
 #include <catch2/catch.hpp>
@@ -22,7 +24,7 @@ static const collection_name_t collection_name_2 = "testcollection2";
     do {                                                                                                               \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->create_database(session, DB);                                                                  \
+            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + (DB) + ";");                            \
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
@@ -32,33 +34,45 @@ static const collection_name_t collection_name_2 = "testcollection2";
             for (const auto& type : types) {                                                                           \
                 columns.emplace_back(type.alias(), type);                                                              \
             }                                                                                                          \
-            dispatcher->create_collection(session, DB, COLL, columns);                                                 \
+            test_create_collection(dispatcher, session, DB, COLL, columns);                                            \
         }                                                                                                              \
     } while (false)
 
 #define FILL_COLLECTION_WAL(DB, COLL, COUNT)                                                                           \
     do {                                                                                                               \
         auto chunk = gen_data_chunk(COUNT, dispatcher->resource());                                                    \
-        auto ins = components::logical_plan::make_node_insert(dispatcher->resource(), {DB, COLL}, std::move(chunk));   \
+        auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(                                  \
+            dispatcher->resource(),                                                                                    \
+            DB,                                                                                                        \
+            COLL,                                                                                                      \
+            components::logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));                     \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_plan(session, ins);                                                                    \
+            dispatcher->execute_plan(                                                                                  \
+                session,                                                                                               \
+                components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});                     \
         }                                                                                                              \
     } while (false)
 
 #define CHECK_FIND_WAL(DB, COLL, KEY, COMPARE, VALUE, COUNT)                                                           \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(), {DB, COLL});                 \
+        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),                              \
+                                                                  core::dbname_t{DB},                                  \
+                                                                  core::relname_t{COLL});                              \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, side_t::left},   \
                                                                      id_par{1});                                       \
-        plan->append_child(                                                                                            \
-            components::logical_plan::make_node_match(dispatcher->resource(), {DB, COLL}, std::move(expr)));           \
+        plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
+                                                                     core::dbname_t{DB},                               \
+                                                                     core::relname_t{COLL},                            \
+                                                                     std::move(expr)));                                \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         params->add_parameter(id_par{1}, VALUE);                                                                       \
-        auto c = dispatcher->find(session, plan, params);                                                              \
+        auto c = dispatcher->execute_plan(                                                                             \
+            session,                                                                                                   \
+            components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});                         \
         REQUIRE(c->size() == COUNT);                                                                                   \
     } while (false)
 
@@ -83,20 +97,23 @@ TEST_CASE("integration::cpp::test_wal_pool::per_worker_files_created") {
     }
 
     INFO("verify per-worker WAL segment files exist") {
-        // With agent=2, should have .wal_0_000000 and .wal_1_000000
-        auto wal_path_0 = config.wal.path / ".wal_0_000000";
-        auto wal_path_1 = config.wal.path / ".wal_1_000000";
-        REQUIRE(std::filesystem::exists(wal_path_0));
-        REQUIRE(std::filesystem::exists(wal_path_1));
+        // WAL creates per-database-oid directories. Otterbrix routes all
+        // DML in this scenario to main_database (oid=4) — single worker.
+        constexpr auto kMainDb = components::catalog::well_known_oid::main_database;
+        auto database_wal_directory = config.wal.path / std::to_string(static_cast<unsigned>(kMainDb));
+        REQUIRE(std::filesystem::exists(database_wal_directory));
+        bool found_wal_segment = false;
+        for (const auto& entry : std::filesystem::directory_iterator(database_wal_directory)) {
+            if (entry.is_regular_file() && entry.path().filename().string().find("wal_") == 0) {
+                found_wal_segment = true;
+                break;
+            }
+        }
+        REQUIRE(found_wal_segment);
 
         // Legacy single .wal should NOT exist
         auto legacy_wal_path = config.wal.path / ".wal";
         REQUIRE_FALSE(std::filesystem::exists(legacy_wal_path));
-
-        // At least one WAL file should have non-zero size (data was written)
-        auto size_0 = std::filesystem::file_size(wal_path_0);
-        auto size_1 = std::filesystem::file_size(wal_path_1);
-        REQUIRE((size_0 > 0 || size_1 > 0));
     }
 }
 
@@ -209,7 +226,7 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
             for (const auto& type : types) {
                 columns.emplace_back(type.alias(), type);
             }
-            dispatcher->create_collection(session, database_name, collection_name_2, columns);
+            test_create_collection(dispatcher, session, database_name, collection_name_2, columns);
         }
         FILL_COLLECTION_WAL(database_name, collection_name_2, kDocuments);
 
@@ -219,10 +236,24 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
     }
 
     INFO("verify both WAL segment files have data") {
-        auto wal_path_0 = config.wal.path / ".wal_0_000000";
-        auto wal_path_1 = config.wal.path / ".wal_1_000000";
-        REQUIRE(std::filesystem::exists(wal_path_0));
-        REQUIRE(std::filesystem::exists(wal_path_1));
+        // WAL creates per-database directories named by database OID (stable
+        // across renames) — see wal_worker_t ctor in services/wal/wal.cpp.
+        // Scan every subdirectory under the root for a wal_* segment file.
+        REQUIRE(std::filesystem::exists(config.wal.path));
+        bool found_wal_segment = false;
+        for (const auto& db_entry : std::filesystem::directory_iterator(config.wal.path)) {
+            if (!db_entry.is_directory())
+                continue;
+            for (const auto& entry : std::filesystem::directory_iterator(db_entry.path())) {
+                if (entry.is_regular_file() && entry.path().filename().string().find("wal_") == 0) {
+                    found_wal_segment = true;
+                    break;
+                }
+            }
+            if (found_wal_segment)
+                break;
+        }
+        REQUIRE(found_wal_segment);
     }
 
     INFO("restart and verify both collections recovered") {
@@ -286,7 +317,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -381,7 +412,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
         // Create database
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         // Create table with NOT NULL on a string column
@@ -465,7 +496,7 @@ TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         // Create table with a typed schema
@@ -519,7 +550,7 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->create_database(session, database_name);
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
         {

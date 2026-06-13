@@ -1,7 +1,8 @@
 #include "data_chunk.hpp"
 #include "vector_operations.hpp"
-#include <components/serialization/deserializer.hpp>
 
+#include <algorithm>
+#include <charconv>
 #include <stdexcept>
 
 namespace components::vector {
@@ -66,6 +67,12 @@ namespace components::vector {
         set_cardinality(0);
     }
 
+    void data_chunk_t::drop_unprojected_placeholders() {
+        data.erase(
+            std::remove_if(data.begin(), data.end(), [](const vector_t& v) { return is_unprojected_placeholder(v); }),
+            data.end());
+    }
+
     void data_chunk_t::destroy() {
         data.clear();
         capacity_ = 0;
@@ -122,7 +129,11 @@ namespace components::vector {
     vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) {
         vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            sub_column = sub_column->entries()[*it].get();
+            if (sub_column->type().type() == types::logical_type::ARRAY) {
+                sub_column = &sub_column->entry();
+            } else {
+                sub_column = sub_column->entries()[*it].get();
+            }
         }
         return sub_column;
     }
@@ -130,7 +141,11 @@ namespace components::vector {
     const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) const {
         const vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            sub_column = sub_column->entries()[*it].get();
+            if (sub_column->type().type() == types::logical_type::ARRAY) {
+                sub_column = &sub_column->entry();
+            } else {
+                sub_column = sub_column->entries()[*it].get();
+            }
         }
         return sub_column;
     }
@@ -159,7 +174,8 @@ namespace components::vector {
         assert(other.size() == 0);
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_unprojected_placeholder(data[i])) continue;
+            if (is_unprojected_placeholder(data[i]))
+                continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], size(), offset, 0);
         }
@@ -177,7 +193,8 @@ namespace components::vector {
         assert(source_count <= size());
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_unprojected_placeholder(data[i])) continue;
+            if (is_unprojected_placeholder(data[i]))
+                continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], indexing, source_count, offset, 0);
         }
@@ -263,8 +280,10 @@ namespace components::vector {
             for (auto it = std::next(path.begin()); it != path.end(); ++it) {
                 bool field_found = false;
                 if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    size_t index = std::stoull(it->c_str());
-                    if (index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
+                    size_t index{};
+                    auto [p, ec] = std::from_chars(it->data(), it->data() + it->size(), index);
+                    if (ec == std::errc{} &&
+                        index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
                                     ->size()) {
                         res.emplace_back(index);
                         sub_column = &sub_column->entry();
@@ -291,57 +310,6 @@ namespace components::vector {
     }
 
     std::pmr::memory_resource* data_chunk_t::resource() const { return resource_; }
-
-    // TODO: serialize vector_t buffers instead of logical_values
-    void data_chunk_t::serialize(serializer::msgpack_serializer_t* serializer) const {
-        serializer->start_array(column_count());
-        for (const auto& column : data) {
-            serializer->start_array(2);
-            column.type().serialize(serializer);
-            serializer->start_array(size());
-            for (size_t i = 0; i < size(); i++) {
-                column.value(i).serialize(serializer);
-            }
-            serializer->end_array();
-            serializer->end_array();
-        }
-        serializer->end_array();
-    }
-
-    data_chunk_t data_chunk_t::deserialize(serializer::msgpack_deserializer_t* deserializer) {
-        std::pmr::vector<types::complex_logical_type> types;
-        size_t size = 0;
-        types.reserve(deserializer->current_array_size());
-        for (size_t i = 0; i < types.capacity(); i++) {
-            deserializer->advance_array(i);
-            deserializer->advance_array(0);
-            types.emplace_back(types::complex_logical_type::deserialize(deserializer->resource(), deserializer));
-            deserializer->pop_array();
-            deserializer->advance_array(1);
-            size = std::max(size, deserializer->current_array_size());
-            deserializer->pop_array();
-            deserializer->pop_array();
-        }
-        if (types.empty()) {
-            deserializer->pop_array();
-            return {deserializer->resource(), types, 0};
-        }
-
-        auto res = vector::data_chunk_t(deserializer->resource(), types, size);
-        res.set_cardinality(size);
-        for (size_t i = 0; i < res.column_count(); i++) {
-            deserializer->advance_array(i);
-            deserializer->advance_array(1);
-            for (size_t j = 0; j < size; j++) {
-                deserializer->advance_array(j);
-                res.set_value(i, j, types::logical_value_t::deserialize(deserializer->resource(), deserializer));
-                deserializer->pop_array();
-            }
-            deserializer->pop_array();
-            deserializer->pop_array();
-        }
-        return res;
-    }
 
     void data_chunk_t::slice(const indexing_vector_t& indexing_vector, uint64_t count) {
         count_ = count;
@@ -430,7 +398,8 @@ namespace components::vector {
             new_size = is_power_of_two(new_size) ? new_size * 2 : next_power_of_two(new_size);
         }
         for (auto& column : data) {
-            if (is_unprojected_placeholder(column)) continue;
+            if (is_unprojected_placeholder(column))
+                continue;
             column.resize(capacity_, new_size);
         }
         row_ids.resize(capacity_, new_size);
@@ -443,6 +412,57 @@ namespace components::vector {
     void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size) {
         if (filled_size >= chunk.capacity()) {
             chunk.resize(filled_size);
+        }
+    }
+
+    core::result_wrapper_t<types::logical_value_t> compact_to_bool_value(const data_chunk_t& data) {
+        return types::logical_value_t{data.resource(), !data.empty()};
+    }
+
+    core::result_wrapper_t<types::logical_value_t> compact_to_single_value(const data_chunk_t& data) {
+        if (data.column_count() == 1 && data.size() == 1) {
+            return data.value(0, 0);
+        }
+        // No extractable value cell → SQL NULL, not an error. This covers a
+        // scalar sub-query that returned zero rows AND the degenerate
+        // zero-column result an ungrouped aggregate emits when its input was
+        // filtered out (e.g. SELECT MAX(x) ... WHERE <no match> → one row, no
+        // column). Yielding an untyped NA null matches the value
+        // get_parameter() returns for an unbound id, so `x = (NULL scalar
+        // subquery)` compares against NULL and selects nothing. Only a genuine
+        // shape violation (>1 row, or >1 column) falls through to the error.
+        if (data.empty() || data.column_count() == 0) {
+            return types::logical_value_t{data.resource(), nullptr};
+        }
+        return core::error_t(core::error_code_t::conversion_failure,
+                             std::pmr::string{"could not convert data_chunk_t to a single value", data.resource()});
+    }
+
+    core::result_wrapper_t<types::logical_value_t> compact_to_array_value(const data_chunk_t& data) {
+        if (!data.empty() && data.column_count() == 1) {
+            std::vector<types::logical_value_t> array;
+            array.reserve(data.size());
+            for (size_t i = 0; i < data.size(); ++i) {
+                array.emplace_back(data.value(0, i));
+            }
+            return types::logical_value_t::create_array(data.resource(), data.data[0].type(), array);
+        } else {
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string{"could not convert data_chunk_t to a array value", data.resource()});
+        }
+    }
+
+    core::result_wrapper_t<types::logical_value_t> compact_to_row_value(const data_chunk_t& data) {
+        if (data.size() == 1) {
+            std::vector<types::logical_value_t> fields;
+            fields.reserve(data.column_count());
+            for (size_t i = 0; i < data.column_count(); ++i) {
+                fields.emplace_back(data.value(i, 0));
+            }
+            return types::logical_value_t::create_struct(data.resource(), "", fields);
+        } else {
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string{"could not convert data_chunk_t to a row value", data.resource()});
         }
     }
 

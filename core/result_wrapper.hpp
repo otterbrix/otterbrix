@@ -1,9 +1,10 @@
 #pragma once
 
 #include <cassert>
-#include <memory>
 #include <memory_resource>
+#include <optional>
 #include <source_location>
+#include <string>
 
 namespace core {
 
@@ -43,6 +44,7 @@ namespace core {
 
         arithmetics_failure,
         comparison_failure,
+        conversion_failure,
 
         index_create_fail,
         index_not_exists,
@@ -58,27 +60,27 @@ namespace core {
     struct error_t {
         error_code_t type;
         std::pmr::string what;
-#if defined(DEV_MODE)
+#if not defined(NDEBUG)
         std::source_location error_origin{};
 
-        explicit error_t(std::pmr::memory_resource* resource,
-                         error_code_t type,
-                         std::source_location location = std::source_location::current())
-            : type(type)
-            , what(resource)
-            , error_origin(location) {}
         explicit error_t(error_code_t type,
                          const std::pmr::string& what,
                          std::source_location location = std::source_location::current())
             : type(type)
             , what(what)
-            , error_origin(location) {}
+            , error_origin(location) {
+            assert(type != error_code_t::none &&
+                   "no error state of error_t can only be created using no_error() constructor");
+        }
         explicit error_t(error_code_t type,
                          std::pmr::string&& what,
                          std::source_location location = std::source_location::current())
             : type(type)
             , what(std::move(what))
-            , error_origin(location) {}
+            , error_origin(location) {
+            assert(type != error_code_t::none &&
+                   "no error state of error_t can only be created using no_error() constructor");
+        }
 
         error_t& operator=(const error_t& other) {
             type = other.type;
@@ -94,9 +96,6 @@ namespace core {
         }
 #else
 
-        explicit error_t(std::pmr::memory_resource* resource, error_code_t type)
-            : type(type)
-            , what(resource) {}
         explicit error_t(error_code_t type, const std::pmr::string& what)
             : type(type)
             , what(what) {}
@@ -138,23 +137,14 @@ namespace core {
 
     // has implicit constructors to simplify usage
     template<typename T>
-    requires(!std::is_same_v<std::decay<T>, error_t>) class result_wrapper_t {
+    requires(!std::is_same_v<std::decay<T>, error_t> && !std::is_same_v<T, void>) class result_wrapper_t {
     private:
         static constexpr bool trivial_store = std::is_default_constructible_v<T>;
-        using Store_T = std::conditional_t<trivial_store, T, std::unique_ptr<T>>;
+        using Store_T = std::conditional_t<trivial_store, T, std::optional<T>>;
 
     public:
         template<typename... Args>
-        result_wrapper_t(Args&&... args) requires(trivial_store&& std::constructible_from<T, Args...>)
-            : value_(std::forward<Args>(args)...)
-            , error_(error_t::no_error()) {}
-        template<typename... Args>
-        result_wrapper_t(Args&&... args) requires(!trivial_store && std::constructible_from<T, Args...>)
-            : value_(std::make_unique<T>(std::forward<Args>(args)...))
-            , error_(error_t::no_error()) {}
-        template<typename... Args>
-        result_wrapper_t(Args&&... args) requires(!trivial_store &&
-                                                  std::constructible_from<std::unique_ptr<T>, Args...>)
+        result_wrapper_t(Args&&... args) requires(std::constructible_from<T, Args...>)
             : value_(std::forward<Args>(args)...)
             , error_(error_t::no_error()) {}
 
@@ -163,78 +153,54 @@ namespace core {
         result_wrapper_t(error_t&& error)
             : error_(std::move(error)) {}
 
-#if defined(DEV_MODE)
-        result_wrapper_t(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>)
+#if not defined(NDEBUG)
+        result_wrapper_t(const result_wrapper_t& other) requires(std::is_copy_constructible_v<T>)
             : value_(other.value_)
             , error_(other.error_) {}
-        result_wrapper_t(const result_wrapper_t& other) requires(!trivial_store && std::is_copy_constructible_v<T>)
-            : value_(std::make_unique<T>(*other.value_))
-            , error_(other.error_) {}
 
-        result_wrapper_t(result_wrapper_t&& other) noexcept
+        result_wrapper_t(result_wrapper_t&& other) noexcept requires(std::is_move_constructible_v<T>)
             : value_(std::move(other.value_))
             , error_(std::move(other.error_)) {}
 
-        result_wrapper_t&
-        operator=(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>) {
-            value_ = std::make_unique<T>(other.value_);
+        result_wrapper_t& operator=(const result_wrapper_t& other) requires(std::is_copy_assignable_v<T>) {
+            value_ = other.value_;
             error_ = other.error_;
-#if defined(DEV_MODE)
             error_checked_ = false;
-#endif
-            return *this;
-        }
-        result_wrapper_t& operator=(const result_wrapper_t& other) requires(!trivial_store &&
-                                                                            std::is_copy_constructible_v<T>) {
-            value_ = std::make_unique<T>(*other.value_);
-            error_ = other.error_;
-#if defined(DEV_MODE)
-            error_checked_ = false;
-#endif
             return *this;
         }
 
-        result_wrapper_t& operator=(result_wrapper_t&& other) noexcept {
+        result_wrapper_t& operator=(result_wrapper_t&& other) noexcept requires(std::is_move_assignable_v<T>) {
             value_ = std::move(other.value_);
             error_ = other.error_;
-#if defined(DEV_MODE)
             error_checked_ = false;
-#endif
+            other.error_checked_ = true;
             return *this;
         }
 #else
-        result_wrapper_t(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>) =
-            default;
-        result_wrapper_t(const result_wrapper_t& other) requires(!trivial_store && std::is_copy_constructible_v<T>)
-            : value_(std::make_unique<T>(other.value()))
-            , error_(other.error_) {}
+        result_wrapper_t(const result_wrapper_t& other) requires(std::is_copy_constructible_v<T>) = default;
 
-        result_wrapper_t(result_wrapper_t&&) noexcept = default;
+        result_wrapper_t(result_wrapper_t&&) noexcept requires(std::is_move_constructible_v<T>) = default;
 
-        result_wrapper_t&
-        operator=(const result_wrapper_t& other) requires(trivial_store&& std::is_copy_constructible_v<T>) = default;
-        result_wrapper_t& operator=(const result_wrapper_t& other) requires(!trivial_store &&
-                                                                            std::is_copy_constructible_v<T>) {
-            value_ = std::make_unique<T>(other.value_);
-            error_ = other.error_;
-            return *this;
-        }
+        result_wrapper_t& operator=(const result_wrapper_t& other) requires(std::is_copy_assignable_v<T>) = default;
 
-        result_wrapper_t& operator=(result_wrapper_t&&) noexcept = default;
+        result_wrapper_t& operator=(result_wrapper_t&&) noexcept requires(std::is_move_assignable_v<T>) = default;
 #endif
 
         bool has_error() const noexcept {
-#if defined(DEV_MODE)
+#if not defined(NDEBUG)
             error_checked_ = true;
 #endif
             return error_.type != error_code_t::none;
         }
-        const error_t& error() const noexcept { return error_; }
-        const T& value() const noexcept {
-#if defined(DEV_MODE)
-            assert(error_checked_);
+        const error_t& error() const noexcept {
+#if not defined(NDEBUG)
+            error_checked_ = true;
 #endif
-            assert(!has_error());
+            return error_;
+        }
+        const T& value() const noexcept {
+            assert(error_checked_ && "result_wrapper_t::value() called without checking for errors");
+            assert(!has_error() && "result_wrapper_t::value() called with error present");
             if constexpr (trivial_store) {
                 return value_;
             } else {
@@ -242,10 +208,8 @@ namespace core {
             }
         }
         T& value() noexcept {
-#if defined(DEV_MODE)
-            assert(error_checked_);
-#endif
-            assert(!has_error());
+            assert(error_checked_ && "result_wrapper_t::value() called without checking for errors");
+            assert(!has_error() && "result_wrapper_t::value() called with error present");
             if constexpr (trivial_store) {
                 return value_;
             } else {
@@ -255,17 +219,19 @@ namespace core {
         bool operator()() const noexcept { return !has_error(); }
 
         template<typename U>
-        requires(!std::is_same_v<T, U>) [[nodiscard]] result_wrapper_t<U> convert_error() const {
+        requires(!std::is_same_v<T, U>) [[nodiscard]] result_wrapper_t<U> convert_error() {
             assert(error_.contains_error());
-            return result_wrapper_t<U>(error_);
+            return result_wrapper_t<U>(std::move(error_));
         }
 
     private:
         Store_T value_;
-        error_t error_;
-#if defined(DEV_MODE)
+#if not defined(NDEBUG)
         mutable bool error_checked_{false};
 #endif
+        error_t error_;
     };
+
+    // TODO: assert for unchecked errors in the destructor of result_wrapper_t
 
 } // namespace core

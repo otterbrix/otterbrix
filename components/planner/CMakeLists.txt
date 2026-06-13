@@ -5,6 +5,7 @@ set(SOURCE_${PROJECT_NAME}
         optimizer.cpp
         optimizer/rules/constant_folding.cpp
         optimizer/rules/column_pruning.cpp
+        optimizer/rules/hash_join.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -20,6 +21,7 @@ target_link_libraries(
         otterbrix::types
         otterbrix::expressions
         otterbrix::logical_plan
+        otterbrix::catalog
         otterbrix::vector
         otterbrix::catalog
 

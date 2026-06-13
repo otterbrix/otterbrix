@@ -60,12 +60,70 @@ namespace components::logical_plan {
                 return "create_macro_t";
             case node_type::drop_macro_t:
                 return "drop_macro_t";
+            case node_type::create_matview_t:
+                return "create_matview_t";
+            case node_type::refresh_matview_t:
+                return "refresh_matview_t";
             case node_type::checkpoint_t:
                 return "checkpoint_t";
             case node_type::vacuum_t:
                 return "vacuum_t";
             case node_type::having_t:
                 return "having_t";
+            case node_type::alter_table_t:
+                return "alter_table_t";
+            case node_type::create_constraint_t:
+                return "create_constraint_t";
+            case node_type::check_constraint_t:
+                return "check_constraint_t";
+            case node_type::fk_check_t:
+                return "fk_check_t";
+            case node_type::fk_cascade_t:
+                return "fk_cascade_t";
+            case node_type::sequence_t:
+                return "sequence_t";
+            case node_type::primitive_write_t:
+                return "primitive_write_t";
+            case node_type::primitive_delete_t:
+                return "primitive_delete_t";
+            case node_type::alter_column_add_t:
+                return "alter_column_add_t";
+            case node_type::alter_column_rename_t:
+                return "alter_column_rename_t";
+            case node_type::alter_column_drop_t:
+                return "alter_column_drop_t";
+            case node_type::dynamic_cascade_delete_t:
+                return "dynamic_cascade_delete_t";
+            case node_type::register_udf_t:
+                return "register_udf_t";
+            case node_type::unregister_udf_t:
+                return "unregister_udf_t";
+            case node_type::commit_transaction_t:
+                return "commit_transaction_t";
+            case node_type::abort_transaction_t:
+                return "abort_transaction_t";
+            case node_type::begin_transaction_t:
+                return "begin_transaction_t";
+            case node_type::computed_field_register_t:
+                return "computed_field_register_t";
+            case node_type::computed_field_unregister_t:
+                return "computed_field_unregister_t";
+            case node_type::catalog_resolve_table_t:
+                return "catalog_resolve_table_t";
+            case node_type::catalog_resolve_namespace_t:
+                return "catalog_resolve_namespace_t";
+            case node_type::catalog_resolve_database_t:
+                return "catalog_resolve_database_t";
+            case node_type::catalog_resolve_type_t:
+                return "catalog_resolve_type_t";
+            case node_type::catalog_resolve_function_t:
+                return "catalog_resolve_function_t";
+            case node_type::catalog_resolve_constraint_t:
+                return "catalog_resolve_constraint_t";
+            case node_type::allocate_oids_t:
+                return "allocate_oids_t";
+            case node_type::set_timezone_t:
+                return "set_timezone_t";
             default:
                 return "unused";
         }

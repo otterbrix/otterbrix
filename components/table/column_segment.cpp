@@ -202,7 +202,7 @@ namespace components::table {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
             auto dataptr = handle.ptr() + segment.block_offset();
-            vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(dataptr));
+            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
             auto& result_mask = result.validity();
             if (!mask.row_is_valid(static_cast<uint64_t>(row_id))) {
                 result_mask.set_invalid(result_idx);
@@ -220,7 +220,6 @@ namespace components::table {
             auto dict = dictionary(segment, handle);
             auto base_data = reinterpret_cast<int32_t*>(baseptr + DICTIONARY_HEADER_SIZE);
             auto result_data = result.data<std::string_view>();
-
             auto dict_offset = base_data[row_id];
             uint32_t string_length;
             if (row_id == 0) {
@@ -237,8 +236,7 @@ namespace components::table {
             auto handle = buffer_manager.pin(segment.block);
 
             auto data_ptr = handle.ptr() + segment.block_offset() + static_cast<uint64_t>(row_id) * sizeof(T);
-            const auto& const_filter = filter->cast<constant_filter_t>();
-            return const_filter.compare(*reinterpret_cast<T*>(data_ptr));
+            return table_filter_dispatch(filter, *reinterpret_cast<T*>(data_ptr));
         }
 
         bool validity_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
@@ -246,10 +244,9 @@ namespace components::table {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
             auto dataptr = handle.ptr() + segment.block_offset();
-            vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(dataptr));
+            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
 
-            const auto& const_filter = filter->cast<constant_filter_t>();
-            return const_filter.compare(mask.row_is_valid(static_cast<uint64_t>(row_id)));
+            return table_filter_dispatch(filter, mask.row_is_valid(static_cast<uint64_t>(row_id)));
         }
 
         bool string_check_row(column_segment_t& segment,
@@ -270,8 +267,8 @@ namespace components::table {
                 string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(base_data[row_id - 1]));
             }
 
-            const auto& const_filter = filter->cast<constant_filter_t>();
-            return const_filter.compare(fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length));
+            return table_filter_dispatch(filter,
+                                         fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length));
         }
 
         struct standard_fixed_size_t {
@@ -353,7 +350,8 @@ namespace components::table {
                 return append_count;
             }
 
-            vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(handle.ptr()));
+            vector::validity_mask_t mask(segment.block->block_manager.buffer_manager.resource(),
+                                         reinterpret_cast<uint64_t*>(handle.ptr()));
             for (uint64_t i = 0; i < append_count; i++) {
                 auto idx = data.referenced_indexing->get_index(offset + i);
                 if (!data.validity.row_is_valid(idx)) {
@@ -1278,6 +1276,13 @@ namespace components::table {
                                                uint64_t& approved_tuple_count) {
         assert(filter.filter_type != expressions::compare_type::invalid);
         assert(!is_union_compare_condition(filter.filter_type));
+        // set_membership_filter_t doesn't fit the single-predicate vectorized path —
+        // it has multiple values, requiring per-row contains() rather than a SIMD compare.
+        // Until M4 wires a vectorized IN-list path here, fall through to the row-based
+        // check_row dispatch (which IS set_membership_filter_t-aware via table_filter_dispatch).
+        if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
+            return approved_tuple_count;
+        }
         auto& constant_filter = filter.cast<constant_filter_t>();
         switch (vector.type().to_physical_type()) {
             case types::physical_type::UINT8: {
@@ -1506,7 +1511,7 @@ namespace components::table {
         if (start_bit % 8 != 0) {
             uint64_t byte_pos = start_bit / 8;
             uint64_t bit_end = (byte_pos + 1) * 8;
-            vector::validity_mask_t mask(reinterpret_cast<uint64_t*>(handle.ptr()));
+            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(handle.ptr()));
             for (uint64_t i = start_bit; i < bit_end; i++) {
                 mask.set_valid(i);
             }

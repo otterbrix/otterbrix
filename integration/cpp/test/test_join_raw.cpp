@@ -40,13 +40,18 @@ namespace {
         if (!node) {
             return;
         }
-        if (node->type() == logical_plan::node_type::aggregate_t &&
-            !node->collection_full_name().unique_identifier.empty()) {
-            const auto& uid = node->collection_full_name().unique_identifier;
-            auto it = chunks_by_uid.find(uid);
-            if (it != chunks_by_uid.end()) {
-                node = logical_plan::make_node_raw_data(res, it->second());
-                return; // leaf is now data
+        if (node->type() == logical_plan::node_type::aggregate_t) {
+            const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
+            const auto& uid_s = static_cast<const std::string&>(agg->uid());
+            if (!uid_s.empty()) {
+                auto it = chunks_by_uid.find(uid_s);
+                if (it != chunks_by_uid.end()) {
+                    auto raw = logical_plan::make_node_raw_data(res, it->second());
+                    raw->set_result_alias(agg->result_alias().empty() ? static_cast<const std::string&>(agg->relname())
+                                                                      : agg->result_alias());
+                    node = raw;
+                    return; // leaf is now data
+                }
             }
         }
         for (auto& child : node->children()) {
@@ -73,7 +78,9 @@ namespace {
         swap_externals(plan, res, chunks_by_uid);
 
         auto session = otterbrix::session_id_t();
-        return dispatcher->execute_plan(session, plan, binder.params_ptr());
+        return dispatcher->execute_plan(
+            session,
+            logical_plan::execution_plan_t{dispatcher->resource(), plan, binder.params_ptr()});
     }
 } // namespace
 
@@ -122,8 +129,9 @@ TEST_CASE("integration::cpp::test_raw_join") {
         chunks_by_uid_t chunks;
         chunks.emplace("uid_a", [res] { return build_pairs(res, "key", "name", {{1, 11}, {2, 22}, {3, 33}}); });
         chunks.emplace("uid_b", [res] { return build_pairs(res, "key", "linker", {{1, 100}, {2, 200}, {3, 300}}); });
-        chunks.emplace("uid_c",
-                       [res] { return build_pairs(res, "linker", "tail", {{100, 555}, {200, 777}, {300, 999}}); });
+        chunks.emplace("uid_c", [res] {
+            return build_pairs(res, "linker", "tail", {{100, 555}, {200, 777}, {300, 999}});
+        });
         chunks.emplace("uid_d", [res] { return build_pairs(res, "key", "extra", {{1, 7}, {3, 9}}); });
 
         const std::string sql = "SELECT * FROM uid_a.db.sch.a a "

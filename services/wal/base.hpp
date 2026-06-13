@@ -1,12 +1,16 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <memory_resource>
 #include <string>
 
 namespace services::wal {
 
     using id_t = std::uint64_t;
     using atomic_id_t = std::atomic<id_t>;
+    using buffer_t = std::pmr::string;
+    using size_tt = std::uint32_t;
+    using crc32_t = std::uint32_t;
 
     inline void next_id(atomic_id_t& id, id_t stride = 1) { id += stride; }
 

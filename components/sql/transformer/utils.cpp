@@ -1,7 +1,14 @@
 #include "utils.hpp"
 
+#include <components/logical_plan/identifier_types.hpp>
+#include <components/logical_plan/node_catalog_resolve_constraint.hpp>
+#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
+#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_sequence.hpp>
 #include <components/types/logical_value.hpp>
+#include <core/date/date_parse.hpp>
 
+#include <atomic>
 #include <cstdlib>
 
 namespace components::sql::transform {
@@ -40,7 +47,7 @@ namespace components::sql::transform {
     }
 
     bool name_collection_t::is_left_table(const std::string& name) const {
-        if (name == left_name.collection || name == left_alias) {
+        if (name == left_name.relname || name == left_alias) {
             return true;
         }
         for (const auto& alias : extra_left_aliases) {
@@ -49,7 +56,7 @@ namespace components::sql::transform {
             }
         }
         for (const auto& nm : extra_left_names) {
-            if (nm.collection == name) {
+            if (nm.relname == name) {
                 return true;
             }
         }
@@ -57,7 +64,7 @@ namespace components::sql::transform {
     }
 
     bool name_collection_t::is_right_table(const std::string& name) const {
-        return name == right_name.collection || name == right_alias;
+        return name == right_name.relname || name == right_alias;
     }
 
     expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name) {
@@ -66,7 +73,7 @@ namespace components::sql::transform {
         }
         if (names.is_left_table(target_name)) {
             return expressions::side_t::left;
-        } else if (names.is_right_table(target_name)) {
+        } else if (names.right_name.relname == target_name || names.right_alias == target_name) {
             return expressions::side_t::right;
         } else {
             return expressions::side_t::undefined;
@@ -83,16 +90,12 @@ namespace components::sql::transform {
         if (lst.empty()) {
             return column_ref_t(resource);
         } else if (lst.size() == 1) {
-            if (nodeTag(lst.back().data) == T_A_Star) {
-                return column_ref_t{{}, expressions::key_t{resource, "*"}};
-            }
             return column_ref_t{{}, expressions::key_t(resource, strVal(lst.back().data))};
         } else {
             auto it = lst.begin();
             std::string table_name;
             std::pmr::vector<std::pmr::string> field_path(resource);
             expressions::side_t side = expressions::side_t::undefined;
-            bool ends_with_star = nodeTag(lst.back().data) == T_A_Star;
 
             if (names.is_left_table(strVal(lst.begin()->data))) {
                 table_name = strVal(it->data);
@@ -102,9 +105,21 @@ namespace components::sql::transform {
                 table_name = strVal(it->data);
                 ++it;
                 side = expressions::side_t::right;
-            }
-            if (ends_with_star && !table_name.empty()) {
-                field_path.emplace_back(std::pmr::string{table_name, resource});
+            } else if (lst.size() >= 3) {
+                // db.table.x style: first elem is database; check if second elem matches a known table.
+                auto second_it = std::next(it);
+                const char* second_name = strVal(second_it->data);
+                if (names.is_left_table(second_name)) {
+                    ++it;
+                    table_name = strVal(it->data);
+                    ++it;
+                    side = expressions::side_t::left;
+                } else if (names.is_right_table(second_name)) {
+                    ++it;
+                    table_name = strVal(it->data);
+                    ++it;
+                    side = expressions::side_t::right;
+                }
             }
             for (; it != lst.end(); ++it) {
                 if (nodeTag(it->data) == T_A_Star) {
@@ -134,6 +149,12 @@ namespace components::sql::transform {
         }
         return ref;
     }
+
+    bool is_jsonb_nav_operator(std::string_view op) { return op == "->" || op == "->>" || op == "#>" || op == "#>>"; }
+
+    bool jsonb_nav_returns_scalar(std::string_view op) { return op == "->>" || op == "#>>"; }
+
+    bool jsonb_op_takes_path(std::string_view op) { return op == "#>" || op == "#>>" || op == "#-"; }
 
     std::string node_tag_to_string(NodeTag type) {
         switch (type) {
@@ -251,6 +272,9 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type) {
         types::complex_logical_type column;
+        if (!type || !type->names) {
+            return column;
+        }
         if (auto linint_name = strVal(linitial(type->names)); !std::strcmp(linint_name, "pg_catalog")) {
             if (auto col = get_logical_type(strVal(lsecond(type->names))); col != types::logical_type::DECIMAL) {
                 column = col;
@@ -295,37 +319,23 @@ namespace components::sql::transform {
     }
 
     template<typename Container>
-    core::error_t fill_with_types(std::pmr::memory_resource* resource, Container& container, PGList& list) {
-        container.reserve(list.lst.size());
+    void fill_with_types(Container& container, PGList& list) {}
+
+    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
+                                                                                    PGList& list) {
+        std::pmr::vector<types::complex_logical_type> types(resource);
+        types.reserve(list.lst.size());
         for (auto data : list.lst) {
             if (nodeTag(data.data) != T_ColumnDef) {
                 continue;
             }
             auto coldef = pg_ptr_cast<ColumnDef>(data.data);
-            if (auto res = get_type(resource, coldef->typeName); res.has_error()) {
-                return res.error();
+            if (auto type_res = get_type(resource, coldef->typeName); type_res.has_error()) {
+                return type_res.convert_error<std::pmr::vector<types::complex_logical_type>>();
             } else {
-                res.value().set_alias(coldef->colname);
-                container.emplace_back(std::move(res.value()));
+                type_res.value().set_alias(coldef->colname);
+                types.emplace_back(std::move(type_res.value()));
             }
-        }
-        return core::error_t::no_error();
-    }
-
-    core::result_wrapper_t<std::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
-                                                                               PGList& list) {
-        std::vector<types::complex_logical_type> types;
-        if (auto res = fill_with_types(resource, types, list); res.contains_error()) {
-            return res;
-        }
-        return types;
-    }
-
-    core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>>
-    get_types_pmr(std::pmr::memory_resource* resource, PGList& list) {
-        std::pmr::vector<types::complex_logical_type> types(resource);
-        if (auto res = fill_with_types(resource, types, list); res.contains_error()) {
-            return res;
         }
         return types;
     }
@@ -333,16 +343,65 @@ namespace components::sql::transform {
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
-                auto constant = pg_ptr_cast<A_Const>(pg_ptr_cast<TypeCast>(node)->arg);
-                if (constant->val.type == T_String) {
-                    std::string str = strVal(&constant->val);
-                    if (str == "t" || str == "f") {
-                        return types::logical_value_t(resource, str == "t");
-                    }
-                    return types::logical_value_t(resource, str);
-                } else {
+                auto cast = pg_ptr_cast<TypeCast>(node);
+                auto constant = pg_ptr_cast<A_Const>(cast->arg);
+                if (constant->val.type != T_String) {
                     return types::logical_value_t(resource, constant->val.val.ival);
                 }
+                std::string_view str = strVal(&constant->val);
+                auto type_res = get_type(resource, cast->typeName);
+                if (!type_res.has_error() && types::is_duration(type_res.value().type())) {
+                    switch (type_res.value().type()) {
+                        case types::logical_type::DATE:
+                            if (auto parsed = core::date::parse_date(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid DATE literal: " + std::string(str), resource});
+                        case types::logical_type::TIME:
+                            if (auto parsed = core::date::parse_time(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIME literal: " + std::string(str), resource});
+                        case types::logical_type::TIME_TZ:
+                            if (auto parsed = core::date::parse_timetz(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIMETZ literal: " + std::string(str), resource});
+                        case types::logical_type::TIMESTAMP:
+                            if (auto parsed = core::date::parse_timestamp(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIMESTAMP literal: " + std::string(str), resource});
+                        case types::logical_type::TIMESTAMP_TZ:
+                            if (auto parsed = core::date::parse_timestamptz(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid TIMESTAMPTZ literal: " + std::string(str), resource});
+                        case types::logical_type::INTERVAL:
+                            if (auto parsed = core::date::parse_interval(str)) {
+                                return types::logical_value_t(resource, *parsed);
+                            }
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"invalid INTERVAL literal: " + std::string(str), resource});
+                        default:
+                            break;
+                    }
+                }
+                if (!type_res.has_error() && type_res.value().type() == types::logical_type::BOOLEAN) {
+                    return types::logical_value_t(resource, str == "t");
+                }
+                return types::logical_value_t(resource, std::string(str));
             }
             case T_A_Const: {
                 auto* value = &(pg_ptr_cast<A_Const>(node)->val);
@@ -502,7 +561,8 @@ namespace components::sql::transform {
         return std::move(out);
     }
 
-    std::vector<table::table_constraint_t> extract_table_constraints(PGList& table_elts) {
+    core::result_wrapper_t<std::vector<table::table_constraint_t>>
+    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts) {
         std::vector<table::table_constraint_t> result;
         for (auto data : table_elts.lst) {
             if (nodeTag(data.data) != T_Constraint) {
@@ -517,6 +577,64 @@ namespace components::sql::transform {
                 case CONSTR_UNIQUE:
                     tc.type = table::table_constraint_type::UNIQUE;
                     break;
+                case CONSTR_FOREIGN:
+                    tc.type = table::table_constraint_type::FOREIGN_KEY;
+                    if (constraint->fk_attrs) {
+                        for (auto col : constraint->fk_attrs->lst) {
+                            tc.columns.emplace_back(strVal(col.data));
+                        }
+                    }
+                    if (constraint->pk_attrs) {
+                        for (auto col : constraint->pk_attrs->lst) {
+                            tc.ref_columns.emplace_back(strVal(col.data));
+                        }
+                    }
+                    if (constraint->pktable) {
+                        if (constraint->pktable->catalogname) {
+                            tc.ref_database = constraint->pktable->catalogname;
+                        } else if (constraint->pktable->schemaname) {
+                            tc.ref_database = constraint->pktable->schemaname;
+                        }
+                        if (constraint->pktable->relname) {
+                            tc.ref_collection = constraint->pktable->relname;
+                        }
+                    }
+                    if (constraint->conname) {
+                        tc.name = constraint->conname;
+                    }
+                    // PostgreSQL stores ' ' / '\0' for unspecified MATCH/action; normalize to
+                    // SQL-standard defaults ('s' SIMPLE, 'a' NO ACTION) so downstream code never
+                    // sees an unexpected sentinel.
+                    if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' ||
+                        constraint->fk_matchtype == 's') {
+                        tc.fk_matchtype = constraint->fk_matchtype;
+                    }
+                    {
+                        auto da = constraint->fk_del_action;
+                        if (da == 'a' || da == 'r' || da == 'c' || da == 'n' || da == 'd') {
+                            tc.fk_del_action = da;
+                        }
+                        auto ua = constraint->fk_upd_action;
+                        if (ua == 'a' || ua == 'r' || ua == 'c' || ua == 'n' || ua == 'd') {
+                            tc.fk_upd_action = ua;
+                        }
+                    }
+                    result.push_back(std::move(tc));
+                    continue; // skip the unique-keys-based code below
+                case CONSTR_CHECK:
+                    tc.type = table::table_constraint_type::CHECK;
+                    if (constraint->conname) {
+                        tc.name = constraint->conname;
+                    }
+                    if (constraint->raw_expr) {
+                        if (auto expr_res = deparse_check_expr(resource, constraint->raw_expr); expr_res.has_error()) {
+                            return expr_res.convert_error<std::vector<table::table_constraint_t>>();
+                        } else {
+                            tc.check_expression = std::move(expr_res.value());
+                        }
+                    }
+                    result.push_back(std::move(tc));
+                    continue;
                 default:
                     continue;
             }
@@ -558,6 +676,193 @@ namespace components::sql::transform {
         }
         result += '$';
         return result;
+    }
+
+    core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node) {
+        if (!node) {
+            return "";
+        }
+        switch (nodeTag(node)) {
+            case T_ColumnRef: {
+                auto* cr = pg_ptr_cast<ColumnRef>(node);
+                if (!cr->fields || cr->fields->lst.empty()) {
+                    return "";
+                }
+                // Use only the last field (unqualified column name)
+                return std::string(strVal(cr->fields->lst.back().data));
+            }
+            case T_A_Const: {
+                auto* ac = pg_ptr_cast<A_Const>(node);
+                switch (nodeTag(&ac->val)) {
+                    case T_Integer:
+                        return std::to_string(intVal(&ac->val));
+                    case T_Float:
+                        return std::string(strVal(&ac->val));
+                    case T_String:
+                        return "'" + std::string(strVal(&ac->val)) + "'";
+                    default:
+                        return "";
+                }
+            }
+            case T_A_Expr: {
+                auto* e = pg_ptr_cast<A_Expr>(node);
+                if (e->kind == AEXPR_OP && e->name && !e->name->lst.empty()) {
+                    std::string op = std::string(strVal(e->name->lst.front().data));
+                    auto left = deparse_check_expr(resource, e->lexpr);
+                    if (left.has_error() || left.value().empty()) {
+                        return left;
+                    }
+                    auto right = deparse_check_expr(resource, e->rexpr);
+                    if (right.has_error() || right.value().empty()) {
+                        return right;
+                    }
+                    return std::move(left.value()) + " " + op + " " + std::move(right.value());
+                }
+                if (e->kind == AEXPR_AND || e->kind == AEXPR_OR) {
+                    std::string sep = (e->kind == AEXPR_AND) ? " AND " : " OR ";
+                    auto left = deparse_check_expr(resource, e->lexpr);
+                    if (left.has_error() || left.value().empty()) {
+                        return left;
+                    }
+                    auto right = deparse_check_expr(resource, e->rexpr);
+                    if (right.has_error() || right.value().empty()) {
+                        return right;
+                    }
+                    return "(" + std::move(left.value()) + ")" + sep + "(" + std::move(right.value()) + ")";
+                }
+                return "";
+            }
+            case T_BoolExpr: {
+                auto* b = pg_ptr_cast<BoolExpr>(node);
+                if (!b->args || b->args->lst.empty()) {
+                    return "";
+                }
+                if (b->boolop == NOT_EXPR) {
+                    auto inner = deparse_check_expr(resource, pg_ptr_cast<Node>(b->args->lst.front().data));
+                    if (inner.has_error()) {
+                        return inner;
+                    }
+                    return inner.value().empty() ? "" : "NOT (" + std::move(inner.value()) + ")";
+                }
+                std::string sep = (b->boolop == AND_EXPR) ? " AND " : " OR ";
+                std::string result;
+                for (auto& cell : b->args->lst) {
+                    auto part = deparse_check_expr(resource, pg_ptr_cast<Node>(cell.data));
+                    if (part.has_error() || part.value().empty()) {
+                        return part;
+                    }
+                    // TODO?
+                    // result here is always empty?
+                    // and separator is not required?
+                    if (!result.empty()) {
+                        result += sep;
+                    }
+                    result += "(" + std::move(part.value()) + ")";
+                }
+                return result;
+            }
+            case T_NullTest: {
+                auto* nt = pg_ptr_cast<NullTest>(node);
+                auto arg = deparse_check_expr(resource, pg_ptr_cast<Node>(nt->arg));
+                if (arg.has_error() || arg.value().empty()) {
+                    return arg;
+                }
+                return std::move(arg.value()) + (nt->nulltesttype == IS_NULL ? " IS NULL" : " IS NOT NULL");
+            }
+            default:
+                return core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"CHECK constraint contains unsupported expression type " +
+                                         node_tag_to_string(nodeTag(node)) +
+                                         "; allowed: column references, constants, comparison/arithmetic operators, "
+                                         "AND/OR/NOT, IS NULL/IS NOT NULL",
+                                     resource});
+        }
+    }
+
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_table(std::pmr::memory_resource* resource,
+                                                                 const std::string& dbname,
+                                                                 const std::string& relname,
+                                                                 logical_plan::node_ptr main_node,
+                                                                 constraint_resolve_kind with_constraints) {
+        if (!main_node) {
+            return main_node;
+        }
+        // Build sequence_t([resolve_namespace?], [resolve_table?],
+        //                  [resolve_constraint?], main_node).
+        // Empty dbname/relname means the caller doesn't have a target identity
+        // (e.g. parameter-only statements, schemaless DDL) — skip the resolve
+        // node so the wrapped plan still carries useful structure.
+        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
+        if (!dbname.empty()) {
+            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{dbname}));
+        }
+        logical_plan::node_catalog_resolve_table_t* table_node_ptr = nullptr;
+        if (!relname.empty()) {
+            auto table_node = logical_plan::make_node_catalog_resolve_table(resource,
+                                                                            core::dbname_t{dbname},
+                                                                            core::relname_t{relname});
+            table_node_ptr = table_node.get();
+            seq->append_child(std::move(table_node));
+        }
+        if (with_constraints != constraint_resolve_kind::none && table_node_ptr) {
+            const auto dir = (with_constraints == constraint_resolve_kind::outgoing)
+                                 ? logical_plan::node_catalog_resolve_constraint_t::direction_t::outgoing
+                                 : logical_plan::node_catalog_resolve_constraint_t::direction_t::referencing;
+            seq->append_child(logical_plan::make_node_catalog_resolve_constraint(resource, table_node_ptr, dir));
+        }
+        seq->append_child(std::move(main_node));
+        return seq;
+    }
+
+    logical_plan::node_ptr maybe_wrap_with_catalog_resolve_namespace(std::pmr::memory_resource* resource,
+                                                                     const std::string& dbname,
+                                                                     logical_plan::node_ptr main_node) {
+        if (!main_node) {
+            return main_node;
+        }
+        if (dbname.empty()) {
+            return main_node;
+        }
+        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
+        seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{dbname}));
+        seq->append_child(std::move(main_node));
+        return seq;
+    }
+
+    logical_plan::node_ptr
+    maybe_wrap_with_catalog_resolve_tables(std::pmr::memory_resource* resource,
+                                           std::vector<std::pair<std::string, std::string>> targets,
+                                           logical_plan::node_ptr main_node) {
+        if (!main_node || targets.empty()) {
+            return main_node;
+        }
+        auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
+        // Dedupe dbname for namespace resolves; preserve table order.
+        std::vector<std::string> seen_dbs;
+        for (const auto& [db, rel] : targets) {
+            if (db.empty())
+                continue;
+            bool already = false;
+            for (const auto& s : seen_dbs) {
+                if (s == db) {
+                    already = true;
+                    break;
+                }
+            }
+            if (already)
+                continue;
+            seen_dbs.push_back(db);
+            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{db}));
+        }
+        for (auto& [db, rel] : targets) {
+            if (rel.empty())
+                continue;
+            seq->append_child(
+                logical_plan::make_node_catalog_resolve_table(resource, core::dbname_t{db}, core::relname_t{rel}));
+        }
+        seq->append_child(std::move(main_node));
+        return seq;
     }
 
 } // namespace components::sql::transform

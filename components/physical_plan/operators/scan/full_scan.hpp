@@ -1,14 +1,17 @@
 #pragma once
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_state.hpp>
-#include <expressions/compare_expression.hpp>
+#include <core/result_wrapper.hpp>
+#include <components/expressions/compare_expression.hpp>
 
 namespace components::operators {
 
-    std::unique_ptr<table::table_filter_t>
-    transform_predicate(const expressions::compare_expression_ptr& expression,
+    core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
+    transform_predicate(std::pmr::memory_resource* resource,
+                        const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
                         const logical_plan::storage_parameters* parameters);
 
@@ -16,17 +19,12 @@ namespace components::operators {
     public:
         full_scan(std::pmr::memory_resource* resource,
                   log_t log,
-                  collection_full_name_t name,
-                  const expressions::compare_expression_ptr& expression,
-                  logical_plan::limit_t limit);
-        full_scan(std::pmr::memory_resource* resource,
-                  log_t log,
-                  collection_full_name_t name,
+                  components::catalog::oid_t table_oid,
                   const expressions::compare_expression_ptr& expression,
                   logical_plan::limit_t limit,
-                  std::vector<size_t> projected_cols);
+                  std::vector<size_t> projected_cols = {});
 
-        const collection_full_name_t& collection_name() const noexcept { return name_; }
+        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const expressions::compare_expression_ptr& expression() const { return expression_; }
         const logical_plan::limit_t& limit() const { return limit_; }
 
@@ -35,7 +33,7 @@ namespace components::operators {
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
-        collection_full_name_t name_;
+        components::catalog::oid_t table_oid_;
         expressions::compare_expression_ptr expression_;
         const logical_plan::limit_t limit_;
         std::vector<size_t> projected_cols_;

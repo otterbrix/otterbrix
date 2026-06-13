@@ -21,9 +21,12 @@ namespace components::logical_plan {
     bool limit_t::is_skipping(int64_t count) const { return count < offset_; }
 
     node_limit_t::node_limit_t(std::pmr::memory_resource* resource,
-                               const collection_full_name_t& collection,
+                               core::dbname_t dbname,
+                               core::relname_t relname,
                                const limit_t& limit)
-        : node_t(resource, node_type::limit_t, collection)
+        : node_t(resource, node_type::limit_t)
+        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        , relname_(std::move(static_cast<std::string&>(relname)))
         , limit_(limit) {}
 
     const limit_t& node_limit_t::limit() const { return limit_; }
@@ -40,9 +43,23 @@ namespace components::logical_plan {
     }
 
     node_limit_ptr make_node_limit(std::pmr::memory_resource* resource,
-                                   const collection_full_name_t& collection,
+                                   core::dbname_t dbname,
+                                   core::relname_t relname,
                                    const limit_t& limit) {
-        return {new node_limit_t{resource, collection, limit}};
+        collection_full_name_t collection;
+        collection.database = static_cast<const std::string&>(dbname);
+        collection.collection = static_cast<const std::string&>(relname);
+        auto node = node_limit_ptr{new node_limit_t{resource, std::move(dbname), std::move(relname), limit}};
+        node->set_collection_full_name(std::move(collection));
+        return node;
+    }
+
+    node_limit_ptr
+    make_node_limit(std::pmr::memory_resource* resource, const collection_full_name_t& collection, const limit_t& limit) {
+        auto node = make_node_limit(
+            resource, core::dbname_t{collection.database}, core::relname_t{collection.collection}, limit);
+        node->set_collection_full_name(collection);
+        return node;
     }
 
 } // namespace components::logical_plan

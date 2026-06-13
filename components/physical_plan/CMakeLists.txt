@@ -34,11 +34,50 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_select.cpp
         operators/operator_sort.cpp
         operators/operator_join.cpp
+        operators/operator_hash_join.cpp
+        operators/operator_union.cpp
+        operators/operator_cte_scan.cpp
+        operators/operator_recursive_cte.cpp
+
+        operators/operator_check_constraint.cpp
+        operators/operator_fk_check.cpp
+        operators/operator_fk_cascade.cpp
+        operators/operator_sequence.cpp
+        operators/operator_primitive_write.cpp
+        operators/operator_primitive_delete.cpp
+        operators/operator_create_collection.cpp
+        operators/operator_create_matview.cpp
+        operators/operator_create_index_metadata.cpp
+        operators/operator_create_index_backfill.cpp
+        operators/operator_drop_index.cpp
+        operators/operator_dynamic_cascade_delete.cpp
+        operators/alter_validators.cpp
+        operators/operator_alter_column_add.cpp
+        operators/operator_alter_column_drop.cpp
+        operators/operator_alter_column_rename.cpp
+        operators/operator_checkpoint.cpp
+        operators/operator_set_timezone.cpp
+        operators/operator_vacuum.cpp
+        operators/operator_register_udf.cpp
+        operators/operator_unregister_udf.cpp
+        operators/operator_commit_transaction.cpp
+        operators/operator_abort_transaction.cpp
+        operators/operator_begin_transaction.cpp
+        operators/operator_computed_field_register.cpp
+        operators/operator_computed_field_unregister.cpp
+        operators/operator_resolve_namespace.cpp
+        operators/operator_resolve_database.cpp
+        operators/operator_resolve_table.cpp
+        operators/operator_resolve_type.cpp
+        operators/operator_resolve_function.cpp
+        operators/operator_resolve_constraint.cpp
+        operators/operator_allocate_oids.cpp
+        operators/resolved_table_metadata.cpp
 
         operators/arithmetic_eval.cpp
 )
 
-add_library(otterbrix_${PROJECT_NAME}
+add_library(otterbrix_${PROJECT_NAME} OBJECT
         ${${PROJECT_NAME}_HEADERS}
         ${${PROJECT_NAME}_SOURCES}
 )
@@ -50,6 +89,7 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
+        otterbrix::date
         otterbrix::types
         otterbrix::vector
         otterbrix::cursor
@@ -57,12 +97,15 @@ target_link_libraries(
         otterbrix::context
         otterbrix::index
         otterbrix::logical_plan
+        otterbrix::catalog
         spdlog::spdlog
         absl::flat_hash_map
         absl::node_hash_map
         absl::int128
         Boost::boost
 )
+
+target_link_libraries(otterbrix_${PROJECT_NAME} PRIVATE FastFloat::fast_float)
 
 target_include_directories(otterbrix_${PROJECT_NAME} PUBLIC
 )

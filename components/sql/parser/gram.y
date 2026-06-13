@@ -589,7 +589,7 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
  */
 %token <str>	IDENT FCONST SCONST BCONST XCONST Op
 %token <ival>	ICONST PARAM
-%token			TYPECAST DOT_DOT COLON_EQUALS
+%token			TYPECAST TYPECAST_Q DOT_DOT COLON_EQUALS
 
 /*
  * If you want to make any keyword changes, update the keyword table in
@@ -1100,6 +1100,11 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
 
 
 
+/* '::?' type-variant selection binds LOOSER than the jsonb path operators
+ * (Op), so `t -> 'a' ->> 'b' ::? type` selects the variant of the whole
+ * navigated field rather than of the last key literal. (Plain '::' stays
+ * tight — see TYPECAST below.) */
+%left		TYPECAST_Q
 %left		Op OPERATOR		/* multi-character ops and user-defined operators */
 %nonassoc	NOTNULL
 %nonassoc	ISNULL
@@ -10878,6 +10883,15 @@ CreatedbStmt:
 					CreatedbStmt *n = makeNode(resource, CreatedbStmt);
 					n->dbname = $3;
 					n->options = $5;
+					n->if_not_exists = false;
+					$$ = (Node *)n;
+				}
+			| CREATE DATABASE IF_P NOT EXISTS database_name opt_with createdb_opt_list
+				{
+					CreatedbStmt *n = makeNode(resource, CreatedbStmt);
+					n->dbname = $6;
+					n->options = $8;
+					n->if_not_exists = true;
 					$$ = (Node *)n;
 				}
 		;
@@ -13533,6 +13547,12 @@ interval_second:
 a_expr:		c_expr									{ $$ = $1; }
 			| a_expr TYPECAST Typename
 					{ $$ = makeTypeCast(resource, $1, $3, @2); }
+			| a_expr TYPECAST_Q Typename
+					{
+						TypeCast *n = (TypeCast *) makeTypeCast(resource, $1, $3, @2);
+						n->variant_select = true;
+						$$ = (Node *) n;
+					}
 			| a_expr COLLATE any_name
 				{
 					CollateClause *n = makeNode(resource, CollateClause);
@@ -13920,6 +13940,12 @@ b_expr:		c_expr
 				{ $$ = $1; }
 			| b_expr TYPECAST Typename
 				{ $$ = makeTypeCast(resource, $1, $3, @2); }
+			| b_expr TYPECAST_Q Typename
+				{
+					TypeCast *n = (TypeCast *) makeTypeCast(resource, $1, $3, @2);
+					n->variant_select = true;
+					$$ = (Node *) n;
+				}
 			| '+' b_expr					%prec UMINUS
 				{ $$ = (Node *) makeSimpleA_Expr(resource, AEXPR_OP, "+", NULL, $2, @1); }
 			| '-' b_expr					%prec UMINUS
@@ -16609,6 +16635,7 @@ makeTypeCast(std::pmr::memory_resource* resource, Node *arg, TypeName *type, int
 	n->arg = arg;
 	n->typeName = type;
 	n->location = location;
+	n->variant_select = false;
 	return (Node *) n;
 }
 

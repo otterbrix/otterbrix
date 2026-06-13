@@ -51,3 +51,37 @@
         };                                                                                                             \
     } /* NOLINT */                                                                                                     \
     static_assert(true, "End call of macro with a semicolon")
+
+#define STRONG_TYPEDEF_EXPLICIT(T, D)                                                                                  \
+    namespace core {                                                                                                   \
+        struct D : boost::totally_ordered1<D> {                                                                        \
+            typedef T base_type;                                                                                       \
+            T t;                                                                                                       \
+            explicit D(const T& t_) noexcept(std::is_nothrow_copy_constructible_v<T>)                                  \
+                : t(t_) {}                                                                                             \
+            explicit D(T&& t_) noexcept(std::is_nothrow_move_constructible_v<T>)                                       \
+                : t(std::move(t_)) {}                                                                                  \
+            D()                                                                                                        \
+            noexcept(std::is_nothrow_default_constructible_v<T>)                                                       \
+                : t() {}                                                                                               \
+            D& operator=(const T& other) noexcept(std::is_nothrow_assignable_v<T, T>) {                                \
+                t = other;                                                                                             \
+                return *this;                                                                                          \
+            }                                                                                                          \
+            explicit operator const T&() const noexcept { return t; }                                                  \
+            explicit operator T&() noexcept { return t; }                                                              \
+            bool operator==(const D& other) const { return t == other.t; }                                             \
+            bool operator<(const D& other) const { return t < other.t; }                                               \
+        };                                                                                                             \
+                                                                                                                       \
+        inline std::ostream& operator<<(std::ostream& stream, const D& value) { return stream << value.t; }            \
+                                                                                                                       \
+    } /* NOLINT */                                                                                                     \
+                                                                                                                       \
+    namespace std {                                                                                                    \
+        template<>                                                                                                     \
+        struct hash<::core::D> {                                                                                       \
+            std::size_t operator()(const ::core::D& x) const { return hash<T>{}(x.t); }                                \
+        };                                                                                                             \
+    } /* NOLINT */                                                                                                     \
+    static_assert(true, "End call of macro with a semicolon")

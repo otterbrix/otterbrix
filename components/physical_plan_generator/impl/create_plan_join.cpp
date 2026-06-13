@@ -1,9 +1,10 @@
 #include "create_plan_join.hpp"
 
-#include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator_join.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+
+#include <utility>
 
 namespace services::planner::impl {
 
@@ -16,18 +17,21 @@ namespace services::planner::impl {
         const auto* join_node = static_cast<const components::logical_plan::node_join_t*>(node.get());
         // assign left table as actor for join
         // Try left child context first, fall back to right (one side may be raw data with nullptr context)
-        auto left_name = node->children().front()->collection_full_name();
-        auto right_name = node->children().back()->collection_full_name();
-        bool known = context.has_collection(left_name) || context.has_collection(right_name);
-        auto coll_name = context.has_collection(left_name) ? left_name : right_name;
-        auto join = known ? boost::intrusive_ptr(new components::operators::operator_join_t(context.resource,
-                                                                                            context.log.clone(),
-                                                                                            join_node->type(),
-                                                                                            node->expressions()[0]))
-                          : boost::intrusive_ptr(new components::operators::operator_join_t(nullptr,
-                                                                                            log_t{},
-                                                                                            join_node->type(),
-                                                                                            node->expressions()[0]));
+        auto left_oid = node->children().front()->table_oid();
+        auto right_oid = node->children().back()->table_oid();
+        bool known = context.has_table_oid(left_oid) || context.has_table_oid(right_oid);
+        auto* resource = known ? context.resource : nullptr;
+        auto log = known ? context.log.clone() : log_t{};
+
+        const auto& expression = node->expressions()[0];
+
+        // Nested-loop join. Equi-join selection (the eq(left.key, right.key) fast
+        // path) now happens in the optimizer (rewrite_hash_joins), which emits a
+        // node_hash_join_t lowered by create_plan_hash_join; anything left as a
+        // node_join_t lands here.
+        components::operators::operator_ptr join = boost::intrusive_ptr(
+            new components::operators::operator_join_t(resource, std::move(log), join_node->type(), expression));
+
         using join_type = components::logical_plan::join_type;
         auto limit_left = components::logical_plan::limit_t::unlimit();
         auto limit_right = components::logical_plan::limit_t::unlimit();

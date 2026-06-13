@@ -39,6 +39,7 @@
 #include "substrait/plan.pb.h"
 
 #include <algorithm>
+#include <memory_resource>
 #include <unordered_map>
 
 namespace components::logical_plan::substrait_adapter {
@@ -133,7 +134,7 @@ namespace components::logical_plan::substrait_adapter {
                     return complex_logical_type::create_list(child_type, std::move(alias));
                 }
                 case substrait::Expression_Literal::kStruct: {
-                    std::vector<complex_logical_type> fields;
+                    std::pmr::vector<complex_logical_type> fields(std::pmr::get_default_resource());
                     fields.reserve(static_cast<size_t>(literal.struct_().fields_size()));
                     for (const auto& field : literal.struct_().fields()) {
                         fields.emplace_back(type_from_literal(field));
@@ -303,7 +304,7 @@ namespace components::logical_plan::substrait_adapter {
                     break;
             }
 
-            auto join_node = make_node_join(resource, {}, jt);
+            auto join_node = make_node_join(resource, core::dbname_t{}, core::relname_t{}, jt);
             join_node->append_child(left.plan);
             join_node->append_child(right.plan);
             if (join.has_expression()) {

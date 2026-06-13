@@ -21,7 +21,11 @@ addopts = [
 name = "otterbrix"
 dynamic = ["version"]
 requires-python = ">= 3.7"
-dependencies = []
+dependencies = [
+    "numpy",
+    "pandas<3",
+    "typing_extensions",
+]
 authors = [
     { name = "Otterbrix Team", email = "team@otterbrix.com" },
 ]

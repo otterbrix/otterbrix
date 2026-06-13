@@ -65,11 +65,9 @@ except ImportError:
     pass
 
 import otterbrix.typing as typing
-import otterbrix.experimental as experimental
 
 _exported_symbols.extend([
     "typing",
-    "experimental",
 ])
 
 __all__ = _exported_symbols

@@ -956,18 +956,9 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::merge_immutable_segments() {
-        struct merge_ref_t {
-            std::string key_bytes;
-            uint32_t old_log_file_id{0};
-            uint64_t old_log_offset{0};
-            int64_t row_value{0};
-            uint64_t new_log_offset{0};
-        };
-
         uint64_t frontier_segment_id = 0;
         std::vector<segment_info_t> immutable_segments;
         std::vector<disk_hash_table_t::value_ref_t> refs;
-        std::vector<merge_ref_t> merged_refs;
         uint64_t merged_segment_id = 0;
         bool built = false;
 
@@ -999,19 +990,28 @@ namespace services::index {
         merged_segment_id = allocate_next_segment_id();
         const auto merged_path = segment_file_path(path_, merged_segment_id);
         const auto temp_path = merge_temp_file_path(path_, merged_segment_id);
+        const auto meta_temp_path = std::filesystem::path(temp_path.string() + ".meta");
         remove_file(fs_, temp_path);
+        remove_file(fs_, meta_temp_path);
 
         auto merged_file = open_file(fs_,
                                      temp_path,
                                      file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                      file_lock_type::NO_LOCK);
         if (!merged_file) {
-            // -fno-exceptions build: abort instead of throw on I/O failure.
+            assert(false && "bitcask I/O failure");
+            std::abort();
+        }
+        auto meta_file = open_file(fs_,
+                                   meta_temp_path,
+                                   file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                                   file_lock_type::NO_LOCK);
+        if (!meta_file) {
             assert(false && "bitcask I/O failure");
             std::abort();
         }
 
-        merged_refs.reserve(refs.size());
+        uint64_t meta_records = 0;
         for (const auto& ref : refs) {
             row_ids_t rows(resource_);
             value_t key(resource_, nullptr);
@@ -1022,16 +1022,26 @@ namespace services::index {
             auto payload = serialize_payload(resource_, key, rows);
             const auto offset = merged_file->seek_position();
             write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
-            merged_refs.push_back(merge_ref_t{key_bytes,
-                                              ref.log_file_id,
-                                              ref.log_offset,
-                                              rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
-                                              offset + sizeof(record_header_t)});
+
+            const uint32_t key_size = static_cast<uint32_t>(key_bytes.size());
+            const int64_t row_value = rows.empty() ? -1 : static_cast<int64_t>(rows.back());
+            const uint64_t new_log_offset = offset + sizeof(record_header_t);
+            meta_file->write(&key_size, sizeof(key_size));
+            if (key_size != 0) {
+                meta_file->write(const_cast<char*>(key_bytes.data()), key_size);
+            }
+            meta_file->write(&ref.log_file_id, sizeof(ref.log_file_id));
+            meta_file->write(&ref.log_offset, sizeof(ref.log_offset));
+            meta_file->write(&row_value, sizeof(row_value));
+            meta_file->write(&new_log_offset, sizeof(new_log_offset));
+            ++meta_records;
         }
 
-        if (!merged_refs.empty()) {
+        if (meta_records != 0) {
             merged_file->sync();
+            meta_file->sync();
             merged_file.reset();
+            meta_file.reset();
             if (!move_files(fs_, temp_path, merged_path)) {
                 assert(false && "bitcask I/O failure");
                 std::abort();
@@ -1039,7 +1049,9 @@ namespace services::index {
             built = true;
         } else {
             merged_file.reset();
+            meta_file.reset();
             remove_file(fs_, temp_path);
+            remove_file(fs_, meta_temp_path);
         }
 
         std::unique_lock lock(mutex_);
@@ -1051,21 +1063,64 @@ namespace services::index {
             return;
         }
 
-        for (const auto& ref : merged_refs) {
-            auto current = hash_index_->get(ref.key_bytes, false);
+        meta_file = open_file(fs_, meta_temp_path, file_flags::READ, file_lock_type::NO_LOCK);
+        if (!meta_file) {
+            assert(false && "bitcask I/O failure");
+            std::abort();
+        }
+        uint64_t meta_offset = 0;
+        const uint64_t meta_size = meta_file->file_size();
+        while (meta_offset < meta_size) {
+            uint32_t key_size = 0;
+            if (!meta_file->read(&key_size, sizeof(key_size), meta_offset)) {
+                break;
+            }
+            meta_offset += sizeof(key_size);
+
+            std::string key_bytes;
+            key_bytes.resize(key_size);
+            if (key_size != 0 && !meta_file->read(key_bytes.data(), key_size, meta_offset)) {
+                break;
+            }
+            meta_offset += key_size;
+
+            uint32_t old_log_file_id = 0;
+            uint64_t old_log_offset = 0;
+            int64_t row_value = 0;
+            uint64_t new_log_offset = 0;
+            if (!meta_file->read(&old_log_file_id, sizeof(old_log_file_id), meta_offset)) {
+                break;
+            }
+            meta_offset += sizeof(old_log_file_id);
+            if (!meta_file->read(&old_log_offset, sizeof(old_log_offset), meta_offset)) {
+                break;
+            }
+            meta_offset += sizeof(old_log_offset);
+            if (!meta_file->read(&row_value, sizeof(row_value), meta_offset)) {
+                break;
+            }
+            meta_offset += sizeof(row_value);
+            if (!meta_file->read(&new_log_offset, sizeof(new_log_offset), meta_offset)) {
+                break;
+            }
+            meta_offset += sizeof(new_log_offset);
+
+            auto current = hash_index_->get(key_bytes, false);
             if (!current.has_value()) {
                 continue;
             }
-            if (current->log_file_id != ref.old_log_file_id ||
-                current->log_offset  != ref.old_log_offset) {
+            if (current->log_file_id != old_log_file_id ||
+                current->log_offset  != old_log_offset) {
                 continue;
             }
-            erase_all_refs_for_key(ref.key_bytes);
-            hash_index_->put(ref.key_bytes,
-                             ref.row_value,
+            erase_all_refs_for_key(key_bytes);
+            hash_index_->put(key_bytes,
+                             row_value,
                              static_cast<uint32_t>(merged_segment_id),
-                             ref.new_log_offset);
+                             new_log_offset);
         }
+        meta_file.reset();
+        remove_file(fs_, meta_temp_path);
         hash_index_->sync();
         for (const auto& segment : immutable_segments) {
             remove_file(fs_, segment.path);

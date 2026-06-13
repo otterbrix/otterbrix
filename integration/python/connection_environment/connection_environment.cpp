@@ -85,8 +85,6 @@ namespace otterbrix {
             return components::cursor::make_cursor(space->dispatcher()->resource(), result.error());
         }
         auto plan = std::move(result).value();
-        // Keep the main-query root for the post-execute catalog scan below;
-        // the plan itself is consumed by execute_plan.
         auto root = plan.sub_queries.back();
         auto cursor = space->dispatcher()->execute_plan(session, std::move(plan));
 

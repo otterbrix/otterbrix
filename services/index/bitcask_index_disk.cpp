@@ -1023,15 +1023,17 @@ namespace services::index {
             const auto offset = merged_file->seek_position();
             write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
 
-            const uint32_t key_size = static_cast<uint32_t>(key_bytes.size());
-            const int64_t row_value = rows.empty() ? -1 : static_cast<int64_t>(rows.back());
-            const uint64_t new_log_offset = offset + sizeof(record_header_t);
+            uint32_t key_size = static_cast<uint32_t>(key_bytes.size());
+            int64_t row_value = rows.empty() ? -1 : static_cast<int64_t>(rows.back());
+            uint32_t old_log_file_id = ref.log_file_id;
+            uint64_t old_log_offset = ref.log_offset;
+            uint64_t new_log_offset = offset + sizeof(record_header_t);
             meta_file->write(&key_size, sizeof(key_size));
             if (key_size != 0) {
                 meta_file->write(const_cast<char*>(key_bytes.data()), key_size);
             }
-            meta_file->write(&ref.log_file_id, sizeof(ref.log_file_id));
-            meta_file->write(&ref.log_offset, sizeof(ref.log_offset));
+            meta_file->write(&old_log_file_id, sizeof(old_log_file_id));
+            meta_file->write(&old_log_offset, sizeof(old_log_offset));
             meta_file->write(&row_value, sizeof(row_value));
             meta_file->write(&new_log_offset, sizeof(new_log_offset));
             ++meta_records;

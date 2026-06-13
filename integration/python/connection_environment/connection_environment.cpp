@@ -66,8 +66,9 @@ namespace otterbrix {
         if (result.has_error()) {
             throw std::runtime_error(result.error().what.c_str());
         }
-        auto view = std::move(result.value());
-        return RelationFactory::CreateFromSelect(std::move(view.node));
+        auto plan = std::move(result).value();
+        auto root = plan.sub_queries.back();
+        return RelationFactory::CreateFromSelect(std::move(root));
     }
 
     Result ConnectionEnvironment::ExecuteInternal(const string& query) {

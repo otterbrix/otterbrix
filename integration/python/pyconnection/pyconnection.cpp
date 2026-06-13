@@ -1,10 +1,21 @@
 #include "pyconnection.hpp"
+#include <memory>
+#include <connection_environment/connection_environment.hpp>
 #include <connection_environment/relation/relation_factory.hpp>
 #include <otterbrix_wrapper/pyresult.hpp>
 #include <otterbrix_wrapper/pyrelation.hpp>
 #include <core/string_util/string_util.hpp>
 #include <scan/python_replacement_scan.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/logical_plan/execution_plan.hpp>
+#include <components/planner/optimizer.hpp>
+#include <components/sql/parser/parser.h>
+#include <components/sql/transformer/transformer.hpp>
+#include <components/sql/transformer/utils.hpp>
+#include <string>
+#include <vector>
+
+using namespace components;
 
 namespace otterbrix {
     // DefaultConnectionHolder
@@ -17,7 +28,7 @@ namespace otterbrix {
 
             auto default_path = std::filesystem::absolute(ConnectionEnvironment::DEFAULT_FOLDER);
             auto space = ConnectionEnvironment::MakeSpace(default_path);
-            connection = make_shared<PyConnection>(space);
+            connection = std::make_shared<PyConnection>(space);
         }
         return connection;
     }
@@ -26,16 +37,16 @@ namespace otterbrix {
         std::lock_guard<std::mutex> guard(l);
         connection = conn;
     }
-    
+
     // Cursors
     Cursors::Cursors() = default;
     Cursors::~Cursors() = default;
-    
+
     void Cursors::AddCursor(pycursor_ptr conn) {
         std::lock_guard<std::mutex> l(lock);
 
         // Clean up previously created cursors
-        vector<weak_ptr<PyConnection>> compacted_cursors;
+        std::vector<std::weak_ptr<PyConnection>> compacted_cursors;
         bool needs_compaction = false;
         for (auto &cur_p : cursors) {
             auto cur = cur_p.lock();
@@ -51,7 +62,7 @@ namespace otterbrix {
 
         cursors.push_back(conn);
     }
-    
+
     void Cursors::ClearCursors() {
         std::lock_guard<std::mutex> l(lock);
 
@@ -81,15 +92,23 @@ namespace otterbrix {
         return default_connection.Set(std::move(conn));
     }
 
-    PyConnection::PyConnection(const boost::intrusive_ptr<otterbrix_t>& space) 
-        : ConnectionEnvironment(space) {}
+    PyConnection::PyConnection(const boost::intrusive_ptr<otterbrix_t>& space)
+        : ExpressionFactory(space)
+        , RelationFactory(space)
+        , space(space) {
+        auto session = otterbrix::session_id_t();
+        space->dispatcher()->execute_sql(session, "CREATE DATABASE tmp;");
+    }
 
     PyConnection::PyConnection(const PyConnection& other)
-        : ConnectionEnvironment(other), std::enable_shared_from_this<PyConnection>(other) {}
+        : ExpressionFactory(other)
+        , RelationFactory(other)
+        , std::enable_shared_from_this<PyConnection>(other)
+        , space(other.space) {}
 
     pyconnection_ptr PyConnection::Connect(const py::object &database_p, bool /*read_only*/,
             const py::dict & /*config_options*/) {
-        string db_str;
+        std::string db_str;
         if (py::isinstance<py::str>(database_p)) {
             db_str = py::str(database_p);
         } else {
@@ -105,12 +124,12 @@ namespace otterbrix {
             con = default_connection.Get();
         } else {
             auto space = ConnectionEnvironment::MakeSpace(path);
-            con = make_shared<PyConnection>(space);
-            
+            con = std::make_shared<PyConnection>(space);
+
         }
-        
+
         return con;
-    }  
+    }
 
     PyConnection::~PyConnection() {
         py::gil_scoped_release gil;
@@ -119,6 +138,72 @@ namespace otterbrix {
     void PyConnection::Cleanup() {
         default_connection.Set(nullptr);
         ConnectionEnvironment::Cleanup();
+    }
+
+    // --- Execution surface (formerly ConnectionEnvironment) ---------------------
+
+    void PyConnection::SetNullConnection() {
+        space = nullptr;
+        ExpressionFactory::SetNullSpace();
+    }
+
+    void PyConnection::CreateDatabase(const std::string& name) {
+        auto session = session_id_t();
+        space->dispatcher()->execute_sql(session, "CREATE DATABASE " + name + ";");
+    }
+
+    built_relation_t PyConnection::RelationFromQuery(const std::string& query) {
+        using namespace components::sql::transform;
+        std::pmr::monotonic_buffer_resource parser_arena(space->dispatcher()->resource());
+        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+        sql::transform::transformer transformer(space->dispatcher()->resource());
+        auto result = transformer.transform(sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
+
+        if (result.has_error()) {
+            throw std::runtime_error(result.error().what.c_str());
+        }
+        auto plan = std::move(result).value();
+        auto root = plan.sub_queries.back();
+        return RelationFactory::CreateFromSelect(std::move(root));
+    }
+
+    Result PyConnection::ExecuteInternal(const std::string& query) {
+        using namespace components::sql::transform;
+
+        auto session = session_id_t();
+        std::pmr::monotonic_buffer_resource parser_arena(space->dispatcher()->resource());
+        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
+
+        sql::transform::transformer transformer(space->dispatcher()->resource());
+        auto result = transformer.transform(sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
+
+        if (result.has_error()) {
+            return components::cursor::make_cursor(space->dispatcher()->resource(), result.error());
+        }
+        auto plan = std::move(result).value();
+        auto cursor = space->dispatcher()->execute_plan(session, std::move(plan));
+
+        return cursor;
+    }
+
+    Result PyConnection::Execute(const components::logical_plan::node_ptr& node_in, bool optimize) {
+        auto session = session_id_t();
+        auto node = node_in;
+        if (optimize) {
+            node = components::planner::optimize(node->resource(), node, nullptr);
+        }
+        return space->dispatcher()->execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{
+                node->resource(), node, ExpressionFactory::GetParams()});
+    }
+
+    cursor::cursor_t_ptr PyConnection::QueryRelation(const components::logical_plan::node_ptr &rel) {
+        auto session = otterbrix::session_id_t();
+        return space->dispatcher()->execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{
+                space->dispatcher()->resource(), rel, ExpressionFactory::GetParams()});
     }
 
     py::list PyConnection::ListTables() {
@@ -193,22 +278,6 @@ namespace otterbrix {
         }
     }
 
-    pyconnection_ptr PyConnection::Begin() {
-        return shared_from_this();
-    }
-
-    pyconnection_ptr PyConnection::Commit() {
-        return shared_from_this();
-    }
-
-    pyconnection_ptr PyConnection::Rollback() {
-        return shared_from_this();
-    }
-
-    pyconnection_ptr PyConnection::Checkpoint() {
-        return shared_from_this();
-    }
-
     void PyConnection::Close() {
         assert(py::gil_check());
         py::gil_scoped_release release;
@@ -217,43 +286,43 @@ namespace otterbrix {
     }
 
     pycursor_ptr PyConnection::Cursor() {
-        pycursor_ptr res = make_shared<PyConnection>(*this);
+        pycursor_ptr res = std::make_shared<PyConnection>(*this);
         cursors.AddCursor(res);
         return res;
     }
 
-    pycursor_ptr PyConnection::Execute(const py::object& query, py::object /*params*/) {
+    pycursor_ptr PyConnection::Execute(const py::object& query) {
         py::gil_scoped_acquire gil;
         if (py::isinstance<py::str>(query)) {
-            ExecuteInternal(string(py::str(query)));
+            ExecuteInternal(std::string(py::str(query)));
         }
         return shared_from_this();
 
     }
 
-    unique_ptr<PyRelation> PyConnection::RunQuery(const py::object& query, string alias, py::object /*params*/) {
+    std::unique_ptr<PyRelation> PyConnection::RunQuery(const py::object& query, std::string alias) {
         if (alias.empty()) {
             alias = "unnamed_relation";
         }
-        return make_unique<PyRelation>(static_cast<ConnectionEnvironment*>(this), RelationFromQuery(string(py::str(query))));
+        return std::make_unique<PyRelation>(this, RelationFromQuery(std::string(py::str(query))));
 
     }
 
 
-    unique_ptr<PyRelation> PyConnection::FromDF(const py::object& value) {
-        string name = "df_no_idea";
+    std::unique_ptr<PyRelation> PyConnection::FromDF(const py::object& value) {
+        std::string name = "df_no_idea";
         auto tableref = Scan::ReplacementObject(value, name);
 
-        return make_unique<PyRelation>(static_cast<ConnectionEnvironment*>(this),
+        return std::make_unique<PyRelation>(this,
             RelationFactory::CreateDFRelation(std::move(tableref)));
     }
 
-    unique_ptr<PyRelation> PyConnection::FromObject(const py::object& value) {
-        string name = "object_no_idea";
+    std::unique_ptr<PyRelation> PyConnection::FromObject(const py::object& value) {
+        std::string name = "object_no_idea";
         auto tableref = Scan::TryReplacementObject(value, name);
         assert(tableref);
 
-        return make_unique<PyRelation>(static_cast<ConnectionEnvironment*>(this),
+        return std::make_unique<PyRelation>(this,
             RelationFactory::CreateDFRelation(std::move(tableref)));
     }
 

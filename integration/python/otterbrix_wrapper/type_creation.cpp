@@ -1,27 +1,29 @@
 #include <iostream>
+#include <memory>
 #include "type_creation.hpp"
+#include <string>
+#include <unordered_map>
 
-#include <core/types/unordered_map.hpp>
 
 using namespace components::types;
 namespace otterbrix {
     namespace TypeCreation {
 
 
-        shared_ptr<OtterBrixPyType> MapType(const shared_ptr<OtterBrixPyType> &key_type,
-                const shared_ptr<OtterBrixPyType> &value_type) {
+        std::shared_ptr<OtterBrixPyType> MapType(const std::shared_ptr<OtterBrixPyType> &key_type,
+                const std::shared_ptr<OtterBrixPyType> &value_type) {
         	auto map_type = complex_logical_type::create_map(key_type->Type(), value_type->Type());
-        	return make_shared_ptr<OtterBrixPyType>(map_type);
+        	return std::make_shared<OtterBrixPyType>(map_type);
         }
 
-        shared_ptr<OtterBrixPyType> ListType(const shared_ptr<OtterBrixPyType> &type) {
+        std::shared_ptr<OtterBrixPyType> ListType(const std::shared_ptr<OtterBrixPyType> &type) {
         	auto array_type = complex_logical_type::create_list(type->Type());
-        	return make_shared_ptr<OtterBrixPyType>(array_type);
+        	return std::make_shared<OtterBrixPyType>(array_type);
         }
 
-        shared_ptr<OtterBrixPyType> ArrayType(const shared_ptr<OtterBrixPyType> &type, idx_t size) {
+        std::shared_ptr<OtterBrixPyType> ArrayType(const std::shared_ptr<OtterBrixPyType> &type, idx_t size) {
         	auto array_type = complex_logical_type::create_array(type->Type(), size);
-        	return make_shared_ptr<OtterBrixPyType>(array_type);
+        	return std::make_shared<OtterBrixPyType>(array_type);
         }
 
         static core::result_wrapper_t<std::pmr::vector<complex_logical_type>>
@@ -31,14 +33,14 @@ namespace otterbrix {
         		const py::list &fields = container;
         		idx_t i = 1;
         		for (auto &item : fields) {
-        			shared_ptr<OtterBrixPyType> pytype;
-        			if (!py::try_cast<shared_ptr<OtterBrixPyType>>(item, pytype)) {
-        				string actual_type = py::str(item.get_type());
+        			std::shared_ptr<OtterBrixPyType> pytype;
+        			if (!py::try_cast<std::shared_ptr<OtterBrixPyType>>(item, pytype)) {
+        				std::string actual_type = py::str(item.get_type());
         				return core::error_t(core::error_code_t::invalid_parameter,
         				                     std::pmr::string("object has to be a list of OtterBrixPyType's, not " + actual_type, resource));
         			}
         			types.push_back(pytype->Type());
-                    types.back().set_alias("v" + to_string(i++));
+                    types.back().set_alias("v" + std::to_string(i++));
         		}
         		return types;
         	} else if (py::isinstance<py::dict>(container)) {
@@ -46,10 +48,10 @@ namespace otterbrix {
         		for (auto &item : fields) {
         			auto &name_p = item.first;
         			auto &type_p = item.second;
-        			string name = py::str(name_p);
-        			shared_ptr<OtterBrixPyType> pytype;
-        			if (!py::try_cast<shared_ptr<OtterBrixPyType>>(type_p, pytype)) {
-        				string actual_type = py::str(type_p.get_type());
+        			std::string name = py::str(name_p);
+        			std::shared_ptr<OtterBrixPyType> pytype;
+        			if (!py::try_cast<std::shared_ptr<OtterBrixPyType>>(type_p, pytype)) {
+        				std::string actual_type = py::str(type_p.get_type());
         				return core::error_t(core::error_code_t::invalid_parameter,
         				                     std::pmr::string("object has to be a list of OtterBrixPyType's, not " + actual_type, resource));
         			}
@@ -58,13 +60,13 @@ namespace otterbrix {
         		}
         		return types;
         	} else {
-        		string actual_type = py::str(container.get_type());
+        		std::string actual_type = py::str(container.get_type());
         		return core::error_t(core::error_code_t::invalid_parameter,
         		                     std::pmr::string("Can not construct a child list from object of type " + actual_type + ", only dict/list is supported", resource));
         	}
         }
 
-        shared_ptr<OtterBrixPyType> StructType(const py::object &fields) {
+        std::shared_ptr<OtterBrixPyType> StructType(const py::object &fields) {
         	auto* resource = std::pmr::get_default_resource();
         	auto types = GetChildList(fields, resource);
         	if (types.has_error()) {
@@ -74,44 +76,44 @@ namespace otterbrix {
         		throw std::runtime_error("Can not create an empty struct type!");
         	}
         	auto struct_type = complex_logical_type::create_struct("struct", std::move(types.value()));
-        	return make_shared_ptr<OtterBrixPyType>(struct_type);
+        	return std::make_shared<OtterBrixPyType>(struct_type);
         }
 
-        shared_ptr<OtterBrixPyType> UnionType(const py::object & /*members*/) {
+        std::shared_ptr<OtterBrixPyType> UnionType(const py::object & /*members*/) {
         	/*auto types = GetChildList(members);
 
         	if (types.empty()) {
         		throw std::runtime_error("Can not create an empty union type!");
         	}
         	auto union_type = complex_logical_type::create_union(std::move(types));
-        	return make_shared_ptr<OtterBrixPyType>(union_type);*/
+        	return std::make_shared<OtterBrixPyType>(union_type);*/
         	throw std::runtime_error("union_type creation method is not implemented yet");
         }
 
-        shared_ptr<OtterBrixPyType> EnumType(const string & /*name*/, const shared_ptr<OtterBrixPyType> & /*type*/,
+        std::shared_ptr<OtterBrixPyType> EnumType(const std::string & /*name*/, const std::shared_ptr<OtterBrixPyType> & /*type*/,
                 const py::list & /*values_p*/) {
         	throw std::runtime_error("enum_type creation method is not implemented yet");
         }
 
-        shared_ptr<OtterBrixPyType> DecimalType(int width, int scale) {
+        std::shared_ptr<OtterBrixPyType> DecimalType(int width, int scale) {
         	auto decimal_type = complex_logical_type::create_decimal(static_cast<uint8_t>(width),
         	                                                         static_cast<uint8_t>(scale));
-        	return make_shared_ptr<OtterBrixPyType>(decimal_type);
+        	return std::make_shared<OtterBrixPyType>(decimal_type);
         }
 
-        shared_ptr<OtterBrixPyType> StringType(const string & /*collation*/) {
+        std::shared_ptr<OtterBrixPyType> StringType(const std::string & /*collation*/) {
         	complex_logical_type type(logical_type::STRING_LITERAL);
         	/*if (collation.empty()) {
         		type = LogicalType::VARCHAR;
         	} else {
         		type = LogicalType::VARCHAR_COLLATION(collation);
         	}*/
-        	return make_shared_ptr<OtterBrixPyType>(type);
+        	return std::make_shared<OtterBrixPyType>(type);
         }
 
-        core::result_wrapper_t<logical_type> StringToLogicalType(const string &type_str,
+        core::result_wrapper_t<logical_type> StringToLogicalType(const std::string &type_str,
                                                                  std::pmr::memory_resource *resource) {
-            static const unordered_map<string, logical_type> fromStrToType = {
+            static const std::unordered_map<std::string, logical_type> fromStrToType = {
                 {"NULL", logical_type::NA},
                 {"VARCHAR", logical_type::STRING_LITERAL},
                 {"BIT", logical_type::BIT},
@@ -143,12 +145,12 @@ namespace otterbrix {
                                  std::pmr::string("Has no function to transform str " + type_str + " to OtterBrix type", resource));
         }
 
-        shared_ptr<OtterBrixPyType> Type(const string &type_str) {
+        std::shared_ptr<OtterBrixPyType> Type(const std::string &type_str) {
             auto ltype = StringToLogicalType(type_str, std::pmr::get_default_resource());
             if (ltype.has_error()) {
                 throw std::runtime_error(ltype.error().what.c_str());
             }
-            return make_shared<OtterBrixPyType>(ltype.value());
+            return std::make_shared<OtterBrixPyType>(ltype.value());
         }
 
         void Initialize(py::module_ m) {

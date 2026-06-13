@@ -9,9 +9,6 @@
 
 #include <core/result_wrapper.hpp>
 #include <core/typedefs.hpp>
-#include <core/types/memory.hpp>
-#include <core/types/vector.hpp>
-#include <core/types/string.hpp>
 
 #include <memory_resource>
 
@@ -19,6 +16,8 @@
 #include <chrono>
 #include <memory_resource>
 #include <utility>
+#include <string>
+#include <vector>
 
 /* Backport for Python < 3.10 */
 #if PY_VERSION_HEX < 0x030a00a1
@@ -49,8 +48,8 @@ namespace otterbrix {
 		}
 
 	public:
-		string ToString() const {
-			return string(py::str(dict));
+		std::string ToString() const {
+			return std::string(py::str(dict));
 		}
 
 	private:
@@ -71,7 +70,7 @@ namespace otterbrix {
 			static components::types::logical_value_t Operation(
 					std::pmr::memory_resource* r,
 					bool signed_value, 
-					vector<uint8_t> &digits, 
+					std::vector<uint8_t> &digits, 
 					uint8_t width, uint8_t scale) {
 				T value = 0;
 				for (auto it = digits.begin(); it != digits.end(); it++) {
@@ -105,7 +104,7 @@ namespace otterbrix {
 			static components::types::logical_value_t Operation(
 					std::pmr::memory_resource* r,
 					bool signed_value, 
-					vector<uint8_t> &digits, 
+					std::vector<uint8_t> &digits, 
 					uint8_t width, uint8_t scale) {
 				T value = 0;
 				for (auto &digit : digits) {
@@ -132,7 +131,7 @@ namespace otterbrix {
 
 	public:
 		PyDecimal(py::handle &obj);
-		vector<uint8_t> digits;
+		std::vector<uint8_t> digits;
 		bool signed_value = false;
 
 		PyDecimalExponentType exponent_type;

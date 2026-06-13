@@ -5,13 +5,14 @@
 #include <native/python_conversion.hpp>
 #include <variant>
 #include <pybind11/embed.h>
+#include <string>
 using namespace otterbrix;
 
 TEST_CASE("HELLO") {
     components::types::logical_value_t logical_value;
     {
         py::scoped_interpreter guard{}; 
-        string db_name = "test_db";
+        std::string db_name = "test_db";
         py::str db_str = db_name;
         py::dict config_dict;
 

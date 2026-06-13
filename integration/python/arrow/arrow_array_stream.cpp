@@ -1,4 +1,5 @@
 #include "arrow_array_stream.hpp"
+#include <memory>
 
 #include <connection_environment/connection_environment.hpp>
 
@@ -61,7 +62,7 @@ namespace otterbrix {
         return arrow_scanner(arrow_obj_handle);
     }
 
-    unique_ptr<arrow_array_schema_wrapper_t> PythonTableArrowArrayStreamFactory::Produce(uintptr_t factory_ptr) {
+    std::unique_ptr<arrow_array_schema_wrapper_t> PythonTableArrowArrayStreamFactory::Produce(uintptr_t factory_ptr) {
         py::gil_scoped_acquire acquire;
         auto factory =
             static_cast<PythonTableArrowArrayStreamFactory*>(reinterpret_cast<void*>(factory_ptr)); // NOLINT
@@ -77,7 +78,7 @@ namespace otterbrix {
             if (!stream->release) {
                 throw std::runtime_error("ArrowArrayStream was released by another thread/library");
             }
-            auto res = make_unique<arrow_array_schema_wrapper_t>();
+            auto res = std::make_unique<arrow_array_schema_wrapper_t>();
             res->arrow_array_stream = *stream;
             stream->release = nullptr;
             return res;
@@ -89,7 +90,7 @@ namespace otterbrix {
             if (!stream->release) {
                 throw std::runtime_error("ArrowArrayStream was released by another thread/library");
             }
-            auto res = make_unique<arrow_array_schema_wrapper_t>();
+            auto res = std::make_unique<arrow_array_schema_wrapper_t>();
             res->arrow_array_stream = *stream;
             stream->release = nullptr;
             return res;
@@ -127,7 +128,7 @@ namespace otterbrix {
         }
 
         auto record_batches = scanner.attr("to_reader")();
-        auto res = make_unique<arrow_array_schema_wrapper_t>();
+        auto res = std::make_unique<arrow_array_schema_wrapper_t>();
         auto export_to_c = record_batches.attr("_export_to_c");
         export_to_c(reinterpret_cast<uint64_t>(&res->arrow_array_stream));
         return res;

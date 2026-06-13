@@ -8,6 +8,7 @@
 #include <util/util.hpp>
 
 #include <stdexcept>
+#include <string>
 
 using namespace components;
 using namespace components::expressions;
@@ -34,7 +35,7 @@ namespace otterbrix {
             make_aggregate_expression(resource, "count", expressions::key_t(resource, "count"))));
     }
 
-    Expression ExpressionFactory::SortExpression(const string& arg) {
+    Expression ExpressionFactory::SortExpression(const std::string& arg) {
         auto* resource = space->dispatcher()->resource();
         return Expression(boost::static_pointer_cast<expressions::expression_i>(
             make_sort_expression(expressions::key_t(resource, arg), sort_order::asc)));
@@ -65,7 +66,7 @@ namespace otterbrix {
             "Invalid argument for sort expression. OtterBrix doesn't support this type of expression");
     }
 
-    core::result_wrapper_t<Expression> ExpressionFactory::AggregationUnaryExpression(const string& function_name,
+    core::result_wrapper_t<Expression> ExpressionFactory::AggregationUnaryExpression(const std::string& function_name,
         const Expression& expr) {
         auto* resource = space->dispatcher()->resource();
         if (!expr.is_key()) {
@@ -73,9 +74,9 @@ namespace otterbrix {
                 resource,
                 "Current configuration support only column names as argument of aggregation function");
         }
-        string sub_name = expr.key().as_string();
+        std::string sub_name = expr.key().as_string();
 
-        string agg_str = function_name + "(" + sub_name + ")";
+        std::string agg_str = function_name + "(" + sub_name + ")";
         auto aggregation_expression =
             expressions::make_aggregate_expression(resource, function_name, expressions::key_t(resource, agg_str));
 
@@ -153,7 +154,7 @@ namespace otterbrix {
             "Incorrect arguments for the compare expression. OtteBrix doesn't implement 'not field' comp_op 'expr'");
     }
 
-    core::result_wrapper_t<Expression> ExpressionFactory::ExpressionWithAlias(const Expression& expr, const string& alias) {
+    core::result_wrapper_t<Expression> ExpressionFactory::ExpressionWithAlias(const Expression& expr, const std::string& alias) {
         auto* resource = space->dispatcher()->resource();
         if (expr.is_key()) {
             expressions::scalar_expression_ptr scalar_expr =
@@ -223,7 +224,7 @@ namespace otterbrix {
 
 
 
-    core::result_wrapper_t<string> ExpressionFactory::ConvertToString(const Expression& expr) {
+    core::result_wrapper_t<std::string> ExpressionFactory::ConvertToString(const Expression& expr) {
         if (expr.is_key()) {
             return expr.key().as_string();
         }
@@ -283,7 +284,7 @@ namespace otterbrix {
                     params->add_parameter(param.first, param.second.value<double>());
                     break;
                 case components::types::physical_type::STRING:
-                    params->add_parameter(param.first, string(param.second.value<std::string_view>()));
+                    params->add_parameter(param.first, std::string(param.second.value<std::string_view>()));
                     break;
                 default:
                     throw std::runtime_error("Couldn\'t convert logical value to document value");

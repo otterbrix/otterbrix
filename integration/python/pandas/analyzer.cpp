@@ -6,11 +6,11 @@
 
 #include <components/types/types.hpp>
 #include <core/typedefs.hpp>
-#include <core/types/vector.hpp>
 #include <core/string_util/case_insensitive.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <memory_resource>
+#include <string>
 
 namespace otterbrix {
     using components::types::logical_type;
@@ -434,7 +434,7 @@ core::result_wrapper_t<complex_logical_type> PandasAnalyzer::DictToStruct(const 
 		auto dict_key = dict.keys.attr("__getitem__")(i);
 
 		//! Have to already transform here because the child_list needs a string as key
-		auto key = string(py::str(dict_key));
+		auto key = std::string(py::str(dict_key));
 
 		auto dict_val = dict.values.attr("__getitem__")(i);
 		auto val = GetItemType(dict_val, can_convert);

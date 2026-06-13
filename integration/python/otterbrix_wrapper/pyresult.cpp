@@ -1,12 +1,13 @@
 #include "pyresult.hpp"
 
 #include <util/convert_value.hpp>
+#include <vector>
 
 using namespace components;
 
 namespace otterbrix {
-    PyResult::PyResult(ConnectionEnvironment* env, components::cursor::cursor_t_ptr result_p,
-            const vector<components::table::column_definition_t>& defs)
+    PyResult::PyResult(PyConnection* env, components::cursor::cursor_t_ptr result_p,
+            const std::vector<components::table::column_definition_t>& defs)
         : env(env), result(std::move(result_p)) {
         if (!result) {
             throw std::runtime_error("PyResult created without a result object");

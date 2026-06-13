@@ -1,10 +1,11 @@
 #include "framework_object_detection.hpp"
 #include "python_abstract.hpp"
 #include "connection_environment.hpp"
+#include "module_cheker.hpp"
 
-#include <core/types/string.hpp>
 
 #include <cassert>
+#include <string>
 
 namespace otterbrix {
 

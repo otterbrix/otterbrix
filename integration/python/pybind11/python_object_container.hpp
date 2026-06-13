@@ -3,9 +3,9 @@
 #include "pybind_wrapper.hpp"
 #include "gil_wrapper.hpp"
 
-#include <core/types/vector.hpp>
 
 #include <cassert>
+#include <vector>
 
 namespace otterbrix {
 
@@ -36,6 +36,6 @@ private:
 		py_obj.emplace_back(obj);
 	}
 
-	vector<py::object> py_obj;
+	std::vector<py::object> py_obj;
 };
 } // namespace otterbrix

@@ -1,9 +1,9 @@
 #include "raw_array_wrapper.hpp"
 
-#include <core/types/vector.hpp>
-#include <core/types/string.hpp>
 
 #include <memory_resource>
+#include <string>
+#include <vector>
 
 namespace otterbrix {
 
@@ -87,13 +87,13 @@ RawArrayWrapper::RawArrayWrapper(const complex_logical_type &type) : data(nullpt
 	type_width = GetNumpyTypeInfo(type, info) ? info.width : 0;
 }
 
-core::result_wrapper_t<string> RawArrayWrapper::OtterBrixToNumpyDtype(std::pmr::memory_resource *resource, const complex_logical_type &type) {
+core::result_wrapper_t<std::string> RawArrayWrapper::OtterBrixToNumpyDtype(std::pmr::memory_resource *resource, const complex_logical_type &type) {
 	numpy_type_info info{};
 	if (!GetNumpyTypeInfo(type, info)) {
 		return core::error_t{core::error_code_t::other_error,
-		                     std::pmr::string{"Unsupported type "+to_string(int(type.type()))+" for OtterBrix -> NumPy conversion", resource}};
+		                     std::pmr::string{"Unsupported type "+std::to_string(int(type.type()))+" for OtterBrix -> NumPy conversion", resource}};
 	}
-	return string(info.dtype);
+	return std::string(info.dtype);
 }
 
 core::error_t RawArrayWrapper::Initialize(std::pmr::memory_resource *resource, idx_t capacity) {
@@ -108,7 +108,7 @@ core::error_t RawArrayWrapper::Initialize(std::pmr::memory_resource *resource, i
 }
 
 void RawArrayWrapper::Resize(idx_t new_capacity) {
-	vector<py::ssize_t> new_shape {py::ssize_t(new_capacity)};
+	std::vector<py::ssize_t> new_shape {py::ssize_t(new_capacity)};
 	array.resize(new_shape, false);
 	data = data_ptr_cast(array.mutable_data());
 }

@@ -1,4 +1,5 @@
 #include "pytype.hpp"
+#include <memory>
 #include "type_creation.hpp"
 
 #include <components/types/types.hpp>
@@ -6,7 +7,7 @@
 #include <core/string_util/string_util.hpp>
 #include <core/typedefs.hpp>
 #include <connection_environment/connection_environment.hpp>
-#include <core/types/vector.hpp>
+#include <string>
 
 using namespace components::types;
 
@@ -135,34 +136,34 @@ namespace otterbrix {
     OtterBrixPyType::OtterBrixPyType(complex_logical_type type) : type(std::move(type)) {
     }
     
-    bool OtterBrixPyType::Equals(const shared_ptr<OtterBrixPyType> &other) const {
+    bool OtterBrixPyType::Equals(const std::shared_ptr<OtterBrixPyType> &other) const {
     	if (!other) {
     		return false;
     	}
     	return type == other->type;
     }
     
-    shared_ptr<OtterBrixPyType> OtterBrixPyType::GetAttribute(const string &name) const {
+    std::shared_ptr<OtterBrixPyType> OtterBrixPyType::GetAttribute(const std::string &name) const {
     	if (type.type() == logical_type::STRUCT || type.type() == logical_type::UNION) {
             const auto& children = type.child_types();
     		for (idx_t i = 0; i < children.size(); i++) {
     			const auto &child = children[i];
     			if (string_utils::CIEquals(child.alias(), name)) {
-    				return make_shared_ptr<OtterBrixPyType>(child);
+    				return std::make_shared<OtterBrixPyType>(child);
     			}
     		}
     	}
     	if (type.type() == logical_type::LIST && string_utils::CIEquals(name, "child")) {
-    		return make_shared_ptr<OtterBrixPyType>(type.child_type());
+    		return std::make_shared<OtterBrixPyType>(type.child_type());
     	}
     	if (type.type() == logical_type::MAP) {
             auto* extension = static_cast<map_logical_type_extension*>(type.extension());
     		auto is_key = string_utils::CIEquals(name, "key");
     		auto is_value = string_utils::CIEquals(name, "value");
     		if (is_key) {
-    			return make_shared_ptr<OtterBrixPyType>(extension->key());
+    			return std::make_shared<OtterBrixPyType>(extension->key());
     		} else if (is_value) {
-    			return make_shared_ptr<OtterBrixPyType>(extension->value());
+    			return std::make_shared<OtterBrixPyType>(extension->value());
     		} else {
     			throw py::attribute_error("Tried to get a child from a map by the name of " + name + 
                     ", but this type only has 'key' and 'value' children");
@@ -205,7 +206,7 @@ namespace otterbrix {
     	return PythonTypeObject::INVALID;
     }
     
-    static core::result_wrapper_t<complex_logical_type> FromString(const string &type_str,
+    static core::result_wrapper_t<complex_logical_type> FromString(const std::string &type_str,
                                                                    std::pmr::memory_resource *resource) {
         auto ltype = TypeCreation::StringToLogicalType(type_str, resource);
         if (ltype.has_error()) {
@@ -222,7 +223,7 @@ namespace otterbrix {
     	if (!py::hasattr(obj, "dtype")) {
     		return false;
     	}
-    	string type_str = py::str(obj.attr("dtype"));
+    	std::string type_str = py::str(obj.attr("dtype"));
     	if (type_str == "bool") {
     		result = logical_type::BOOLEAN;
     	} else if (type_str == "int8") {
@@ -315,7 +316,7 @@ namespace otterbrix {
     	std::pmr::vector<complex_logical_type> members(resource);
 
     	for (const auto &arg : args) {
-    		auto name = "u" + to_string(index++);
+    		auto name = "u" + std::to_string(index++);
     		py::object object = py::reinterpret_borrow<py::object>(arg);
     		auto member = FromObject(object, resource);
     		if (member.has_error()) {
@@ -380,7 +381,7 @@ namespace otterbrix {
     			                     std::pmr::string("Can only create a MAP from a dict if args is formed correctly", resource));
     		}
     	}
-    	string origin_type = py::str(origin);
+    	std::string origin_type = py::str(origin);
     	return core::error_t(core::error_code_t::conversion_failure,
     	                     std::pmr::string("Could not convert from " + origin_type + " to OtterBrixPyType", resource));
     }
@@ -397,7 +398,7 @@ namespace otterbrix {
     	for (auto &item : dict) {
     		auto &name_p = item.first;
     		auto type_p = py::reinterpret_borrow<py::object>(item.second);
-    		string name = py::str(name_p);
+    		std::string name = py::str(name_p);
     		auto type = FromObject(type_p, resource);
     		if (type.has_error()) {
     			return std::move(type);
@@ -429,7 +430,7 @@ namespace otterbrix {
     		return FromString(string_value, resource);
     	}
     	default: {
-    		string actual_type = py::str(object.get_type());
+    		std::string actual_type = py::str(object.get_type());
     		return core::error_t(core::error_code_t::conversion_failure,
     		                     std::pmr::string("Could not convert from object of type " + actual_type + " to OtterBrixPyType", resource));
     	}
@@ -437,25 +438,25 @@ namespace otterbrix {
     }
     
     void OtterBrixPyType::Initialize(py::handle &m) {
-    	auto type_module = py::class_<OtterBrixPyType, shared_ptr<OtterBrixPyType>>(m, "OtterBrixPyType", py::module_local());
+    	auto type_module = py::class_<OtterBrixPyType, std::shared_ptr<OtterBrixPyType>>(m, "OtterBrixPyType", py::module_local());
     
     	type_module.def("__repr__", &OtterBrixPyType::ToString, "Stringified representation of the type object");
     	type_module.def("__eq__", &OtterBrixPyType::Equals, "Compare two types for equality", py::arg("other"));
     	type_module.def_property_readonly("id", &OtterBrixPyType::GetId);
     	type_module.def_property_readonly("children", &OtterBrixPyType::Children);
-    	type_module.def(py::init<>([](const string &type_str) {
+    	type_module.def(py::init<>([](const std::string &type_str) {
             auto ltype = FromString(type_str, std::pmr::get_default_resource());
             if (ltype.has_error()) {
                 throw std::runtime_error(ltype.error().what.c_str());
             }
-    		return make_shared_ptr<OtterBrixPyType>(ltype.value());
+    		return std::make_shared<OtterBrixPyType>(ltype.value());
     	}));
     	type_module.def(py::init<>([](const py::object &obj) {
     		auto ltype = FromObject(obj, std::pmr::get_default_resource());
             if (ltype.has_error()) {
                 throw std::runtime_error(ltype.error().what.c_str());
             }
-    		return make_shared_ptr<OtterBrixPyType>(ltype.value());
+    		return std::make_shared<OtterBrixPyType>(ltype.value());
     	}));
     	type_module.def("__getattr__", &OtterBrixPyType::GetAttribute, "Get the child type by 'name'", py::arg("name"));
     	type_module.def("__getitem__", &OtterBrixPyType::GetAttribute, "Get the child type by 'name'", py::arg("name"));
@@ -464,7 +465,7 @@ namespace otterbrix {
     	py::implicitly_convertible<py::str, OtterBrixPyType>();
     }
     
-    string OtterBrixPyType::ToString() const {
+    std::string OtterBrixPyType::ToString() const {
         return logical_type_name(type.type());
     }
     
@@ -486,11 +487,11 @@ namespace otterbrix {
     	py::list children;
     	auto id = type.type();
     	if (id == logical_type::LIST) {
-    		children.append(py::make_tuple("child", make_shared_ptr<OtterBrixPyType>(type.child_type())));
+    		children.append(py::make_tuple("child", std::make_shared<OtterBrixPyType>(type.child_type())));
     		return children;
     	}
     	if (id == logical_type::ARRAY) {
-    		children.append(py::make_tuple("child", make_shared_ptr<OtterBrixPyType>(type.child_type())));
+    		children.append(py::make_tuple("child", std::make_shared<OtterBrixPyType>(type.child_type())));
 			auto* extension = static_cast<array_logical_type_extension*>(type.extension());
     		children.append(py::make_tuple("size", extension->size()));
     		return children;
@@ -503,14 +504,14 @@ namespace otterbrix {
     		for (idx_t i = 0; i < struct_children.size(); i++) {
     			auto &child = struct_children[i];
     			children.append(
-    			    py::make_tuple(child.alias(), make_shared_ptr<OtterBrixPyType>(child)));
+    			    py::make_tuple(child.alias(), std::make_shared<OtterBrixPyType>(child)));
     		}
     		return children;
     	}
     	if (id == logical_type::MAP) {
             auto* extension = static_cast<map_logical_type_extension*>(type.extension());
-    		children.append(py::make_tuple("key", make_shared_ptr<OtterBrixPyType>(extension->key())));
-    		children.append(py::make_tuple("value", make_shared_ptr<OtterBrixPyType>(extension->value())));
+    		children.append(py::make_tuple("key", std::make_shared<OtterBrixPyType>(extension->key())));
+    		children.append(py::make_tuple("value", std::make_shared<OtterBrixPyType>(extension->value())));
     		return children;
     	}
     	if (id == logical_type::DECIMAL) {
@@ -522,7 +523,7 @@ namespace otterbrix {
     	throw std::runtime_error("Children is not implemented for this type");
     }
     
-    string OtterBrixPyType::GetId() const {
+    std::string OtterBrixPyType::GetId() const {
         if (type.type() == logical_type::NA) {
             return "null";
         }

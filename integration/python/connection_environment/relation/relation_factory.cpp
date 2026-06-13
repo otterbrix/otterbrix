@@ -1,4 +1,5 @@
 #include "relation_factory.hpp"
+#include <memory>
 #include <components/expressions/sort_expression.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -7,7 +8,8 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <integration/cpp/otterbrix.hpp>
 #include <scan/python_replacement_scan.hpp>
-#include <core/types/string.hpp>
+#include <string>
+#include <vector>
 
 using namespace components;
 using namespace components::logical_plan;
@@ -30,7 +32,7 @@ namespace otterbrix {
         const std::string error_str = "#";
 
         components::types::complex_logical_type
-        find_type(const string& name, const std::pmr::vector<column_definition_t>& initial) {
+        find_type(const std::string& name, const std::pmr::vector<column_definition_t>& initial) {
             for (const auto& col : initial) {
                 if (col.name() == name) {
                     return col.type();
@@ -39,7 +41,7 @@ namespace otterbrix {
             return components::types::logical_type::UNKNOWN;
         }
 
-        std::pair<string, bool>
+        std::pair<std::string, bool>
         find_param_name(const std::variant<core::parameter_id_t, expressions::key_t, expression_ptr>& param) {
             return std::visit([](const auto& expr) {
                 using type = std::decay_t<decltype(expr)>;
@@ -55,7 +57,7 @@ namespace otterbrix {
 
         column_definition_t process_aggregate(const aggregate_expression_ptr& aggregate_expr,
                                                const std::pmr::vector<column_definition_t>& initial) {
-            string name = error_str;
+            std::string name = error_str;
             components::types::complex_logical_type type = components::types::logical_type::UNKNOWN;
             if (aggregate_expr->params().size() > 1) {
                 return column_definition_t(name, type);
@@ -69,7 +71,7 @@ namespace otterbrix {
                 auto founded_name = find_param_name(param);
 
                 if (aggregate_expr->key().is_null()) {
-                    string agg_str = aggregate_expr->function_name();
+                    std::string agg_str = aggregate_expr->function_name();
                     name = agg_str + "(" + founded_name.first + ")";
                 } else {
                     name = aggregate_expr->key().as_string();
@@ -86,7 +88,7 @@ namespace otterbrix {
 
         column_definition_t process_scalar(const scalar_expression_ptr& scalar_expr,
                                             const std::pmr::vector<column_definition_t>& initial) {
-            string name = error_str;
+            std::string name = error_str;
             components::types::complex_logical_type type = components::types::logical_type::UNKNOWN;
 
             if (scalar_expr->type() != scalar_type::get_field) {
@@ -183,8 +185,8 @@ namespace otterbrix {
             node_select_ptr select, node_limit_ptr limit) {
         static int indx = 0;
         auto session = otterbrix::session_id_t();
-        string name = "t";
-        name += to_string(indx++);
+        std::string name = "t";
+        name += std::to_string(indx++);
         space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");
 
         auto* resource = space->dispatcher()->resource();
@@ -224,7 +226,7 @@ namespace otterbrix {
         return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
     }
 
-    built_relation_t RelationFactory::SortRelation(const built_relation_t& relation, const vector<Expression>& exprs) {
+    built_relation_t RelationFactory::SortRelation(const built_relation_t& relation, const std::vector<Expression>& exprs) {
         if (exprs.empty()) {
             throw std::runtime_error("Please provide at least one expression to sort on");
         }
@@ -249,9 +251,9 @@ namespace otterbrix {
         return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
     }
 
-    built_relation_t RelationFactory::GroupRelation(const built_relation_t& relation, const vector<Expression>& exprs) {
+    built_relation_t RelationFactory::GroupRelation(const built_relation_t& relation, const std::vector<Expression>& exprs) {
         auto* resource = space->dispatcher()->resource();
-        vector<expressions::expression_ptr> fields;
+        std::vector<expressions::expression_ptr> fields;
         fields.reserve(exprs.size());
         for (const auto& expr : exprs) {
             if (expr.is_expression()) {
@@ -281,7 +283,7 @@ namespace otterbrix {
         return {node, std::move(schema)};
     }
 
-    built_relation_t RelationFactory::SelectRelation(const built_relation_t& relation, const vector<Expression>& exprs) {
+    built_relation_t RelationFactory::SelectRelation(const built_relation_t& relation, const std::vector<Expression>& exprs) {
         auto* resource = space->dispatcher()->resource();
         auto select = make_node_select(resource, core::dbname_t{}, core::relname_t{});
         for (const auto& expr : exprs) {
@@ -310,7 +312,7 @@ namespace otterbrix {
     }
 
     built_relation_t RelationFactory::JoinRelation(const built_relation_t& relation, const built_relation_t& other,
-            const vector<Expression>& exprs, components::logical_plan::join_type type) {
+            const std::vector<Expression>& exprs, components::logical_plan::join_type type) {
         auto* resource = space->dispatcher()->resource();
         std::pmr::vector<expressions::expression_ptr> conditions(resource);
         for (const auto& expr : exprs) {
@@ -362,7 +364,7 @@ namespace otterbrix {
     }
 
     // should be protected because don\'t send external data
-    built_relation_t RelationFactory::CreateDFRelation(unique_ptr<components::tableref::TableRef> ref) {
+    built_relation_t RelationFactory::CreateDFRelation(std::unique_ptr<components::tableref::TableRef> ref) {
         auto* resource = space->dispatcher()->resource();
         auto tableData = Scan::FetchObjectData(resource, std::move(ref));
 

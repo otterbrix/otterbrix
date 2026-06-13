@@ -7,13 +7,14 @@
 #include <components/types/types.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/vector.hpp>
-#include <core/types/memory.hpp>
+#include <memory>
 
 #include <absl/numeric/int128.h>
 
 #include <chrono>
 #include <memory_resource>
 #include <string_view>
+#include <string>
 
 namespace otterbrix {
     using namespace components::vector;
@@ -370,8 +371,8 @@ static bool ConvertDecimal(NumpyAppendData &append_data) {
 
 ArrayWrapper::ArrayWrapper(const complex_logical_type &type, bool pandas)
     : requires_mask(false), pandas(pandas) {
-	data = make_unique<RawArrayWrapper>(type);
-	mask = make_unique<RawArrayWrapper>(logical_type::BOOLEAN);
+	data = std::make_unique<RawArrayWrapper>(type);
+	mask = std::make_unique<RawArrayWrapper>(logical_type::BOOLEAN);
 }
 
 core::error_t ArrayWrapper::Initialize(std::pmr::memory_resource *resource, idx_t capacity) {
@@ -489,11 +490,11 @@ core::error_t ArrayWrapper::Append(std::pmr::memory_resource *resource, idx_t cu
 	case logical_type::UNION:
 		return core::error_t{core::error_code_t::other_error,
 		                     std::pmr::string{"type not yet supported for numpy conversion: " +
-		                         to_string(static_cast<int>(input.type().type())), resource}};
+		                         std::to_string(static_cast<int>(input.type().type())), resource}};
 
 	default:
 		return core::error_t{core::error_code_t::other_error,
-		                     std::pmr::string{"Unsupported type "+to_string(static_cast<int>(input.type().type())), resource}};
+		                     std::pmr::string{"Unsupported type "+std::to_string(static_cast<int>(input.type().type())), resource}};
 	}
 	// A nested converter (LIST/ARRAY/MAP/STRUCT) or ConvertDecimal may have recorded an error.
 	if (append_data.error.contains_error()) {

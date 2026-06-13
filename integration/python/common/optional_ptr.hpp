@@ -1,10 +1,19 @@
 #pragma once
 
-#include "memory.hpp"
-
-#include <stdexcept> 
+#include <memory>
+#include <stdexcept>
 
 namespace otterbrix {
+
+template <bool IS_ENABLED>
+struct MemorySafety {
+#ifdef DEBUG
+    // In DEBUG mode safety is always on
+	static constexpr bool ENABLED = true;
+#else
+    static constexpr bool ENABLED = IS_ENABLED;
+#endif
+};
 
 template <class T, bool SAFE = true>
 class optional_ptr { // NOLINT: mimic std casing
@@ -15,9 +24,9 @@ public:
 	}
 	optional_ptr(T &ref) : ptr(&ref) { // NOLINT: allow implicit creation from reference
 	}
-	optional_ptr(const unique_ptr<T> &ptr_p) : ptr(ptr_p.get()) { // NOLINT: allow implicit creation from unique pointer
+	optional_ptr(const std::unique_ptr<T> &ptr_p) : ptr(ptr_p.get()) { // NOLINT: allow implicit creation from unique pointer
 	}
-	optional_ptr(const shared_ptr<T> &ptr_p) : ptr(ptr_p.get()) { // NOLINT: allow implicit creation from shared pointer
+	optional_ptr(const std::shared_ptr<T> &ptr_p) : ptr(ptr_p.get()) { // NOLINT: allow implicit creation from shared pointer
 	}
 
 	void CheckValid() const {

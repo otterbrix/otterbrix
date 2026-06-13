@@ -2,10 +2,11 @@
 #include "python_import_cache.hpp"
 #include "python_import_cache_item.hpp"
 #include "../connection_environment.hpp"
+#include <stack>
 
 namespace otterbrix {
 
-py::handle PythonImporter::Import(stack<std::reference_wrapper<PythonImportCacheItem>> &hierarchy, bool load) {
+py::handle PythonImporter::Import(std::stack<std::reference_wrapper<PythonImportCacheItem>> &hierarchy, bool load) {
     auto &import_cache = ConnectionEnvironment::ImportCache();
     py::handle source(nullptr);
     while (!hierarchy.empty()) {

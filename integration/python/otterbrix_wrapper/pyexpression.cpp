@@ -1,4 +1,5 @@
 #include "pyexpression.hpp"
+#include <memory>
 #include "pyrelation.hpp"
 
 #include <native/python_conversion.hpp>
@@ -35,14 +36,14 @@ namespace otterbrix {
 
     PyExpression::~PyExpression() = default;
 
-    pyexpr_ptr PyExpression::ColumnExpression(const string& column_name, PyConnection& conn, const string& side) {
+    pyexpr_ptr PyExpression::ColumnExpression(const std::string& column_name, PyConnection& conn, const std::string& side) {
         auto side_val = components::expressions::side_t::undefined;
         if (side == "left") {
             side_val = components::expressions::side_t::left;
         } else if (side == "right") {
             side_val = components::expressions::side_t::right;
         }
-        return make_shared<PyExpression>(
+        return std::make_shared<PyExpression>(
             components::expressions::key_t(std::pmr::get_default_resource(), column_name, side_val),
             conn);
     }
@@ -52,14 +53,14 @@ namespace otterbrix {
         if (val.has_error()) {
             throw std::runtime_error(std::string(val.error().what));
         }
-        return make_shared<PyExpression>(conn.MakeConstant(std::move(val.value())), conn);
+        return std::make_shared<PyExpression>(conn.MakeConstant(std::move(val.value())), conn);
     }
 
     pyexpr_ptr PyExpression::CountExpression(PyConnection& conn) {
-        return make_shared<PyExpression>(conn.MakeCountExpression(), conn);    
+        return std::make_shared<PyExpression>(conn.MakeCountExpression(), conn);    
     }
 
-    string PyExpression::ToString() const {
+    std::string PyExpression::ToString() const {
         auto result = factory->ConvertToString(expr);
         if (result.has_error()) {
             throw std::runtime_error(std::string(result.error().what));
@@ -115,7 +116,7 @@ namespace otterbrix {
         if (val.has_error()) {
             throw std::runtime_error(std::string(val.error().what));
         }
-        auto expr = make_shared<PyExpression>(factory->MakeConstant(std::move(val.value())), factory);
+        auto expr = std::make_shared<PyExpression>(factory->MakeConstant(std::move(val.value())), factory);
         return Multiply(*expr);
     }
 
@@ -173,14 +174,14 @@ namespace otterbrix {
         return ComparisonExpression(expressions::compare_type::regex, *this, other);
     }
 
-    pyexpr_ptr PyExpression::SetAlias(const string& alias) {
-        return make_shared<PyExpression>(unwrap(factory->ExpressionWithAlias(expr, alias)), factory);
+    pyexpr_ptr PyExpression::SetAlias(const std::string& alias) {
+        return std::make_shared<PyExpression>(unwrap(factory->ExpressionWithAlias(expr, alias)), factory);
     }
 
     // AND, OR and NOT
 
     pyexpr_ptr PyExpression::Not() {
-        return make_shared<PyExpression>(unwrap(factory->ComparisonNotExpression(this->expr)), factory);
+        return std::make_shared<PyExpression>(unwrap(factory->ComparisonNotExpression(this->expr)), factory);
     }
 
     pyexpr_ptr PyExpression::And(const PyExpression &other) {
@@ -209,36 +210,36 @@ namespace otterbrix {
 
     pyexpr_ptr PyExpression::AggregationExpression(const std::string& function_name,
         const PyExpression& expr) {
-        return make_shared<PyExpression>(
+        return std::make_shared<PyExpression>(
             unwrap(expr.factory->AggregationUnaryExpression(function_name, expr.expr)), expr.factory);
     }
 
     pyexpr_ptr PyExpression::ScalarBinaryExpression(components::expressions::scalar_type type,
         const PyExpression& left, const PyExpression& right) {
-        return make_shared<PyExpression>(
+        return std::make_shared<PyExpression>(
             unwrap(left.factory->ScalarBinaryExpression(type, left.expr, right.expr)), left.factory);
     }
 
     pyexpr_ptr PyExpression::ScalarUnaryExpression(components::expressions::scalar_type type,
         const PyExpression& expr) {
-        return make_shared<PyExpression>(expr.factory->ScalarUnaryExpression(type, expr.expr), expr.factory);
+        return std::make_shared<PyExpression>(expr.factory->ScalarUnaryExpression(type, expr.expr), expr.factory);
     }
 
     pyexpr_ptr PyExpression::ComparisonExpression(components::expressions::compare_type type,
         const PyExpression& left, const PyExpression& right) {
-        return make_shared<PyExpression>(
+        return std::make_shared<PyExpression>(
             unwrap(left.factory->ComparisonExpression(type, left.expr, right.expr)), left.factory);
     }
 
 
     pyexpr_ptr PyExpression::ComparisonUnionExpression(expressions::compare_type type,
             const PyExpression& left, const PyExpression& right) {
-        return make_shared<PyExpression>(
+        return std::make_shared<PyExpression>(
             unwrap(left.factory->ComparisonUnionExpression(type, left.expr, right.expr)), left.factory);
     }
 
     pyexpr_ptr PyExpression::SortExpression(components::expressions::sort_order type, const PyExpression& expr) {
-        return make_shared<PyExpression>(unwrap(expr.factory->SortExpression(expr.expr, type)), expr.factory);
+        return std::make_shared<PyExpression>(unwrap(expr.factory->SortExpression(expr.expr, type)), expr.factory);
     }
 
 } // namespace otterbrix

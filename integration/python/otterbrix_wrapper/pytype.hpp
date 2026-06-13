@@ -2,10 +2,10 @@
 
 #include <pybind11/pybind_wrapper.hpp>
 
-#include <core/types/memory.hpp>
-#include <core/types/string.hpp>
+#include <memory>
 
 #include <components/types/types.hpp>
+#include <string>
 
 namespace otterbrix {
 
@@ -25,7 +25,7 @@ namespace otterbrix {
         static bool check_(const py::handle &object);
     };
     
-    class OtterBrixPyType : public enable_shared_from_this<OtterBrixPyType> {
+    class OtterBrixPyType : public std::enable_shared_from_this<OtterBrixPyType> {
     public:
         explicit OtterBrixPyType(components::types::complex_logical_type type);
     
@@ -33,12 +33,12 @@ namespace otterbrix {
         static void Initialize(py::handle &m);
     
     public:
-        bool Equals(const shared_ptr<OtterBrixPyType> &other) const;
-        shared_ptr<OtterBrixPyType> GetAttribute(const string &name) const;
+        bool Equals(const std::shared_ptr<OtterBrixPyType> &other) const;
+        std::shared_ptr<OtterBrixPyType> GetAttribute(const std::string &name) const;
         py::list Children() const;
-        string ToString() const;
+        std::string ToString() const;
         const components::types::complex_logical_type &Type() const;
-        string GetId() const;
+        std::string GetId() const;
     
     private:
         components::types::complex_logical_type type;

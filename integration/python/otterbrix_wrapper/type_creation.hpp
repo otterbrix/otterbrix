@@ -7,12 +7,12 @@
 #include <components/types/types.hpp>
 #include <core/result_wrapper.hpp>
 #include <core/typedefs.hpp>
-#include <core/types/memory.hpp>
-#include <core/types/string.hpp>
-#include <core/types/vector.hpp>
-#include <core/types/unordered_map.hpp>
+#include <memory>
 
 #include <memory_resource>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace otterbrix {
     namespace TypeCreation {
@@ -20,27 +20,27 @@ namespace otterbrix {
         // Maps a SQL/OtterBrix type string (e.g. "VARCHAR", "BIGINT") to its logical_type.
         // Returns a conversion_failure error if the string has no known mapping.
         core::result_wrapper_t<components::types::logical_type>
-        StringToLogicalType(const string &type_str, std::pmr::memory_resource *resource);
+        StringToLogicalType(const std::string &type_str, std::pmr::memory_resource *resource);
 
-        shared_ptr<OtterBrixPyType> MapType(const shared_ptr<OtterBrixPyType> &key_type,
-                const shared_ptr<OtterBrixPyType> &value_type);
+        std::shared_ptr<OtterBrixPyType> MapType(const std::shared_ptr<OtterBrixPyType> &key_type,
+                const std::shared_ptr<OtterBrixPyType> &value_type);
 
-        shared_ptr<OtterBrixPyType> ListType(const shared_ptr<OtterBrixPyType> &type);
+        std::shared_ptr<OtterBrixPyType> ListType(const std::shared_ptr<OtterBrixPyType> &type);
 
-        shared_ptr<OtterBrixPyType> ArrayType(const shared_ptr<OtterBrixPyType> &type, idx_t size);
+        std::shared_ptr<OtterBrixPyType> ArrayType(const std::shared_ptr<OtterBrixPyType> &type, idx_t size);
 
-        shared_ptr<OtterBrixPyType> StructType(const py::object &fields);
+        std::shared_ptr<OtterBrixPyType> StructType(const py::object &fields);
 
-        shared_ptr<OtterBrixPyType> UnionType(const py::object &members); 
+        std::shared_ptr<OtterBrixPyType> UnionType(const py::object &members); 
 
-        shared_ptr<OtterBrixPyType> EnumType(const string &name, const shared_ptr<OtterBrixPyType> &type,
+        std::shared_ptr<OtterBrixPyType> EnumType(const std::string &name, const std::shared_ptr<OtterBrixPyType> &type,
                 const py::list &values_p); 
 
-        shared_ptr<OtterBrixPyType> DecimalType(int width, int scale);
+        std::shared_ptr<OtterBrixPyType> DecimalType(int width, int scale);
 
-        shared_ptr<OtterBrixPyType> StringType(const string &collation);
+        std::shared_ptr<OtterBrixPyType> StringType(const std::string &collation);
 
-        shared_ptr<OtterBrixPyType> Type(const string &type_str); 
+        std::shared_ptr<OtterBrixPyType> Type(const std::string &type_str); 
 
         void Initialize(py::module_ m);
     } // namespace TypeCreation

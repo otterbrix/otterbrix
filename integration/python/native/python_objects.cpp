@@ -11,6 +11,7 @@
 #include <memory_resource>
 #include <sstream>
 #include <limits>
+#include <string>
 
 using components::types::logical_type;
 using components::types::logical_value_t;
@@ -101,7 +102,7 @@ void PyDecimal::SetExponent(py::handle &exponent) {
 		return;
 	}
 	if (py::isinstance<py::str>(exponent)) {
-		string exponent_string = py::str(exponent);
+		std::string exponent_string = py::str(exponent);
 		if (exponent_string == "n") {
 			exponent_type = PyDecimalExponentType::EXPONENT_NAN;
 			return;

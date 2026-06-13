@@ -3,10 +3,10 @@
 
 #include "importer.hpp"
 
-#include <core/types/stack.hpp>
 
 #include <functional>
 #include <stdexcept>
+#include <stack>
 
 namespace otterbrix {
 
@@ -18,7 +18,7 @@ py::handle PythonImportCacheItem::operator()(bool load) {
 	if (IsLoaded()) {
 		return object;
 	}
-	stack<std::reference_wrapper<PythonImportCacheItem>> hierarchy;
+	std::stack<std::reference_wrapper<PythonImportCacheItem>> hierarchy;
 
 	optional_ptr<PythonImportCacheItem> item = this;
 	while (item) {

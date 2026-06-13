@@ -4,12 +4,13 @@
 
 #include <cassert>
 #include <memory_resource>
+#include <vector>
 
 namespace otterbrix {
 
 NumpyResultConversion::NumpyResultConversion(
         std::pmr::memory_resource *resource,
-        const vector<components::types::complex_logical_type> &types,
+        const std::vector<components::types::complex_logical_type> &types,
         idx_t initial_capacity, bool pandas)
     : resource_(resource), count(0), capacity(0), pandas(pandas) {
 	owned_data.reserve(types.size());

@@ -1,4 +1,5 @@
 #include "arrow_scan_function.hpp"
+#include <memory>
 
 #include <otterbrix_wrapper/python_dependency.hpp>
 
@@ -87,7 +88,7 @@ namespace otterbrix {
                         ArrowScanInitGlobal,
                         ArrowScanInitLocal) {}
 
-    unique_ptr<FunctionData> ArrowScanFunction::ArrowScanBind(TableFunctionBindInput& input,
+    std::unique_ptr<FunctionData> ArrowScanFunction::ArrowScanBind(TableFunctionBindInput& input,
                                                               std::vector<complex_logical_type>& return_types,
                                                               std::vector<std::string>& names) {
         if (input.inputs[0].is_null()) {
@@ -108,19 +109,19 @@ namespace otterbrix {
         if (return_types.empty()) {
             throw std::runtime_error("Provided table/dataframe must have at least one column");
         }
-        return make_unique<ArrowScanFunctionData>(factory_ptr, dependency);
+        return std::make_unique<ArrowScanFunctionData>(factory_ptr, dependency);
     }
 
-    unique_ptr<GlobalTableFunctionState>
+    std::unique_ptr<GlobalTableFunctionState>
     ArrowScanFunction::ArrowScanInitGlobal(TableFunctionInitInput& input) {
         auto& bind_data = input.bind_data->Cast<ArrowScanFunctionData>();
         auto stream = PythonTableArrowArrayStreamFactory::Produce(bind_data.factory_ptr);
-        return make_unique<ArrowScanGlobalState>(std::move(stream));
+        return std::make_unique<ArrowScanGlobalState>(std::move(stream));
     }
 
-    unique_ptr<LocalTableFunctionState>
+    std::unique_ptr<LocalTableFunctionState>
     ArrowScanFunction::ArrowScanInitLocal(TableFunctionInitInput&, GlobalTableFunctionState*) {
-        return make_unique<ArrowScanLocalState>();
+        return std::make_unique<ArrowScanLocalState>();
     }
 
     void ArrowScanFunction::ArrowScanFunc(TableFunctionInput& data_p, components::vector::data_chunk_t& output) {
@@ -139,7 +140,7 @@ namespace otterbrix {
             arrow_schema_wrapper_t schema_wrapper;
             global_state.stream->get_schema(schema_wrapper);
             global_state.schema =
-                make_unique<arrow_table_schema_t>(schema_from_arrow(resource, &schema_wrapper.arrow_schema));
+                std::make_unique<arrow_table_schema_t>(schema_from_arrow(resource, &schema_wrapper.arrow_schema));
         }
 
         // Make sure we have an in-flight converted batch with rows still to emit.
@@ -157,7 +158,7 @@ namespace otterbrix {
             // Convert via the canonical core path. data_chunk_from_arrow takes the schema by value;
             // its per-column arrow_type metadata is shared_ptr-backed, so the copy is cheap and the
             // cached global_state.schema stays valid for the next batch.
-            global_state.current = make_unique<components::vector::data_chunk_t>(
+            global_state.current = std::make_unique<components::vector::data_chunk_t>(
                 data_chunk_from_arrow(resource, &batch->arrow_array, *global_state.schema));
             global_state.current_offset = 0;
         }

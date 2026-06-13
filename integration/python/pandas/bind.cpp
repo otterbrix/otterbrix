@@ -1,4 +1,5 @@
 #include "pandas_bind.hpp"
+#include <memory>
 
 #include "pandas_analyzer.hpp"
 #include "column/pandas_numpy_column.hpp"
@@ -7,14 +8,14 @@
 
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
-#include <core/types/vector.hpp>
-#include <core/types/string.hpp>
 #include <core/typedefs.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <cassert>
 #include <string_view>
 #include <memory_resource>
+#include <string>
+#include <vector>
 
 namespace otterbrix {
     using components::types::complex_logical_type;
@@ -77,7 +78,7 @@ static core::result_wrapper_t<complex_logical_type> BindColumn(PandasBindColumn 
 
 	if (column_has_mask) {
 		// masked object, fetch the internal data and mask array
-		bind_data.mask = make_unique<RegisteredArray>(column.attr("array").attr("_mask"));
+		bind_data.mask = std::make_unique<RegisteredArray>(column.attr("array").attr("_mask"));
 	}
 
 	if (bind_data.numpy_type.type == NumpyNullableType::CATEGORY) {
@@ -85,7 +86,7 @@ static core::result_wrapper_t<complex_logical_type> BindColumn(PandasBindColumn 
                              std::pmr::string("OtterBrix does't support Enum/Category", resource));
 	} else if (bind_data.numpy_type.type == NumpyNullableType::FLOAT_16) {
 		auto pandas_array = column.attr("array");
-		bind_data.pandas_col = make_unique<PandasNumpyColumn>(py::array(column.attr("to_numpy")("float32")));
+		bind_data.pandas_col = std::make_unique<PandasNumpyColumn>(py::array(column.attr("to_numpy")("float32")));
 		bind_data.numpy_type.type = NumpyNullableType::FLOAT_32;
 		auto logical = NumpyToLogicalType(resource, bind_data.numpy_type);
 		if (logical.has_error()) {
@@ -96,13 +97,13 @@ static core::result_wrapper_t<complex_logical_type> BindColumn(PandasBindColumn 
 		auto pandas_array = column.attr("array");
 		if (py::hasattr(pandas_array, "_data")) {
 			// This means we can access the numpy array directly
-			bind_data.pandas_col = make_unique<PandasNumpyColumn>(column.attr("array").attr("_data"));
+			bind_data.pandas_col = std::make_unique<PandasNumpyColumn>(column.attr("array").attr("_data"));
 		} else if (py::hasattr(pandas_array, "asi8")) {
 			// This is a datetime object, has the option to get the array as int64_t's
-			bind_data.pandas_col = make_unique<PandasNumpyColumn>(py::array(pandas_array.attr("asi8")));
+			bind_data.pandas_col = std::make_unique<PandasNumpyColumn>(py::array(pandas_array.attr("asi8")));
 		} else {
 			// Otherwise we have to get it through 'to_numpy()'
-			bind_data.pandas_col = make_unique<PandasNumpyColumn>(py::array(column.attr("to_numpy")()));
+			bind_data.pandas_col = std::make_unique<PandasNumpyColumn>(py::array(column.attr("to_numpy")()));
 		}
 		auto logical = NumpyToLogicalType(resource, bind_data.numpy_type);
 		if (logical.has_error()) {
@@ -125,8 +126,8 @@ static core::result_wrapper_t<complex_logical_type> BindColumn(PandasBindColumn 
 }
 
 core::error_t Pandas::Bind(std::pmr::memory_resource *resource, py::handle df_p,
-                  vector<PandasColumnBindData> &bind_columns,
-                  vector<complex_logical_type> &return_types, vector<string> &names,
+                  std::vector<PandasColumnBindData> &bind_columns,
+                  std::vector<complex_logical_type> &return_types, std::vector<std::string> &names,
                   const configuration::config_pandas &cfg) {
 
 	PandasDataFrameBind df(df_p);

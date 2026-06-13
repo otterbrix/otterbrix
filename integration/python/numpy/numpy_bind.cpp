@@ -1,4 +1,5 @@
 #include "numpy_bind.hpp"
+#include <memory>
 #include <iostream>
 #include "array_wrapper.hpp"
 
@@ -8,19 +9,21 @@
 #include "numpy_type.hpp"
 
 #include <memory_resource>
+#include <string>
+#include <vector>
 
 namespace otterbrix {
 
 using components::types::complex_logical_type;
 
-core::error_t NumpyBind::Bind(std::pmr::memory_resource *resource, py::handle df, vector<PandasColumnBindData> &bind_columns,
-                     vector<complex_logical_type> &return_types, vector<string> &names,
+core::error_t NumpyBind::Bind(std::pmr::memory_resource *resource, py::handle df, std::vector<PandasColumnBindData> &bind_columns,
+                     std::vector<complex_logical_type> &return_types, std::vector<std::string> &names,
                      const configuration::config_pandas &cfg) {
 
 	auto df_columns = py::list(df.attr("keys")());
 	auto df_types = py::list();
 	for (auto item : py::cast<py::dict>(df)) {
-		if (string(py::str(item.second.attr("dtype").attr("char"))) == "U") {
+		if (std::string(py::str(item.second.attr("dtype").attr("char"))) == "U") {
 			df_types.attr("append")(py::str("string"));
 			continue;
 		}
@@ -45,10 +48,10 @@ core::error_t NumpyBind::Bind(std::pmr::memory_resource *resource, py::handle df
 		auto column = get_fun(df_columns[col_idx]);
 
 		if (bind_data.numpy_type.type == NumpyNullableType::FLOAT_16) {
-			bind_data.pandas_col = make_unique<PandasNumpyColumn>(py::array(column.attr("astype")("float32")));
+			bind_data.pandas_col = std::make_unique<PandasNumpyColumn>(py::array(column.attr("astype")("float32")));
 			bind_data.numpy_type.type = NumpyNullableType::FLOAT_32;
 		} else {
-			bind_data.pandas_col = make_unique<PandasNumpyColumn>(column);
+			bind_data.pandas_col = std::make_unique<PandasNumpyColumn>(column);
 		}
 		auto col_type = NumpyToLogicalType(resource, bind_data.numpy_type);
 		if (col_type.has_error()) {

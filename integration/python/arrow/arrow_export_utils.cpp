@@ -6,6 +6,8 @@
 #include <components/vector/arrow/arrow_converter.hpp>
 
 #include <memory_resource>
+#include <string>
+#include <vector>
 
 namespace otterbrix {
 
@@ -19,8 +21,8 @@ namespace otterbrix {
 
     namespace pyarrow {
 
-        py::object ToArrowTable(const vector<components::types::complex_logical_type>& types,
-                                const vector<string>& names,
+        py::object ToArrowTable(const std::vector<components::types::complex_logical_type>& types,
+                                const std::vector<std::string>& names,
                                 const py::list& batches) {
             py::gil_scoped_acquire acquire;
 

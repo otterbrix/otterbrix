@@ -2,9 +2,10 @@
 
 #include <native/python_objects.hpp>
 #include <core/typedefs.hpp>
-#include <core/types/string.hpp>
 
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 using components::types::logical_type;
 using components::types::logical_value_t;
@@ -83,7 +84,7 @@ namespace otterbrix {
 
         py::dict CursorRowToPythonDict(components::cursor::cursor_t_ptr& cursor,
                 uint64_t row_idx,
-                const vector<components::table::column_definition_t>& col_defs) {
+                const std::vector<components::table::column_definition_t>& col_defs) {
             py::dict result;
             for (idx_t i = 0; i < col_defs.size(); i++) {
                 auto val = cursor->value(i, row_idx);
@@ -94,7 +95,7 @@ namespace otterbrix {
 
         py::dict DataChunkRowToPythonDict(const components::vector::data_chunk_t& chunk,
                 uint64_t row_idx,
-                const vector<components::table::column_definition_t>& col_defs) {
+                const std::vector<components::table::column_definition_t>& col_defs) {
             py::dict result;
             for (idx_t i = 0; i < col_defs.size(); i++) {
                 auto val = chunk.value(i, row_idx);

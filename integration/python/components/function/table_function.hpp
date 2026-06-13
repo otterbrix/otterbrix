@@ -4,14 +4,13 @@
 
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <core/types/optional_ptr.hpp>
-#include <core/types/memory.hpp>
+#include <common/optional_ptr.hpp>
 
 #include <core/external_dependencies.hpp>
 
 #include <memory>
-#include <string>
 #include <vector>
+#include <string>
 
 namespace components::tableref {
     class TableRef;

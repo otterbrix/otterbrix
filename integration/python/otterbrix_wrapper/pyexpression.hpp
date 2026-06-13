@@ -8,20 +8,20 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 
-#include <core/types/memory.hpp>
-#include <core/types/string.hpp>
+#include <memory>
+#include <string>
 
 
 namespace otterbrix {
 
     class PyExpression;
 
-    //! R14: shared_ptr<PyExpression> is MANDATED here -- it is the pybind11 holder type registered
-    //! in expression_initialize.cpp as py::class_<PyExpression, shared_ptr<PyExpression>>. It is not
+    //! R14: std::shared_ptr<PyExpression> is MANDATED here -- it is the pybind11 holder type registered
+    //! in expression_initialize.cpp as py::class_<PyExpression, std::shared_ptr<PyExpression>>. It is not
     //! a free-form internal ownership choice and cannot be replaced without breaking the binding.
-    using pyexpr_ptr = shared_ptr<PyExpression>;
+    using pyexpr_ptr = std::shared_ptr<PyExpression>;
 
-    //! The former enable_shared_from_this<PyExpression> base was removed: PyExpression never calls
+    //! The former std::enable_shared_from_this<PyExpression> base was removed: PyExpression never calls
     //! shared_from_this(); all instances are produced via make_shared and handed to pybind as the
     //! holder above.
     class PyExpression {
@@ -32,7 +32,7 @@ namespace otterbrix {
         ~PyExpression();
         static void Initialize(py::module_ &m);
 
-        static pyexpr_ptr ColumnExpression(const string& column_name, PyConnection& conn, const string& side = "");
+        static pyexpr_ptr ColumnExpression(const std::string& column_name, PyConnection& conn, const std::string& side = "");
 
         static pyexpr_ptr ConstantExpression(const py::object& value, PyConnection& conn);
         
@@ -41,7 +41,7 @@ namespace otterbrix {
 
     public:
 
-        string ToString() const;
+        std::string ToString() const;
         void Print() const;        
 
         // Aggregation operations
@@ -75,7 +75,7 @@ namespace otterbrix {
 
         pyexpr_ptr Regex(const PyExpression &other);
 
-        pyexpr_ptr SetAlias(const string& alias);
+        pyexpr_ptr SetAlias(const std::string& alias);
     
         // AND, OR and NOT
 

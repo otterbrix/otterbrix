@@ -1,8 +1,8 @@
 #pragma once
 
 #include <pybind11/pybind_wrapper.hpp>
-#include <core/types/string.hpp>
-#include <core/types/optional_ptr.hpp>
+#include <common/optional_ptr.hpp>
+#include <string>
 
 namespace otterbrix {
 
@@ -10,10 +10,10 @@ struct PythonImportCache;
 
 struct PythonImportCacheItem {
 public:
-	PythonImportCacheItem(const string &name, optional_ptr<PythonImportCacheItem> parent)
+	PythonImportCacheItem(const std::string &name, optional_ptr<PythonImportCacheItem> parent)
 	    : name(name), is_module(false), load_succeeded(false), parent(parent), object(nullptr) {
 	}
-	PythonImportCacheItem(const string &name)
+	PythonImportCacheItem(const std::string &name)
 	    : name(name), is_module(true), load_succeeded(false), parent(nullptr), object(nullptr) {
 	}
 
@@ -38,7 +38,7 @@ private:
 
 private:
 	//! The name of the item
-	string name;
+	std::string name;
 	//! Whether the item is a module
 	bool is_module;
 	//! Whether or not we attempted to load the item

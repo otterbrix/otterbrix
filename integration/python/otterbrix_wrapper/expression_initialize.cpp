@@ -1,9 +1,11 @@
 #include "pyexpression.hpp"
+#include <memory>
 #include "pyrelation.hpp"
 
 #include <pybind11/pybind_wrapper.hpp>
 
 #include <pyconnection/pyconnection.hpp>
+#include <string>
 
 namespace otterbrix {
     static void InitializeStaticMethods(py::module_ &m) {
@@ -24,7 +26,7 @@ namespace otterbrix {
         m.def("CountExpression", &PyExpression::CountExpression, py::arg("pyconnection"), docs);
     }
 
-    static void InitializeDunderMethods(py::class_<PyExpression, shared_ptr<PyExpression>> &m) {
+    static void InitializeDunderMethods(py::class_<PyExpression, std::shared_ptr<PyExpression>> &m) {
 	    const char *docs;
 
 		m.def("__round__", &PyExpression::Round);
@@ -211,7 +213,7 @@ namespace otterbrix {
             A rlike expression based on a SQL REGEX match
 
             Parameters:
-                expr: The string and the pattern
+                expr: The std::string and the pattern
 
             Returns:
                 FunctionExpression: selt REGEX pattern
@@ -262,11 +264,11 @@ namespace otterbrix {
     	m.def("__ror__", &PyExpression::Or, docs);
     }
     
-    static void InitializeImplicitConversion(py::class_<PyExpression, shared_ptr<PyExpression>> & /*m*/) {
+    static void InitializeImplicitConversion(py::class_<PyExpression, std::shared_ptr<PyExpression>> & /*m*/) {
     }
     void PyExpression::Initialize(py::module_ &m) {
         auto expression =
-	        py::class_<PyExpression, shared_ptr<PyExpression>>(m, "Expression", py::module_local());
+	        py::class_<PyExpression, std::shared_ptr<PyExpression>>(m, "Expression", py::module_local());
         InitializeStaticMethods(m);
         InitializeDunderMethods(expression);
 	    InitializeImplicitConversion(expression);
@@ -291,7 +293,7 @@ namespace otterbrix {
      		Return the stringified version of the expression.
      
      		Returns:
-     			str: The string representation.
+     			str: The std::string representation.
      	)";
      	expression.def("__repr__", &PyExpression::ToString, docs);
      

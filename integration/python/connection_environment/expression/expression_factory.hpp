@@ -8,13 +8,13 @@
 #include <components/expressions/scalar_expression.hpp>
 
 #include <core/result_wrapper.hpp>
-#include <core/types/string.hpp>
 
 #include <optional>
 
 #include <integration/cpp/otterbrix.hpp>
 
 #include <unordered_map>
+#include <string>
 
 
 namespace otterbrix {
@@ -76,14 +76,14 @@ namespace otterbrix {
 
         Expression MakeCountExpression();
 
-        Expression SortExpression(const string& arg);
+        Expression SortExpression(const std::string& arg);
 
         core::result_wrapper_t<Expression>
         SortExpression(const Expression& arg,
                        components::expressions::sort_order order = components::expressions::sort_order::asc);
 
 
-        core::result_wrapper_t<Expression> AggregationUnaryExpression(const string& function_name,
+        core::result_wrapper_t<Expression> AggregationUnaryExpression(const std::string& function_name,
                 const Expression& expr);
 
         Expression ScalarUnaryExpression(components::expressions::scalar_type type,
@@ -96,7 +96,7 @@ namespace otterbrix {
         core::result_wrapper_t<Expression> ComparisonExpression(components::expressions::compare_type type,
             const Expression& left, const Expression& right);
 
-        core::result_wrapper_t<Expression> ExpressionWithAlias(const Expression& expr, const string& alias);
+        core::result_wrapper_t<Expression> ExpressionWithAlias(const Expression& expr, const std::string& alias);
 
         core::result_wrapper_t<Expression> ComparisonNotExpression(const Expression& expr);
 
@@ -106,7 +106,7 @@ namespace otterbrix {
     public:
         core::result_wrapper_t<components::expressions::compare_expression_ptr>
         UnionExpressionToExpressionPtr(const Expression& expr);
-        core::result_wrapper_t<string> ConvertToString(const Expression& expr);
+        core::result_wrapper_t<std::string> ConvertToString(const Expression& expr);
     
         components::logical_plan::parameter_node_ptr GetParams(); 
 

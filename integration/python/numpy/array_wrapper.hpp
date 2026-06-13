@@ -9,7 +9,7 @@
 #include <components/table/storage/file_buffer.hpp>
 #include <core/result_wrapper.hpp>
 #include <core/typedefs.hpp>
-#include <core/types/memory.hpp>
+#include <memory>
 
 #include <memory_resource>
 
@@ -42,8 +42,8 @@ public:
 struct ArrayWrapper {
 	explicit ArrayWrapper(const components::types::complex_logical_type &type, bool pandas = false);
 
-	unique_ptr<RawArrayWrapper> data;
-	unique_ptr<RawArrayWrapper> mask;
+	std::unique_ptr<RawArrayWrapper> data;
+	std::unique_ptr<RawArrayWrapper> mask;
 	bool requires_mask;
 	bool pandas;
 

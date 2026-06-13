@@ -7,7 +7,6 @@
 #include <components/vector/arrow/arrow_wrapper.hpp>
 
 #include <core/external_dependencies.hpp>
-#include <core/types/memory.hpp>
 
 #include <memory>
 #include <mutex>
@@ -24,15 +23,15 @@ namespace otterbrix {
     public:
         ArrowScanFunction();
 
-        static unique_ptr<components::function::FunctionData>
+        static std::unique_ptr<components::function::FunctionData>
         ArrowScanBind(components::function::TableFunctionBindInput& input,
                       std::vector<components::types::complex_logical_type>& return_types,
                       std::vector<std::string>& names);
 
-        static unique_ptr<components::function::GlobalTableFunctionState>
+        static std::unique_ptr<components::function::GlobalTableFunctionState>
         ArrowScanInitGlobal(components::function::TableFunctionInitInput& input);
 
-        static unique_ptr<components::function::LocalTableFunctionState>
+        static std::unique_ptr<components::function::LocalTableFunctionState>
         ArrowScanInitLocal(components::function::TableFunctionInitInput& input,
                            components::function::GlobalTableFunctionState* gstate);
 

@@ -1,4 +1,5 @@
 #include "numpy_scan.hpp"
+#include <memory>
 
 #include <connection_environment/connection_environment.hpp>
 #include <native/python_conversion.hpp>
@@ -13,6 +14,7 @@
 #include <cstring>
 #include <memory_resource>
 #include <string_view>
+#include <string>
 
 namespace otterbrix {
 
@@ -52,7 +54,7 @@ void ScanNumpyCategoryTemplated(py::array &column, idx_t offset, vector_t &out, 
 }
 
 template <class T>
-core::error_t ScanNumpyCategory(std::pmr::memory_resource *resource, py::array &column, idx_t count, idx_t offset, vector_t &out, string &src_type) {
+core::error_t ScanNumpyCategory(std::pmr::memory_resource *resource, py::array &column, idx_t count, idx_t offset, vector_t &out, std::string &src_type) {
 	if (src_type == "int8") {
 		ScanNumpyCategoryTemplated<int8_t, T>(column, offset, out, count);
 	} else if (src_type == "int16") {
@@ -260,7 +262,7 @@ core::error_t NumpyScan::Scan(std::pmr::memory_resource *resource, PandasColumnB
 		// Get the data pointer and the validity mask of the result vector
 		auto tgt_ptr = out.data<std::string_view>(); 
 		auto &out_mask = out.validity();
-		unique_ptr<PythonGILWrapper> gil;
+		std::unique_ptr<PythonGILWrapper> gil;
 		auto &import_cache = ConnectionEnvironment::ImportCache();
 
 		// Loop over every row of the arrays contents
@@ -297,7 +299,7 @@ core::error_t NumpyScan::Scan(std::pmr::memory_resource *resource, PandasColumnB
 				}
 				if (!py::isinstance<py::str>(val)) {
 					if (!gil) {
-						gil = make_unique<PythonGILWrapper>();
+						gil = std::make_unique<PythonGILWrapper>();
 					}
 					bind_data.object_str_val.Push(std::move(py::str(val)));
 					val = reinterpret_cast<PyObject *>(bind_data.object_str_val.LastAddedObject().ptr());
@@ -342,7 +344,7 @@ core::error_t NumpyScan::Scan(std::pmr::memory_resource *resource, PandasColumnB
 						break;
 					default:
 						return make_error(resource,
-						    "Unsupported typekind constant " + to_string(int(kind)) + " for Python Unicode Compact decode");
+						    "Unsupported typekind constant " + std::to_string(int(kind)) + " for Python Unicode Compact decode");
 					}
 				} else {
 					return make_error(resource, "Unsupported string type: no clue what this string is");

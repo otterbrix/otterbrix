@@ -4,9 +4,9 @@
 
 #include <components/vector/arrow/arrow.hpp>
 #include <components/types/types.hpp>
+#include <string>
+#include <vector>
 
-#include <core/types/string.hpp>
-#include <core/types/vector.hpp>
 
 namespace otterbrix {
 
@@ -14,8 +14,8 @@ namespace otterbrix {
 
     namespace pyarrow {
 
-        py::object ToArrowTable(const vector<components::types::complex_logical_type>& types,
-                                const vector<string>& names,
+        py::object ToArrowTable(const std::vector<components::types::complex_logical_type>& types,
+                                const std::vector<std::string>& names,
                                 const py::list& batches);
 
     } // namespace pyarrow

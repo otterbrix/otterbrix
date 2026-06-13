@@ -1,8 +1,9 @@
 #include "python_dependency.hpp"
+#include <memory>
 
 namespace otterbrix {
     
-    PythonDependencyItem::PythonDependencyItem(unique_ptr<RegisteredObject> &&object) : object(std::move(object)) {
+    PythonDependencyItem::PythonDependencyItem(std::unique_ptr<RegisteredObject> &&object) : object(std::move(object)) {
     }
     
     PythonDependencyItem::~PythonDependencyItem() { // NOLINT - cannot throw in exception
@@ -10,13 +11,13 @@ namespace otterbrix {
         object.reset();
     }
     
-    unique_ptr<DependencyItem> PythonDependencyItem::Create(py::object object) {
-        auto registered_object = make_unique<RegisteredObject>(std::move(object));
-        return make_unique<PythonDependencyItem>(std::move(registered_object));
+    std::unique_ptr<DependencyItem> PythonDependencyItem::Create(py::object object) {
+        auto registered_object = std::make_unique<RegisteredObject>(std::move(object));
+        return std::make_unique<PythonDependencyItem>(std::move(registered_object));
     }
         
-    unique_ptr<DependencyItem> PythonDependencyItem::Create(unique_ptr<RegisteredObject> &&object) {
-        return make_unique<PythonDependencyItem>(std::move(object));
+    std::unique_ptr<DependencyItem> PythonDependencyItem::Create(std::unique_ptr<RegisteredObject> &&object) {
+        return std::make_unique<PythonDependencyItem>(std::move(object));
     }
 
 } // namespace otterbrix

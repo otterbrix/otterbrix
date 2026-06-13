@@ -1,6 +1,7 @@
 #include "dataframe.hpp"
 
 #include <connection_environment/connection_environment.hpp>
+#include <connection_environment/module_cheker.hpp>
 
 #include <cassert>
 #include <stdexcept>

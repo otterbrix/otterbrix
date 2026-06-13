@@ -1,9 +1,9 @@
 #pragma once
 
-#include "string_util/case_insensitive.hpp"
-#include "types/memory.hpp"
-#include "types/string.hpp"
+#include <core/string_util/case_insensitive.hpp>
+#include <memory>
 
+#include <string>
 #include <utility>
 
 namespace otterbrix {
@@ -18,8 +18,8 @@ enum class dependency_kind_t : uint8_t
 	replacement_cache,  //! keeps the factory + python object alive for the replacement scan
 };
 
-inline const string& dependency_kind_name(dependency_kind_t kind) {
-	static const string names[] = {"data", "copy", "replacement_cache"};
+inline const std::string& dependency_kind_name(dependency_kind_t kind) {
+	static const std::string names[] = {"data", "copy", "replacement_cache"};
 	return names[static_cast<uint8_t>(kind)];
 }
 
@@ -51,7 +51,7 @@ public:
 	//! GetDependency therefore hands back a non-owning observer pointer; the scan's FunctionData
 	//! borrows it for a lifetime strictly nested inside this registry's.
 	//! R16: enum-keyed identity API (preferred).
-	void AddDependency(dependency_kind_t kind, unique_ptr<DependencyItem> item) {
+	void AddDependency(dependency_kind_t kind, std::unique_ptr<DependencyItem> item) {
 		objects[dependency_kind_name(kind)] = std::move(item);
 	}
 	DependencyItem *GetDependency(dependency_kind_t kind) const {
@@ -59,10 +59,10 @@ public:
 	}
 
 	//! Legacy string-keyed API, retained only for the out-of-zone arrow/pandas get-sites.
-	void AddDependency(const string &name, unique_ptr<DependencyItem> item) {
+	void AddDependency(const std::string &name, std::unique_ptr<DependencyItem> item) {
 		objects[name] = std::move(item);
 	}
-	DependencyItem *GetDependency(const string &name) const {
+	DependencyItem *GetDependency(const std::string &name) const {
 		auto it = objects.find(name);
 		if (it == objects.end()) {
 			return nullptr;
@@ -81,7 +81,7 @@ public:
 
 private:
 	//! The objects encompassed by this dependency. This registry owns them outright.
-	case_insensitive_map_t<unique_ptr<DependencyItem>> objects;
+	case_insensitive_map_t<std::unique_ptr<DependencyItem>> objects;
 };
 
 } // namespace otterbrix

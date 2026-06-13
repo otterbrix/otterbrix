@@ -10,12 +10,12 @@
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/table/column_definition.hpp>
-#include <core/types/memory.hpp>
-#include <core/types/vector.hpp>
+#include <memory>
 #include <components/tableref/tableref.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
 #include <memory_resource>
+#include <vector>
 
 
 using namespace components::logical_plan;
@@ -41,17 +41,17 @@ namespace otterbrix {
         // Chaining operations: each takes the source node + its column schema
         // and returns the new node + its (eagerly recomputed) column schema.
         built_relation_t FilterRelation(const built_relation_t& relation, const Expression& condition);
-        built_relation_t SortRelation(const built_relation_t& relation, const vector<Expression>& exprs);
-        built_relation_t GroupRelation(const built_relation_t& relation, const vector<Expression>& exprs);
-        built_relation_t SelectRelation(const built_relation_t& relation, const vector<Expression>& exprs);
+        built_relation_t SortRelation(const built_relation_t& relation, const std::vector<Expression>& exprs);
+        built_relation_t GroupRelation(const built_relation_t& relation, const std::vector<Expression>& exprs);
+        built_relation_t SelectRelation(const built_relation_t& relation, const std::vector<Expression>& exprs);
 
         built_relation_t JoinRelation(const built_relation_t& relation, const built_relation_t& other,
-                const vector<Expression>& exprs, components::logical_plan::join_type type);
+                const std::vector<Expression>& exprs, components::logical_plan::join_type type);
 
         built_relation_t LimitRelation(const built_relation_t& relation, int64_t count);
 
         built_relation_t CreateFromSelect(components::logical_plan::node_ptr plan);
-        built_relation_t CreateDFRelation(unique_ptr<components::tableref::TableRef> tableref);
+        built_relation_t CreateDFRelation(std::unique_ptr<components::tableref::TableRef> tableref);
 
     private:
         // Wrap a source node in an aggregate node carrying one of

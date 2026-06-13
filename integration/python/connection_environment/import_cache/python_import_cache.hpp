@@ -3,8 +3,8 @@
 #include "python_import_cache_modules.hpp"
 
 #include <pybind11/pybind_wrapper.hpp>
+#include <vector>
 
-#include <core/types/vector.hpp>
 
 namespace otterbrix {
 
@@ -33,7 +33,7 @@ public:
 	py::handle AddCache(py::object item);
 private:
 
-	vector<py::object> owned_objects;
+	std::vector<py::object> owned_objects;
 };
 
 } // namespace otterbrix

@@ -6,10 +6,9 @@
 #include <components/vector/vector.hpp>
 #include <core/result_wrapper.hpp>
 #include <core/typedefs.hpp>
-#include <core/types/string.hpp>
-#include <core/types/vector.hpp>
 
 #include <memory_resource>
+#include <string>
 
 namespace otterbrix {
 
@@ -24,7 +23,7 @@ struct RawArrayWrapper {
 	idx_t count;
 
 public:
-	static core::result_wrapper_t<string> OtterBrixToNumpyDtype(std::pmr::memory_resource *resource, const components::types::complex_logical_type &type);
+	static core::result_wrapper_t<std::string> OtterBrixToNumpyDtype(std::pmr::memory_resource *resource, const components::types::complex_logical_type &type);
 	core::error_t Initialize(std::pmr::memory_resource *resource, idx_t capacity);
 	void Resize(idx_t new_capacity);
 };

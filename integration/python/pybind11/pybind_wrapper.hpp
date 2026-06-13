@@ -4,7 +4,6 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
-#include <core/types/memory.hpp>
 
 #include <vector>
 

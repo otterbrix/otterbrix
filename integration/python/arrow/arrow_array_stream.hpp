@@ -6,7 +6,6 @@
 #include <components/vector/arrow/arrow_wrapper.hpp>
 
 #include <core/external_dependencies.hpp>
-#include <core/types/memory.hpp>
 
 #include <memory>
 
@@ -59,7 +58,7 @@ namespace otterbrix {
             : arrow_object(arrow_table) {};
 
         //! Produces an Arrow stream wrapper; called once when initializing scan state.
-        static unique_ptr<components::vector::arrow::arrow_array_schema_wrapper_t> Produce(uintptr_t factory);
+        static std::unique_ptr<components::vector::arrow::arrow_array_schema_wrapper_t> Produce(uintptr_t factory);
 
         //! Get the schema of the arrow object.
         static void GetSchemaInternal(py::handle arrow_object,

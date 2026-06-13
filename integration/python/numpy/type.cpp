@@ -1,15 +1,15 @@
 #include "numpy_type.hpp"
 
 #include <components/types/types.hpp>
-#include <core/types/string.hpp>
 
 #include <memory_resource>
+#include <string>
 
 namespace otterbrix {
 
 using components::types::logical_type;
 
-static core::error_t make_error(std::pmr::memory_resource *resource, const string &what) {
+static core::error_t make_error(std::pmr::memory_resource *resource, const std::string &what) {
 	return core::error_t{core::error_code_t::other_error, std::pmr::string{what, resource}};
 }
 
@@ -25,7 +25,7 @@ static bool IsDateTime(NumpyNullableType type) {
 	};
 }
 
-static core::result_wrapper_t<NumpyNullableType> ConvertNumpyTypeInternal(std::pmr::memory_resource *resource, const string &col_type_str) {
+static core::result_wrapper_t<NumpyNullableType> ConvertNumpyTypeInternal(std::pmr::memory_resource *resource, const std::string &col_type_str) {
 	if (col_type_str == "bool" || col_type_str == "boolean") {
 		return NumpyNullableType::BOOL;
 	}
@@ -104,7 +104,7 @@ static core::result_wrapper_t<NumpyNullableType> ConvertNumpyTypeInternal(std::p
 }
 
 core::result_wrapper_t<NumpyType> ConvertNumpyType(std::pmr::memory_resource *resource, const py::handle &col_type) {
-	auto col_type_str = string(py::str(col_type));
+	auto col_type_str = std::string(py::str(col_type));
 	NumpyType numpy_type;
 
 	auto internal = ConvertNumpyTypeInternal(resource, col_type_str);
@@ -158,7 +158,7 @@ core::result_wrapper_t<components::types::complex_logical_type> NumpyToLogicalTy
 		return logical_type::TIMESTAMP;
 	}
 	default:
-		return make_error(resource, "No known conversion for NumpyNullableType "+to_string(static_cast<unsigned int>(col_type.type))+" to logical_type");
+		return make_error(resource, "No known conversion for NumpyNullableType "+std::to_string(static_cast<unsigned int>(col_type.type))+" to logical_type");
 	}
 }
 

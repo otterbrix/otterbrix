@@ -10,8 +10,8 @@
 
 #include <limits>
 #include <memory_resource>
-#include <core/types/string.hpp>
-#include <core/types/vector.hpp>
+#include <string>
+#include <vector>
 
 using components::types::logical_value_t;
 using components::types::physical_type;
@@ -60,14 +60,14 @@ namespace otterbrix
     {
         return logical_value_t::create_map(r,
                                            logical_type::NA, logical_type::NA,
-                                           vector<logical_value_t>(), vector<logical_value_t>()
+                                           std::vector<logical_value_t>(), std::vector<logical_value_t>()
         );
     }
 
 
-    vector<string> TransformStructKeys(py::handle keys, idx_t size)
+    std::vector<std::string> TransformStructKeys(py::handle keys, idx_t size)
     {
-        vector<string> res;
+        std::vector<std::string> res;
         res.reserve(size);
         for (idx_t i = 0; i < size; i++)
         {
@@ -152,7 +152,7 @@ namespace otterbrix
             {
                 return make_error(r,
                     "We could not convert the object " + dict.ToString() + " to the target struct type with " +
-                    to_string(struct_extension->child_types().size()) + " fields"
+                    std::to_string(struct_extension->child_types().size()) + " fields"
                 );
             }
         }
@@ -163,7 +163,7 @@ namespace otterbrix
             key_mapping[struct_keys[i]] = i;
         }
 
-        vector<logical_value_t> struct_values;
+        std::vector<logical_value_t> struct_values;
         for (idx_t i = 0; i < dict.len; i++)
         {
             if (struct_target)
@@ -237,8 +237,8 @@ namespace otterbrix
         complex_logical_type key_type = logical_type::NA;
         complex_logical_type value_type = logical_type::NA;
 
-        vector<logical_value_t> key_values;
-        vector<logical_value_t> value_values;
+        std::vector<logical_value_t> key_values;
+        std::vector<logical_value_t> value_values;
 
         for (idx_t i = 0; i < size; i++)
         {
@@ -333,8 +333,8 @@ namespace otterbrix
         const auto& key_children = key_list.value().children();
         const auto& value_children = value_list.value().children();
 
-        vector<logical_value_t> key_values;
-        vector<logical_value_t> value_values;
+        std::vector<logical_value_t> key_values;
+        std::vector<logical_value_t> value_values;
 
         for (idx_t i = 0; i < key_size; i++)
         {
@@ -375,7 +375,7 @@ namespace otterbrix
                 +
                 "STRUCT consists of " + std::to_string(child_count) + " children");
         }
-        vector<logical_value_t> children;
+        std::vector<logical_value_t> children;
         for (idx_t i = 0; i < child_count; i++)
         {
             auto& type = child_types[i];
@@ -397,7 +397,7 @@ namespace otterbrix
     {
         auto size = py::len(ele);
 
-        vector<logical_value_t> values;
+        std::vector<logical_value_t> values;
         values.reserve(size);
 
         bool list_target = target_type.type() == logical_type::LIST;
@@ -428,7 +428,7 @@ namespace otterbrix
     {
         auto size = py::len(ele);
 
-        vector<logical_value_t> values;
+        std::vector<logical_value_t> values;
         values.reserve(size);
 
         bool array_target = target_type.type() == logical_type::ARRAY;
@@ -849,11 +849,11 @@ namespace otterbrix
             }
         case PythonObjectType::Uuid:
             {
-                return logical_value_t(resource, py::str(ele).cast<string>());
+                return logical_value_t(resource, py::str(ele).cast<std::string>());
             }
         case PythonObjectType::String:
             {
-                auto stringified = ele.cast<string>();
+                auto stringified = ele.cast<std::string>();
                 if (target_type.type() == logical_type::UNKNOWN
                     || target_type.type() == logical_type::STRING_LITERAL)
                 {
@@ -872,7 +872,7 @@ namespace otterbrix
             }
         case PythonObjectType::Bytes:
             {
-                const string& ele_string = ele.cast<string>();
+                const std::string& ele_string = ele.cast<std::string>();
                 switch (target_type.type())
                 {
                 case logical_type::UNKNOWN:
@@ -926,7 +926,7 @@ namespace otterbrix
             return TransformPythonValue(resource, ele.attr("tolist")(), target_type, nan_as_null);
         case PythonObjectType::Other:
             return make_error(resource, "No implementation: Unable to transform python value of type " +
-                py::str(ele.get_type()).cast<string>() +
+                py::str(ele.get_type()).cast<std::string>() +
                 " to OtterBrix logical_type");
         default:
             return make_error(resource, "Object type recognized but not implemented!");

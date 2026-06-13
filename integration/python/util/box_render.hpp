@@ -2,14 +2,14 @@
 
 #include <components/table/column_definition.hpp>
 #include <components/cursor/cursor.hpp>
+#include <string>
+#include <vector>
 
-#include <core/types/string.hpp>
-#include <core/types/vector.hpp>
 
 namespace otterbrix {
         
-    string Show(components::cursor::cursor_t_ptr cursor,
-            const vector<components::table::column_definition_t>& col_defs);
+    std::string Show(components::cursor::cursor_t_ptr cursor,
+            const std::vector<components::table::column_definition_t>& col_defs);
 
 } // namespace otterbrix
 

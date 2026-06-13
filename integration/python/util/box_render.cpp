@@ -5,6 +5,8 @@
 #include <tabulate/table.hpp>
 
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 
 namespace otterbrix {
@@ -12,8 +14,8 @@ namespace otterbrix {
     using namespace tabulate;
     using components::types::logical_type;
 
-    string Show(components::cursor::cursor_t_ptr cursor,
-            const vector<components::table::column_definition_t>& col_defs) {
+    std::string Show(components::cursor::cursor_t_ptr cursor,
+            const std::vector<components::table::column_definition_t>& col_defs) {
         Table box;
         Table::Row_t head;
         for (const auto& col_def : col_defs) {

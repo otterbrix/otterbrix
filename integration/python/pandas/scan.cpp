@@ -1,4 +1,5 @@
 #include "pandas_scan.hpp"
+#include <memory>
 #include "pandas_bind.hpp"
 #include "column/pandas_numpy_column.hpp"
 
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace otterbrix {
 
@@ -24,16 +26,16 @@ using namespace components::function;
 
 
 struct PandasScanFunctionData : public TableFunctionData {
-    PandasScanFunctionData(py::handle df, idx_t row_count, vector<PandasColumnBindData> pandas_bind_data,
-                           vector<complex_logical_type> sql_types, DependencyItem* dependency)
+    PandasScanFunctionData(py::handle df, idx_t row_count, std::vector<PandasColumnBindData> pandas_bind_data,
+                           std::vector<complex_logical_type> sql_types, DependencyItem* dependency)
         : df(df), row_count(row_count), lines_read(0), pandas_bind_data(std::move(pandas_bind_data))
         , sql_types(std::move(sql_types)), copied_df(dependency)  {
     }
     py::handle df;
     idx_t row_count;
     std::atomic<idx_t> lines_read;
-    vector<PandasColumnBindData> pandas_bind_data;
-    vector<complex_logical_type> sql_types;
+    std::vector<PandasColumnBindData> pandas_bind_data;
+    std::vector<complex_logical_type> sql_types;
     //! Non-owning observer of the source/copy dependency. The owning ExternalDependency (held by
     //! the TableRef) outlives this FunctionData, so a borrow is sufficient to document the alias.
     DependencyItem* copied_df;
@@ -54,7 +56,7 @@ struct PandasScanLocalState : public LocalTableFunctionState {
     idx_t start;
     idx_t end;
     idx_t batch_index;
-    vector<uint64_t> column_ids;
+    std::vector<uint64_t> column_ids;
 };
 
 struct PandasScanGlobalState : public GlobalTableFunctionState {
@@ -76,12 +78,12 @@ PandasScanFunction::PandasScanFunction()
                    PandasScanInitLocal) {
     }
 
-unique_ptr<FunctionData> PandasScanFunction::PandasScanBind(TableFunctionBindInput &input,
-                                                           vector<complex_logical_type> &return_types, vector<string> &names) {
+std::unique_ptr<FunctionData> PandasScanFunction::PandasScanBind(TableFunctionBindInput &input,
+                                                           std::vector<complex_logical_type> &return_types, std::vector<std::string> &names) {
     py::gil_scoped_acquire acquire;
     py::handle df(reinterpret_cast<PyObject *>(input.inputs[0].value<void*>()));
 
-    vector<PandasColumnBindData> pandas_bind_data;
+    std::vector<PandasColumnBindData> pandas_bind_data;
 
     // NOTE: the table-function bind callback (table_function_bind_t) has a fixed C-ABI
     // signature with no threaded engine resource, so the binder resource is rooted here.
@@ -109,19 +111,19 @@ unique_ptr<FunctionData> PandasScanFunction::PandasScanBind(TableFunctionBindInp
 
     auto get_fun = df.attr("__getitem__");
     idx_t row_count = py::len(get_fun(df_columns[0]));
-    return make_unique<PandasScanFunctionData>(df, row_count, std::move(pandas_bind_data), return_types, dependency_item);
+    return std::make_unique<PandasScanFunctionData>(df, row_count, std::move(pandas_bind_data), return_types, dependency_item);
 }
 
-unique_ptr<GlobalTableFunctionState> PandasScanFunction::PandasScanInitGlobal(TableFunctionInitInput &input) {
+std::unique_ptr<GlobalTableFunctionState> PandasScanFunction::PandasScanInitGlobal(TableFunctionInitInput &input) {
     if (PyGILState_Check()) {
          throw std::runtime_error("PandasScan called but GIL was already held!");
     }
-    return make_unique<PandasScanGlobalState>(PandasScanMaxThreads(input.bind_data.get()));
+    return std::make_unique<PandasScanGlobalState>(PandasScanMaxThreads(input.bind_data.get()));
 }
 
-unique_ptr<LocalTableFunctionState> PandasScanFunction::PandasScanInitLocal(TableFunctionInitInput &input,
+std::unique_ptr<LocalTableFunctionState> PandasScanFunction::PandasScanInitLocal(TableFunctionInitInput &input,
                                                                            GlobalTableFunctionState *gstate) {
-    auto result = make_unique<PandasScanLocalState>(0, 0);
+    auto result = std::make_unique<PandasScanLocalState>(0, 0);
     result->column_ids = input.column_ids;
     PandasScanParallelStateNext(input.bind_data.get(), result.get(), gstate);
     return result;
@@ -200,9 +202,9 @@ void PandasScanFunction::PandasScanFunc(TableFunctionInput &data_p, components::
 py::object PandasScanFunction::PandasReplaceCopiedNames(const py::object &original_df) {
     py::object copy_df = original_df.attr("copy")(false);
     auto df_columns = py::list(original_df.attr("columns"));
-    vector<string> columns;
+    std::vector<std::string> columns;
     for (const auto &str : df_columns) {
-         columns.push_back(string(py::str(str)));
+         columns.push_back(std::string(py::str(str)));
     }
     string_utils::DeduplicateColumns(columns);
 

@@ -320,7 +320,7 @@ namespace otterbrix {
     		py::object object = py::reinterpret_borrow<py::object>(arg);
     		auto member = FromObject(object, resource);
     		if (member.has_error()) {
-    			return std::move(member);
+    			return member;
     		}
     		members.push_back(std::move(member.value()));
             members.back().set_alias(name);
@@ -361,7 +361,7 @@ namespace otterbrix {
     		}
     		auto child = FromObject(args[0], resource);
     		if (child.has_error()) {
-    			return std::move(child);
+    			return child;
     		}
     		return complex_logical_type::create_list(child.value());
     	}
@@ -369,11 +369,11 @@ namespace otterbrix {
     		if (IsMapType(args)) {
     			auto key = FromObject(args[0], resource);
     			if (key.has_error()) {
-    				return std::move(key);
+    				return key;
     			}
     			auto value = FromObject(args[1], resource);
     			if (value.has_error()) {
-    				return std::move(value);
+    				return value;
     			}
     			return complex_logical_type::create_map(key.value(), value.value());
     		} else {
@@ -401,7 +401,7 @@ namespace otterbrix {
     		std::string name = py::str(name_p);
     		auto type = FromObject(type_p, resource);
     		if (type.has_error()) {
-    			return std::move(type);
+    			return type;
     		}
     		children.push_back(std::move(type.value()));
             children.back().set_alias(name);

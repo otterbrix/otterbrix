@@ -83,6 +83,7 @@ namespace services::index {
             uint64_t next_overflow_page{0};
             uint32_t level_value{0};
             uint32_t split_bucket_value{0};
+            uint32_t hash_seed_value{0};
         };
 
         void open_or_create();
@@ -96,7 +97,7 @@ namespace services::index {
         uint64_t overflow_page_count() const;
         uint64_t bucket_primary_page_id(uint32_t bucket_id) const;
 
-        static uint32_t hash_key(std::string_view key);
+        uint32_t hash_key(std::string_view key) const;
 
         void read_page(uint64_t page_id, byte_buffer_t& page) const;
         void write_page(uint64_t page_id, const byte_buffer_t& page);

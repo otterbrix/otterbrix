@@ -956,30 +956,47 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::merge_immutable_segments() {
-        std::unique_lock lock(mutex_);
-        const uint64_t last_active_segment_id = active_segment_id_;
-        auto segments = collect_segments();
+        struct merge_ref_t {
+            std::string key_bytes;
+            uint32_t old_log_file_id{0};
+            uint64_t old_log_offset{0};
+            int64_t row_value{0};
+            uint64_t new_log_offset{0};
+        };
+
+        uint64_t frontier_segment_id = 0;
         std::vector<segment_info_t> immutable_segments;
-        for (const auto& segment : segments) {
-            if (segment.id < last_active_segment_id) {
-                immutable_segments.push_back(segment);
-            }
-        }
-        if (immutable_segments.empty()) {
-            return;
-        }
-        const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
-        struct restore_rehash_state_t {
-            disk_hash_table_t* table{nullptr};
-            bool prev{false};
-            ~restore_rehash_state_t() {
-                if (table) {
-                    table->set_auto_rehash_suppressed(prev);
+        std::vector<disk_hash_table_t::value_ref_t> refs;
+        std::vector<merge_ref_t> merged_refs;
+        uint64_t merged_segment_id = 0;
+        bool built = false;
+
+        {
+            std::unique_lock lock(mutex_);
+            frontier_segment_id = active_segment_id_;
+            auto segments = collect_segments();
+            for (const auto& seg : segments) {
+                if (seg.id < frontier_segment_id) {
+                    immutable_segments.push_back(seg);
                 }
             }
-        } restore_rehash_state{hash_index_.get(), prev_rehash_suppressed};
+            if (immutable_segments.empty()) {
+                return;
+            }
+            const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
+            bulk_prev_rehash_suppressed_ = prev_rehash_suppressed;
+            hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
+                if (ref.log_file_id < static_cast<uint32_t>(frontier_segment_id)) {
+                    refs.push_back(ref);
+                }
+            });
+            if (refs.empty()) {
+                hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
+                return;
+            }
+        }
 
-        const auto merged_segment_id = allocate_next_segment_id();
+        merged_segment_id = allocate_next_segment_id();
         const auto merged_path = segment_file_path(path_, merged_segment_id);
         const auto temp_path = merge_temp_file_path(path_, merged_segment_id);
         remove_file(fs_, temp_path);
@@ -994,56 +1011,67 @@ namespace services::index {
             std::abort();
         }
 
-        struct merged_ref_t {
-            std::string key_bytes;
-            int64_t row;
-            uint64_t offset;
-        };
-
-        std::vector<disk_hash_table_t::value_ref_t> refs;
-        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) { refs.push_back(ref); });
-        std::vector<merged_ref_t> merged_refs;
         merged_refs.reserve(refs.size());
         for (const auto& ref : refs) {
-            if (ref.log_file_id >= last_active_segment_id) {
-                continue;
-            }
             row_ids_t rows(resource_);
             value_t key(resource_, nullptr);
             if (!read_rows_at(ref.log_file_id, ref.log_offset, rows, &key)) {
                 continue;
             }
+            const auto key_bytes = key_bytes_for_hash(key);
             auto payload = serialize_payload(resource_, key, rows);
             const auto offset = merged_file->seek_position();
             write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
-            merged_refs.push_back(merged_ref_t{key_bytes_for_hash(key),
-                                               rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
-                                               offset + sizeof(record_header_t)});
+            merged_refs.push_back(merge_ref_t{key_bytes,
+                                              ref.log_file_id,
+                                              ref.log_offset,
+                                              rows.empty() ? -1 : static_cast<int64_t>(rows.back()),
+                                              offset + sizeof(record_header_t)});
         }
 
-        merged_file->sync();
-        merged_file.reset();
-        if (!move_files(fs_, temp_path, merged_path)) {
-            // -fno-exceptions build: abort instead of throw on I/O failure.
-            assert(false && "bitcask I/O failure");
-            std::abort();
+        if (!merged_refs.empty()) {
+            merged_file->sync();
+            merged_file.reset();
+            if (!move_files(fs_, temp_path, merged_path)) {
+                assert(false && "bitcask I/O failure");
+                std::abort();
+            }
+            built = true;
+        } else {
+            merged_file.reset();
+            remove_file(fs_, temp_path);
         }
 
-        for (const auto& merged_ref : merged_refs) {
-            erase_all_refs_for_key(merged_ref.key_bytes);
-            hash_index_->put(merged_ref.key_bytes,
-                             merged_ref.row,
+        std::unique_lock lock(mutex_);
+        if (!built) {
+            hash_index_->set_auto_rehash_suppressed(bulk_prev_rehash_suppressed_);
+            if (!bulk_prev_rehash_suppressed_) {
+                hash_index_->trigger_rehash_if_needed();
+            }
+            return;
+        }
+
+        for (const auto& ref : merged_refs) {
+            auto current = hash_index_->get(ref.key_bytes, false);
+            if (!current.has_value()) {
+                continue;
+            }
+            if (current->log_file_id != ref.old_log_file_id ||
+                current->log_offset  != ref.old_log_offset) {
+                continue;
+            }
+            erase_all_refs_for_key(ref.key_bytes);
+            hash_index_->put(ref.key_bytes,
+                             ref.row_value,
                              static_cast<uint32_t>(merged_segment_id),
-                             merged_ref.offset);
+                             ref.new_log_offset);
         }
-
+        hash_index_->sync();
         for (const auto& segment : immutable_segments) {
             remove_file(fs_, segment.path);
         }
-
-        restore_rehash_state.table = nullptr;
-        hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
-        if (!prev_rehash_suppressed) {
+        hash_index_->set_auto_rehash_suppressed(bulk_prev_rehash_suppressed_);
+        if (!bulk_prev_rehash_suppressed_) {
             hash_index_->trigger_rehash_if_needed();
         }
     }
@@ -1083,8 +1111,6 @@ namespace services::index {
         remove_file(fs_, txn_log_file_path());
         remove_file(fs_, txn_applied_file_path());
         remove_file(fs_, hash_index_file_path_);
-
-        // Reset all in-memory cursors to the fresh-directory state.
         reset_flush_state();
         next_timestamp_ = 0;
         next_segment_id_.store(1);

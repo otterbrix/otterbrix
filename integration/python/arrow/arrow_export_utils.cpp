@@ -2,34 +2,50 @@
 
 #include "arrow_array_stream.hpp"
 
-#include <components/arrow/arrow.hpp>
-#include <components/arrow/arrow_converter.hpp>
+#include <components/vector/arrow/arrow.hpp>
+#include <components/vector/arrow/arrow_converter.hpp>
+
+#include <memory_resource>
 
 namespace otterbrix {
 
-    void TransformOtterbrixToArrowChunk(ArrowSchema &arrow_schema, ArrowArray &data, py::list &batches) {
-	    py::gil_assert();
-	    auto pyarrow_lib_module = py::module::import("pyarrow").attr("lib");
-	    auto batch_import_func = pyarrow_lib_module.attr("RecordBatch").attr("_import_from_c");
-	    batches.append(batch_import_func(reinterpret_cast<uint64_t>(&data), reinterpret_cast<uint64_t>(&arrow_schema)));
+    void TransformOtterbrixToArrowChunk(ArrowSchema& arrow_schema, ArrowArray& data, py::list& batches) {
+        py::gil_assert();
+        auto pyarrow_lib_module = py::module::import("pyarrow").attr("lib");
+        auto batch_import_func = pyarrow_lib_module.attr("RecordBatch").attr("_import_from_c");
+        batches.append(
+            batch_import_func(reinterpret_cast<uint64_t>(&data), reinterpret_cast<uint64_t>(&arrow_schema)));
     }
 
     namespace pyarrow {
-    
-        py::object ToArrowTable(const vector<components::types::complex_logical_type> &types, 
-                const vector<string> &names, const py::list &batches) {
-        	py::gil_scoped_acquire acquire;
-        
-        	auto pyarrow_lib_module = py::module::import("pyarrow").attr("lib");
-        	auto from_batches_func = pyarrow_lib_module.attr("Table").attr("from_batches");
-        	auto schema_import_func = pyarrow_lib_module.attr("Schema").attr("_import_from_c");
-        	ArrowSchema schema;
-            components::arrow::ArrowConverter::ToArrowSchema(&schema, types, names);
-        	auto schema_obj = schema_import_func(reinterpret_cast<uint64_t>(&schema));
-        
-        	return py::cast<otterbrix::pyarrow::Table>(from_batches_func(batches, schema_obj));
+
+        py::object ToArrowTable(const vector<components::types::complex_logical_type>& types,
+                                const vector<string>& names,
+                                const py::list& batches) {
+            py::gil_scoped_acquire acquire;
+
+            auto pyarrow_lib_module = py::module::import("pyarrow").attr("lib");
+            auto from_batches_func = pyarrow_lib_module.attr("Table").attr("from_batches");
+            auto schema_import_func = pyarrow_lib_module.attr("Schema").attr("_import_from_c");
+
+            // Core to_arrow_schema derives column names from the type aliases; fold names into typed aliases.
+            std::pmr::vector<components::types::complex_logical_type> schema_types(std::pmr::get_default_resource());
+            schema_types.reserve(types.size());
+            for (std::size_t i = 0; i < types.size(); i++) {
+                auto t = types[i];
+                if (i < names.size()) {
+                    t.set_alias(names[i]);
+                }
+                schema_types.push_back(std::move(t));
+            }
+
+            ArrowSchema schema;
+            components::vector::arrow::to_arrow_schema(&schema, schema_types);
+            auto schema_obj = schema_import_func(reinterpret_cast<uint64_t>(&schema));
+
+            return py::cast<otterbrix::pyarrow::Table>(from_batches_func(batches, schema_obj));
         }
-    
+
     } // namespace pyarrow
 
 } // namespace otterbrix

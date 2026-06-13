@@ -3,12 +3,15 @@
 #include <components/types/types.hpp>
 #include <core/types/string.hpp>
 
-#include <algorithm>
-#include <stdexcept>
+#include <memory_resource>
 
 namespace otterbrix {
 
 using components::types::logical_type;
+
+static core::error_t make_error(std::pmr::memory_resource *resource, const string &what) {
+	return core::error_t{core::error_code_t::other_error, std::pmr::string{what, resource}};
+}
 
 static bool IsDateTime(NumpyNullableType type) {
 	switch (type) {
@@ -22,7 +25,7 @@ static bool IsDateTime(NumpyNullableType type) {
 	};
 }
 
-static NumpyNullableType ConvertNumpyTypeInternal(const string &col_type_str) {
+static core::result_wrapper_t<NumpyNullableType> ConvertNumpyTypeInternal(std::pmr::memory_resource *resource, const string &col_type_str) {
 	if (col_type_str == "bool" || col_type_str == "boolean") {
 		return NumpyNullableType::BOOL;
 	}
@@ -68,49 +71,47 @@ static NumpyNullableType ConvertNumpyTypeInternal(const string &col_type_str) {
 	if (col_type_str == "timedelta64[ns]") {
 		return NumpyNullableType::TIMEDELTA;
 	}
-	// We use 'StartsWith' because it might have ', tz' at the end, indicating timezone
-    auto StartsWith = [](const string& text, const string& prefix) { 
-        if (text.length() < prefix.length()) {
-            return false;
-        }
-        return std::equal(prefix.begin(), prefix.end(), text.begin());
-    };
-	if (StartsWith(col_type_str, "datetime64[ns")) {
+	// We use 'starts_with' because it might have ', tz' at the end, indicating timezone
+	if (col_type_str.starts_with("datetime64[ns")) {
 		return NumpyNullableType::DATETIME_NS;
 	}
-	if (StartsWith(col_type_str, "datetime64[us")) {
+	if (col_type_str.starts_with("datetime64[us")) {
 		return NumpyNullableType::DATETIME_US;
 	}
-	if (StartsWith(col_type_str, "datetime64[ms")) {
+	if (col_type_str.starts_with("datetime64[ms")) {
 		return NumpyNullableType::DATETIME_MS;
 	}
-	if (StartsWith(col_type_str, "datetime64[s")) {
+	if (col_type_str.starts_with("datetime64[s")) {
 		return NumpyNullableType::DATETIME_S;
 	}
 	// Legacy datetime type indicators
-	if (StartsWith(col_type_str, "<M8[ns")) {
+	if (col_type_str.starts_with("<M8[ns")) {
 		return NumpyNullableType::DATETIME_NS;
 	}
-	if (StartsWith(col_type_str, "<M8[s")) {
+	if (col_type_str.starts_with("<M8[s")) {
 		return NumpyNullableType::DATETIME_S;
 	}
-	if (StartsWith(col_type_str, "<M8[us")) {
+	if (col_type_str.starts_with("<M8[us")) {
 		return NumpyNullableType::DATETIME_US;
 	}
-	if (StartsWith(col_type_str, "<M8[ms")) {
+	if (col_type_str.starts_with("<M8[ms")) {
 		return NumpyNullableType::DATETIME_MS;
 	}
 	if (col_type_str == "category") {
 		return NumpyNullableType::CATEGORY;
 	}
-	throw std::runtime_error("Data type "+col_type_str+" not recognized");
+	return make_error(resource, "Data type "+col_type_str+" not recognized");
 }
 
-NumpyType ConvertNumpyType(const py::handle &col_type) {
+core::result_wrapper_t<NumpyType> ConvertNumpyType(std::pmr::memory_resource *resource, const py::handle &col_type) {
 	auto col_type_str = string(py::str(col_type));
 	NumpyType numpy_type;
 
-	numpy_type.type = ConvertNumpyTypeInternal(col_type_str);
+	auto internal = ConvertNumpyTypeInternal(resource, col_type_str);
+	if (internal.has_error()) {
+		return internal.convert_error<NumpyType>();
+	}
+	numpy_type.type = internal.value();
 	if (IsDateTime(numpy_type.type)) {
 		if (hasattr(col_type, "tz")) {
 			// The datetime has timezone information.
@@ -120,7 +121,7 @@ NumpyType ConvertNumpyType(const py::handle &col_type) {
 	return numpy_type;
 }
 
-components::types::complex_logical_type NumpyToLogicalType(const NumpyType &col_type) {
+core::result_wrapper_t<components::types::complex_logical_type> NumpyToLogicalType(std::pmr::memory_resource *resource, const NumpyType &col_type) {
 	switch (col_type.type) {
 	case NumpyNullableType::BOOL:
 		return logical_type::BOOLEAN;
@@ -157,7 +158,7 @@ components::types::complex_logical_type NumpyToLogicalType(const NumpyType &col_
 		return logical_type::TIMESTAMP;
 	}
 	default:
-		throw std::runtime_error("No known conversion for NumpyNullableType "+to_string(static_cast<unsigned int>(col_type.type))+" to logical_type");
+		return make_error(resource, "No known conversion for NumpyNullableType "+to_string(static_cast<unsigned int>(col_type.type))+" to logical_type");
 	}
 }
 

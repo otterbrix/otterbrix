@@ -8,8 +8,9 @@
 #include <core/typedefs.hpp>
 #include <core/types/vector.hpp>
 #include <core/string_util/case_insensitive.hpp>
+#include <core/result_wrapper.hpp>
 
-#include <stdexcept>
+#include <memory_resource>
 
 namespace otterbrix {
     using components::types::logical_type;
@@ -52,7 +53,8 @@ static bool SameTypeRealm(const complex_logical_type &a, const complex_logical_t
 	return true;
 }
 
-static bool UpgradeType(complex_logical_type &left, const complex_logical_type &right);
+static core::result_wrapper_t<bool> UpgradeType(complex_logical_type &left, const complex_logical_type &right,
+                                                std::pmr::memory_resource *resource);
 
 static bool CheckTypeCompatibility(const complex_logical_type &left, const complex_logical_type &right) {
 	if (!SameTypeRealm(left, right)) {
@@ -97,24 +99,40 @@ static bool IsStructColumnValid(const complex_logical_type &left, const complex_
 	return true;
 }
 
-static bool CombineStructTypes(complex_logical_type &result, const complex_logical_type &input) {
+static core::result_wrapper_t<bool> CombineStructTypes(complex_logical_type &result, const complex_logical_type &input,
+                                                       std::pmr::memory_resource *resource) {
 	assert(input.type() == logical_type::STRUCT);
 	auto &children = input.child_types();
 	for (auto &type : children) {
-		if (!UpgradeType(result, type)) {
+		auto upgraded = UpgradeType(result, type, resource);
+		if (upgraded.has_error()) {
+			return upgraded;
+		}
+		if (!upgraded.value()) {
 			return false;
 		}
 	}
 	return true;
 }
 
-static bool SatisfiesMapConstraints(const complex_logical_type &left, const complex_logical_type &right, complex_logical_type &map_value_type) {
+static core::result_wrapper_t<bool> SatisfiesMapConstraints(const complex_logical_type &left,
+                                                            const complex_logical_type &right,
+                                                            complex_logical_type &map_value_type,
+                                                            std::pmr::memory_resource *resource) {
 	assert(left.type() == logical_type::STRUCT && left.type() == right.type());
 
-	if (!CombineStructTypes(map_value_type, left)) {
+	auto combined_left = CombineStructTypes(map_value_type, left, resource);
+	if (combined_left.has_error()) {
+		return combined_left;
+	}
+	if (!combined_left.value()) {
 		return false;
 	}
-	if (!CombineStructTypes(map_value_type, right)) {
+	auto combined_right = CombineStructTypes(map_value_type, right, resource);
+	if (combined_right.has_error()) {
+		return combined_right;
+	}
+	if (!combined_right.value()) {
 		return false;
 	}
 	return true;
@@ -126,7 +144,8 @@ static complex_logical_type ConvertStructToMap(complex_logical_type &map_value_t
 
 // This is similar to ForceMaxLogicalType but we have custom rules around combining STRUCT types
 // And because of that we have to avoid ForceMaxLogicalType for every nested type
-static bool UpgradeType(complex_logical_type &left, const complex_logical_type &right) {
+static core::result_wrapper_t<bool> UpgradeType(complex_logical_type &left, const complex_logical_type &right,
+                                                std::pmr::memory_resource *resource) {
 	if (left.type() == logical_type::NA) {
 		// Early out for upgrading null
 		left = right;
@@ -144,23 +163,33 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 			return false;
 		}
 		complex_logical_type child_type = logical_type::NA;
-		if (!UpgradeType(child_type, left.child_type())) {
+		auto upgraded_left = UpgradeType(child_type, left.child_type(), resource);
+		if (upgraded_left.has_error()) {
+			return upgraded_left;
+		}
+		if (!upgraded_left.value()) {
 			return false;
 		}
-		if (!UpgradeType(child_type, right.child_type())) {
+		auto upgraded_right = UpgradeType(child_type, right.child_type(), resource);
+		if (upgraded_right.has_error()) {
+			return upgraded_right;
+		}
+		if (!upgraded_right.value()) {
 			return false;
 		}
 		left = complex_logical_type::create_list(child_type);
 		return true;
 	}
     case logical_type::ARRAY: {
-		throw std::runtime_error("ARRAY types are not being detected yet, this should never happen");
+		return core::error_t(core::error_code_t::unimplemented_yet,
+		                     std::pmr::string("ARRAY types are not being detected yet, this should never happen",
+		                                      resource));
 	}
     case logical_type::STRUCT: {
 		if (right.type() == logical_type::STRUCT) {
 			bool valid_struct = IsStructColumnValid(left, right);
 			if (valid_struct) {
-                std::pmr::vector<complex_logical_type> children(std::pmr::get_default_resource());
+                std::pmr::vector<complex_logical_type> children(resource);
 				auto child_count = right.size();
 				assert(child_count == left.size());
 
@@ -171,8 +200,12 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 					auto &right_child = right_children[i];
 					auto new_child = left_children[i];
 
-					auto child_name = new_child.alias(); 
-					if (!UpgradeType(new_child, right_child)) {
+					auto child_name = new_child.alias();
+					auto upgraded = UpgradeType(new_child, right_child, resource);
+					if (upgraded.has_error()) {
+						return upgraded;
+					}
+					if (!upgraded.value()) {
 						return false;
 					}
                     new_child.set_alias(child_name);
@@ -181,7 +214,11 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 				left = complex_logical_type::create_struct("struct", std::move(children));
 			} else {
 				complex_logical_type value_type = logical_type::NA;
-				if (SatisfiesMapConstraints(left, right, value_type)) {
+				auto satisfies = SatisfiesMapConstraints(left, right, value_type, resource);
+				if (satisfies.has_error()) {
+					return satisfies;
+				}
+				if (satisfies.value()) {
 					// Combine all the child types together, becoming the value_type for the resulting MAP
 					left = ConvertStructToMap(value_type);
 				} else {
@@ -191,9 +228,13 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 		} else if (right.type() == logical_type::MAP) {
 			// Left: STRUCT, Right: MAP
 			// Combine all the child types of the STRUCT into the value type of the MAP
-            auto value_type = 
+            auto value_type =
                 static_cast<map_logical_type_extension*>(right.extension())->value();
-			if (!CombineStructTypes(value_type, left)) {
+			auto combined = CombineStructTypes(value_type, left, resource);
+			if (combined.has_error()) {
+				return combined;
+			}
+			if (!combined.value()) {
 				return false;
 			}
 			left = complex_logical_type::create_map(logical_type::STRING_LITERAL, value_type);
@@ -203,7 +244,9 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 		return true;
 	}
     case logical_type::UNION: {
-		throw std::runtime_error("UNION types are not being detected yet, this should never happen");
+		return core::error_t(core::error_code_t::unimplemented_yet,
+		                     std::pmr::string("UNION types are not being detected yet, this should never happen",
+		                                      resource));
 	}
     case logical_type::MAP: {
         auto left_map_extension =
@@ -213,25 +256,45 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
                 static_cast<map_logical_type_extension*>(right.extension());
 			// Key Type
 			complex_logical_type key_type = logical_type::NA;
-			if (!UpgradeType(key_type, left_map_extension->key())) {
+			auto key_left = UpgradeType(key_type, left_map_extension->key(), resource);
+			if (key_left.has_error()) {
+				return key_left;
+			}
+			if (!key_left.value()) {
 				return false;
 			}
-			if (!UpgradeType(key_type, right_map_extension->key())) {
+			auto key_right = UpgradeType(key_type, right_map_extension->key(), resource);
+			if (key_right.has_error()) {
+				return key_right;
+			}
+			if (!key_right.value()) {
 				return false;
 			}
 
 			// Value Type
 			complex_logical_type value_type = logical_type::NA;
-			if (!UpgradeType(value_type, left_map_extension->value())) {
+			auto val_left = UpgradeType(value_type, left_map_extension->value(), resource);
+			if (val_left.has_error()) {
+				return val_left;
+			}
+			if (!val_left.value()) {
 				return false;
 			}
-			if (!UpgradeType(value_type, right_map_extension->value())) {
+			auto val_right = UpgradeType(value_type, right_map_extension->value(), resource);
+			if (val_right.has_error()) {
+				return val_right;
+			}
+			if (!val_right.value()) {
 				return false;
 			}
 			left = complex_logical_type::create_map(key_type, value_type);
 		} else if (right.type() == logical_type::STRUCT) {
 			auto value_type = left_map_extension->value();
-			if (!CombineStructTypes(value_type, right)) {
+			auto combined = CombineStructTypes(value_type, right, resource);
+			if (combined.has_error()) {
+				return combined;
+			}
+			if (!combined.value()) {
 				return false;
 			}
 			left = complex_logical_type::create_map(logical_type::STRING_LITERAL, value_type);
@@ -249,11 +312,11 @@ static bool UpgradeType(complex_logical_type &left, const complex_logical_type &
 	}
 }
 
-complex_logical_type PandasAnalyzer::GetListType(py::object &ele, bool &can_convert) {
+core::result_wrapper_t<complex_logical_type> PandasAnalyzer::GetListType(py::object &ele, bool &can_convert) {
 	auto size = py::len(ele);
 
 	if (size == 0) {
-		return logical_type::NA;
+		return complex_logical_type(logical_type::NA);
 	}
 
 	idx_t i = 0;
@@ -261,10 +324,17 @@ complex_logical_type PandasAnalyzer::GetListType(py::object &ele, bool &can_conv
 	for (auto py_val : ele) {
 		auto object = py::reinterpret_borrow<py::object>(py_val);
 		auto item_type = GetItemType(object, can_convert);
+		if (item_type.has_error()) {
+			return item_type;
+		}
 		if (!i) {
-			list_type = item_type;
+			list_type = item_type.value();
 		} else {
-			if (!UpgradeType(list_type, item_type)) {
+			auto upgraded = UpgradeType(list_type, item_type.value(), resource_);
+			if (upgraded.has_error()) {
+				return upgraded.convert_error<complex_logical_type>();
+			}
+			if (!upgraded.value()) {
 				can_convert = false;
 			}
 		}
@@ -296,7 +366,7 @@ static bool StructKeysAreEqual(const std::pmr::vector<complex_logical_type> &ref
 }
 
 // Verify that all struct entries in a column have the same amount of fields and that keys are equal
-static bool VerifyStructValidity(vector<complex_logical_type> &structs) {
+static bool VerifyStructValidity(std::pmr::vector<complex_logical_type> &structs) {
 	assert(!structs.empty());
 	idx_t reference_entry = 0;
 	// Get first non-null entry
@@ -328,31 +398,37 @@ static bool VerifyStructValidity(vector<complex_logical_type> &structs) {
 	return true;
 }
 
-complex_logical_type PandasAnalyzer::DictToMap(const PyDictionary &dict, bool &can_convert) {
+core::result_wrapper_t<complex_logical_type> PandasAnalyzer::DictToMap(const PyDictionary &dict, bool &can_convert) {
 	auto keys = dict.values.attr("__getitem__")(0);
 	auto values = dict.values.attr("__getitem__")(1);
 
 	if (py::none().is(keys) || py::none().is(values)) {
 		return complex_logical_type::create_map(
-                logical_type::NA, 
+                logical_type::NA,
                 logical_type::NA);
 	}
 
 	auto key_type = GetListType(keys, can_convert);
+	if (key_type.has_error()) {
+		return key_type;
+	}
 	if (!can_convert) {
 		return EmptyMap();
 	}
 	auto value_type = GetListType(values, can_convert);
+	if (value_type.has_error()) {
+		return value_type;
+	}
 	if (!can_convert) {
 		return EmptyMap();
 	}
 
-	return complex_logical_type::create_map(key_type, value_type);
+	return complex_logical_type::create_map(key_type.value(), value_type.value());
 }
 
 //! Python dictionaries don't allow duplicate keys, so we don't need to check this.
-complex_logical_type PandasAnalyzer::DictToStruct(const PyDictionary &dict, bool &can_convert) {
-    std::pmr::vector<complex_logical_type> struct_children(std::pmr::get_default_resource());
+core::result_wrapper_t<complex_logical_type> PandasAnalyzer::DictToStruct(const PyDictionary &dict, bool &can_convert) {
+    std::pmr::vector<complex_logical_type> struct_children(resource_);
 
 	for (idx_t i = 0; i < dict.len; i++) {
 		auto dict_key = dict.keys.attr("__getitem__")(i);
@@ -362,8 +438,12 @@ complex_logical_type PandasAnalyzer::DictToStruct(const PyDictionary &dict, bool
 
 		auto dict_val = dict.values.attr("__getitem__")(i);
 		auto val = GetItemType(dict_val, can_convert);
-        val.set_alias(key);
-		struct_children.push_back(val);
+		if (val.has_error()) {
+			return val;
+		}
+		auto child = val.value();
+        child.set_alias(key);
+		struct_children.push_back(child);
 	}
 	return complex_logical_type::create_struct("struct", struct_children);
 }
@@ -372,27 +452,27 @@ complex_logical_type PandasAnalyzer::DictToStruct(const PyDictionary &dict, bool
 //! e.g python lists can consist of multiple different types, which we cant communicate downwards through
 //! complex_logical_type's alone
 
-complex_logical_type PandasAnalyzer::GetItemType(py::object ele, bool &can_convert) {
+core::result_wrapper_t<complex_logical_type> PandasAnalyzer::GetItemType(py::object ele, bool &can_convert) {
 	auto object_type = GetPythonObjectType(ele);
 
 	switch (object_type) {
 	case PythonObjectType::None:
-		return logical_type::NA;
+		return complex_logical_type(logical_type::NA);
 	case PythonObjectType::Bool:
-		return logical_type::BOOLEAN;
+		return complex_logical_type(logical_type::BOOLEAN);
 	case PythonObjectType::Integer: {
-		components::types::logical_value_t integer(std::pmr::get_default_resource(), components::types::logical_type::UNKNOWN);
+		components::types::logical_value_t integer(resource_, components::types::logical_type::UNKNOWN);
 		if (!TryTransformPythonNumeric(integer, ele)) {
 			can_convert = false;
-			return logical_type::NA;
+			return complex_logical_type(logical_type::NA);
 		}
 		return integer.type();
 	}
 	case PythonObjectType::Float:
 		if (std::isnan(PyFloat_AsDouble(ele.ptr()))) {
-			return logical_type::NA;
+			return complex_logical_type(logical_type::NA);
 		}
-		return logical_type::DOUBLE;
+		return complex_logical_type(logical_type::DOUBLE);
 	case PythonObjectType::Decimal: {
 		PyDecimal decimal(ele);
 		complex_logical_type type;
@@ -402,16 +482,21 @@ complex_logical_type PandasAnalyzer::GetItemType(py::object ele, bool &can_conve
 		return type;
 	}
 	case PythonObjectType::String:
-		return logical_type::STRING_LITERAL;
+		return complex_logical_type(logical_type::STRING_LITERAL);
 	case PythonObjectType::Uuid:
-		return logical_type::UUID;
+		return complex_logical_type(logical_type::UUID);
 	case PythonObjectType::ByteArray:
 	case PythonObjectType::MemoryView:
 	case PythonObjectType::Bytes:
-		return logical_type::BLOB;
+		return complex_logical_type(logical_type::BLOB);
 	case PythonObjectType::Tuple:
-	case PythonObjectType::List:
-		return complex_logical_type::create_list(GetListType(ele, can_convert));
+	case PythonObjectType::List: {
+		auto list_type = GetListType(ele, can_convert);
+		if (list_type.has_error()) {
+			return list_type;
+		}
+		return complex_logical_type::create_list(list_type.value());
+	}
 	case PythonObjectType::Dict: {
 		PyDictionary dict = PyDictionary(py::reinterpret_borrow<py::object>(ele));
 		// Assuming keys and values are the same size
@@ -428,13 +513,22 @@ complex_logical_type PandasAnalyzer::GetItemType(py::object ele, bool &can_conve
 		return GetItemType(ele.attr("tolist")(), can_convert);
 	}
 	case PythonObjectType::NdArray: {
-		auto extended_type = ConvertNumpyType(ele.attr("dtype"));
-		complex_logical_type ltype;
-		ltype = NumpyToLogicalType(extended_type);
-		if (extended_type.type == NumpyNullableType::OBJECT) {
-			complex_logical_type converted_type = InnerAnalyze(ele, can_convert, 1);
+		auto extended_type = ConvertNumpyType(resource_, ele.attr("dtype"));
+		if (extended_type.has_error()) {
+			return extended_type.convert_error<complex_logical_type>();
+		}
+		auto ltype_result = NumpyToLogicalType(resource_, extended_type.value());
+		if (ltype_result.has_error()) {
+			return ltype_result;
+		}
+		complex_logical_type ltype = ltype_result.value();
+		if (extended_type.value().type == NumpyNullableType::OBJECT) {
+			auto converted_type = InnerAnalyze(ele, can_convert, 1);
+			if (converted_type.has_error()) {
+				return converted_type;
+			}
 			if (can_convert) {
-				ltype = converted_type;
+				ltype = converted_type.value();
 			}
 		}
 		return complex_logical_type::create_list(ltype);
@@ -442,9 +536,10 @@ complex_logical_type PandasAnalyzer::GetItemType(py::object ele, bool &can_conve
 	case PythonObjectType::Other:
 		// Fall back to string for unknown types
 		can_convert = false;
-		return logical_type::STRING_LITERAL;
+		return complex_logical_type(logical_type::STRING_LITERAL);
 	default:
-		throw std::runtime_error("Unsupported PythonObjectType");
+		return core::error_t(core::error_code_t::conversion_failure,
+		                     std::pmr::string("Unsupported PythonObjectType", resource_));
 	}
 }
 
@@ -461,11 +556,11 @@ uint64_t PandasAnalyzer::GetSampleIncrement(idx_t rows) {
 	return rows / sample;
 }
 
-complex_logical_type PandasAnalyzer::InnerAnalyze(py::object column, bool &can_convert, idx_t increment) {
+core::result_wrapper_t<complex_logical_type> PandasAnalyzer::InnerAnalyze(py::object column, bool &can_convert, idx_t increment) {
 	idx_t rows = py::len(column);
 
 	if (rows == 0) {
-		return logical_type::NA;
+		return complex_logical_type(logical_type::NA);
 	}
 
 	// Keys are not guaranteed to start at 0 for Series, use the internal __array__ instead
@@ -478,13 +573,23 @@ complex_logical_type PandasAnalyzer::InnerAnalyze(py::object column, bool &can_c
 	auto row = column.attr("__getitem__");
 
 	complex_logical_type item_type = logical_type::NA;
-	vector<complex_logical_type> types;
+	std::pmr::vector<complex_logical_type> types(resource_);
 	for (idx_t i = 0; i < rows; i += increment) {
 		auto obj = row(i);
 		auto next_item_type = GetItemType(obj, can_convert);
-		types.push_back(next_item_type);
+		if (next_item_type.has_error()) {
+			return next_item_type;
+		}
+		types.push_back(next_item_type.value());
 
-		if (!can_convert || !UpgradeType(item_type, next_item_type)) {
+		if (!can_convert) {
+			return next_item_type;
+		}
+		auto upgraded = UpgradeType(item_type, next_item_type.value(), resource_);
+		if (upgraded.has_error()) {
+			return upgraded.convert_error<complex_logical_type>();
+		}
+		if (!upgraded.value()) {
 			can_convert = false;
 			return next_item_type;
 		}
@@ -497,14 +602,18 @@ complex_logical_type PandasAnalyzer::InnerAnalyze(py::object column, bool &can_c
 	return item_type;
 }
 
-bool PandasAnalyzer::Analyze(py::object column) {
+core::result_wrapper_t<bool> PandasAnalyzer::Analyze(py::object column) {
 	// Disable analyze
 	if (sample_size == 0) {
 		return false;
 	}
 	bool can_convert = true;
 	idx_t increment = GetSampleIncrement(py::len(column));
-	complex_logical_type type = InnerAnalyze(column, can_convert, increment);
+	auto analyzed = InnerAnalyze(column, can_convert, increment);
+	if (analyzed.has_error()) {
+		return analyzed.convert_error<bool>();
+	}
+	complex_logical_type type = analyzed.value();
 
 	if (type == logical_type::NA && increment > 1) {
 		// We did not see the whole dataset, hence we are not sure if nulls are really nulls
@@ -514,7 +623,11 @@ bool PandasAnalyzer::Analyze(py::object column) {
 			// This means we do have a value that is not null, figure out its type
 			auto row = column.attr("__getitem__");
 			auto obj = row(first_valid_index);
-			type = GetItemType(obj, can_convert);
+			auto item = GetItemType(obj, can_convert);
+			if (item.has_error()) {
+				return item.convert_error<bool>();
+			}
+			type = item.value();
 		}
 	}
 	if (can_convert) {

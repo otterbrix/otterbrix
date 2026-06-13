@@ -1,7 +1,8 @@
-#include <iostream>
-
 #include "relation_factory.hpp"
 #include <components/expressions/sort_expression.hpp>
+#include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
+#include <components/expressions/expression.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <integration/cpp/otterbrix.hpp>
@@ -10,256 +11,370 @@
 
 using namespace components;
 using namespace components::logical_plan;
+using components::table::column_definition_t;
+using namespace components::expressions;
+
 namespace otterbrix {
 
-    RelationFactory::RelationFactory(const boost::intrusive_ptr<otterbrix_t>& space) : space(space) {
+    namespace {
+        // ---------------------------------------------------------------------
+        // Column-schema derivation.
+        //
+        // These helpers reproduce, op-by-op, what the former ColumnsVisitor
+        // (relation.cpp) computed while walking the Relation variant tree.
+        // Instead of walking a tree, each chaining op now recomputes the
+        // output schema eagerly from the source schema + the op's expressions,
+        // and the result is carried in built_relation_t::columns. The exact
+        // name/type results are preserved (count -> UBIGINT, avg(x) -> DOUBLE,
+        // field lookups against the source schema, "#"/UNKNOWN sentinels).
+        const std::string error_str = "#";
 
-    }
+        components::types::complex_logical_type
+        find_type(const string& name, const std::pmr::vector<column_definition_t>& initial) {
+            for (const auto& col : initial) {
+                if (col.name() == name) {
+                    return col.type();
+                }
+            }
+            return components::types::logical_type::UNKNOWN;
+        }
+
+        std::pair<string, bool>
+        find_param_name(const std::variant<core::parameter_id_t, expressions::key_t, expression_ptr>& param) {
+            return std::visit([](const auto& expr) {
+                using type = std::decay_t<decltype(expr)>;
+                if constexpr (std::is_same_v<type, expressions::key_t>) {
+                    return std::make_pair(expr.as_string(), true);
+                } else if constexpr (std::is_same_v<type, core::parameter_id_t> ||
+                                     std::is_same_v<type, expression_ptr>) {
+                    return std::make_pair(error_str, false);
+                }
+                throw std::runtime_error("Unknown parameter type for nodes");
+            }, param);
+        }
+
+        column_definition_t process_aggregate(const aggregate_expression_ptr& aggregate_expr,
+                                               const std::pmr::vector<column_definition_t>& initial) {
+            string name = error_str;
+            components::types::complex_logical_type type = components::types::logical_type::UNKNOWN;
+            if (aggregate_expr->params().size() > 1) {
+                return column_definition_t(name, type);
+            }
+            bool is_count = aggregate_expr->function_name() == "count";
+            if (is_count) {
+                name = "count";
+                type = types::logical_type::UBIGINT;
+            } else {
+                const auto& param = aggregate_expr->params().front();
+                auto founded_name = find_param_name(param);
+
+                if (aggregate_expr->key().is_null()) {
+                    string agg_str = aggregate_expr->function_name();
+                    name = agg_str + "(" + founded_name.first + ")";
+                } else {
+                    name = aggregate_expr->key().as_string();
+                }
+                auto base_type = find_type(founded_name.first, initial);
+                if (aggregate_expr->function_name() == "avg") {
+                    type = types::logical_type::DOUBLE;
+                } else {
+                    type = base_type;
+                }
+            }
+            return column_definition_t(name, type);
+        }
+
+        column_definition_t process_scalar(const scalar_expression_ptr& scalar_expr,
+                                            const std::pmr::vector<column_definition_t>& initial) {
+            string name = error_str;
+            components::types::complex_logical_type type = components::types::logical_type::UNKNOWN;
+
+            if (scalar_expr->type() != scalar_type::get_field) {
+                return column_definition_t(name, type);
+            }
+            if (scalar_expr->params().size() > 1) {
+                return column_definition_t(name, type);
+            }
+            if (scalar_expr->params().size() == 1) {
+                auto param_name = find_param_name(scalar_expr->params().front());
+                name = scalar_expr->key().is_null() ? param_name.first
+                                                    : scalar_expr->key().as_string();
+                type = find_type(param_name.first, initial);
+            } else {
+                if (!scalar_expr->key().is_null()) {
+                    name = scalar_expr->key().as_string();
+                }
+                type = find_type(name, initial);
+            }
+            return column_definition_t(name, type);
+        }
+
+        // Schema for an aggregate that carries a SELECT clause (no group).
+        // Mirrors ColumnsVisitor::operator()(Aggregate) with select && !group.
+        std::pmr::vector<column_definition_t>
+        select_schema(std::pmr::memory_resource* resource, const node_select_ptr& select,
+                      const std::pmr::vector<column_definition_t>& initial) {
+            std::pmr::vector<column_definition_t> result(resource);
+            const auto& exprs = select->expressions();
+            result.reserve(exprs.size());
+            for (const auto& expr : exprs) {
+                switch (expr->group()) {
+                    case expression_group::scalar:
+                        result.push_back(process_scalar(
+                            boost::static_pointer_cast<scalar_expression_t>(expr), initial));
+                        break;
+                    default:
+                        result.emplace_back(error_str, components::types::logical_type::UNKNOWN);
+                }
+            }
+            return result;
+        }
+
+        // Schema for an aggregate that carries a GROUP clause.
+        // Mirrors ColumnsVisitor::operator()(Aggregate) with group present.
+        std::pmr::vector<column_definition_t>
+        group_schema(std::pmr::memory_resource* resource, const node_group_ptr& group,
+                     const std::pmr::vector<column_definition_t>& initial) {
+            std::pmr::vector<column_definition_t> result(resource);
+            const auto& exprs = group->expressions();
+            result.reserve(exprs.size());
+            for (const auto& expr : exprs) {
+                switch (expr->group()) {
+                    case expression_group::aggregate:
+                        result.push_back(process_aggregate(
+                            boost::static_pointer_cast<aggregate_expression_t>(expr), initial));
+                        break;
+                    case expression_group::scalar:
+                        result.push_back(process_scalar(
+                            boost::static_pointer_cast<scalar_expression_t>(expr), initial));
+                        break;
+                    default:
+                        result.emplace_back(error_str, components::types::logical_type::UNKNOWN);
+                }
+            }
+            return result;
+        }
+
+        // Pass-through schema (copy) for ops that don't change the column set:
+        // filter (match), sort, and limit. Mirrors ColumnsVisitor's !group,
+        // no-select Aggregate branch (and Limit -> resource->GetColumns()).
+        std::pmr::vector<column_definition_t>
+        passthrough_schema(std::pmr::memory_resource* resource,
+                           const std::pmr::vector<column_definition_t>& initial) {
+            std::pmr::vector<column_definition_t> result(resource);
+            result.reserve(initial.size());
+            for (const auto& col : initial) {
+                result.emplace_back(col.name(), col.type());
+            }
+            return result;
+        }
+    } // namespace
+
+    RelationFactory::RelationFactory(const boost::intrusive_ptr<otterbrix_t>& space) : space(space) {}
 
     RelationFactory::~RelationFactory() = default;
-    
+
     void RelationFactory::SetNullSpace() {
         space = nullptr;
     }
 
-    shared_ptr<Relation> RelationFactory::make_data_relation(node_data_ptr data, 
-            shared_ptr<ExternalDependency> external_dependency, unique_ptr<vector<components::table::column_definition_t>> columns) {
-        return make_shared<Relation>(data, external_dependency, std::move(columns));
-    }
-    
-    shared_ptr<Relation> RelationFactory::make_aggregate_relation(shared_ptr<Relation> from, node_group_ptr group,
-            node_match_ptr match, node_sort_ptr sort, node_select_ptr select, node_limit_ptr limit) {
+    node_ptr RelationFactory::make_aggregate_node(const node_ptr& from,
+            node_group_ptr group, node_match_ptr match, node_sort_ptr sort,
+            node_select_ptr select, node_limit_ptr limit) {
         static int indx = 0;
         auto session = otterbrix::session_id_t();
         string name = "t";
         name += to_string(indx++);
         space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");
-        auto res = make_shared<Relation>(from, group, match, sort, select, name, limit);
-        return res;
+
+        auto* resource = space->dispatcher()->resource();
+        auto aggregator = make_node_aggregate(resource, core::dbname_t{"tmp"}, core::relname_t{name});
+        aggregator->append_child(from);
+        if (group) {
+            aggregator->append_child(group);
+        }
+        if (match) {
+            aggregator->append_child(match);
+        }
+        if (sort) {
+            aggregator->append_child(sort);
+        }
+        if (select) {
+            aggregator->append_child(select);
+        }
+        if (limit) {
+            aggregator->append_child(limit);
+        }
+        return boost::static_pointer_cast<node_t>(aggregator);
     }
 
-    shared_ptr<Relation> RelationFactory::make_join_relation(shared_ptr<Relation> left, shared_ptr<Relation> right, 
-            unique_ptr<vector<expression_ptr>> conditions,
-            components::logical_plan::join_type type) {
-        return make_shared<Relation>(left, right, std::move(conditions), type);
+    built_relation_t RelationFactory::FilterRelation(const built_relation_t& relation, const Expression& condition) {
+        auto* resource = space->dispatcher()->resource();
+        node_match_ptr match_node;
+        if (condition.is_expression()) {
+            if (condition.expression()->group() == expressions::expression_group::compare) {
+                match_node = make_node_match(resource, core::dbname_t{}, core::relname_t{}, condition.expression());
+            } else {
+                throw std::runtime_error("Implementation Error. Undefined expression for filter");
+            }
+        } else {
+            throw std::runtime_error("The method supports only condition expression");
+        }
+        auto node = make_aggregate_node(relation.node, nullptr, match_node, nullptr, nullptr);
+        return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
     }
 
-    shared_ptr<Relation> RelationFactory::FilterRelation(shared_ptr<Relation> relation, const Expression& condition) { 
-        auto match_node = std::visit([resource = space->dispatcher()->resource()](const auto& expr) -> node_match_ptr {
-                   using T = std::decay_t<decltype(expr)>; 
-                   if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                       if (expr->group() == expressions::expression_group::compare) {
-                          return make_node_match(resource, core::dbname_t{}, core::relname_t{}, expr);
-                       } else if constexpr (std::is_same_v<T, types::logical_value_t> || 
-                               std::is_same_v<T, expressions::key_t>) {
-                           throw std::runtime_error("The method supports only condition expressions");
-                       }
-                       throw std::runtime_error("Implementation Error. Undefined expression for filter");
-                   } 
-                   throw std::runtime_error("The method supports only condition expression");
-               }, condition);
-        return make_aggregate_relation(relation, nullptr, match_node, nullptr, nullptr);
-    }
-
-    shared_ptr<Relation> RelationFactory::SortRelation(shared_ptr<Relation> relation, const vector<Expression>& exprs) {
+    built_relation_t RelationFactory::SortRelation(const built_relation_t& relation, const vector<Expression>& exprs) {
         if (exprs.empty()) {
             throw std::runtime_error("Please provide at least one expression to sort on");
         }
         std::pmr::vector<expressions::expression_ptr> sort_exprs(space->dispatcher()->resource());
         sort_exprs.reserve(exprs.size());
         for (const auto& expr : exprs) {
-            sort_exprs.push_back(
-                    std::visit([](const auto& sort_expr) -> expressions::expression_ptr {
-                        using T = std::decay_t<decltype(sort_expr)>;
-                        if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                            if (sort_expr->group() == expressions::expression_group::sort) {
-                                return sort_expr;//auto casted = boost::static_pointer_cast<expressions::expression_t> 
-                            } else {
-                                throw std::runtime_error("Undefined expression type for sort relation");
-                            }
-                        } else if constexpr (std::is_same_v<T, types::logical_value_t> || 
-                                std::is_same_v<T, expressions::key_t>) {
-                            throw std::runtime_error("The method supports only sort expressions");
-                        } else {
-                            throw std::runtime_error("Implementation Error. Undefined expression type for sort relation");
-                        }
-                    }, expr));
+            if (expr.is_expression()) {
+                if (expr.expression()->group() == expressions::expression_group::sort) {
+                    sort_exprs.push_back(expr.expression());
+                } else {
+                    throw std::runtime_error("Undefined expression type for sort relation");
+                }
+            } else if (expr.is_key()) {
+                throw std::runtime_error("The method supports only sort expressions");
+            } else {
+                throw std::runtime_error("Implementation Error. Undefined expression type for sort relation");
+            }
         }
         auto sort = make_node_sort(space->dispatcher()->resource(), core::dbname_t{}, core::relname_t{}, std::move(sort_exprs));
 
-        return make_aggregate_relation(relation, nullptr, nullptr, sort, nullptr);
-
+        auto node = make_aggregate_node(relation.node, nullptr, nullptr, sort, nullptr);
+        return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
     }
 
-    shared_ptr<Relation> RelationFactory::GroupRelation(shared_ptr<Relation> relation, const vector<Expression>& exprs) {
+    built_relation_t RelationFactory::GroupRelation(const built_relation_t& relation, const vector<Expression>& exprs) {
+        auto* resource = space->dispatcher()->resource();
         vector<expressions::expression_ptr> fields;
         fields.reserve(exprs.size());
         for (const auto& expr : exprs) {
-            fields.push_back(
-                    std::visit([resource=space->dispatcher()->resource()](const auto& field) -> expressions::expression_ptr {
-                        using T = std::decay_t<decltype(field)>;
-                        if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                            if (field->group() == expressions::expression_group::aggregate) {
-                                return field;
-                            } else if (field->group() == expressions::expression_group::scalar) {
-                                auto scalar = boost::static_pointer_cast<expressions::scalar_expression_t>(field);
-                                if (scalar->type() == expressions::scalar_type::get_field) {
-                                    return scalar;
-                                } else {
-                                    throw std::runtime_error("Could\'t use scalar expression in a group node");
-                                }
-
-                            } else {
-                                throw std::runtime_error("Undefined expression type for group relation");
-                            }
-                        } else if constexpr (std::is_same_v<T, expressions::key_t>) {
-                            return make_scalar_expression(resource, expressions::scalar_type::get_field, field);
-                        } else if constexpr (std::is_same_v<T, types::logical_value_t>) {
-                            throw std::runtime_error("The method supports only aggregation expressions and fields");
-                        } else {
-                            throw std::runtime_error("Implementation Error. Undefined expression type for group relation");
-                        }
-                    }, expr));
+            if (expr.is_expression()) {
+                const auto& field = expr.expression();
+                if (field->group() == expressions::expression_group::aggregate) {
+                    fields.push_back(field);
+                } else if (field->group() == expressions::expression_group::scalar) {
+                    auto scalar = boost::static_pointer_cast<expressions::scalar_expression_t>(field);
+                    if (scalar->type() == expressions::scalar_type::get_field) {
+                        fields.push_back(scalar);
+                    } else {
+                        throw std::runtime_error("Could\'t use scalar expression in a group node");
+                    }
+                } else {
+                    throw std::runtime_error("Undefined expression type for group relation");
+                }
+            } else if (expr.is_key()) {
+                fields.push_back(make_scalar_expression(resource, expressions::scalar_type::get_field, expr.key()));
+            } else {
+                throw std::runtime_error("The method supports only aggregation expressions and fields");
+            }
         }
         auto group = make_node_group(space->dispatcher()->resource(), core::dbname_t{}, core::relname_t{}, std::move(fields));
 
-        return make_aggregate_relation(relation, group, nullptr, nullptr, nullptr);
+        auto schema = group_schema(space->dispatcher()->resource(), group, relation.columns);
+        auto node = make_aggregate_node(relation.node, group, nullptr, nullptr, nullptr);
+        return {node, std::move(schema)};
     }
 
-    shared_ptr<Relation> RelationFactory::SelectRelation(shared_ptr<Relation> relation, const vector<Expression>& exprs) {
+    built_relation_t RelationFactory::SelectRelation(const built_relation_t& relation, const vector<Expression>& exprs) {
         auto* resource = space->dispatcher()->resource();
         auto select = make_node_select(resource, core::dbname_t{}, core::relname_t{});
         for (const auto& expr : exprs) {
-            auto scalar = std::visit([resource](const auto& field) -> expressions::expression_ptr {
-                using T = std::decay_t<decltype(field)>;
-                if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                    if (field->group() == expressions::expression_group::scalar) {
-                        return field;
-                    }
-                    if (field->group() == expressions::expression_group::aggregate) {
-                        throw std::runtime_error(
-                            "Aggregate expressions are not allowed in select(); use groupBy().agg() instead");
-                    }
-                    throw std::runtime_error("Undefined expression type for select relation");
-                } else if constexpr (std::is_same_v<T, expressions::key_t>) {
-                    return make_scalar_expression(resource, expressions::scalar_type::get_field, field);
-                } else if constexpr (std::is_same_v<T, types::logical_value_t>) {
-                    throw std::runtime_error("The method supports only column expressions and fields");
+            expressions::expression_ptr scalar;
+            if (expr.is_expression()) {
+                const auto& field = expr.expression();
+                if (field->group() == expressions::expression_group::scalar) {
+                    scalar = field;
+                } else if (field->group() == expressions::expression_group::aggregate) {
+                    throw std::runtime_error(
+                        "Aggregate expressions are not allowed in select(); use groupBy().agg() instead");
                 } else {
-                    throw std::runtime_error("Implementation Error. Undefined expression type for select relation");
+                    throw std::runtime_error("Undefined expression type for select relation");
                 }
-            }, expr);
+            } else if (expr.is_key()) {
+                scalar = make_scalar_expression(resource, expressions::scalar_type::get_field, expr.key());
+            } else {
+                throw std::runtime_error("The method supports only column expressions and fields");
+            }
             select->append_expression(scalar);
         }
 
-        return make_aggregate_relation(relation, nullptr, nullptr, nullptr, select);
+        auto schema = select_schema(resource, select, relation.columns);
+        auto node = make_aggregate_node(relation.node, nullptr, nullptr, nullptr, select);
+        return {node, std::move(schema)};
     }
 
-    shared_ptr<Relation> RelationFactory::JoinRelation(shared_ptr<Relation> relation, shared_ptr<Relation> other, 
+    built_relation_t RelationFactory::JoinRelation(const built_relation_t& relation, const built_relation_t& other,
             const vector<Expression>& exprs, components::logical_plan::join_type type) {
-        auto conditions = make_unique<vector<expressions::expression_ptr>>();
+        auto* resource = space->dispatcher()->resource();
+        std::pmr::vector<expressions::expression_ptr> conditions(resource);
         for (const auto& expr : exprs) {
-            conditions->push_back(
-                    std::visit([](const auto& cond_expr) -> expressions::expression_ptr {
-                        using T = std::decay_t<decltype(cond_expr)>;
-                        if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                            if (cond_expr->group() == expressions::expression_group::compare) {
-                                return cond_expr;//auto casted = boost::static_pointer_cast<expressions::expression_t> 
-                            } else {
-                                throw std::runtime_error("Undefined expression type for sort relation");
-                            }
-                        } else if constexpr (std::is_same_v<T, types::logical_value_t> || 
-                                std::is_same_v<T, expressions::key_t>) {
-                            throw std::runtime_error("The method supports only conditions");
-                        } else {
-                            throw std::runtime_error("Implementation Error. Undefined expression type for condition");
-                        }
-                        
-                        
-                    }, expr));
-        
+            if (expr.is_expression()) {
+                if (expr.expression()->group() == expressions::expression_group::compare) {
+                    conditions.push_back(expr.expression());
+                } else {
+                    throw std::runtime_error("Undefined expression type for sort relation");
+                }
+            } else if (expr.is_key()) {
+                throw std::runtime_error("The method supports only conditions");
+            } else {
+                throw std::runtime_error("Implementation Error. Undefined expression type for condition");
+            }
         }
-       
-        if (exprs.empty()) {
-            conditions = nullptr;
+
+        auto join_node = make_node_join(resource, core::dbname_t{}, core::relname_t{}, type);
+        join_node->append_child(relation.node);
+        join_node->append_child(other.node);
+        if (!exprs.empty()) {
+            for (const auto& expr : conditions) {
+                join_node->append_expression(expr);
+            }
         }
-        return make_join_relation(relation, other, std::move(conditions), type);
+
+        // Join schema: left columns followed by right columns.
+        std::pmr::vector<column_definition_t> schema(resource);
+        schema.reserve(relation.columns.size() + other.columns.size());
+        for (const auto& col : relation.columns) {
+            schema.emplace_back(col.name(), col.type());
+        }
+        for (const auto& col : other.columns) {
+            schema.emplace_back(col.name(), col.type());
+        }
+        return {boost::static_pointer_cast<node_t>(join_node), std::move(schema)};
     }
-    shared_ptr<Relation> RelationFactory::LimitRelation(shared_ptr<Relation> relation, int64_t count) {
+
+    built_relation_t RelationFactory::LimitRelation(const built_relation_t& relation, int64_t count) {
         auto limit_node = make_node_limit(space->dispatcher()->resource(),
                                           core::dbname_t{},
                                           core::relname_t{},
                                           limit_t(count));
-        return make_aggregate_relation(relation, nullptr, nullptr, nullptr, nullptr, limit_node);
+        auto node = make_aggregate_node(relation.node, nullptr, nullptr, nullptr, nullptr, limit_node);
+        return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
     }
 
-    shared_ptr<Relation> RelationFactory::CreateFromSelect(components::logical_plan::node_ptr /*plan*/) {
-        return nullptr;
-    }
-
-    shared_ptr<Relation> RelationFactory::CreateFromTable(core::dbname_t /*database*/, core::relname_t /*collection*/) {
-        return nullptr;
+    built_relation_t RelationFactory::CreateFromSelect(components::logical_plan::node_ptr /*plan*/) {
+        return {nullptr, std::pmr::vector<column_definition_t>(space->dispatcher()->resource())};
     }
 
     // should be protected because don\'t send external data
-    shared_ptr<Relation> RelationFactory::CreateDFRelation(unique_ptr<components::tableref::TableRef> ref) {
-        auto external_dependency = ref->external_dependency;
+    built_relation_t RelationFactory::CreateDFRelation(unique_ptr<components::tableref::TableRef> ref) {
+        auto* resource = space->dispatcher()->resource();
+        auto tableData = Scan::FetchObjectData(resource, std::move(ref));
 
-        auto tableData = Scan::FetchObjectData(space->dispatcher()->resource(), std::move(ref));
-        return make_shared<Relation>(tableData.first, external_dependency, std::move(tableData.second));
-    }
-
-    logical_plan::node_ptr RelationFactory::Execute(const Relation& rel) {
-        return std::visit([this, resource = space->dispatcher()->resource()](const auto& rel) {
-            using plan_type = std::decay_t<decltype(rel)>;
-            if constexpr (std::is_same_v<plan_type, Relation::Aggregate>) {
-                const Relation& val = *(rel.resource);
-                auto res = RelationFactory::Execute(val);
-
-                auto aggregator = logical_plan::make_node_aggregate(resource, core::dbname_t{"tmp"}, core::relname_t{rel.name});
-                aggregator->append_child(res);
-                
-                if (rel.group) {
-                    aggregator->append_child(rel.group);
-                }
-                if (rel.match) {
-                    aggregator->append_child(rel.match);
-                }
-                if (rel.sort) {
-                    aggregator->append_child(rel.sort);
-                }
-                if (rel.select) {
-                    aggregator->append_child(rel.select);
-                }
-                if (rel.limit) {
-                    aggregator->append_child(rel.limit);
-                }
-                return boost::static_pointer_cast<node_t>(aggregator);
-            } else if constexpr (std::is_same_v<plan_type, Relation::Data>) {
-                return boost::static_pointer_cast<node_t>(rel.data);
-            } else if constexpr (std::is_same_v<plan_type, Relation::Join>) {
-                auto left = RelationFactory::Execute(*(rel.left));
-                auto right = RelationFactory::Execute(*(rel.right));
-                auto join_node = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, rel.join_type);
-                join_node->append_child(left);
-                join_node->append_child(right);
-                if (rel.conditions) {
-                    const auto cond_vector = *(rel.conditions);
-                    for (const auto& expr : cond_vector) {
-                        join_node->append_expression(expr);
-                    }
-                }
-                return boost::static_pointer_cast<node_t>(join_node);
-            } else if constexpr (std::is_same_v<plan_type, Relation::Limit>) {
-                auto child = RelationFactory::Execute(*(rel.resource));
-                auto limit_node = logical_plan::make_node_limit(resource, core::dbname_t{}, core::relname_t{}, limit_t(rel.count));
-                limit_node->append_child(child);
-                return boost::static_pointer_cast<node_t>(limit_node);
+        // Data leaf: the column schema is the data table's own columns.
+        std::pmr::vector<column_definition_t> schema(resource);
+        if (tableData.second) {
+            schema.reserve(tableData.second->size());
+            for (const auto& col : *tableData.second) {
+                schema.emplace_back(col.name(), col.type());
             }
-            throw std::runtime_error("Implementation error. Undefined executed node");
-        }, rel.relation);
-
+        }
+        return {boost::static_pointer_cast<node_t>(tableData.first), std::move(schema)};
     }
 
-
-} // namespace 
+} // namespace

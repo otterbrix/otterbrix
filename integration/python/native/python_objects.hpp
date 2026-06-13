@@ -7,10 +7,13 @@
 #include <components/types/types.hpp>
 #include <components/types/logical_value.hpp>
 
+#include <core/result_wrapper.hpp>
 #include <core/typedefs.hpp>
 #include <core/types/memory.hpp>
 #include <core/types/vector.hpp>
 #include <core/types/string.hpp>
+
+#include <memory_resource>
 
 #include <array>
 #include <chrono>
@@ -134,10 +137,13 @@ namespace otterbrix {
 
 		PyDecimalExponentType exponent_type;
 		int32_t exponent_value;
+		//! false when the python Decimal's exponent could not be recognized during construction;
+		//! consumers (TryGetType / to_logical_value) surface this without throwing.
+		bool exponent_recognized = true;
 
 	public:
 		bool TryGetType(components::types::complex_logical_type &type);
-		components::types::logical_value_t to_logical_value(std::pmr::memory_resource* r);
+		core::result_wrapper_t<components::types::logical_value_t> to_logical_value(std::pmr::memory_resource* r);
 
 	private:
 		void SetExponent(py::handle &exponent);
@@ -146,8 +152,8 @@ namespace otterbrix {
 
 	struct PythonObject {
 		static void Initialize();
-		static py::object FromStruct(const components::types::logical_value_t &value, const components::types::complex_logical_type &id);
-		static py::object FromValue(const components::types::logical_value_t &value, const components::types::complex_logical_type &id);
+		static core::result_wrapper_t<py::object> FromStruct(std::pmr::memory_resource* r, const components::types::logical_value_t &value, const components::types::complex_logical_type &id);
+		static core::result_wrapper_t<py::object> FromValue(std::pmr::memory_resource* r, const components::types::logical_value_t &value, const components::types::complex_logical_type &id);
 	};
 
 	template <class T>

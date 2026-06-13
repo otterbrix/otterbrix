@@ -39,16 +39,15 @@ namespace otterbrix {
         void SetNullConnection();
 
         void CreateDatabase(const string& name);
-        shared_ptr<Relation> RelationFromQuery(const string& query);
+        built_relation_t RelationFromQuery(const string& query);
         Result ExecuteInternal(const string& query);
-        Result Execute(const Relation& rel, bool optimize = false);
+        Result Execute(const components::logical_plan::node_ptr& node, bool optimize = false);
 
         components::cursor::cursor_t_ptr QueryRelation(const components::logical_plan::node_ptr &rel);
     public:
         static bool IsJupyter();
 
         static PythonImportCache& ImportCache();
-        static case_insensitive_set_t& GetCollections();
         static case_insensitive_set_t& GetTables();
     
     private:
@@ -57,7 +56,6 @@ namespace otterbrix {
 
     private:
         static shared_ptr<PythonImportCache> import_cache;
-        static shared_ptr<case_insensitive_set_t> collections;
 
     };
 } // namespace otterbrix

@@ -1,10 +1,7 @@
 #include "connection_environment.hpp"
 #include <iostream>
-#include <functional>
 #include <components/configuration/configuration.hpp>
 #include <integration/cpp/otterbrix.hpp>
-#include <components/logical_plan/node_create_collection.hpp>
-#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -15,7 +12,6 @@ using namespace components;
 namespace otterbrix {
 
     shared_ptr<PythonImportCache> ConnectionEnvironment::import_cache = nullptr;
-    shared_ptr<case_insensitive_set_t> ConnectionEnvironment::collections = nullptr; 
 
     boost::intrusive_ptr<otterbrix_t> ConnectionEnvironment::MakeSpace(
         const std::filesystem::path& path) {
@@ -56,7 +52,7 @@ namespace otterbrix {
         space->dispatcher()->execute_sql(session, "CREATE DATABASE " + name + ";");
     }
 
-    shared_ptr<Relation> ConnectionEnvironment::RelationFromQuery(const string& query) {
+    built_relation_t ConnectionEnvironment::RelationFromQuery(const string& query) {
         using namespace components::sql::transform;
         std::pmr::monotonic_buffer_resource parser_arena(space->dispatcher()->resource());
         auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
@@ -85,43 +81,14 @@ namespace otterbrix {
             return components::cursor::make_cursor(space->dispatcher()->resource(), result.error());
         }
         auto plan = std::move(result).value();
-        auto root = plan.sub_queries.back();
         auto cursor = space->dispatcher()->execute_plan(session, std::move(plan));
-
-        if (cursor->is_success()) {
-            // CREATE TABLE plan is no longer a single create_collection node. It is wrapped in a sequence with a catalog_resolve_namespace node that holds the database name. Walk the plan to find the created collection and database. For queries without an explicit database, use the PostgreSQL default namespace "public" (same default as the engine search path).
-            const logical_plan::node_create_collection_t* created = nullptr;
-            std::string dbname;
-            std::function<void(const logical_plan::node_ptr&)> scan =
-                [&](const logical_plan::node_ptr& n) {
-                    if (!n) {
-                        return;
-                    }
-                    if (n->type() == logical_plan::node_type::create_collection_t) {
-                        created = static_cast<const logical_plan::node_create_collection_t*>(n.get());
-                    } else if (n->type() == logical_plan::node_type::catalog_resolve_namespace_t) {
-                        dbname = static_cast<const logical_plan::node_catalog_resolve_namespace_t*>(n.get())->dbname();
-                    }
-                    for (const auto& child : n->children()) {
-                        scan(child);
-                    }
-                };
-            scan(root);
-            if (created) {
-                if (dbname.empty()) {
-                    dbname = "public";
-                }
-                auto& collections = GetCollections();
-                collections.insert(dbname + "." + created->relname());
-            }
-        }
 
         return cursor;
     }
 
-    Result ConnectionEnvironment::Execute(const Relation& rel, bool optimize) {
+    Result ConnectionEnvironment::Execute(const components::logical_plan::node_ptr& node_in, bool optimize) {
         auto session = session_id_t();
-        auto node = RelationFactory::Execute(rel);
+        auto node = node_in;
         if (optimize) {
             node = components::planner::optimize(node->resource(), node, nullptr);
         }
@@ -151,12 +118,5 @@ namespace otterbrix {
         return *(import_cache.get());
     }
 
-    case_insensitive_set_t& ConnectionEnvironment::GetCollections() {
-        if (!collections) {
-            collections = make_shared<case_insensitive_set_t>();
-        }
-        return *(collections.get());
-    }
 
-    
 } // namespace otterbrix

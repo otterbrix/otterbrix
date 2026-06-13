@@ -12,7 +12,7 @@
 #include <absl/numeric/int128.h>
 
 #include <chrono>
-#include <stdexcept>
+#include <memory_resource>
 #include <string_view>
 
 namespace otterbrix {
@@ -22,6 +22,9 @@ namespace otterbrix {
 
 namespace otterbrix_py_convert {
 
+// Numeric conversion via static_cast. Used for both regular column conversion and
+// integral->double conversion (HUGEINT/UHUGEINT, DECIMAL), with int128/uint128->double
+// specializations defined below. For built-in types static_cast<T>(val) and T(val) are equivalent.
 struct RegularConvert {
 	template <class OTTERBRIX_T, class NUMPY_T>
 	static NUMPY_T ConvertValue(OTTERBRIX_T val, NumpyAppendData &append_data) {
@@ -99,15 +102,26 @@ struct UUIDConvert {
 	}
 };
 
-static py::object InternalCreateList(vector_t &input, 
+static py::object InternalCreateList(vector_t &input,
     idx_t total_size, idx_t offset, idx_t size, NumpyAppendData &append_data) {
 	// Initialize the array we'll append the list data to
 	auto &type = input.type();
 	ArrayWrapper result(type, append_data.pandas);
-	result.Initialize(size);
+	if (auto init_err = result.Initialize(append_data.resource, size); init_err.contains_error()) {
+		if (!append_data.error.contains_error()) {
+			append_data.error = std::move(init_err);
+		}
+		return py::none();
+	}
 
 	assert(offset + size <= total_size);
-	result.Append(0, input, total_size, offset, size);
+	if (auto append_err = result.Append(append_data.resource, 0, input, total_size, offset, size);
+	    append_err.contains_error()) {
+		if (!append_data.error.contains_error()) {
+			append_data.error = std::move(append_err);
+		}
+		return py::none();
+	}
 	return result.ToArray();
 }
 
@@ -153,51 +167,49 @@ struct ArrayConvert {
 
 struct StructConvert {
 	static py::dict ConvertValue(vector_t &input, idx_t chunk_offset, NumpyAppendData &append_data) {
-		(void)append_data;
 		py::dict py_struct;
 		auto val = input.value(chunk_offset);
 		auto &child_types = input.type().child_types();
-		auto &struct_children = val.children(); 
+		auto &struct_children = val.children();
 
 		for (idx_t i = 0; i < struct_children.size(); i++) {
 			auto &child_entry = child_types[i];
-			auto &child_name = child_entry.alias(); 
+			auto &child_name = child_entry.alias();
 			auto &child_type = child_entry;
-			py_struct[child_name.c_str()] = PythonObject::FromValue(struct_children[i], child_type);
+			auto field = PythonObject::FromValue(append_data.resource, struct_children[i], child_type);
+			if (field.has_error()) {
+				if (!append_data.error.contains_error()) {
+					append_data.error = field.error();
+				}
+				return py_struct;
+			}
+			py_struct[child_name.c_str()] = field.value();
 		}
 		return py_struct;
 	}
 };
 struct MapConvert {
-	static py::dict ConvertValue(vector_t &input, idx_t chunk_offset, NumpyAppendData &append_data) {
-		(void)append_data;
+	static py::object ConvertValue(vector_t &input, idx_t chunk_offset, NumpyAppendData &append_data) {
 		auto val = input.value(chunk_offset);
-		return PythonObject::FromValue(val, input.type());
-	}
-};
-
-struct IntegralConvert {
-	template <class OTTERBRIX_T, class NUMPY_T>
-	static NUMPY_T ConvertValue(OTTERBRIX_T val, NumpyAppendData &append_data) {
-		(void)append_data;
-		return NUMPY_T(val);
-	}
-
-	template <class NUMPY_T, bool PANDAS>
-	static NUMPY_T NullValue(bool &set_mask) {
-		set_mask = true;
-		return 0;
+		auto res = PythonObject::FromValue(append_data.resource, val, input.type());
+		if (res.has_error()) {
+			if (!append_data.error.contains_error()) {
+				append_data.error = res.error();
+			}
+			return py::none();
+		}
+		return res.value();
 	}
 };
 
 template <>
-double IntegralConvert::ConvertValue(absl::int128 val, NumpyAppendData &append_data) {
+double RegularConvert::ConvertValue(absl::int128 val, NumpyAppendData &append_data) {
 	(void)append_data;
 	return static_cast<double>(val);
 }
 
 template <>
-double IntegralConvert::ConvertValue(absl::uint128 val, NumpyAppendData &append_data) {
+double RegularConvert::ConvertValue(absl::uint128 val, NumpyAppendData &append_data) {
 	(void)append_data;
 	return static_cast<double>(val);
 }
@@ -252,39 +264,6 @@ static bool ConvertColumn(NumpyAppendData &append_data) {
 	}
 }
 
-template <class OTTERBRIX_T, class NUMPY_T>
-static bool ConvertColumnCategoricalTemplate(NumpyAppendData &append_data) {
-	auto target_offset = append_data.target_offset;
-	auto target_data = append_data.target_data;
-	auto &idata = append_data.idata;
-	auto count = append_data.count;
-	auto source_offset = append_data.source_offset;
-
-	auto src_ptr = idata.get_data<OTTERBRIX_T>();
-	auto out_ptr = reinterpret_cast<NUMPY_T *>(target_data);
-	if (!idata.validity.all_valid()) {
-		for (idx_t i = 0; i < count; i++) {
-			idx_t src_idx = idata.referenced_indexing->get_index(i + source_offset);
-			idx_t offset = target_offset + i;
-			if (!idata.validity.row_is_valid(src_idx)) {
-				out_ptr[offset] = static_cast<NUMPY_T>(-1);
-			} else {
-				out_ptr[offset] = otterbrix_py_convert::RegularConvert::template ConvertValue<OTTERBRIX_T, NUMPY_T>(
-				    src_ptr[src_idx], append_data);
-			}
-		}
-	} else {
-		for (idx_t i = 0; i < count; i++) {
-			idx_t src_idx = idata.referenced_indexing->get_index(i + source_offset);
-			idx_t offset = target_offset + i;
-			out_ptr[offset] = otterbrix_py_convert::RegularConvert::template ConvertValue<OTTERBRIX_T, NUMPY_T>(
-			    src_ptr[src_idx], append_data);
-		}
-	}
-	// Null values are encoded in the data itself
-	return false;
-}
-
 template <class NUMPY_T, class CONVERT>
 static bool ConvertNested(NumpyAppendData &append_data) {
 	auto target_offset = append_data.target_offset;
@@ -325,21 +304,6 @@ static bool ConvertNested(NumpyAppendData &append_data) {
 	}
 }
 
-template <class NUMPY_T>
-static bool ConvertColumnCategorical(NumpyAppendData &append_data) {
-	auto physical_type = append_data.physical_type;
-	switch (physical_type) {
-	case physical_type::UINT8:
-		return ConvertColumnCategoricalTemplate<uint8_t, NUMPY_T>(append_data);
-	case physical_type::UINT16:
-		return ConvertColumnCategoricalTemplate<uint16_t, NUMPY_T>(append_data);
-	case physical_type::UINT32:
-		return ConvertColumnCategoricalTemplate<uint32_t, NUMPY_T>(append_data);
-	default:
-		throw std::runtime_error("Enum Physical Type not Allowed");
-	}
-}
-
 template <class T>
 static bool ConvertColumnRegular(NumpyAppendData &append_data) {
 	return ConvertColumn<T, T, otterbrix_py_convert::RegularConvert>(append_data);
@@ -364,7 +328,7 @@ static bool ConvertDecimalInternal(NumpyAppendData &append_data, double division
 				target_mask[offset] = true;
 			} else {
 				out_ptr[offset] =
-				    otterbrix_py_convert::IntegralConvert::ConvertValue<OTTERBRIX_T, double>(src_ptr[src_idx], append_data) /
+				    otterbrix_py_convert::RegularConvert::ConvertValue<OTTERBRIX_T, double>(src_ptr[src_idx], append_data) /
 				    division;
 				target_mask[offset] = false;
 			}
@@ -375,7 +339,7 @@ static bool ConvertDecimalInternal(NumpyAppendData &append_data, double division
 			idx_t src_idx = idata.referenced_indexing->get_index(i + source_offset);
 			idx_t offset = target_offset + i;
 			out_ptr[offset] =
-			    otterbrix_py_convert::IntegralConvert::ConvertValue<OTTERBRIX_T, double>(src_ptr[src_idx], append_data) /
+			    otterbrix_py_convert::RegularConvert::ConvertValue<OTTERBRIX_T, double>(src_ptr[src_idx], append_data) /
 			    division;
 			target_mask[offset] = false;
 		}
@@ -398,7 +362,9 @@ static bool ConvertDecimal(NumpyAppendData &append_data) {
 	case physical_type::INT128:
 		return ConvertDecimalInternal<int128_t>(append_data, division);
 	default:
-		throw std::runtime_error("unsupported decimal storage type in ConvertDecimal");
+		append_data.error = core::error_t{core::error_code_t::other_error,
+		                                  std::pmr::string{"unsupported decimal storage type in ConvertDecimal", append_data.resource}};
+		return false;
 	}
 }
 
@@ -408,9 +374,14 @@ ArrayWrapper::ArrayWrapper(const complex_logical_type &type, bool pandas)
 	mask = make_unique<RawArrayWrapper>(logical_type::BOOLEAN);
 }
 
-void ArrayWrapper::Initialize(idx_t capacity) {
-	data->Initialize(capacity);
-	mask->Initialize(capacity);
+core::error_t ArrayWrapper::Initialize(std::pmr::memory_resource *resource, idx_t capacity) {
+	if (auto err = data->Initialize(resource, capacity); err.contains_error()) {
+		return err;
+	}
+	if (auto err = mask->Initialize(resource, capacity); err.contains_error()) {
+		return err;
+	}
+	return core::error_t::no_error();
 }
 
 void ArrayWrapper::Resize(idx_t new_capacity) {
@@ -418,7 +389,7 @@ void ArrayWrapper::Resize(idx_t new_capacity) {
 	mask->Resize(new_capacity);
 }
 
-void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_size, idx_t source_offset, idx_t count) {
+core::error_t ArrayWrapper::Append(std::pmr::memory_resource *resource, idx_t current_offset, vector_t &input, idx_t source_size, idx_t source_offset, idx_t count) {
 	auto dataptr = data->data;
 	auto maskptr = reinterpret_cast<bool *>(mask->data);
 	assert(dataptr);
@@ -434,7 +405,7 @@ void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_si
 		count = source_size;
 	}
 
-	NumpyAppendData append_data(idata, input);
+	NumpyAppendData append_data(resource, idata, input);
 	append_data.target_offset = current_offset;
 	append_data.target_data = dataptr;
 	append_data.source_offset = source_offset;
@@ -472,10 +443,10 @@ void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_si
 		may_have_null = ConvertColumnRegular<uint64_t>(append_data);
 		break;
 	case logical_type::HUGEINT:
-		may_have_null = ConvertColumn<absl::int128, double, otterbrix_py_convert::IntegralConvert>(append_data);
+		may_have_null = ConvertColumn<absl::int128, double, otterbrix_py_convert::RegularConvert>(append_data);
 		break;
 	case logical_type::UHUGEINT:
-		may_have_null = ConvertColumn<absl::uint128, double, otterbrix_py_convert::IntegralConvert>(append_data);
+		may_have_null = ConvertColumn<absl::uint128, double, otterbrix_py_convert::RegularConvert>(append_data);
 		break;
 	case logical_type::FLOAT:
 		may_have_null = ConvertColumnRegular<float>(append_data);
@@ -516,17 +487,24 @@ void ArrayWrapper::Append(idx_t current_offset, vector_t &input, idx_t source_si
 
 	case logical_type::ENUM:
 	case logical_type::UNION:
-		throw std::runtime_error("type not yet supported for numpy conversion: " +
-		                         to_string(static_cast<int>(input.type().type())));
+		return core::error_t{core::error_code_t::other_error,
+		                     std::pmr::string{"type not yet supported for numpy conversion: " +
+		                         to_string(static_cast<int>(input.type().type())), resource}};
 
 	default:
-		throw std::runtime_error("Unsupported type "+to_string(static_cast<int>(input.type().type())));
+		return core::error_t{core::error_code_t::other_error,
+		                     std::pmr::string{"Unsupported type "+to_string(static_cast<int>(input.type().type())), resource}};
+	}
+	// A nested converter (LIST/ARRAY/MAP/STRUCT) or ConvertDecimal may have recorded an error.
+	if (append_data.error.contains_error()) {
+		return std::move(append_data.error);
 	}
 	if (may_have_null) {
 		requires_mask = true;
 	}
 	data->count += count;
 	mask->count += count;
+	return core::error_t::no_error();
 }
 
 py::object ArrayWrapper::ToArray() const {

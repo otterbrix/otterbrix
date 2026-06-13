@@ -11,11 +11,16 @@
 #include <utf8proc.h>
 
 #include <cstring>
+#include <memory_resource>
 #include <string_view>
 
 namespace otterbrix {
 
 using components::vector::vector_t;
+
+static core::error_t make_error(std::pmr::memory_resource *resource, const std::string &what) {
+	return core::error_t{core::error_code_t::other_error, std::pmr::string{what, resource}};
+}
 
 template <class T>
 void ScanNumpyColumn(py::array &numpy_col, idx_t stride, idx_t offset, vector_t &out, idx_t count) {
@@ -47,7 +52,7 @@ void ScanNumpyCategoryTemplated(py::array &column, idx_t offset, vector_t &out, 
 }
 
 template <class T>
-void ScanNumpyCategory(py::array &column, idx_t count, idx_t offset, vector_t &out, string &src_type) {
+core::error_t ScanNumpyCategory(std::pmr::memory_resource *resource, py::array &column, idx_t count, idx_t offset, vector_t &out, string &src_type) {
 	if (src_type == "int8") {
 		ScanNumpyCategoryTemplated<int8_t, T>(column, offset, out, count);
 	} else if (src_type == "int16") {
@@ -57,8 +62,9 @@ void ScanNumpyCategory(py::array &column, idx_t count, idx_t offset, vector_t &o
 	} else if (src_type == "int64") {
 		ScanNumpyCategoryTemplated<int64_t, T>(column, offset, out, count);
 	} else {
-		throw std::runtime_error("The Pandas type " + src_type + " for categorical types is not implemented yet");
+		return make_error(resource, "The Pandas type " + src_type + " for categorical types is not implemented yet");
 	}
+	return core::error_t::no_error();
 }
 static void ApplyMask(PandasColumnBindData &bind_data, components::vector::validity_mask_t &validity, idx_t count, idx_t offset) {
     assert(bind_data.mask);
@@ -160,20 +166,24 @@ static void SetInvalidRecursive(vector_t &out, idx_t index) {
 
 //! 'count' is the amount of rows in the 'out' vector
 //! 'offset' is the current row number within this vector
-void ScanNumpyObject(PyObject *object, idx_t offset, vector_t &out) {
+core::error_t ScanNumpyObject(std::pmr::memory_resource *resource, PyObject *object, idx_t offset, vector_t &out) {
 
 	// handle None
 	if (object == Py_None) {
 		SetInvalidRecursive(out, offset);
-		return;
+		return core::error_t::no_error();
 	}
 
-	auto val = TransformPythonValue(object, out.type());
+	auto val = TransformPythonValue(resource, object, out.type());
+	if (val.has_error()) {
+		return val.error();
+	}
 	// Check if the Value type is accepted for the logical_type of Vector
-	out.set_value(offset, val);
+	out.set_value(offset, val.value());
+	return core::error_t::no_error();
 }
 
-void NumpyScan::ScanObjectColumn(PyObject **col, idx_t stride, idx_t count, idx_t offset, vector_t &out) {
+core::error_t NumpyScan::ScanObjectColumn(std::pmr::memory_resource *resource, PyObject **col, idx_t stride, idx_t count, idx_t offset, vector_t &out) {
 	// numpy_col is a sequential list of objects, that make up one "column" (Vector)
 	out.set_vector_type(components::vector::vector_type::FLAT);
 	PythonGILWrapper gil; // We're creating python objects here, so we need the GIL
@@ -181,19 +191,24 @@ void NumpyScan::ScanObjectColumn(PyObject **col, idx_t stride, idx_t count, idx_
 	if (stride == sizeof(PyObject *)) {
 		auto src_ptr = col + offset;
 		for (idx_t i = 0; i < count; i++) {
-			ScanNumpyObject(src_ptr[i], i, out);
+			if (auto err = ScanNumpyObject(resource, src_ptr[i], i, out); err.contains_error()) {
+				return err;
+			}
 		}
 	} else {
 		for (idx_t i = 0; i < count; i++) {
 			auto src_ptr = col[stride / sizeof(PyObject *) * (i + offset)];
-			ScanNumpyObject(src_ptr, i, out);
+			if (auto err = ScanNumpyObject(resource, src_ptr, i, out); err.contains_error()) {
+				return err;
+			}
 		}
 	}
+	return core::error_t::no_error();
 }
 
 //! 'offset' is the offset within the column
 //! 'count' is the amount of values we will convert in this batch
-void NumpyScan::Scan(PandasColumnBindData &bind_data, idx_t count, idx_t offset, vector_t &out) {
+core::error_t NumpyScan::Scan(std::pmr::memory_resource *resource, PandasColumnBindData &bind_data, idx_t count, idx_t offset, vector_t &out) {
 	assert(bind_data.pandas_col->Backend() == PandasColumnBackend::NUMPY);
 	auto &numpy_col = reinterpret_cast<PandasNumpyColumn &>(*bind_data.pandas_col);
 	auto &array = numpy_col.array;
@@ -239,7 +254,7 @@ void NumpyScan::Scan(PandasColumnBindData &bind_data, idx_t count, idx_t offset,
 		const bool is_object_col = bind_data.numpy_type.type == NumpyNullableType::OBJECT;
 		if (is_object_col && out.type().type() != components::types::logical_type::STRING_LITERAL) {
 			//! We have determined the underlying logical type of this object column
-			return NumpyScan::ScanObjectColumn(src_ptr, numpy_col.stride, count, offset, out);
+			return NumpyScan::ScanObjectColumn(resource, src_ptr, numpy_col.stride, count, offset, out);
 		}
 
 		// Get the data pointer and the validity mask of the result vector
@@ -326,22 +341,23 @@ void NumpyScan::Scan(PandasColumnBindData &bind_data, idx_t count, idx_t offset,
 						                                            PyUtil::PyUnicodeGetLength(val_handle), out);
 						break;
 					default:
-						throw std::runtime_error(
+						return make_error(resource,
 						    "Unsupported typekind constant " + to_string(int(kind)) + " for Python Unicode Compact decode");
 					}
 				} else {
-					throw std::runtime_error("Unsupported string type: no clue what this string is");
+					return make_error(resource, "Unsupported string type: no clue what this string is");
 				}
 			}
 		}
 		break;
 	}
-	case NumpyNullableType::CATEGORY: 
-			throw std::runtime_error("OtterBrix doen\'t support Categories/ENUMs");
+	case NumpyNullableType::CATEGORY:
+			return make_error(resource, "OtterBrix doen\'t support Categories/ENUMs");
 
 	default:
-		throw std::runtime_error("Unsupported pandas type");
+		return make_error(resource, "Unsupported pandas type");
 	}
+	return core::error_t::no_error();
 }
 
 } // namespace otterbrix

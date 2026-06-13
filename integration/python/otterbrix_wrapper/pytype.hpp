@@ -41,7 +41,6 @@ namespace otterbrix {
         string GetId() const;
     
     private:
-    private:
         components::types::complex_logical_type type;
     };
 

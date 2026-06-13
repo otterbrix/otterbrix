@@ -24,8 +24,9 @@ namespace otterbrix {
         	return make_shared_ptr<OtterBrixPyType>(array_type);
         }
 
-        static std::pmr::vector<complex_logical_type> GetChildList(const py::object &container) {
-        	std::pmr::vector<complex_logical_type> types(std::pmr::get_default_resource());
+        static core::result_wrapper_t<std::pmr::vector<complex_logical_type>>
+        GetChildList(const py::object &container, std::pmr::memory_resource *resource) {
+        	std::pmr::vector<complex_logical_type> types(resource);
         	if (py::isinstance<py::list>(container)) {
         		const py::list &fields = container;
         		idx_t i = 1;
@@ -33,7 +34,8 @@ namespace otterbrix {
         			shared_ptr<OtterBrixPyType> pytype;
         			if (!py::try_cast<shared_ptr<OtterBrixPyType>>(item, pytype)) {
         				string actual_type = py::str(item.get_type());
-        				throw std::runtime_error("object has to be a list of OtterBrixPyType's, not " + actual_type);
+        				return core::error_t(core::error_code_t::invalid_parameter,
+        				                     std::pmr::string("object has to be a list of OtterBrixPyType's, not " + actual_type, resource));
         			}
         			types.push_back(pytype->Type());
                     types.back().set_alias("v" + to_string(i++));
@@ -48,7 +50,8 @@ namespace otterbrix {
         			shared_ptr<OtterBrixPyType> pytype;
         			if (!py::try_cast<shared_ptr<OtterBrixPyType>>(type_p, pytype)) {
         				string actual_type = py::str(type_p.get_type());
-        				throw std::runtime_error("object has to be a list of OtterBrixPyType's, not " + actual_type);
+        				return core::error_t(core::error_code_t::invalid_parameter,
+        				                     std::pmr::string("object has to be a list of OtterBrixPyType's, not " + actual_type, resource));
         			}
         			types.push_back(pytype->Type());
                     types.back().set_alias(name);
@@ -56,17 +59,21 @@ namespace otterbrix {
         		return types;
         	} else {
         		string actual_type = py::str(container.get_type());
-        		throw std::runtime_error(
-        		    "Can not construct a child list from object of type " + actual_type + ", only dict/list is supported");
+        		return core::error_t(core::error_code_t::invalid_parameter,
+        		                     std::pmr::string("Can not construct a child list from object of type " + actual_type + ", only dict/list is supported", resource));
         	}
         }
 
         shared_ptr<OtterBrixPyType> StructType(const py::object &fields) {
-        	auto types = GetChildList(fields);
-        	if (types.empty()) {
+        	auto* resource = std::pmr::get_default_resource();
+        	auto types = GetChildList(fields, resource);
+        	if (types.has_error()) {
+        		throw std::runtime_error(types.error().what.c_str());
+        	}
+        	if (types.value().empty()) {
         		throw std::runtime_error("Can not create an empty struct type!");
         	}
-        	auto struct_type = complex_logical_type::create_struct("struct", std::move(types));
+        	auto struct_type = complex_logical_type::create_struct("struct", std::move(types.value()));
         	return make_shared_ptr<OtterBrixPyType>(struct_type);
         }
 
@@ -102,9 +109,9 @@ namespace otterbrix {
         	return make_shared_ptr<OtterBrixPyType>(type);
         }
 
-        shared_ptr<OtterBrixPyType> Type(const string &type_str) {
-
-            unordered_map<string, logical_type> fromStrToType = {
+        core::result_wrapper_t<logical_type> StringToLogicalType(const string &type_str,
+                                                                 std::pmr::memory_resource *resource) {
+            static const unordered_map<string, logical_type> fromStrToType = {
                 {"NULL", logical_type::NA},
                 {"VARCHAR", logical_type::STRING_LITERAL},
                 {"BIT", logical_type::BIT},
@@ -130,9 +137,18 @@ namespace otterbrix {
             };
             auto it = fromStrToType.find(type_str);
             if (it != fromStrToType.end()) {
-                return make_shared<OtterBrixPyType>(it->second);
+                return it->second;
             }
-            throw std::runtime_error("Has no function to transform str " + type_str + " to OtterBrix type");
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string("Has no function to transform str " + type_str + " to OtterBrix type", resource));
+        }
+
+        shared_ptr<OtterBrixPyType> Type(const string &type_str) {
+            auto ltype = StringToLogicalType(type_str, std::pmr::get_default_resource());
+            if (ltype.has_error()) {
+                throw std::runtime_error(ltype.error().what.c_str());
+            }
+            return make_shared<OtterBrixPyType>(ltype.value());
         }
 
         void Initialize(py::module_ m) {

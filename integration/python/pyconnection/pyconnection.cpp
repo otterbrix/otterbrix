@@ -4,6 +4,7 @@
 #include <otterbrix_wrapper/pyrelation.hpp>
 #include <core/string_util/string_util.hpp>
 #include <scan/python_replacement_scan.hpp>
+#include <components/catalog/catalog_oids.hpp>
 
 namespace otterbrix {
     // DefaultConnectionHolder
@@ -123,9 +124,57 @@ namespace otterbrix {
     py::list PyConnection::ListTables() {
         py::gil_scoped_acquire gil;
         py::list res;
-        const auto& tables = ConnectionEnvironment::GetCollections();
-        for (const auto& entry : tables) {
-            res.append(py::str(entry));
+
+        // Enumerate USER tables straight from the engine catalog (pg_class) instead
+        // of a local registry. pg_class layout: [0=oid, 1=relname, 2=relnamespace,
+        // 3=relkind, 4=relstoragemode]. We project the columns we need and filter in
+        // C++: user objects have oid >= FIRST_USER_OID (system catalog rows sit below
+        // that), and only regular relations (relkind 'r') are tables.
+        auto cursor = ExecuteInternal("SELECT oid, relname, relkind FROM pg_class;");
+        if (!cursor || cursor->is_error() || cursor->size() == 0) {
+            return res;
+        }
+
+        // Resolve the projected column positions by alias, falling back to the
+        // SELECT order above if the cursor carries no aliases.
+        const auto& types = cursor->type_data();
+        components::cursor::index_t oid_col = 0;
+        components::cursor::index_t relname_col = 1;
+        components::cursor::index_t relkind_col = 2;
+        for (std::size_t i = 0; i < types.size(); ++i) {
+            if (!types[i].has_alias()) {
+                continue;
+            }
+            const auto& alias = types[i].alias();
+            if (alias == "oid") {
+                oid_col = static_cast<components::cursor::index_t>(i);
+            } else if (alias == "relname") {
+                relname_col = static_cast<components::cursor::index_t>(i);
+            } else if (alias == "relkind") {
+                relkind_col = static_cast<components::cursor::index_t>(i);
+            }
+        }
+
+        while (cursor->has_next()) {
+            cursor->advance();
+            auto oid_cell = cursor->value(static_cast<uint64_t>(oid_col));
+            if (oid_cell.is_null() ||
+                oid_cell.value<std::uint32_t>() < components::catalog::FIRST_USER_OID) {
+                continue; // system catalog object
+            }
+            auto relkind_cell = cursor->value(static_cast<uint64_t>(relkind_col));
+            if (!relkind_cell.is_null()) {
+                auto relkind = relkind_cell.value<std::string_view>();
+                if (!relkind.empty() && relkind.front() != 'r') {
+                    continue; // not a regular table (view / matview / sequence / ...)
+                }
+            }
+            auto relname_cell = cursor->value(static_cast<uint64_t>(relname_col));
+            if (relname_cell.is_null()) {
+                continue;
+            }
+            auto relname = relname_cell.value<std::string_view>();
+            res.append(py::str(std::string(relname)));
         }
         return res;
     }
@@ -161,7 +210,6 @@ namespace otterbrix {
     }
 
     void PyConnection::Close() {
-        SetResult(nullptr);
         assert(py::gil_check());
         py::gil_scoped_release release;
         SetNullConnection();
@@ -176,10 +224,9 @@ namespace otterbrix {
 
     pycursor_ptr PyConnection::Execute(const py::object& query, py::object /*params*/) {
         py::gil_scoped_acquire gil;
-        result = nullptr;
         if (py::isinstance<py::str>(query)) {
-            SetResult(ExecuteInternal(string(py::str(query))));
-        } 
+            ExecuteInternal(string(py::str(query)));
+        }
         return shared_from_this();
 
     }
@@ -197,43 +244,17 @@ namespace otterbrix {
         string name = "df_no_idea";
         auto tableref = Scan::ReplacementObject(value, name);
 
-        shared_ptr<Relation> relation = RelationFactory::CreateDFRelation(std::move(tableref));
-        return make_unique<PyRelation>(static_cast<ConnectionEnvironment*>(this), relation);
+        return make_unique<PyRelation>(static_cast<ConnectionEnvironment*>(this),
+            RelationFactory::CreateDFRelation(std::move(tableref)));
     }
 
     unique_ptr<PyRelation> PyConnection::FromObject(const py::object& value) {
-        string name = "object_no_idea"; 
+        string name = "object_no_idea";
         auto tableref = Scan::TryReplacementObject(value, name);
         assert(tableref);
 
-        shared_ptr<Relation> relation = RelationFactory::CreateDFRelation(std::move(tableref));
-        return make_unique<PyRelation>(static_cast<ConnectionEnvironment*>(this), relation);
-    }
-
-    bool PyConnection::HasResult() const {
-        return result != nullptr;
-    }
-    
-    PyResult& PyConnection::GetResult() {
-        if (!result) {
-            ThrowConnectionException();
-        }
-        return *result;
-    }
-    
-    const PyResult& PyConnection::GetResult() const {
-        if (!result) {
-            ThrowConnectionException();
-        }
-        return *result;
-    }
-    
-    void PyConnection::SetResult(Result res) {
-        if (res) {
-            result = nullptr;
-        } else {
-            result = nullptr;
-        }
+        return make_unique<PyRelation>(static_cast<ConnectionEnvironment*>(this),
+            RelationFactory::CreateDFRelation(std::move(tableref)));
     }
 
 } // namespace otterbrix

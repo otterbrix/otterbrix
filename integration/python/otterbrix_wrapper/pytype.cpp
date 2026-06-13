@@ -1,8 +1,9 @@
 #include "pytype.hpp"
+#include "type_creation.hpp"
 
 #include <components/types/types.hpp>
+#include <core/result_wrapper.hpp>
 #include <core/string_util/string_util.hpp>
-#include <core/types/unordered_map.hpp>
 #include <core/typedefs.hpp>
 #include <connection_environment/connection_environment.hpp>
 #include <core/types/vector.hpp>
@@ -171,8 +172,9 @@ namespace otterbrix {
             ", but this type either isn't nested, or it doesn't have a child by that name");
     }
     
-    static complex_logical_type FromObject(const py::object &object);
-    
+    static core::result_wrapper_t<complex_logical_type> FromObject(const py::object &object,
+                                                                   std::pmr::memory_resource *resource);
+
     namespace {
     enum class PythonTypeObject : uint8_t {
     	INVALID,   // not convertible to our type
@@ -203,41 +205,13 @@ namespace otterbrix {
     	return PythonTypeObject::INVALID;
     }
     
-    static complex_logical_type FromString(const string &type_str) {//, shared_ptr<PyConnection> pycon) {
-    	/*if (!pycon) {
-    		pycon = PyConnection::DefaultConnection();
-    	}
-    	auto &connection = pycon->con.GetConnection();
-    	return TransformStringToLogicalType(type_str, *connection.context);*/
-        unordered_map<string, logical_type> fromStrToType = {
-            {"NULL", logical_type::NA},
-            {"VARCHAR", logical_type::STRING_LITERAL},
-            {"BIT", logical_type::BIT},
-            {"UUID", logical_type::UUID},
-            {"BLOB", logical_type::BLOB},
-            {"BOOLEAN", logical_type::BOOLEAN},
-            {"TIMESTAMP", logical_type::TIMESTAMP},
-            {"TIMESTAMP_S", logical_type::TIMESTAMP},
-            {"TIMESTAMP_MS", logical_type::TIMESTAMP},
-            {"TIMESTAMP_NS", logical_type::TIMESTAMP},
-            {"DOUBLE", logical_type::DOUBLE},
-            {"FLOAT", logical_type::FLOAT},
-            {"TINYINT", logical_type::TINYINT},
-            {"UTINYINT", logical_type::UTINYINT},
-            {"SMALLINT", logical_type::SMALLINT},
-            {"USMALLINT", logical_type::USMALLINT},
-            {"INTEGER", logical_type::INTEGER},
-            {"UINTEGER", logical_type::UINTEGER},
-            {"BIGINT", logical_type::BIGINT},
-            {"UBIGINT", logical_type::UBIGINT},
-            {"HUGEINT", logical_type::HUGEINT},
-            {"UHUGEINT", logical_type::UHUGEINT}
-        };
-		auto it = fromStrToType.find(type_str);
-		if (it != fromStrToType.end()) {
-			return it->second;
-		}
-		throw std::runtime_error("Has no function to transform str " + type_str + " to OtterBrix type");
+    static core::result_wrapper_t<complex_logical_type> FromString(const string &type_str,
+                                                                   std::pmr::memory_resource *resource) {
+        auto ltype = TypeCreation::StringToLogicalType(type_str, resource);
+        if (ltype.has_error()) {
+            return ltype.convert_error<complex_logical_type>();
+        }
+        return complex_logical_type(ltype.value());
     }
     
     static bool FromNumpyType(const py::object &type, complex_logical_type &result) {
@@ -279,33 +253,35 @@ namespace otterbrix {
     	return true;
     }
     
-    static complex_logical_type FromType(const py::type &obj) {
+    static core::result_wrapper_t<complex_logical_type> FromType(const py::type &obj,
+                                                                 std::pmr::memory_resource *resource) {
     	py::module_ builtins = py::module_::import("builtins");
     	if (obj.is(builtins.attr("str"))) {
-    		return logical_type::STRING_LITERAL;
+    		return complex_logical_type(logical_type::STRING_LITERAL);
     	}
     	if (obj.is(builtins.attr("int"))) {
-    		return logical_type::BIGINT;
+    		return complex_logical_type(logical_type::BIGINT);
     	}
     	if (obj.is(builtins.attr("bytearray"))) {
-    		return logical_type::BLOB;
+    		return complex_logical_type(logical_type::BLOB);
     	}
     	if (obj.is(builtins.attr("bytes"))) {
-    		return logical_type::BLOB;
+    		return complex_logical_type(logical_type::BLOB);
     	}
     	if (obj.is(builtins.attr("float"))) {
-    		return logical_type::DOUBLE;
+    		return complex_logical_type(logical_type::DOUBLE);
     	}
     	if (obj.is(builtins.attr("bool"))) {
-    		return logical_type::BOOLEAN;
+    		return complex_logical_type(logical_type::BOOLEAN);
     	}
     
     	complex_logical_type result;
     	if (FromNumpyType(obj, result)) {
     		return result;
     	}
-    
-    	throw py::cast_error("Could not convert from unknown 'type' to OtterBrixPyType");
+
+    	return core::error_t(core::error_code_t::conversion_failure,
+    	                     std::pmr::string("Could not convert from unknown 'type' to OtterBrixPyType", resource));
     }
     
     static bool IsMapType(const py::tuple &args) {
@@ -333,99 +309,129 @@ namespace otterbrix {
     	return py::tuple(result);
     }
     
-    static complex_logical_type FromUnionTypeInternal(const py::tuple &args) {
+    static core::result_wrapper_t<complex_logical_type> FromUnionTypeInternal(const py::tuple &args,
+                                                                              std::pmr::memory_resource *resource) {
     	idx_t index = 1;
-    	vector<complex_logical_type> members;
-    
+    	std::pmr::vector<complex_logical_type> members(resource);
+
     	for (const auto &arg : args) {
     		auto name = "u" + to_string(index++);
     		py::object object = py::reinterpret_borrow<py::object>(arg);
-    		members.push_back(FromObject(object));
+    		auto member = FromObject(object, resource);
+    		if (member.has_error()) {
+    			return std::move(member);
+    		}
+    		members.push_back(std::move(member.value()));
             members.back().set_alias(name);
     	}
-    
-    	throw std::runtime_error("Could\'t transrom object to OtterBrix Union. "
-                "Has no complex_logical_type::create_union");
+
+    	return core::error_t(core::error_code_t::unimplemented_yet,
+    	                     std::pmr::string("Could\'t transrom object to OtterBrix Union. "
+                "Has no complex_logical_type::create_union", resource));
     }
-    
-    static complex_logical_type FromUnionType(const py::object &obj) {
+
+    static core::result_wrapper_t<complex_logical_type> FromUnionType(const py::object &obj,
+                                                                      std::pmr::memory_resource *resource) {
     	py::tuple args = obj.attr("__args__");
-    
+
     	// Optional inserts NoneType into the Union
     	// all types are nullable so we just filter the Nones
     	auto filtered_args = FilterNones(args);
     	if (filtered_args.size() == 1) {
     		// If only a single type is left, dont construct a UNION
-    		return FromObject(filtered_args[0]);
+    		return FromObject(filtered_args[0], resource);
     	}
-    	return FromUnionTypeInternal(filtered_args);
+    	return FromUnionTypeInternal(filtered_args, resource);
     };
-    
-    static complex_logical_type FromGenericAlias(const py::object &obj) {
+
+    static core::result_wrapper_t<complex_logical_type> FromGenericAlias(const py::object &obj,
+                                                                         std::pmr::memory_resource *resource) {
     	py::module_ builtins = py::module_::import("builtins");
     	py::module_ types = py::module_::import("types");
     	auto generic_alias = types.attr("GenericAlias");
     	assert(py::isinstance(obj, generic_alias));
     	auto origin = obj.attr("__origin__");
     	py::tuple args = obj.attr("__args__");
-    
+
     	if (origin.is(builtins.attr("list"))) {
     		if (args.size() != 1) {
-    			throw std::runtime_error("Can only create a LIST from a single type");
+    			return core::error_t(core::error_code_t::invalid_parameter,
+    			                     std::pmr::string("Can only create a LIST from a single type", resource));
     		}
-    		return complex_logical_type::create_list(FromObject(args[0]));
+    		auto child = FromObject(args[0], resource);
+    		if (child.has_error()) {
+    			return std::move(child);
+    		}
+    		return complex_logical_type::create_list(child.value());
     	}
     	if (origin.is(builtins.attr("dict"))) {
     		if (IsMapType(args)) {
-    			return complex_logical_type::create_map(FromObject(args[0]), FromObject(args[1]));
+    			auto key = FromObject(args[0], resource);
+    			if (key.has_error()) {
+    				return std::move(key);
+    			}
+    			auto value = FromObject(args[1], resource);
+    			if (value.has_error()) {
+    				return std::move(value);
+    			}
+    			return complex_logical_type::create_map(key.value(), value.value());
     		} else {
-    			throw std::runtime_error("Can only create a MAP from a dict if args is formed correctly");
+    			return core::error_t(core::error_code_t::invalid_parameter,
+    			                     std::pmr::string("Can only create a MAP from a dict if args is formed correctly", resource));
     		}
     	}
     	string origin_type = py::str(origin);
-    	throw std::runtime_error("Could not convert from " + origin_type + " to OtterBrixPyType");
+    	return core::error_t(core::error_code_t::conversion_failure,
+    	                     std::pmr::string("Could not convert from " + origin_type + " to OtterBrixPyType", resource));
     }
-    
-    static complex_logical_type FromDictionary(const py::object &obj) {
+
+    static core::result_wrapper_t<complex_logical_type> FromDictionary(const py::object &obj,
+                                                                       std::pmr::memory_resource *resource) {
     	auto dict = py::reinterpret_steal<py::dict>(obj);
-    	std::pmr::vector<complex_logical_type> children(std::pmr::get_default_resource());
+    	std::pmr::vector<complex_logical_type> children(resource);
     	if (dict.size() == 0) {
-    		throw std::runtime_error("Could not convert empty dictionary to a STRUCT type");
+    		return core::error_t(core::error_code_t::invalid_parameter,
+    		                     std::pmr::string("Could not convert empty dictionary to a STRUCT type", resource));
     	}
     	children.reserve(dict.size());
     	for (auto &item : dict) {
     		auto &name_p = item.first;
     		auto type_p = py::reinterpret_borrow<py::object>(item.second);
     		string name = py::str(name_p);
-    		auto type = FromObject(type_p);
-    		children.push_back(std::move(type));
+    		auto type = FromObject(type_p, resource);
+    		if (type.has_error()) {
+    			return std::move(type);
+    		}
+    		children.push_back(std::move(type.value()));
             children.back().set_alias(name);
     	}
     	return complex_logical_type::create_struct("struct", std::move(children));
     }
-    
-    static complex_logical_type FromObject(const py::object &object) {
+
+    static core::result_wrapper_t<complex_logical_type> FromObject(const py::object &object,
+                                                                   std::pmr::memory_resource *resource) {
     	auto object_type = GetTypeObjectType(object);
     	switch (object_type) {
     	case PythonTypeObject::BASE: {
-    		return FromType(object);
+    		return FromType(object, resource);
     	}
     	case PythonTypeObject::COMPOSITE: {
-    		return FromGenericAlias(object);
+    		return FromGenericAlias(object, resource);
     	}
     	case PythonTypeObject::STRUCT: {
-    		return FromDictionary(object);
+    		return FromDictionary(object, resource);
     	}
     	case PythonTypeObject::UNION: {
-    		return FromUnionType(object);
+    		return FromUnionType(object, resource);
     	}
     	case PythonTypeObject::STRING: {
     		auto string_value = std::string(py::str(object));
-    		return FromString(string_value);//, nullptr);
+    		return FromString(string_value, resource);
     	}
     	default: {
     		string actual_type = py::str(object.get_type());
-    		throw std::runtime_error("Could not convert from object of type " + actual_type + " to OtterBrixPyType");
+    		return core::error_t(core::error_code_t::conversion_failure,
+    		                     std::pmr::string("Could not convert from object of type " + actual_type + " to OtterBrixPyType", resource));
     	}
     	}
     }
@@ -438,12 +444,18 @@ namespace otterbrix {
     	type_module.def_property_readonly("id", &OtterBrixPyType::GetId);
     	type_module.def_property_readonly("children", &OtterBrixPyType::Children);
     	type_module.def(py::init<>([](const string &type_str) {
-            auto ltype = FromString(type_str);
-    		return make_shared_ptr<OtterBrixPyType>(ltype);
+            auto ltype = FromString(type_str, std::pmr::get_default_resource());
+            if (ltype.has_error()) {
+                throw std::runtime_error(ltype.error().what.c_str());
+            }
+    		return make_shared_ptr<OtterBrixPyType>(ltype.value());
     	}));
     	type_module.def(py::init<>([](const py::object &obj) {
-    		auto ltype = FromObject(obj);
-    		return make_shared_ptr<OtterBrixPyType>(ltype);
+    		auto ltype = FromObject(obj, std::pmr::get_default_resource());
+            if (ltype.has_error()) {
+                throw std::runtime_error(ltype.error().what.c_str());
+            }
+    		return make_shared_ptr<OtterBrixPyType>(ltype.value());
     	}));
     	type_module.def("__getattr__", &OtterBrixPyType::GetAttribute, "Get the child type by 'name'", py::arg("name"));
     	type_module.def("__getitem__", &OtterBrixPyType::GetAttribute, "Get the child type by 'name'", py::arg("name"));
@@ -484,7 +496,7 @@ namespace otterbrix {
     		return children;
     	}
     	if (id == logical_type::ENUM) {
-            std::runtime_error("OtterBrix doesn\'t implement OtterBrix Enum methods");
+            throw std::runtime_error("OtterBrix doesn\'t implement OtterBrix Enum methods");
     	}
     	if (id == logical_type::STRUCT || id == logical_type::UNION) {
     		const auto &struct_children = type.child_types();

@@ -18,6 +18,11 @@ public:
 
 	PythonImportCacheItem Scanner;
 	PythonImportCacheItem Dataset;
+
+protected:
+	bool IsRequired() const override final {
+		return false;
+	}
 };
 
 struct PyarrowCacheItem : public PythonImportCacheItem {
@@ -36,6 +41,11 @@ public:
 	PyarrowDatasetCacheItem dataset;
 	PythonImportCacheItem Table;
 	PythonImportCacheItem RecordBatchReader;
+
+protected:
+	bool IsRequired() const override final {
+		return false;
+	}
 };
 
 } // namespace otterbrix

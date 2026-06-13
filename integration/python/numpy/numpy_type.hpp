@@ -3,6 +3,9 @@
 #include <pybind11/pybind_wrapper.hpp>
 
 #include <components/types/types.hpp>
+#include <core/result_wrapper.hpp>
+
+#include <memory_resource>
 
 namespace otterbrix {
 
@@ -54,7 +57,7 @@ enum class NumpyObjectType : uint8_t {
 	DICT,      //! dict of numpy arrays of shape (n,)
 };
 
-NumpyType ConvertNumpyType(const py::handle &col_type);
-components::types::complex_logical_type NumpyToLogicalType(const NumpyType &col_type);
+core::result_wrapper_t<NumpyType> ConvertNumpyType(std::pmr::memory_resource *resource, const py::handle &col_type);
+core::result_wrapper_t<components::types::complex_logical_type> NumpyToLogicalType(std::pmr::memory_resource *resource, const NumpyType &col_type);
 
 } // namespace otterbrix

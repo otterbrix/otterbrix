@@ -16,9 +16,15 @@ namespace otterbrix {
 
     class PyExpression;
 
+    //! R14: shared_ptr<PyExpression> is MANDATED here -- it is the pybind11 holder type registered
+    //! in expression_initialize.cpp as py::class_<PyExpression, shared_ptr<PyExpression>>. It is not
+    //! a free-form internal ownership choice and cannot be replaced without breaking the binding.
     using pyexpr_ptr = shared_ptr<PyExpression>;
 
-    class PyExpression : public enable_shared_from_this<PyExpression> {
+    //! The former enable_shared_from_this<PyExpression> base was removed: PyExpression never calls
+    //! shared_from_this(); all instances are produced via make_shared and handed to pybind as the
+    //! holder above.
+    class PyExpression {
     public:
         PyExpression(Expression expr, PyConnection& conn);
         PyExpression(Expression expr, ExpressionFactory* factory);

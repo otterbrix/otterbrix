@@ -12,7 +12,10 @@
 #include <core/string_util/string_util.hpp>
 #include <core/external_dependencies.hpp>
 #include <atomic>
+#include <memory_resource>
 #include <mutex>
+#include <stdexcept>
+#include <string>
 
 namespace otterbrix {
 
@@ -22,16 +25,18 @@ using namespace components::function;
 
 struct PandasScanFunctionData : public TableFunctionData {
     PandasScanFunctionData(py::handle df, idx_t row_count, vector<PandasColumnBindData> pandas_bind_data,
-                           vector<complex_logical_type> sql_types, shared_ptr<DependencyItem> dependency)
+                           vector<complex_logical_type> sql_types, DependencyItem* dependency)
         : df(df), row_count(row_count), lines_read(0), pandas_bind_data(std::move(pandas_bind_data))
-        , sql_types(std::move(sql_types)), copied_df(std::move(dependency))  {
+        , sql_types(std::move(sql_types)), copied_df(dependency)  {
     }
     py::handle df;
     idx_t row_count;
     std::atomic<idx_t> lines_read;
     vector<PandasColumnBindData> pandas_bind_data;
     vector<complex_logical_type> sql_types;
-    shared_ptr<DependencyItem> copied_df;
+    //! Non-owning observer of the source/copy dependency. The owning ExternalDependency (held by
+    //! the TableRef) outlives this FunctionData, so a borrow is sufficient to document the alias.
+    DependencyItem* copied_df;
 
     ~PandasScanFunctionData() override {
          try {
@@ -78,16 +83,21 @@ unique_ptr<FunctionData> PandasScanFunction::PandasScanBind(TableFunctionBindInp
 
     vector<PandasColumnBindData> pandas_bind_data;
 
+    // NOTE: the table-function bind callback (table_function_bind_t) has a fixed C-ABI
+    // signature with no threaded engine resource, so the binder resource is rooted here.
+    auto* resource = std::pmr::get_default_resource();
     auto is_py_dict = py::isinstance<py::dict>(df);
-    if (is_py_dict) {
-         NumpyBind::Bind(df, pandas_bind_data, return_types, names);
-    } else {
-         Pandas::Bind(df, pandas_bind_data, return_types, names);
+    auto bind_error = is_py_dict
+                          ? NumpyBind::Bind(resource, df, pandas_bind_data, return_types, names)
+                          : Pandas::Bind(resource, df, pandas_bind_data, return_types, names);
+    if (bind_error.contains_error()) {
+         // Locked table_function_bind_t contract surfaces failures via exception (DEFER: R3).
+         throw std::runtime_error(std::string(bind_error.what));
     }
     auto df_columns = py::list(df.attr("keys")());
 
     auto &ref = input.ref;
-    shared_ptr<DependencyItem> dependency_item;
+    DependencyItem* dependency_item = nullptr;
     if (ref.external_dependency) {
         // This was created during the replacement scan if this was a pandas DataFrame (see python_replacement_scan.cpp)
         dependency_item = ref.external_dependency->GetDependency("copy");
@@ -148,7 +158,11 @@ void PandasScanFunction::PandasBackendScanSwitch(PandasColumnBindData &bind_data
     auto backend = bind_data.pandas_col->Backend();
     switch (backend) {
     case PandasColumnBackend::NUMPY: {
-         NumpyScan::Scan(bind_data, count, offset, out);
+         auto scan_error = NumpyScan::Scan(out.resource(), bind_data, count, offset, out);
+         if (scan_error.contains_error()) {
+             // Locked table_function_t contract surfaces failures via exception (DEFER: R3).
+             throw std::runtime_error(std::string(scan_error.what));
+         }
          break;
     }
     default: {

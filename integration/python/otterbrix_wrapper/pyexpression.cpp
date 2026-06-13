@@ -9,10 +9,24 @@
 #include <components/expressions/key.hpp>
 
 #include <optional>
+#include <stdexcept>
+#include <string>
 
 using namespace components;
 
 namespace otterbrix {
+
+    namespace {
+        // R14 boundary: the expression factory now reports invalid arguments via
+        // core::result_wrapper_t. Surface those to Python as exceptions (mirrors
+        // connection_environment.cpp's transform-result handling).
+        Expression unwrap(core::result_wrapper_t<Expression>&& result) {
+            if (result.has_error()) {
+                throw std::runtime_error(std::string(result.error().what));
+            }
+            return std::move(result.value());
+        }
+    } // namespace
     PyExpression::PyExpression(Expression expr, PyConnection& conn)
         : expr(std::move(expr)), factory(&conn) {}
 
@@ -34,9 +48,11 @@ namespace otterbrix {
     }
 
     pyexpr_ptr PyExpression::ConstantExpression(const py::object& value, PyConnection& conn) {
-        auto val = TransformPythonValue(value);
-        return make_shared<PyExpression>(conn.MakeConstant(std::move(val)), conn);
-        
+        auto val = TransformPythonValue(std::pmr::get_default_resource(), value);
+        if (val.has_error()) {
+            throw std::runtime_error(std::string(val.error().what));
+        }
+        return make_shared<PyExpression>(conn.MakeConstant(std::move(val.value())), conn);
     }
 
     pyexpr_ptr PyExpression::CountExpression(PyConnection& conn) {
@@ -44,7 +60,11 @@ namespace otterbrix {
     }
 
     string PyExpression::ToString() const {
-        return factory->ConvertToString(expr); 
+        auto result = factory->ConvertToString(expr);
+        if (result.has_error()) {
+            throw std::runtime_error(std::string(result.error().what));
+        }
+        return std::move(result.value());
     }
 
     void PyExpression::Print() const {
@@ -91,8 +111,11 @@ namespace otterbrix {
 
     pyexpr_ptr PyExpression::Negate() {
         auto value = py::int_(-1);
-        auto val = TransformPythonValue(value);
-        auto expr = make_shared<PyExpression>(factory->MakeConstant(std::move(val)), factory);
+        auto val = TransformPythonValue(std::pmr::get_default_resource(), value);
+        if (val.has_error()) {
+            throw std::runtime_error(std::string(val.error().what));
+        }
+        auto expr = make_shared<PyExpression>(factory->MakeConstant(std::move(val.value())), factory);
         return Multiply(*expr);
     }
 
@@ -151,13 +174,13 @@ namespace otterbrix {
     }
 
     pyexpr_ptr PyExpression::SetAlias(const string& alias) {
-        return make_shared<PyExpression>(factory->ExpressionWithAlias(expr, alias), factory);      
+        return make_shared<PyExpression>(unwrap(factory->ExpressionWithAlias(expr, alias)), factory);
     }
 
     // AND, OR and NOT
 
     pyexpr_ptr PyExpression::Not() {
-        return make_shared<PyExpression>(factory->ComparisonNotExpression(this->expr), factory);
+        return make_shared<PyExpression>(unwrap(factory->ComparisonNotExpression(this->expr)), factory);
     }
 
     pyexpr_ptr PyExpression::And(const PyExpression &other) {
@@ -186,33 +209,36 @@ namespace otterbrix {
 
     pyexpr_ptr PyExpression::AggregationExpression(const std::string& function_name,
         const PyExpression& expr) {
-        return make_shared<PyExpression>(expr.factory->AggregationUnaryExpression(function_name, expr.expr), expr.factory);
+        return make_shared<PyExpression>(
+            unwrap(expr.factory->AggregationUnaryExpression(function_name, expr.expr)), expr.factory);
     }
 
-    pyexpr_ptr PyExpression::ScalarBinaryExpression(components::expressions::scalar_type type, 
+    pyexpr_ptr PyExpression::ScalarBinaryExpression(components::expressions::scalar_type type,
         const PyExpression& left, const PyExpression& right) {
-        return make_shared<PyExpression>(left.factory->ScalarBinaryExpression(type, left.expr, right.expr), left.factory);
+        return make_shared<PyExpression>(
+            unwrap(left.factory->ScalarBinaryExpression(type, left.expr, right.expr)), left.factory);
     }
 
-    pyexpr_ptr PyExpression::ScalarUnaryExpression(components::expressions::scalar_type type, 
+    pyexpr_ptr PyExpression::ScalarUnaryExpression(components::expressions::scalar_type type,
         const PyExpression& expr) {
         return make_shared<PyExpression>(expr.factory->ScalarUnaryExpression(type, expr.expr), expr.factory);
     }
 
     pyexpr_ptr PyExpression::ComparisonExpression(components::expressions::compare_type type,
         const PyExpression& left, const PyExpression& right) {
-        return make_shared<PyExpression>(left.factory->ComparisonExpression(type, left.expr, right.expr), left.factory);
-    
+        return make_shared<PyExpression>(
+            unwrap(left.factory->ComparisonExpression(type, left.expr, right.expr)), left.factory);
     }
 
 
-    pyexpr_ptr PyExpression::ComparisonUnionExpression(expressions::compare_type type, 
+    pyexpr_ptr PyExpression::ComparisonUnionExpression(expressions::compare_type type,
             const PyExpression& left, const PyExpression& right) {
-        return make_shared<PyExpression>(left.factory->ComparisonUnionExpression(type, left.expr, right.expr), left.factory);
+        return make_shared<PyExpression>(
+            unwrap(left.factory->ComparisonUnionExpression(type, left.expr, right.expr)), left.factory);
     }
 
     pyexpr_ptr PyExpression::SortExpression(components::expressions::sort_order type, const PyExpression& expr) {
-        return make_shared<PyExpression>(expr.factory->SortExpression(expr.expr, type), expr.factory);
+        return make_shared<PyExpression>(unwrap(expr.factory->SortExpression(expr.expr, type)), expr.factory);
     }
 
 } // namespace otterbrix

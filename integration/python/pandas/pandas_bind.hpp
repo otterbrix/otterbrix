@@ -10,6 +10,9 @@
 #include <components/types/types.hpp>
 #include <core/types/string.hpp>
 #include <core/types/vector.hpp>
+#include <core/result_wrapper.hpp>
+
+#include <memory_resource>
 
 namespace otterbrix {
 
@@ -30,7 +33,7 @@ struct PandasColumnBindData {
 };
 
 struct Pandas {
-	static void Bind(py::handle df, vector<PandasColumnBindData> &out,
+	static core::error_t Bind(std::pmr::memory_resource *resource, py::handle df, vector<PandasColumnBindData> &out,
 	                 vector<components::types::complex_logical_type> &return_types,
                      vector<string> &names,
                      const configuration::config_pandas &cfg = {});

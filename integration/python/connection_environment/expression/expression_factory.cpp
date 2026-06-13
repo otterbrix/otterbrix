@@ -29,46 +29,51 @@ namespace otterbrix {
     }
 
     Expression ExpressionFactory::MakeCountExpression() {
-        return make_aggregate_expression(space->dispatcher()->resource(), "count", expressions::key_t(space->dispatcher()->resource(), "count"));
+        auto* resource = space->dispatcher()->resource();
+        return Expression(boost::static_pointer_cast<expressions::expression_i>(
+            make_aggregate_expression(resource, "count", expressions::key_t(resource, "count"))));
     }
 
     Expression ExpressionFactory::SortExpression(const string& arg) {
-        return make_sort_expression(expressions::key_t(space->dispatcher()->resource(), arg), sort_order::asc);
+        auto* resource = space->dispatcher()->resource();
+        return Expression(boost::static_pointer_cast<expressions::expression_i>(
+            make_sort_expression(expressions::key_t(resource, arg), sort_order::asc)));
     }
 
-    Expression ExpressionFactory::SortExpression(const Expression& arg, sort_order order) {
-        return std::visit([order](const auto& expr) -> Expression {
-            using T = std::decay_t<decltype(expr)>;
-            if constexpr (std::is_same_v<T, expressions::key_t>) {
-                return Expression(make_sort_expression(expr, order));
-            } else if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                if (expr->group() == expression_group::sort) {
-                    return Expression(expr);
-                } else {
-                    throw std::runtime_error("Invalid argument for sort expression. OtterBrix doesn\'t support this type of expression");
-                }
-            } else if constexpr (std::is_same_v<T, core::parameter_id_t>) {
-                throw std::runtime_error("Invalid argument for sort expression. OtterBrix doesn\'t support this type of expression");
-            } else {
-                throw std::runtime_error("Implementation Error. Undefined expression during sort expession processing");
-            }}, arg);
+    namespace {
+        core::error_t invalid_argument(std::pmr::memory_resource* resource, const char* message) {
+            return core::error_t(core::error_code_t::invalid_parameter, std::pmr::string{message, resource});
+        }
+    } // namespace
+
+    core::result_wrapper_t<Expression> ExpressionFactory::SortExpression(const Expression& arg, sort_order order) {
+        auto* resource = space->dispatcher()->resource();
+        if (arg.is_key()) {
+            return Expression(make_sort_expression(arg.key(), order));
+        }
+        if (arg.is_expression()) {
+            if (arg.expression()->group() == expression_group::sort) {
+                return Expression(arg.expression());
+            }
+            return invalid_argument(
+                resource,
+                "Invalid argument for sort expression. OtterBrix doesn't support this type of expression");
+        }
+        // parameter
+        return invalid_argument(
+            resource,
+            "Invalid argument for sort expression. OtterBrix doesn't support this type of expression");
     }
 
-    Expression ExpressionFactory::AggregationUnaryExpression(const string& function_name,
+    core::result_wrapper_t<Expression> ExpressionFactory::AggregationUnaryExpression(const string& function_name,
         const Expression& expr) {
         auto* resource = space->dispatcher()->resource();
-        string sub_name = std::visit([](const auto& param) -> string {
-                using T = std::decay_t<decltype(param)>;
-                if constexpr (std::is_same_v<T, expressions::key_t>) {
-                    return param.as_string();
-                } else if (std::is_same_v<T, expressions::expression_ptr> ||
-                           std::is_same_v<T, core::parameter_id_t>) {
-                    throw std::runtime_error("Current configuration support only column names as argument of aggregation function");
-                } else {
-                    throw std::runtime_error("Implementation Error. Undefined parameter of aggregaton function");
-                }
-            },
-            expr);
+        if (!expr.is_key()) {
+            return invalid_argument(
+                resource,
+                "Current configuration support only column names as argument of aggregation function");
+        }
+        string sub_name = expr.key().as_string();
 
         string agg_str = function_name + "(" + sub_name + ")";
         auto aggregation_expression =
@@ -81,154 +86,153 @@ namespace otterbrix {
         // Multiply by 1.0 so arithmetic promotes to DOUBLE
         if (function_name == "avg") {
             Expression one = MakeConstant(types::logical_value_t(resource, 1.0));
-            Expression scaled = ScalarBinaryExpression(scalar_type::multiply, expr, std::move(one));
-            std::visit(
-                [&](const auto& inner) {
-                    using T = std::decay_t<decltype(inner)>;
-                    if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                        aggregation_expression->append_param(inner);
-                    } else {
-                        throw std::runtime_error("avg: internal multiply expression expected");
-                    }
-                },
-                scaled);
+            auto scaled = ScalarBinaryExpression(scalar_type::multiply, expr, std::move(one));
+            if (scaled.has_error()) {
+                return scaled.error();
+            }
+            if (!scaled.value().is_expression()) {
+                return invalid_argument(resource, "avg: internal multiply expression expected");
+            }
+            aggregation_expression->append_param(scaled.value().expression());
             return Expression(aggregation_expression);
         }
 
-        aggregation_expression->append_param(expr);
+        aggregation_expression->append_param(expr.key());
         return Expression(aggregation_expression);
     }
 
-    Expression ExpressionFactory::ScalarUnaryExpression(components::expressions::scalar_type type, 
+    Expression ExpressionFactory::ScalarUnaryExpression(components::expressions::scalar_type type,
         const Expression& expr) {
-        return std::visit([&type, resource = space->dispatcher()->resource()](const auto& arg) -> Expression {
-            using T = std::decay_t<decltype(arg)>;
-            if constexpr (
-                (std::is_same_v<T, expressions::key_t> || std::is_same_v<T, core::parameter_id_t> || 
-                    std::is_same_v<T, expressions::expression_ptr>)) {
-                auto scalar_expr = expressions::make_scalar_expression(resource, type);
-                scalar_expr->append_param(arg);
-                return Expression(boost::static_pointer_cast<expressions::expression_i>(scalar_expr));
-            }
-
-        }, expr); 
+        auto* resource = space->dispatcher()->resource();
+        auto scalar_expr = expressions::make_scalar_expression(resource, type);
+        if (expr.is_key()) {
+            scalar_expr->append_param(expr.key());
+        } else if (expr.is_parameter()) {
+            scalar_expr->append_param(expr.parameter());
+        } else {
+            scalar_expr->append_param(expr.expression());
+        }
+        return Expression(boost::static_pointer_cast<expressions::expression_i>(scalar_expr));
     }
 
-    Expression ExpressionFactory::ScalarBinaryExpression(components::expressions::scalar_type type, 
+    namespace {
+        // Append an Expression's payload to a node that takes param_storage children (scalar/compare).
+        template<class NODE>
+        void append_expression(NODE& node, const Expression& expr) {
+            if (expr.is_key()) {
+                node->append_param(expr.key());
+            } else if (expr.is_parameter()) {
+                node->append_param(expr.parameter());
+            } else {
+                node->append_param(expr.expression());
+            }
+        }
+    } // namespace
+
+    core::result_wrapper_t<Expression> ExpressionFactory::ScalarBinaryExpression(components::expressions::scalar_type type,
         const Expression& left, const Expression& right) {
-        return std::visit([&type, resource = space->dispatcher()->resource()](const auto& arg1, const auto& arg2) -> Expression {
-            using T1 = std::decay_t<decltype(arg1)>;
-            using T2 = std::decay_t<decltype(arg2)>;
-
-            if constexpr (
-                (std::is_same_v<T1, expressions::key_t> || std::is_same_v<T1, core::parameter_id_t> || 
-                    std::is_same_v<T1, expressions::expression_ptr>) && 
-                (std::is_same_v<T2, expressions::key_t> || std::is_same_v<T2, core::parameter_id_t> || 
-                    std::is_same_v<T2, expressions::expression_ptr>)) {
-                expressions::scalar_expression_ptr scalar_expr = expressions::make_scalar_expression(resource, type);
-
-                scalar_expr->append_param(arg1);
-                scalar_expr->append_param(arg2);
-                return Expression(boost::static_pointer_cast<expressions::expression_i>(scalar_expr));
-            }
-            throw std::runtime_error("Undefined argument for scalar binary expression");
-
-        }, left, right);
-        
+        auto* resource = space->dispatcher()->resource();
+        expressions::scalar_expression_ptr scalar_expr = expressions::make_scalar_expression(resource, type);
+        append_expression(scalar_expr, left);
+        append_expression(scalar_expr, right);
+        return Expression(boost::static_pointer_cast<expressions::expression_i>(scalar_expr));
     }
 
-    Expression ExpressionFactory::ComparisonExpression(expressions::compare_type type, 
+    core::result_wrapper_t<Expression> ExpressionFactory::ComparisonExpression(expressions::compare_type type,
         const Expression& left, const Expression& right) {
-
-        return std::visit([&type, resource = space->dispatcher()->resource()](const auto& arg1, const auto& arg2) -> Expression {
-            using T1 = std::decay_t<decltype(arg1)>;
-            using T2 = std::decay_t<decltype(arg2)>;
-            if constexpr (std::is_same_v<T1, expressions::key_t> && 
-                (std::is_same_v<T2, expressions::key_t> || std::is_same_v<T2, core::parameter_id_t>)) {
-                auto compare_expression = expressions::make_compare_expression(resource, type, arg1, arg2);
-                return Expression(boost::static_pointer_cast<expressions::expression_i>(compare_expression));
-            }
-            throw std::runtime_error("Incorrect arguments for the compare expression. OtteBrix doesn\'t implement \'not field\' comp_op \'expr\'");
-            
-        }, left, right);
-    
-    }
-    
-    Expression ExpressionFactory::ExpressionWithAlias(const Expression& expr, const string& alias) {
-        return std::visit([&alias, resource = space->dispatcher()->resource()](const auto& expr) -> Expression {
-            using T = std::decay_t<decltype(expr)>;
-            if constexpr (std::is_same_v<T, expressions::key_t>) {
-                expressions::scalar_expression_ptr scalar_expr = 
-                    expressions::make_scalar_expression(resource, 
-                        expressions::scalar_type::get_field, expressions::key_t(resource, alias));
-                scalar_expr->append_param(expr);
-                return Expression(boost::static_pointer_cast<expressions::expression_i>(scalar_expr));
-            } else  if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                if (expr->group() == expression_group::aggregate) {
-                    const auto& agg = boost::static_pointer_cast<expressions::aggregate_expression_t>(expr);
-                    auto alias_expr = make_aggregate_expression(resource, agg->function_name(), expressions::key_t(resource, alias));
-                    for (const auto& param : agg->params()) {
-                        alias_expr->append_param(param);
-                    }
-                    return Expression(boost::static_pointer_cast<expressions::expression_i>(alias_expr));
-                } 
-                throw std::runtime_error("Incorrect argument for the alias expression. Coulnd\'t support difficult expressions");
-                
-            }
-            throw std::runtime_error("Incorrect argument for the alias expression. OtteBrix doesn\'t implement naming of \'not field\'");
-        }, expr);
-                
+        auto* resource = space->dispatcher()->resource();
+        if (left.is_key() && (right.is_key() || right.is_parameter())) {
+            expressions::compare_expression_ptr compare_expression =
+                right.is_key()
+                    ? expressions::make_compare_expression(resource, type, left.key(), right.key())
+                    : expressions::make_compare_expression(resource, type, left.key(), right.parameter());
+            return Expression(boost::static_pointer_cast<expressions::expression_i>(compare_expression));
+        }
+        return invalid_argument(
+            resource,
+            "Incorrect arguments for the compare expression. OtteBrix doesn't implement 'not field' comp_op 'expr'");
     }
 
-    Expression ExpressionFactory::ComparisonNotExpression(const Expression& expr) {
+    core::result_wrapper_t<Expression> ExpressionFactory::ExpressionWithAlias(const Expression& expr, const string& alias) {
+        auto* resource = space->dispatcher()->resource();
+        if (expr.is_key()) {
+            expressions::scalar_expression_ptr scalar_expr =
+                expressions::make_scalar_expression(resource,
+                    expressions::scalar_type::get_field, expressions::key_t(resource, alias));
+            scalar_expr->append_param(expr.key());
+            return Expression(boost::static_pointer_cast<expressions::expression_i>(scalar_expr));
+        }
+        if (expr.is_expression()) {
+            if (expr.expression()->group() == expression_group::aggregate) {
+                const auto& agg = boost::static_pointer_cast<expressions::aggregate_expression_t>(expr.expression());
+                auto alias_expr = make_aggregate_expression(resource, agg->function_name(), expressions::key_t(resource, alias));
+                for (const auto& param : agg->params()) {
+                    alias_expr->append_param(param);
+                }
+                return Expression(boost::static_pointer_cast<expressions::expression_i>(alias_expr));
+            }
+            return invalid_argument(
+                resource,
+                "Incorrect argument for the alias expression. Coulnd't support difficult expressions");
+        }
+        return invalid_argument(
+            resource,
+            "Incorrect argument for the alias expression. OtteBrix doesn't implement naming of 'not field'");
+    }
+
+    core::result_wrapper_t<Expression> ExpressionFactory::ComparisonNotExpression(const Expression& expr) {
         auto not_expr = make_compare_union_expression(space->dispatcher()->resource(), expressions::compare_type::union_not);
-        not_expr->append_child(UnionExpressionToExpressionPtr(expr));
+        auto child = UnionExpressionToExpressionPtr(expr);
+        if (child.has_error()) {
+            return child.error();
+        }
+        not_expr->append_child(child.value());
         return Expression(boost::static_pointer_cast<expressions::expression_i>(not_expr));
     }
 
-    Expression ExpressionFactory::ComparisonUnionExpression(expressions::compare_type type, 
+    core::result_wrapper_t<Expression> ExpressionFactory::ComparisonUnionExpression(expressions::compare_type type,
         const Expression& left, const Expression& right) {
         auto union_expr = make_compare_union_expression(space->dispatcher()->resource(), type);
-        union_expr->append_child(UnionExpressionToExpressionPtr(left));
-        union_expr->append_child(UnionExpressionToExpressionPtr(right));
+        auto left_child = UnionExpressionToExpressionPtr(left);
+        if (left_child.has_error()) {
+            return left_child.error();
+        }
+        auto right_child = UnionExpressionToExpressionPtr(right);
+        if (right_child.has_error()) {
+            return right_child.error();
+        }
+        union_expr->append_child(left_child.value());
+        union_expr->append_child(right_child.value());
         return Expression(boost::static_pointer_cast<expressions::expression_i>(union_expr));
-        
     }
 
     Expression ExpressionFactory::TrueExpression() {
         return Expression(make_compare_expression(space->dispatcher()->resource(), compare_type::all_true));
     }
 
-    expressions::compare_expression_ptr ExpressionFactory::UnionExpressionToExpressionPtr(const Expression& expr) {
-        return std::visit([resource = space->dispatcher()->resource()](const auto& expr) -> expressions::compare_expression_ptr {
-            using T = std::decay_t<decltype(expr)>;
-            if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                if (expr->group() == expressions::expression_group::compare) {
-                    return boost::static_pointer_cast<expressions::compare_expression_t>(expr);
-                }
-            }
-            
-            throw std::runtime_error("Incorrect arguments for the compare union expression. Should be bool expression");
-        }, expr);
+    core::result_wrapper_t<expressions::compare_expression_ptr>
+    ExpressionFactory::UnionExpressionToExpressionPtr(const Expression& expr) {
+        auto* resource = space->dispatcher()->resource();
+        if (expr.is_expression() && expr.expression()->group() == expressions::expression_group::compare) {
+            return boost::static_pointer_cast<expressions::compare_expression_t>(expr.expression());
+        }
+        return invalid_argument(
+            resource,
+            "Incorrect arguments for the compare union expression. Should be bool expression");
     }
 
 
 
-    string ExpressionFactory::ConvertToString(const Expression& expr) {
-        return std::visit([this](const auto& expr) -> string {
-            using T = std::decay_t<decltype(expr)>;
-            if constexpr (std::is_same_v<T, expressions::key_t>) {
-                return expr.as_string();
-            } else if constexpr (std::is_same_v<T, expressions::expression_ptr>) {
-                return expr->to_string();
-            } else if constexpr (std::is_same_v<T, core::parameter_id_t>){ 
-                const auto& value = this->values.at(expr);
-                return util::LogicalValueToString(value);
-            }
-            std::runtime_error("Implementation Error: Couldn\'t convert PyExpression to string");
-        
-        }, expr);
-
+    core::result_wrapper_t<string> ExpressionFactory::ConvertToString(const Expression& expr) {
+        if (expr.is_key()) {
+            return expr.key().as_string();
+        }
+        if (expr.is_expression()) {
+            return expr.expression()->to_string();
+        }
+        // parameter
+        const auto& value = this->values.at(expr.parameter());
+        return util::LogicalValueToString(value);
     }
 
     core::parameter_id_t ExpressionFactory::AddValue(components::types::logical_value_t&& value) {

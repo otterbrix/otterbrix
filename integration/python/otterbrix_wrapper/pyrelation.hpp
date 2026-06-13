@@ -10,20 +10,21 @@
 #include <core/types/string.hpp>
 #include <core/types/vector.hpp>
 
+#include <memory_resource>
+
 namespace otterbrix {
     class ConnectionEnvironment;
     class PyExpression;
+    struct built_relation_t;
     using pyexpr_ptr = shared_ptr<PyExpression>;
 
     class PyRelation {
     public:
-        PyRelation(ConnectionEnvironment* env, shared_ptr<Relation> rel);
+        PyRelation(ConnectionEnvironment* env, built_relation_t rel);
         PyRelation(unique_ptr<PyResult> result);
-            
+
         ~PyRelation();
         static void Initialize(py::handle& m);
-
-        pyexpr_ptr ColumnExpression(const string& name);
 
         unique_ptr<PyRelation> Project(const py::args& args);
         unique_ptr<PyRelation> Filter(const py::object &expr);
@@ -32,7 +33,7 @@ namespace otterbrix {
         unique_ptr<PyRelation> Sort(const py::args& args);
 
         unique_ptr<PyRelation> Group(const py::args& args);
-        
+
         unique_ptr<PyRelation> Join(const PyRelation& other, const py::object& condition, const string& type);
         unique_ptr<PyRelation> Cross(const PyRelation& other);
 
@@ -55,9 +56,14 @@ namespace otterbrix {
         ExpressionFactory* GetExpressionFactory();
         void AssertRelation();
     private:
+        // The eagerly-built logical_plan node (nullptr when this PyRelation was
+        // created from a result). schema_ carries the column names/types this
+        // node produces, computed eagerly at each chaining op so that
+        // Columns()/ColumnTypes() work before execution.
+        components::logical_plan::node_ptr node_;
+        std::pmr::vector<components::table::column_definition_t> schema_;
         bool executed;
         ConnectionEnvironment* env;
-        shared_ptr<Relation> rel;
         unique_ptr<PyResult> result;
         bool optimize_ = false;
     };

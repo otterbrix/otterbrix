@@ -7,28 +7,33 @@
 #include <components/configuration/configuration.hpp>
 #include <components/types/types.hpp>
 #include <core/typedefs.hpp>
+#include <core/result_wrapper.hpp>
+
+#include <memory_resource>
 
 namespace otterbrix {
 
 class PandasAnalyzer {
 public:
-	explicit PandasAnalyzer(const configuration::config_pandas& cfg = {})
+	explicit PandasAnalyzer(std::pmr::memory_resource* resource,
+	                        const configuration::config_pandas& cfg = {})
 		: sample_size(cfg.analyze_sample_size)
-		, analyzed_type(components::types::logical_type::NA) {
+		, analyzed_type(components::types::logical_type::NA)
+		, resource_(resource) {
 	}
 
 public:
-	components::types::complex_logical_type GetListType(py::object &ele, bool &can_convert);
-	components::types::complex_logical_type DictToMap(const PyDictionary &dict, bool &can_convert);
-	components::types::complex_logical_type DictToStruct(const PyDictionary &dict, bool &can_convert);
-	components::types::complex_logical_type GetItemType(py::object ele, bool &can_convert);
-	bool Analyze(py::object column);
+	core::result_wrapper_t<components::types::complex_logical_type> GetListType(py::object &ele, bool &can_convert);
+	core::result_wrapper_t<components::types::complex_logical_type> DictToMap(const PyDictionary &dict, bool &can_convert);
+	core::result_wrapper_t<components::types::complex_logical_type> DictToStruct(const PyDictionary &dict, bool &can_convert);
+	core::result_wrapper_t<components::types::complex_logical_type> GetItemType(py::object ele, bool &can_convert);
+	core::result_wrapper_t<bool> Analyze(py::object column);
 	components::types::complex_logical_type AnalyzedType() {
 		return analyzed_type;
 	}
 
 private:
-	components::types::complex_logical_type InnerAnalyze(py::object column, bool &can_convert, idx_t increment);
+	core::result_wrapper_t<components::types::complex_logical_type> InnerAnalyze(py::object column, bool &can_convert, idx_t increment);
 	uint64_t GetSampleIncrement(idx_t rows);
 
 private:
@@ -37,6 +42,8 @@ private:
 	PythonGILWrapper gil;
 	//! The resulting analyzed type
 	components::types::complex_logical_type analyzed_type;
+	//! Threaded memory resource for engine-data containers
+	std::pmr::memory_resource* resource_;
 };
 
 } // namespace otterbrix

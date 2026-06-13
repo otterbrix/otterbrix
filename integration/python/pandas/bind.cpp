@@ -10,10 +10,11 @@
 #include <core/types/vector.hpp>
 #include <core/types/string.hpp>
 #include <core/typedefs.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <cassert>
 #include <string_view>
-#include <stdexcept>
+#include <memory_resource>
 
 namespace otterbrix {
     using components::types::complex_logical_type;
@@ -60,12 +61,18 @@ private:
 
 }; // namespace
 
-static complex_logical_type BindColumn(PandasBindColumn &column_p, PandasColumnBindData &bind_data,
+static core::result_wrapper_t<complex_logical_type> BindColumn(PandasBindColumn &column_p,
+                                       PandasColumnBindData &bind_data,
+                                       std::pmr::memory_resource *resource,
                                        const configuration::config_pandas &cfg) {
 	complex_logical_type column_type;
 	auto &column = column_p.handle;
 
-	bind_data.numpy_type = ConvertNumpyType(column_p.type);
+	auto numpy_type = ConvertNumpyType(resource, column_p.type);
+	if (numpy_type.has_error()) {
+		return numpy_type.convert_error<complex_logical_type>();
+	}
+	bind_data.numpy_type = numpy_type.value();
 	bool column_has_mask = py::hasattr(column.attr("array"), "_mask");
 
 	if (column_has_mask) {
@@ -74,12 +81,17 @@ static complex_logical_type BindColumn(PandasBindColumn &column_p, PandasColumnB
 	}
 
 	if (bind_data.numpy_type.type == NumpyNullableType::CATEGORY) {
-        throw std::runtime_error("OtterBrix does\'t support Enum/Category");
+        return core::error_t(core::error_code_t::unimplemented_yet,
+                             std::pmr::string("OtterBrix does't support Enum/Category", resource));
 	} else if (bind_data.numpy_type.type == NumpyNullableType::FLOAT_16) {
 		auto pandas_array = column.attr("array");
 		bind_data.pandas_col = make_unique<PandasNumpyColumn>(py::array(column.attr("to_numpy")("float32")));
 		bind_data.numpy_type.type = NumpyNullableType::FLOAT_32;
-		column_type = NumpyToLogicalType(bind_data.numpy_type);
+		auto logical = NumpyToLogicalType(resource, bind_data.numpy_type);
+		if (logical.has_error()) {
+			return logical;
+		}
+		column_type = logical.value();
 	} else {
 		auto pandas_array = column.attr("array");
 		if (py::hasattr(pandas_array, "_data")) {
@@ -92,26 +104,36 @@ static complex_logical_type BindColumn(PandasBindColumn &column_p, PandasColumnB
 			// Otherwise we have to get it through 'to_numpy()'
 			bind_data.pandas_col = make_unique<PandasNumpyColumn>(py::array(column.attr("to_numpy")()));
 		}
-		column_type = NumpyToLogicalType(bind_data.numpy_type);
+		auto logical = NumpyToLogicalType(resource, bind_data.numpy_type);
+		if (logical.has_error()) {
+			return logical;
+		}
+		column_type = logical.value();
 	}
 	// Analyze the inner data type of the 'object' column
 	if (bind_data.numpy_type.type == NumpyNullableType::OBJECT) {
-		PandasAnalyzer analyzer(cfg);
-		if (analyzer.Analyze(column)) {
+		PandasAnalyzer analyzer(resource, cfg);
+		auto analyzed = analyzer.Analyze(column);
+		if (analyzed.has_error()) {
+			return analyzed.convert_error<complex_logical_type>();
+		}
+		if (analyzed.value()) {
 			column_type = analyzer.AnalyzedType();
 		}
 	}
 	return column_type;
 }
 
-void Pandas::Bind(py::handle df_p, vector<PandasColumnBindData> &bind_columns,
+core::error_t Pandas::Bind(std::pmr::memory_resource *resource, py::handle df_p,
+                  vector<PandasColumnBindData> &bind_columns,
                   vector<complex_logical_type> &return_types, vector<string> &names,
                   const configuration::config_pandas &cfg) {
 
 	PandasDataFrameBind df(df_p);
 	idx_t column_count = py::len(df.names);
 	if (column_count == 0 || py::len(df.types) == 0 || column_count != py::len(df.types)) {
-		throw std::runtime_error("Need a DataFrame with at least one column");
+		return core::error_t(core::error_code_t::invalid_parameter,
+		                     std::pmr::string("Need a DataFrame with at least one column", resource));
 	}
 
 	return_types.reserve(column_count);
@@ -122,11 +144,15 @@ void Pandas::Bind(py::handle df_p, vector<PandasColumnBindData> &bind_columns,
 
 		names.emplace_back(py::str(df.names[col_idx]));
 		auto column = df[col_idx];
-		auto column_type = BindColumn(column, bind_data, cfg);
+		auto column_type = BindColumn(column, bind_data, resource, cfg);
+		if (column_type.has_error()) {
+			return column_type.error();
+		}
 
-		return_types.push_back(column_type);
+		return_types.push_back(column_type.value());
 		bind_columns.push_back(std::move(bind_data));
 	}
+	return core::error_t::no_error();
 }
 
 } // namespace otterbrix

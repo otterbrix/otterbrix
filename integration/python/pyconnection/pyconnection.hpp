@@ -59,8 +59,6 @@ namespace otterbrix {
     {
     private:
         Cursors cursors;
-        std::mutex py_connection_lock;
-        unique_ptr<PyResult> result;
     public:
         PyConnection(const boost::intrusive_ptr<otterbrix_t>& space);
         PyConnection(const PyConnection& other);
@@ -96,11 +94,6 @@ namespace otterbrix {
     public:
         unique_ptr<PyRelation> FromDF(const py::object& value);
         unique_ptr<PyRelation> FromObject(const py::object& value);
-    public:
-        bool HasResult() const;
-        PyResult& GetResult();   
-        const PyResult& GetResult() const;
-        void SetResult(Result res);
 
     };
 } // namespace otterbrix

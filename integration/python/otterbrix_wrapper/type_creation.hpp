@@ -5,14 +5,22 @@
 #include <pybind11/pybind_wrapper.hpp>
 
 #include <components/types/types.hpp>
+#include <core/result_wrapper.hpp>
 #include <core/typedefs.hpp>
 #include <core/types/memory.hpp>
 #include <core/types/string.hpp>
 #include <core/types/vector.hpp>
 #include <core/types/unordered_map.hpp>
 
+#include <memory_resource>
+
 namespace otterbrix {
     namespace TypeCreation {
+
+        // Maps a SQL/OtterBrix type string (e.g. "VARCHAR", "BIGINT") to its logical_type.
+        // Returns a conversion_failure error if the string has no known mapping.
+        core::result_wrapper_t<components::types::logical_type>
+        StringToLogicalType(const string &type_str, std::pmr::memory_resource *resource);
 
         shared_ptr<OtterBrixPyType> MapType(const shared_ptr<OtterBrixPyType> &key_type,
                 const shared_ptr<OtterBrixPyType> &value_type);

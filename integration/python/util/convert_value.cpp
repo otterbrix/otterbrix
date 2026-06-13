@@ -74,7 +74,11 @@ namespace otterbrix {
                 convertible_numeric_physical_to_double(physical)) {
                 return py::cast(numeric_logical_value_as_double(value));
             }
-            return PythonObject::FromValue(value, type);
+            auto result = PythonObject::FromValue(value.resource(), value, type);
+            if (result.has_error()) {
+                throw std::runtime_error(std::string(result.error().what));
+            }
+            return std::move(result.value());
         }
 
         py::dict CursorRowToPythonDict(components::cursor::cursor_t_ptr& cursor,

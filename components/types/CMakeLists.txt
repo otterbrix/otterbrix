@@ -2,6 +2,7 @@ project(types CXX)
 
 set(SOURCE_${PROJECT_NAME}
         types.cpp
+        type_spec.cpp
         physical_value.cpp
         logical_value.cpp
         operations_helper.cpp

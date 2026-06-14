@@ -6,6 +6,15 @@
 
 namespace configuration {
 
+    inline constexpr uint16_t default_pax_rows_per_page = 256;
+
+    enum class disk_layout_policy : uint8_t
+    {
+        auto_select = 0,
+        columnar_only = 1,
+        pax_only = 2
+    };
+
     struct config_log final {
         std::filesystem::path path{std::filesystem::current_path() / "log"};
         log_t::level level{log_t::level::trace};
@@ -31,10 +40,12 @@ namespace configuration {
     struct config_disk final {
         std::filesystem::path path{std::filesystem::current_path() / "disk"};
         bool on{true};
+        disk_layout_policy layout_policy{disk_layout_policy::auto_select};
         int agent = 2;
         uint64_t bitcask_flush_threshold{1000};
         uint64_t bitcask_segment_record_limit{100};
         uint64_t btree_flush_threshold{1000};
+        uint16_t pax_rows_per_page{default_pax_rows_per_page};
 
         explicit config_disk(const std::filesystem::path& path = std::filesystem::current_path())
             : path(path / "wal") {}

@@ -216,7 +216,7 @@ namespace {
                 }
                 d.emplace_back(s, id);
             }
-            std::partial_sort(d.begin(), d.begin() + std::min(k, d.size()), d.end());
+            std::partial_sort(d.begin(), d.begin() + static_cast<std::ptrdiff_t>(std::min(k, d.size())), d.end());
             std::vector<int> ids;
             for (std::size_t i = 0; i < std::min(k, d.size()); ++i) ids.push_back(d[i].second);
             return ids;
@@ -301,12 +301,12 @@ TEST_CASE("dynamic::insert_throughput") {
         // Brute-force is O(N)/query — few samples; HNSW is ~1ms — many.
         auto [s, recall] = w.search_burst(indexed ? 200 : 20, k);
         print_search(std::string("insert ") + (indexed ? "[HNSW]   " : "[no index]") +
-                         "  " + std::to_string(N) + " rows in " + std::to_string((long) t) + "ms (" +
-                         std::to_string((long) rps) + "/s)",
+                         "  " + std::to_string(N) + " rows in " + std::to_string(static_cast<long>(t)) + "ms (" +
+                         std::to_string(static_cast<long>(rps)) + "/s)",
                      s,
                      recall);
         std::cout << "CSV,insert_throughput," << (indexed ? "indexed" : "plain") << "," << N << ","
-                  << (long) t << "," << (long) rps << "," << s.p95 << "," << recall << "\n";
+                  << static_cast<long>(t) << "," << static_cast<long>(rps) << "," << s.p95 << "," << recall << "\n";
     }
     std::cout << "(non-indexed search is exact brute force; indexed uses the HNSW graph)\n";
 }
@@ -332,8 +332,8 @@ TEST_CASE("dynamic::delete_and_rebuild") {
         w.delete_n(step); // auto-rebuild may fire inside commit when >20% tombstones
         auto [s, r] = w.search_burst(150, k);
         double pct = 100.0 * (1.0 - static_cast<double>(w.live.size()) / N);
-        print_search(std::to_string((long) pct) + "% deleted (" + std::to_string(w.live.size()) + " live)", s, r);
-        std::cout << "CSV,delete_and_rebuild," << (long) pct << "," << w.live.size() << "," << s.p95 << ","
+        print_search(std::to_string(static_cast<long>(pct)) + "% deleted (" + std::to_string(w.live.size()) + " live)", s, r);
+        std::cout << "CSV,delete_and_rebuild," << static_cast<long>(pct) << "," << w.live.size() << "," << s.p95 << ","
                   << s.avg << "," << r << "\n";
     }
     std::cout << "peak RSS: " << peak_rss_kb() << " KB\n";
@@ -358,8 +358,8 @@ TEST_CASE("dynamic::mixed_churn") {
         double dt_ins = w.insert(churn);
         auto [s, r] = w.search_burst(150, k);
         print_search("round " + std::to_string(round) + " (" + std::to_string(w.live.size()) + " live)", s, r);
-        std::cout << "CSV,mixed_churn," << round << "," << w.live.size() << "," << (long) dt_del << ","
-                  << (long) dt_ins << "," << s.p95 << "," << r << "\n";
+        std::cout << "CSV,mixed_churn," << round << "," << w.live.size() << "," << static_cast<long>(dt_del) << ","
+                  << static_cast<long>(dt_ins) << "," << s.p95 << "," << r << "\n";
     }
     std::cout << "RSS start=" << rss0 << "KB  end=" << peak_rss_kb() << "KB  (bounded under churn)\n";
 }
@@ -377,7 +377,7 @@ TEST_CASE("dynamic::realistic_session") {
     auto report = [&](const std::string& phase, double op_ms) {
         auto [s, r] = w.search_burst(120, k);
         print_search(phase + " (" + std::to_string(w.live.size()) + " live)", s, r);
-        std::cout << "CSV,realistic," << phase << "," << w.live.size() << "," << (long) op_ms << "," << s.p95
+        std::cout << "CSV,realistic," << phase << "," << w.live.size() << "," << static_cast<long>(op_ms) << "," << s.p95
                   << "," << r << "\n";
     };
 
@@ -463,8 +463,8 @@ TEST_CASE("dynamic::delete_throughput") {
                   << std::setprecision(0) << std::setw(8) << rps << " rows/s"
                   << (dt > 200 ? "   <-- rebuild spike" : "") << "\n";
         std::cout << "CSV,delete_throughput," << step_i << "," << w.live.size() << "," << dt << ","
-                  << (long) rps << "\n";
+                  << static_cast<long>(rps) << "\n";
     }
     std::cout << "deleted " << total_deleted << " rows in " << std::setprecision(0) << total_del_ms
-              << "ms  (avg " << (long) (total_deleted / (total_del_ms / 1000.0)) << " rows/s overall)\n";
+              << "ms  (avg " << static_cast<long>(total_deleted / (total_del_ms / 1000.0)) << " rows/s overall)\n";
 }

@@ -156,7 +156,7 @@ namespace components::index {
         if (extract_vector(key, vec)) {
             ensure_backend(vec.size());
             if (vec.size() == dim_) {
-                if (backend_) backend_->add(row_index, vec.data(), /*replace_deleted=*/true);
+                if (backend_) backend_->add(static_cast<std::size_t>(row_index), vec.data(), /*replace_deleted=*/true);
             }
         }
     }
@@ -207,7 +207,7 @@ namespace components::index {
         for (auto& [row_index, vec] : it->second) {
             ensure_backend(vec.size());
             if (vec.size() == dim_ && backend_) {
-                backend_->add(row_index, vec.data(), /*replace_deleted=*/true);
+                backend_->add(static_cast<std::size_t>(row_index), vec.data(), /*replace_deleted=*/true);
             }
         }
         pending_inserts_.erase(it);

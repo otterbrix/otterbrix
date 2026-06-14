@@ -20,12 +20,25 @@ namespace components::operators {
             }
             auto types = chunks.front().types();
             vector::data_chunk_t combined(resource, types, total == 0 ? 1 : total);
+            // Columns the scan left unmaterialised (e.g. non-RETURNING columns) are
+            // unprojected placeholders (null data + null auxiliary) in every source
+            // chunk. Keep them placeholders in the merged chunk — copying them would
+            // dereference a null data buffer (the multi-chunk RETURNING crash).
+            for (uint64_t col = 0; col < combined.column_count(); ++col) {
+                if (chunks.front().data[col].data() == nullptr && chunks.front().data[col].auxiliary() == nullptr) {
+                    combined.data[col].set_data(nullptr);
+                    combined.data[col].set_auxiliary(nullptr);
+                }
+            }
             uint64_t offset = 0;
             for (auto& c : chunks) {
                 if (c.size() == 0) {
                     continue;
                 }
                 for (uint64_t col = 0; col < c.column_count(); ++col) {
+                    if (combined.data[col].data() == nullptr && combined.data[col].auxiliary() == nullptr) {
+                        continue; // placeholder column — nothing to materialise
+                    }
                     vector::vector_ops::copy(c.data[col], combined.data[col], c.size(), 0, offset);
                 }
                 vector::vector_ops::copy(c.row_ids, combined.row_ids, c.size(), 0, offset);

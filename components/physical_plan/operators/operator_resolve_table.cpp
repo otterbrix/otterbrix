@@ -152,7 +152,7 @@ namespace components::operators {
 
         // read pg_class by oid to determine relkind and relnamespace.
         // pg_class layout: [0=oid, 1=relname, 2=relnamespace, 3=relkind,
-        // 4=relstoragemode]. We key by "oid" so we get a single row at most.
+        // 4=relstoragemode, 5=relstorageformat]. We key by "oid" so we get a single row at most.
         {
             types::logical_value_t toid_lv(resource_, table_oid_);
             std::pmr::vector<std::string> pc_keys(resource_);
@@ -468,14 +468,6 @@ namespace components::operators {
         // operator output chunk; decoded type derived from atttypspec or
         // atttypid via the existing catalog helpers.
         if (target_node_) {
-            std::fprintf(stderr,
-                         "[RT] populate md table_oid=%u ns_oid=%u relkind='%c' rows=%zu relname='%s'\n",
-                         static_cast<unsigned>(table_oid_),
-                         static_cast<unsigned>(namespace_oid_),
-                         relkind_ ? relkind_ : '?',
-                         rows.size(),
-                         relname_.c_str());
-            std::fflush(stderr);
             components::logical_plan::resolved_table_metadata_t md;
             md.table_oid = table_oid_;
             md.namespace_oid = namespace_oid_;

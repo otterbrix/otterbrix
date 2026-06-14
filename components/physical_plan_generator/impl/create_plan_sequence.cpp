@@ -39,7 +39,7 @@ namespace services::planner::impl {
                                                                         cc->table_oid(),
                                                                         cc->namespace_oid(),
                                                                         cc->column_definitions(),
-                                                                        cc->is_disk_storage(),
+                                                                        cc->storage_format(),
                                                                         std::move(writes)));
         }
 

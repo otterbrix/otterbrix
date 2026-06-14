@@ -50,6 +50,8 @@ namespace services::planner::impl {
             if (std::holds_alternative<expr::key_t>(comp.left()) &&
                 std::holds_alternative<core::parameter_id_t>(comp.right())) {
                 const auto& key = std::get<expr::key_t>(comp.left());
+                // A hashed index cannot answer a range predicate; require a non-hashed
+                // index on the key for gt/gte/lt/lte, else fall back to a full scan.
                 const bool range = is_range_compare(comp.type());
                 if (context.has_index_on(key) &&
                     (!range ||
@@ -79,7 +81,7 @@ namespace services::planner::impl {
                 return false;
             }
             auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
-            if (comp_expr->type() == compare_type::regex || comp_expr->do_not_fold()) {
+            if (comp_expr->type() == compare_type::regex) {
                 return false;
             }
             for (const auto& child : comp_expr->children()) {
@@ -88,10 +90,22 @@ namespace services::planner::impl {
                 }
             }
 
-            // union compare expressions have nullptr in left and right slots
-            if (!is_union_compare_condition(comp_expr->type()) &&
-                (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
-                 std::holds_alternative<expression_ptr>(comp_expr->right()))) {
+            // Union nodes keep their operands in children_, with left_/right_ left null, so the
+            // holds_alternative<expression_ptr> check below would reject them. Only union_and is
+            // pushable (lowers to conjunction_and_filter_t); or/not are not handled yet.
+            if (comp_expr->is_union()) {
+                return comp_expr->type() == compare_type::union_and;
+            }
+
+            if (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
+                std::holds_alternative<expression_ptr>(comp_expr->right())) {
+                return false;
+            }
+            // A pushable leaf must be exactly (column key) op (constant): that's what
+            // transform_predicate lowers to a constant_filter. Reject both-key (a = b) and
+            // no-key (5 = 5) comparisons — neither can be lowered.
+            if (std::holds_alternative<expr::key_t>(comp_expr->left()) ==
+                std::holds_alternative<expr::key_t>(comp_expr->right())) {
                 return false;
             }
             return true;
@@ -101,7 +115,8 @@ namespace services::planner::impl {
                                                                components::catalog::oid_t table_oid,
                                                                const components::expressions::expression_ptr& expr,
                                                                components::logical_plan::limit_t limit,
-                                                               const std::vector<size_t>& projected_cols) {
+                                                               const std::vector<size_t>& projected_cols,
+                                                               bool row_ids_only) {
             if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
@@ -133,7 +148,8 @@ namespace services::planner::impl {
                                                                                      table_oid,
                                                                                      comp_expr,
                                                                                      limit,
-                                                                                     projected_cols));
+                                                                                     projected_cols,
+                                                                                     row_ids_only));
                 } else {
                     // For now we do a full scan and apply function after
                     auto match_operator =
@@ -166,7 +182,8 @@ namespace services::planner::impl {
     components::operators::operator_ptr create_plan_match(const context_storage_t& context,
                                                           const components::logical_plan::node_ptr& node,
                                                           components::logical_plan::limit_t limit,
-                                                          const std::vector<size_t>& projected_cols) {
+                                                          const std::vector<size_t>& projected_cols,
+                                                          bool row_ids_only) {
         if (node->expressions().empty()) {
             // Build projected_cols (storage chunk indices). For relkind='g' read
             // live columns by their chunk_position (resolved at resolve-table time).
@@ -201,7 +218,8 @@ namespace services::planner::impl {
                                       match_node->table_oid(),
                                       match_node->expressions()[0],
                                       limit,
-                                      projected_cols);
+                                      projected_cols,
+                                      row_ids_only);
         }
     }
 

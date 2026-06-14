@@ -47,6 +47,23 @@ namespace components::planner {
     namespace {
         using node_ptr = logical_plan::node_ptr;
 
+        std::string_view
+        to_relstorageformat(logical_plan::create_collection_storage_format_t storage_format) noexcept {
+            using logical_plan::create_collection_storage_format_t;
+
+            switch (storage_format) {
+                case create_collection_storage_format_t::disk_auto:
+                    return catalog::relstorageformat::disk_auto;
+                case create_collection_storage_format_t::disk_columnar:
+                    return catalog::relstorageformat::disk_columnar;
+                case create_collection_storage_format_t::disk_pax:
+                    return catalog::relstorageformat::disk_pax;
+                case create_collection_storage_format_t::in_memory:
+                default:
+                    return catalog::relstorageformat::in_memory;
+            }
+        }
+
         node_ptr rewrite_insert(std::pmr::memory_resource* r, node_ptr node) {
             auto* ins = static_cast<logical_plan::node_insert_t*>(node.get());
             node_ptr cur = node;
@@ -182,7 +199,8 @@ namespace components::planner {
                                                              cc->is_disk_storage(),
                                                              ns_oid,
                                                              oid_batch,
-                                                             rk);
+                                                             rk,
+                                                             to_relstorageformat(cc->storage_format()));
             cc->set_table_oid(table_oid);
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));

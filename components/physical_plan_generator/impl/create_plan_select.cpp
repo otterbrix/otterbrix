@@ -1,6 +1,7 @@
 #include "create_plan_select.hpp"
 
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_select.hpp>
 
@@ -209,11 +210,17 @@ namespace services::planner::impl {
         auto op = boost::intrusive_ptr(new components::operators::operator_select_t(plan_resource, plan_log));
 
         // Aggregates are always handled by operator_group_t upstream; node_select_t only contains
-        // scalar expressions (get_field, arithmetic, constant, star_expand, coalesce, case_when).
+        // scalar expressions (get_field, arithmetic, constant, star_expand, coalesce, case_when)
+        // and scalar row/vector functions.
         for (const auto& expr : node->expressions()) {
             if (expr->group() == expression_group::scalar) {
                 auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
                 op->add_column(make_select_column_scalar(plan_resource, scalar_expr, params));
+            } else if (expr->group() == expression_group::function) {
+                components::operators::select_column_t col(plan_resource);
+                col.type = components::operators::select_column_t::kind::function;
+                col.function_expr = reinterpret_cast<const components::expressions::function_expression_ptr&>(expr);
+                op->add_column(std::move(col));
             }
         }
 

@@ -17,6 +17,31 @@ namespace components::logical_plan {
     using expression_ptr = expressions::expression_ptr;
     using hash_t = expressions::hash_t;
 
+    // Deferred uncorrelated subquery: run once standalone, substitute its result
+    // back into the main plan as a literal. Correlated subqueries are rejected at
+    // transform time (they can't run standalone).
+    struct subquery_request_t {
+        enum class kind_t : uint8_t
+        {
+            scalar, // (SELECT <single value> ...) — result fills `result_param`
+            in_list // col IN (SELECT col ...)     — results fill `placeholder` children
+        };
+        kind_t kind;
+        // Logical plan of the subquery body (bare aggregate, not yet resolve-wrapped).
+        node_ptr subquery_plan;
+        // scalar: parameter id reserved in the main plan's HAVING/WHERE compare.
+        core::parameter_id_t result_param{};
+        // in_list: left-hand column the IN predicate tests.
+        expressions::key_t in_left_key;
+        // in_list: union_or compare wired into the main WHERE tree; the pre-pass
+        // appends one eq(in_left_key, $value) child per subquery result row.
+        expression_ptr placeholder;
+
+        explicit subquery_request_t(std::pmr::memory_resource* resource)
+            : kind(kind_t::scalar)
+            , in_left_key(resource) {}
+    };
+
     // The polymorphic free helper `cfn_of(node_t*)` was removed.
     // Generic walkers that operated on `node_t*` and need the cfn either
     // (a) inline a per-call type switch when truly needed (see
@@ -36,10 +61,17 @@ namespace components::logical_plan {
         // dispatcher, executor, operators after enrich), always use
         // `table_oid()` from the base class.
         const std::string& result_alias() const;
+        const std::pmr::vector<std::pmr::string>& output_column_aliases() const;
+        std::pmr::vector<std::pmr::string>& output_column_aliases();
         const std::pmr::vector<node_ptr>& children() const;
         std::pmr::vector<node_ptr>& children();
         const std::pmr::vector<expression_ptr>& expressions() const;
         std::pmr::vector<expression_ptr>& expressions();
+
+        // Deferred uncorrelated subqueries; only populated on the plan root,
+        // drained by the dispatcher before executing the main plan.
+        const std::pmr::vector<subquery_request_t>& subqueries() const;
+        std::pmr::vector<subquery_request_t>& subqueries();
 
         void set_result_alias(const std::string& alias);
         void reserve_child(std::size_t count);
@@ -73,8 +105,10 @@ namespace components::logical_plan {
     protected:
         const node_type type_;
         std::string result_alias_;
+        std::pmr::vector<std::pmr::string> output_column_aliases_;
         std::pmr::vector<node_ptr> children_;
         std::pmr::vector<expression_ptr> expressions_;
+        std::pmr::vector<subquery_request_t> subqueries_;
         // See table_oid()/set_table_oid() above. Default INVALID_OID; enrich
         // is responsible for stamping the resolved oid before plan execution.
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};

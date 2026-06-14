@@ -17,6 +17,7 @@ namespace components::planner {
     // stamp_oids_from_resolves, so node->table_oid() is populated and
     // sibling catalog_resolve_table_t nodes carry resolved_metadata().
     // Schema-aware rules go here.
+    //   - join_predicate_pushdown (duplicates WHERE join predicates into comma-join ON clauses)
     //   - column_pruning (annotates node_aggregate_t with projected_cols)
     //
     // Schema info is read from the plan tree itself (sibling resolves);

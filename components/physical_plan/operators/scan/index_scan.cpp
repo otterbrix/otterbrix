@@ -1,9 +1,37 @@
 #include "index_scan.hpp"
 
+#include <components/vector/indexing_vector.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
 namespace components::operators {
+
+    namespace {
+        bool compare_values(expressions::compare_type compare_type,
+                            const types::logical_value_t& left,
+                            const types::logical_value_t& right) {
+            if (left.is_null() || right.is_null()) {
+                return false;
+            }
+
+            switch (compare_type) {
+                case expressions::compare_type::eq:
+                    return left == right;
+                case expressions::compare_type::ne:
+                    return left != right;
+                case expressions::compare_type::lt:
+                    return left < right;
+                case expressions::compare_type::lte:
+                    return left <= right;
+                case expressions::compare_type::gt:
+                    return left > right;
+                case expressions::compare_type::gte:
+                    return left >= right;
+                default:
+                    return false;
+            }
+        }
+    } // namespace
 
     index_scan::index_scan(std::pmr::memory_resource* resource,
                            log_t log,
@@ -92,10 +120,27 @@ namespace components::operators {
                                              ctx->session,
                                              table_oid_,
                                              std::move(row_ids),
-                                             count);
+                                             count,
+                                             ctx->txn);
             auto data = co_await std::move(ff);
 
             if (data) {
+                auto column_index = data->column_index(key_.as_string());
+                // logical_value_t comparison asserts matching types, so cast the probe
+                // value to the column type before re-filtering.
+                const auto casted_value = value_.cast_as(data->data[column_index].type(), ctx->session_tz);
+                vector::indexing_vector_t matched(resource_, data->size());
+                uint64_t matched_count = 0;
+
+                for (uint64_t i = 0; i < data->size(); i++) {
+                    if (compare_values(compare_type_, data->value(column_index, i), casted_value)) {
+                        matched.set_index(matched_count++, i);
+                    }
+                }
+
+                if (matched_count < data->size()) {
+                    data->slice(matched, matched_count);
+                }
                 output_ = make_operator_data(resource_, split_chunk_into_batches(resource_, std::move(*data)));
             } else {
                 auto [_t2, tf2] = actor_zeta::send(ctx->disk_address,

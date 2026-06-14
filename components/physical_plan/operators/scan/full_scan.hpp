@@ -22,7 +22,8 @@ namespace components::operators {
                   components::catalog::oid_t table_oid,
                   const expressions::compare_expression_ptr& expression,
                   logical_plan::limit_t limit,
-                  std::vector<size_t> projected_cols = {});
+                  std::vector<size_t> projected_cols = {},
+                  bool row_ids_only = false);
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const expressions::compare_expression_ptr& expression() const { return expression_; }
@@ -37,6 +38,7 @@ namespace components::operators {
         expressions::compare_expression_ptr expression_;
         const logical_plan::limit_t limit_;
         std::vector<size_t> projected_cols_;
+        bool row_ids_only_;
     };
 
 } // namespace components::operators

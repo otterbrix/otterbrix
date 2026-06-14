@@ -2,6 +2,8 @@
 
 #include <core/result_wrapper.hpp>
 
+#include <string>
+
 namespace components::operators {
 
     namespace detail {
@@ -22,6 +24,103 @@ namespace components::operators {
                 default:
                     throw std::logic_error("Not an arithmetic scalar_type");
             }
+        }
+
+        const char* scalar_op_name(expressions::scalar_type t) {
+            switch (t) {
+                case expressions::scalar_type::add:
+                    return "add";
+                case expressions::scalar_type::subtract:
+                    return "subtract";
+                case expressions::scalar_type::multiply:
+                    return "multiply";
+                case expressions::scalar_type::divide:
+                    return "divide";
+                case expressions::scalar_type::mod:
+                    return "mod";
+                case expressions::scalar_type::unary_minus:
+                    return "unary_minus";
+                case expressions::scalar_type::case_expr:
+                    return "case";
+                default:
+                    return "unknown";
+            }
+        }
+
+        const char* logical_type_name(types::logical_type t) {
+            switch (t) {
+                case types::logical_type::NA:
+                    return "NA";
+                case types::logical_type::BOOLEAN:
+                    return "BOOLEAN";
+                case types::logical_type::TINYINT:
+                    return "TINYINT";
+                case types::logical_type::SMALLINT:
+                    return "SMALLINT";
+                case types::logical_type::INTEGER:
+                    return "INTEGER";
+                case types::logical_type::BIGINT:
+                    return "BIGINT";
+                case types::logical_type::HUGEINT:
+                    return "HUGEINT";
+                case types::logical_type::FLOAT:
+                    return "FLOAT";
+                case types::logical_type::DOUBLE:
+                    return "DOUBLE";
+                case types::logical_type::DECIMAL:
+                    return "DECIMAL";
+                case types::logical_type::UTINYINT:
+                    return "UTINYINT";
+                case types::logical_type::USMALLINT:
+                    return "USMALLINT";
+                case types::logical_type::UINTEGER:
+                    return "UINTEGER";
+                case types::logical_type::UBIGINT:
+                    return "UBIGINT";
+                case types::logical_type::UHUGEINT:
+                    return "UHUGEINT";
+                case types::logical_type::STRING_LITERAL:
+                    return "STRING_LITERAL";
+                case types::logical_type::DATE:
+                    return "DATE";
+                case types::logical_type::TIME:
+                    return "TIME";
+                case types::logical_type::TIME_TZ:
+                    return "TIME_TZ";
+                case types::logical_type::TIMESTAMP:
+                    return "TIMESTAMP";
+                case types::logical_type::TIMESTAMP_TZ:
+                    return "TIMESTAMP_TZ";
+                case types::logical_type::INTERVAL:
+                    return "INTERVAL";
+                default:
+                    return "OTHER";
+            }
+        }
+
+        core::result_wrapper_t<vector::vector_t> validate_arithmetic_result(std::pmr::memory_resource* resource,
+                                                                            expressions::scalar_type op,
+                                                                            vector::vector_t&& result,
+                                                                            const resolved_operand& left,
+                                                                            const resolved_operand& right,
+                                                                            uint64_t count) {
+            if (result.type().type() != types::logical_type::NA) {
+                return std::move(result);
+            }
+
+            const auto left_type = left.vec ? left.vec->type().type() : left.scalar->type().type();
+            const auto right_type = right.vec ? right.vec->type().type() : right.scalar->type().type();
+            std::string msg = "unsupported arithmetic operand types: op=";
+            msg += scalar_op_name(op);
+            msg += " left=";
+            msg += logical_type_name(left_type);
+            msg += left.vec ? "(vector)" : "(scalar)";
+            msg += " right=";
+            msg += logical_type_name(right_type);
+            msg += right.vec ? "(vector)" : "(scalar)";
+            msg += " rows=";
+            msg += std::to_string(count);
+            return core::error_t(core::error_code_t::arithmetics_failure, std::pmr::string{msg, resource});
         }
 
         core::result_wrapper_t<resolved_operand> resolve_operand(const expressions::param_storage& param,
@@ -108,30 +207,70 @@ namespace components::operators {
 
                     vector::vector_t computed(resource, types::complex_logical_type(types::logical_type::BIGINT), 0);
                     if (left_op.value().vec && right_op.value().vec) {
-                        computed = vector::compute_binary_arithmetic(resource,
-                                                                     op,
-                                                                     *left_op.value().vec,
-                                                                     *right_op.value().vec,
-                                                                     count);
+                        auto computed_res =
+                            validate_arithmetic_result(resource,
+                                                       scalar_expr->type(),
+                                                       vector::compute_binary_arithmetic(resource,
+                                                                                         op,
+                                                                                         *left_op.value().vec,
+                                                                                         *right_op.value().vec,
+                                                                                         count),
+                                                       left_op.value(),
+                                                       right_op.value(),
+                                                       count);
+                        if (computed_res.has_error()) {
+                            return computed_res.convert_error<resolved_operand>();
+                        }
+                        computed = std::move(computed_res.value());
                     } else if (left_op.value().vec && right_op.value().scalar) {
-                        computed = vector::compute_vector_scalar_arithmetic(resource,
-                                                                            op,
-                                                                            *left_op.value().vec,
-                                                                            *right_op.value().scalar,
-                                                                            count);
+                        auto computed_res =
+                            validate_arithmetic_result(resource,
+                                                       scalar_expr->type(),
+                                                       vector::compute_vector_scalar_arithmetic(resource,
+                                                                                                 op,
+                                                                                                 *left_op.value().vec,
+                                                                                                 *right_op.value().scalar,
+                                                                                                 count),
+                                                       left_op.value(),
+                                                       right_op.value(),
+                                                       count);
+                        if (computed_res.has_error()) {
+                            return computed_res.convert_error<resolved_operand>();
+                        }
+                        computed = std::move(computed_res.value());
                     } else if (left_op.value().scalar && right_op.value().vec) {
-                        computed = vector::compute_scalar_vector_arithmetic(resource,
-                                                                            op,
-                                                                            *left_op.value().scalar,
-                                                                            *right_op.value().vec,
-                                                                            count);
+                        auto computed_res =
+                            validate_arithmetic_result(resource,
+                                                       scalar_expr->type(),
+                                                       vector::compute_scalar_vector_arithmetic(resource,
+                                                                                                 op,
+                                                                                                 *left_op.value().scalar,
+                                                                                                 *right_op.value().vec,
+                                                                                                 count),
+                                                       left_op.value(),
+                                                       right_op.value(),
+                                                       count);
+                        if (computed_res.has_error()) {
+                            return computed_res.convert_error<resolved_operand>();
+                        }
+                        computed = std::move(computed_res.value());
                     } else {
                         auto lval = *left_op.value().scalar;
                         auto rval = *right_op.value().scalar;
                         uint64_t out_count = count > 0 ? count : 1;
                         vector::vector_t left_vec(resource, lval, out_count);
                         left_vec.flatten(out_count);
-                        computed = vector::compute_vector_scalar_arithmetic(resource, op, left_vec, rval, out_count);
+                        auto computed_res = validate_arithmetic_result(resource,
+                                                                       scalar_expr->type(),
+                                                                       vector::compute_vector_scalar_arithmetic(
+                                                                           resource, op, left_vec, rval, out_count),
+                                                                       left_op.value(),
+                                                                       right_op.value(),
+                                                                       out_count);
+                        if (computed_res.has_error()) {
+                            return computed_res.convert_error<resolved_operand>();
+                        }
+                        computed = std::move(computed_res.value());
                     }
                     for (auto& t : sub_temps) {
                         temp_vecs.emplace_back(std::move(t));
@@ -389,11 +528,16 @@ namespace components::operators {
         auto arith_op = detail::scalar_to_arithmetic_op(op);
 
         if (left_op.value().vec && right_op.value().vec) {
-            return vector::compute_binary_arithmetic(resource,
-                                                     arith_op,
-                                                     *left_op.value().vec,
-                                                     *right_op.value().vec,
-                                                     count);
+            return detail::validate_arithmetic_result(resource,
+                                                      op,
+                                                      vector::compute_binary_arithmetic(resource,
+                                                                                        arith_op,
+                                                                                        *left_op.value().vec,
+                                                                                        *right_op.value().vec,
+                                                                                        count),
+                                                      left_op.value(),
+                                                      right_op.value(),
+                                                      count);
         } else if (left_op.value().vec && right_op.value().scalar) {
             if (arith_op == vector::arithmetic_op::divide || arith_op == vector::arithmetic_op::mod) {
                 types::logical_value_t zero(resource, right_op.value().scalar->type());
@@ -403,17 +547,27 @@ namespace components::operators {
                                          std::pmr::string{"division by zero", resource});
                 }
             }
-            return vector::compute_vector_scalar_arithmetic(resource,
-                                                            arith_op,
-                                                            *left_op.value().vec,
-                                                            *right_op.value().scalar,
-                                                            count);
+            return detail::validate_arithmetic_result(resource,
+                                                      op,
+                                                      vector::compute_vector_scalar_arithmetic(resource,
+                                                                                                arith_op,
+                                                                                                *left_op.value().vec,
+                                                                                                *right_op.value().scalar,
+                                                                                                count),
+                                                      left_op.value(),
+                                                      right_op.value(),
+                                                      count);
         } else if (left_op.value().scalar && right_op.value().vec) {
-            return vector::compute_scalar_vector_arithmetic(resource,
-                                                            arith_op,
-                                                            *left_op.value().scalar,
-                                                            *right_op.value().vec,
-                                                            count);
+            return detail::validate_arithmetic_result(resource,
+                                                      op,
+                                                      vector::compute_scalar_vector_arithmetic(resource,
+                                                                                                arith_op,
+                                                                                                *left_op.value().scalar,
+                                                                                                *right_op.value().vec,
+                                                                                                count),
+                                                      left_op.value(),
+                                                      right_op.value(),
+                                                      count);
         } else {
             auto lval = *left_op.value().scalar;
             auto rval = *right_op.value().scalar;
@@ -428,7 +582,13 @@ namespace components::operators {
             uint64_t out_count = count > 0 ? count : 1;
             vector::vector_t left_vec(resource, lval, out_count);
             left_vec.flatten(out_count);
-            return vector::compute_vector_scalar_arithmetic(resource, arith_op, left_vec, rval, out_count);
+            return detail::validate_arithmetic_result(resource,
+                                                      op,
+                                                      vector::compute_vector_scalar_arithmetic(
+                                                          resource, arith_op, left_vec, rval, out_count),
+                                                      left_op.value(),
+                                                      right_op.value(),
+                                                      out_count);
         }
     }
 

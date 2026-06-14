@@ -4,6 +4,28 @@
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan/operators/operator_empty.hpp>
 
+#include <cstdio>
+#include <cstdlib>
+
+namespace {
+    bool trace_aggregate_errors_enabled() {
+        const char* raw = std::getenv("OTTERBRIX_EXEC_TRACE_ERRORS");
+        return raw && raw[0] != '\0' && raw[0] != '0';
+    }
+
+    void trace_aggregate_error(const char* where, const core::error_t& err) {
+        if (!trace_aggregate_errors_enabled()) {
+            return;
+        }
+        std::fprintf(stderr,
+                     "[AGG_ERROR] where=%s code=%d what='%s'\n",
+                     where,
+                     static_cast<int>(err.type),
+                     err.what.c_str());
+        std::fflush(stderr);
+    }
+} // namespace
+
 namespace components::operators::aggregate {
 
     operator_aggregate_t::operator_aggregate_t(std::pmr::memory_resource* resource, log_t log)
@@ -13,12 +35,14 @@ namespace components::operators::aggregate {
     void operator_aggregate_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->type() == operator_type::batch) {
             if (auto res = aggregate_batch_impl(pipeline_context); res.has_error()) {
+                trace_aggregate_error("aggregate_batch_impl", res.error());
                 set_error(res.error());
             } else {
                 batch_results_ = std::move(res.value());
             }
         } else {
             if (auto res = aggregate_impl(pipeline_context); res.has_error()) {
+                trace_aggregate_error("aggregate_impl", res.error());
                 set_error(res.error());
             } else {
                 aggregate_result_ = std::move(res.value());

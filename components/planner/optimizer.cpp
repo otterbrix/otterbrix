@@ -3,6 +3,7 @@
 #include "optimizer/rules/column_pruning.hpp"
 #include "optimizer/rules/constant_folding.hpp"
 #include "optimizer/rules/hash_join.hpp"
+#include "optimizer/rules/join_predicate_pushdown.hpp"
 
 namespace components::planner {
 
@@ -26,8 +27,15 @@ namespace components::planner {
             return nullptr;
         }
 
-        // Column pruning is intentionally disabled in the current work; the rule
-        // (optimizer::prune_columns) is left in place but not run here.
+        // Feature branch: push WHERE predicates that span both join sides onto
+        // the synthesized cross join (adds a join filter; WHERE is untouched).
+        optimizer::push_down_join_predicates(node);
+
+        // Column pruning: annotate aggregate nodes with the column indices each
+        // one needs to read from its source. Must run while joins are still
+        // node_join_t (it splits join columns per side), i.e. BEFORE the
+        // hash-join rewrite below converts them into node_hash_join_t.
+        optimizer::prune_columns(node);
 
         // Hash-join selection: rewrite eligible nested-loop joins (single
         // eq(left.key, right.key) condition) into node_hash_join_t so the planner

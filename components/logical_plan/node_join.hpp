@@ -23,6 +23,7 @@ namespace components::logical_plan {
                              join_type type);
 
         join_type type() const;
+        void set_type(join_type type);
 
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }

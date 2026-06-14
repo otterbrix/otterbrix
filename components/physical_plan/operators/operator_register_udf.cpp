@@ -87,6 +87,17 @@ namespace components::operators {
         //    plan's function_uid() set from global matches no local entry and the
         //    predicate gets a null function pointer at runtime.
         if (auto* def_reg = components::compute::function_registry_t::get_default()) {
+            // The default registry is a process-wide singleton, so an earlier
+            // registration of this name may sit at a stale uid that no current
+            // per-executor registry knows. Drop any same-name entry whose uid we
+            // aren't about to (re)write so name lookups stay deterministic.
+            if (!uids.empty()) {
+                for (const auto& [existing_name, existing_uid] : def_reg->get_functions()) {
+                    if (existing_name == func_name && existing_uid != uids.front()) {
+                        def_reg->remove_function(existing_uid);
+                    }
+                }
+            }
             auto res = uids.empty() ? def_reg->add_function(function_->get_copy(resource_))
                                     : def_reg->add_function_with_uid(uids.front(), function_->get_copy(resource_));
             if (res.has_error()) {

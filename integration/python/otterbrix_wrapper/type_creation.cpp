@@ -12,7 +12,9 @@ namespace otterbrix {
 
         std::shared_ptr<otterbrix_py_type_t> map_type(const std::shared_ptr<otterbrix_py_type_t> &key_type,
                 const std::shared_ptr<otterbrix_py_type_t> &value_type) {
-        	auto map_type = complex_logical_type::create_map(key_type->type(), value_type->type());
+        	// type-creation glue (directly bound to Python, no resource to thread); mirrors struct_type.
+        	auto* resource = std::pmr::get_default_resource();
+        	auto map_type = complex_logical_type::create_map(resource, key_type->type(), value_type->type());
         	return std::make_shared<otterbrix_py_type_t>(map_type);
         }
 

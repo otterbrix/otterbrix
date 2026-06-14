@@ -577,7 +577,7 @@ namespace components::catalog {
             ++pos; // ','
             auto val = parse_flat_type(resource, s, pos);
             ++pos; // ')'
-            return types::complex_logical_type::create_map(key, val);
+            return types::complex_logical_type::create_map(resource, key, val);
         }
         if (name == "STRUCT") {
             std::string struct_name = read_token(s, pos);

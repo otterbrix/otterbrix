@@ -41,6 +41,11 @@ namespace components::vector::arrow::scaner {
         if (array.null_count != 0 && array.n_buffers > 0 && array.buffers[0]) {
             auto bit_offset = get_effective_offset(array, parent_offset, chunk_offset, nested_offset);
             auto n_bitmask_bytes = (size + 8 - 1) / 8;
+            if (mask.all_valid()) {
+                // The validity mask is lazily allocated (all_valid() => data() == nullptr).
+                // Materialize it before memcpy'ing the arrow null bitmap into mask.data().
+                mask.resize(mask.resource(), size);
+            }
             if (bit_offset % 8 == 0) {
                 memcpy(mask.data(), arrow_buffer_data<std::byte>(array, 0) + bit_offset / 8, n_bitmask_bytes);
             } else {

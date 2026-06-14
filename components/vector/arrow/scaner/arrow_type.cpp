@@ -78,7 +78,8 @@ namespace components::vector::arrow {
                 auto list_info = reinterpret_cast<arrow_list_info*>(type_info_.get());
                 auto& struct_child = list_info->get_child();
                 auto struct_type = struct_child.type(true);
-                return types::complex_logical_type::create_map(struct_type.child_types()[0],
+                return types::complex_logical_type::create_map(struct_type.child_types().get_allocator().resource(),
+                                                               struct_type.child_types()[0],
                                                                struct_type.child_types()[1]);
             }
             case types::logical_type::UNION: {
@@ -395,7 +396,7 @@ namespace components::vector::arrow {
             key_value.emplace_back(value_type->type());
             key_value.back().set_alias("value");
 
-            auto map_type = types::complex_logical_type::create_map(key_type->type(), value_type->type());
+            auto map_type = types::complex_logical_type::create_map(resource, key_type->type(), value_type->type());
             std::vector<std::shared_ptr<arrow_type>> children;
             children.reserve(2);
             children.push_back(std::move(key_type));

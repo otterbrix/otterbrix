@@ -375,7 +375,7 @@ namespace otterbrix {
     			if (value.has_error()) {
     				return value;
     			}
-    			return complex_logical_type::create_map(key.value(), value.value());
+    			return complex_logical_type::create_map(resource, key.value(), value.value());
     		} else {
     			return core::error_t(core::error_code_t::invalid_parameter,
     			                     std::pmr::string("Can only create a MAP from a dict if args is formed correctly", resource));

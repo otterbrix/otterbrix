@@ -15,6 +15,7 @@
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <vector>
 
 // The bug related to the use of RTTI by the pybind11 library has been fixed: a
 // declaration should be in each translation unit.
@@ -27,7 +28,7 @@ logical_value_t to_value(std::pmr::memory_resource* resource, const py::handle& 
     if (py::isinstance<py::bool_>(obj)) {
         return logical_value_t{resource, obj.cast<bool>()};
     } else if (py::isinstance<py::int_>(obj)) {
-        return logical_value_t{resource, obj.cast<int64_t>()}; //TODO x64 long -> int64_t x32 long -> int32_t
+        return logical_value_t{resource, obj.cast<int64_t>()};
     } else if (py::isinstance<py::float_>(obj)) {
         return logical_value_t{resource, obj.cast<double>()};
     } else if (py::isinstance<py::bytes>(obj)) {

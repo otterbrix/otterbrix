@@ -30,6 +30,8 @@ private:
         cfg.log.level = log_t::level::off;
         cfg.disk.on = config.disk_on;
         cfg.wal.on = config.wal_on;
+        cfg.disk.path = std::filesystem::current_path() / "disk";
+        cfg.wal.path = std::filesystem::current_path() / "wal";
         return cfg;
     }
 };
@@ -197,6 +199,11 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
     std::vector<benchmark_t*> filtered;
     for (auto& b : benchmarks_) {
         if (matches_filter(*b, config)) {
+            if (config.no_setup) {
+                if (auto* sql = dynamic_cast<sql_benchmark_t*>(b.get())) {
+                    sql->set_disable_setup(true);
+                }
+            }
             filtered.push_back(b.get());
         }
     }
@@ -235,6 +242,10 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
 
     // Load-only mode: create one shared instance, run load() for first benchmark per group, then exit
     if (config.load_only) {
+        if (config.skip_load) {
+            std::cout << "Load-only: --skip-load is set, nothing to load.\n";
+            return;
+        }
         benchmark_instance_t instance(config);
         benchmark_state_t state;
         state.dispatcher = instance.dispatcher();

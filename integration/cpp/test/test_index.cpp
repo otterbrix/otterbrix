@@ -20,6 +20,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory_resource>
 #include <sstream>
 #include <tuple>
@@ -522,6 +523,131 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 24;", 0);
 }
 
+namespace {
+
+constexpr uint64_t kMinBitcaskBytesAfterCheckpoint = 10'000;
+
+std::filesystem::path find_hash_index_dir(const std::filesystem::path& disk_path, const std::string& index_name) {
+    if (!std::filesystem::exists(disk_path)) {
+        return {};
+    }
+    for (const auto& d : std::filesystem::directory_iterator(disk_path)) {
+        if (!d.is_directory()) {
+            continue;
+        }
+        try {
+            const auto oid = std::stoull(d.path().filename().string());
+            if (oid < 16384) {
+                continue;
+            }
+        } catch (...) {
+            continue;
+        }
+        const auto candidate = d.path() / index_name;
+        if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+uint64_t bitcask_data_bytes(const std::filesystem::path& index_dir) {
+    uint64_t total = 0;
+    if (index_dir.empty()) {
+        return 0;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(index_dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const auto name = entry.path().filename().string();
+        if (name.rfind("bitcask.", 0) == 0 && name.size() >= 5 && name.compare(name.size() - 5, 5, ".data") == 0) {
+            total += static_cast<uint64_t>(entry.file_size());
+        }
+    }
+    return total;
+}
+
+} // namespace
+
+// CHECKPOINT repopulate_table clears the bitcask backing and rebuilds the hash
+// index in memory. The handler must also mirror txn_id=0 pending rows back to
+// disk agents; otherwise bitcask.*.data segments stay empty while hash_index.bin
+// only holds bucket pages — index-path lookups work only until the next restart
+// rescans the table via bootstrap_repopulate_sync.
+TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_keylog") {
+    constexpr int kRows = 500;
+    static const std::string kHashIndexName = "idx_count_hash";
+
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_index/checkpoint_repopulate_persists_bitcask_keylog");
+    test_clear_directory(config);
+
+    INFO("phase 1: disk hash index, bulk load, CHECKPOINT, bitcask keylog on disk") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (count bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE INDEX idx_count_hash ON TestDatabase.TestCollection "
+                                               "USING hash (count);");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream q;
+            q << "INSERT INTO TestDatabase.TestCollection (count) VALUES ";
+            for (int i = 0; i < kRows; ++i) {
+                q << "(" << (i + 1) << ")" << (i + 1 == kRows ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, q.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == static_cast<std::size_t>(kRows));
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+
+        const auto index_dir = find_hash_index_dir(config.disk.path, kHashIndexName);
+        REQUIRE_FALSE(index_dir.empty());
+        REQUIRE(bitcask_data_bytes(index_dir) >= kMinBitcaskBytesAfterCheckpoint);
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 250;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 500;", 1);
+    }
+
+    INFO("phase 2: restart — persisted bitcask keylog, index-path lookups exact") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        const auto index_dir = find_hash_index_dir(config.disk.path, kHashIndexName);
+        REQUIRE_FALSE(index_dir.empty());
+        REQUIRE(bitcask_data_bytes(index_dir) >= kMinBitcaskBytesAfterCheckpoint);
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 500;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 501;", 0);
+    }
+}
+
 // VACUUM rebuilds the index. Entries inserted under a real txn id stay
 // PENDING-invisible unless that txn index-commits, and VACUUM never
 // index-commits, so a rebuild under ctx->txn would be invisible to every reader
@@ -588,6 +714,73 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
     // Deleted multiples of 3 stay gone via the rebuilt index.
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 48;", 0);
+}
+
+// CREATE INDEX backfill scans the table via storage_scan_segment, which emits
+// chunks of at most DEFAULT_VECTOR_CAPACITY (1024) rows. A regression that
+// overwrites the scan buffer on each chunk leaves only the last chunk indexed
+// in single_field_index, so equality lookups in the first (rows - 1024) keys
+// return 0 rows even though the heap row exists.
+TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capacity") {
+    constexpr int kRows = 2000;
+    constexpr int kVectorCapacity = 1024;
+    static_assert(kRows > kVectorCapacity);
+
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_index/create_index_backfill_over_vector_capacity");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE TABLE TestDatabase.TestCollection (count bigint) "
+                                           "WITH (storage = 'disk');");
+        REQUIRE(cur->is_success());
+    }
+
+    // Load more rows than a single scan chunk so backfill must stitch batches.
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream q;
+        q << "INSERT INTO TestDatabase.TestCollection (count) VALUES ";
+        for (int i = 0; i < kRows; ++i) {
+            q << "(" << (i + 1) << ")" << (i + 1 == kRows ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, q.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == static_cast<std::size_t>(kRows));
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+        REQUIRE(cur->is_success());
+    }
+
+    // single_field_index backfill must cover all chunks, not only the trailing one.
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 504;", 1);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 976;", 1);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 977;", 1);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 2000;", 1);
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE INDEX idx_count_hash ON TestDatabase.TestCollection "
+                                           "USING hash (count);");
+        REQUIRE(cur->is_success());
+    }
+
+    // hash index gets the same backfill scan; spot-check after both indexes exist.
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 504;", 1);
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 2000;", 1);
 }
 
 // ----------------------------------------------------------------------------

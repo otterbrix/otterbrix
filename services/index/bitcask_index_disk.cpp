@@ -54,9 +54,6 @@ namespace services::index {
         constexpr const char* hash_index_file = "hash_index.bin";
         constexpr const char* txn_log_file = "bitcask.txn.log";
         constexpr const char* txn_applied_file = "bitcask.txn.applied";
-        constexpr const char* merge_manifest_merged_key = "merged=";
-        constexpr const char* merge_manifest_removed_key = "removed=";
-        constexpr const char* merge_manifest_complete_key = "complete=";
         constexpr unsigned segment_id_width = 6;
         constexpr uint32_t txn_magic = 0x314E5854; // TXN1
 
@@ -145,63 +142,35 @@ namespace services::index {
             return directory / merge_manifest_file;
         }
 
-        struct merge_manifest_t {
-            uint64_t merged_segment_id{0};
-            std::vector<uint64_t> removed_segment_ids;
-            bool complete{false};
-            bool valid{false};
-        };
-
-        merge_manifest_t read_merge_manifest(const std::filesystem::path& directory) {
-            merge_manifest_t manifest;
+        bool read_merge_manifest(const std::filesystem::path& directory,
+                                 uint64_t& merged_segment_id,
+                                 std::vector<uint64_t>& removed_segment_ids) {
             std::ifstream input(merge_manifest_path(directory));
             if (!input.good()) {
-                return manifest;
+                return false;
             }
-            std::string line;
-            while (std::getline(input, line)) {
-                if (line.starts_with(merge_manifest_merged_key)) {
-                    const auto value = line.substr(std::strlen(merge_manifest_merged_key));
-                    const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), manifest.merged_segment_id);
-                    if (ec != std::errc() || ptr != value.data() + value.size()) {
-                        return merge_manifest_t{};
-                    }
-                    manifest.valid = true;
-                } else if (line.starts_with(merge_manifest_removed_key)) {
-                    const auto value = line.substr(std::strlen(merge_manifest_removed_key));
-                    size_t pos = 0;
-                    while (pos < value.size()) {
-                        const auto comma = value.find(',', pos);
-                        const auto end = comma == std::string_view::npos ? value.size() : comma;
-                        uint64_t removed_id = 0;
-                        const auto slice = value.substr(pos, end - pos);
-                        const auto [ptr, ec] =
-                            std::from_chars(slice.data(), slice.data() + slice.size(), removed_id);
-                        if (ec != std::errc() || ptr != slice.data() + slice.size()) {
-                            return merge_manifest_t{};
-                        }
-                        manifest.removed_segment_ids.push_back(removed_id);
-                        if (comma == std::string_view::npos) {
-                            break;
-                        }
-                        pos = comma + 1;
-                    }
-                } else if (line.starts_with(merge_manifest_complete_key)) {
-                    const auto value = line.substr(std::strlen(merge_manifest_complete_key));
-                    if (value == "1") {
-                        manifest.complete = true;
-                    } else if (value != "0") {
-                        return merge_manifest_t{};
-                    }
+            std::size_t removed_count = 0;
+            input >> merged_segment_id >> removed_count;
+            if (input.fail()) {
+                return false;
+            }
+            removed_segment_ids.clear();
+            removed_segment_ids.reserve(removed_count);
+            for (std::size_t i = 0; i < removed_count; ++i) {
+                uint64_t removed_id = 0;
+                input >> removed_id;
+                if (input.fail()) {
+                    removed_segment_ids.clear();
+                    return false;
                 }
+                removed_segment_ids.push_back(removed_id);
             }
-            return manifest;
+            return true;
         }
 
         void write_merge_manifest(const std::filesystem::path& directory,
                                   uint64_t merged_segment_id,
-                                  const std::vector<uint64_t>& removed_segment_ids,
-                                  bool complete) {
+                                  const std::vector<uint64_t>& removed_segment_ids) {
             const auto manifest_path = merge_manifest_path(directory);
             const auto temp_path = manifest_path.string() + ".tmp";
             {
@@ -210,16 +179,11 @@ namespace services::index {
                     assert(false && "bitcask I/O failure");
                     std::abort();
                 }
-                output << merge_manifest_merged_key << merged_segment_id << '\n';
-                output << merge_manifest_removed_key;
-                for (size_t i = 0; i < removed_segment_ids.size(); ++i) {
-                    if (i != 0) {
-                        output << ',';
-                    }
-                    output << removed_segment_ids[i];
+                output << merged_segment_id << ' ' << removed_segment_ids.size();
+                for (const auto removed_id : removed_segment_ids) {
+                    output << ' ' << removed_id;
                 }
                 output << '\n';
-                output << merge_manifest_complete_key << (complete ? '1' : '0') << '\n';
                 output.flush();
                 if (!output.good()) {
                     assert(false && "bitcask I/O failure");
@@ -430,18 +394,18 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::apply_merge_recovery_cleanup() {
-        const auto manifest = read_merge_manifest(path_);
-        if (!manifest.valid) {
+        uint64_t merged_segment_id = 0;
+        std::vector<uint64_t> removed_segment_ids;
+        if (!read_merge_manifest(path_, merged_segment_id, removed_segment_ids)) {
             return;
         }
 
-        const auto merged_path = segment_file_path(path_, manifest.merged_segment_id);
-        if (!std::filesystem::exists(merged_path)) {
+        if (!std::filesystem::exists(segment_file_path(path_, merged_segment_id))) {
             remove_merge_manifest(path_);
             return;
         }
 
-        for (const auto removed_id : manifest.removed_segment_ids) {
+        for (const auto removed_id : removed_segment_ids) {
             const auto removed_path = segment_file_path(path_, removed_id);
             if (!std::filesystem::exists(removed_path)) {
                 continue;
@@ -1169,7 +1133,7 @@ namespace services::index {
             meta_file->sync();
             merged_file.reset();
             meta_file.reset();
-            write_merge_manifest(path_, merged_segment_id, removed_segment_ids, false);
+            write_merge_manifest(path_, merged_segment_id, removed_segment_ids);
             if (!move_files(fs_, temp_path, merged_path)) {
                 remove_merge_manifest(path_);
                 assert(false && "bitcask I/O failure");
@@ -1255,7 +1219,6 @@ namespace services::index {
             const auto removed_path = segment_file_path(path_, removed_id);
             remove_file(fs_, removed_path);
         }
-        write_merge_manifest(path_, merged_segment_id, removed_segment_ids, true);
         hash_index_->set_auto_rehash_suppressed(bulk_prev_rehash_suppressed_);
         if (!bulk_prev_rehash_suppressed_) {
             hash_index_->trigger_rehash_if_needed();

@@ -168,7 +168,37 @@ namespace services::index {
             return true;
         }
 
-        void write_merge_manifest(const std::filesystem::path& directory,
+        void remove_merge_manifest(const std::filesystem::path& directory) {
+            std::error_code ec;
+            std::filesystem::remove(merge_manifest_path(directory), ec);
+        }
+
+        // Durably publish a sidecar: fsync temp, then rename over target.
+        // rename(2) atomically replaces an existing target on POSIX, so never
+        // unlink the target first — that leaves a crash window with no file.
+        [[nodiscard]] bool publish_replacement_file(core::filesystem::local_file_system_t& fs,
+                                                    const std::filesystem::path& temp_path,
+                                                    const std::filesystem::path& target_path) {
+            auto temp_file =
+                open_file(fs, temp_path, file_flags::READ | file_flags::WRITE, file_lock_type::NO_LOCK);
+            if (!temp_file || !temp_file->sync()) {
+                return false;
+            }
+            temp_file.reset();
+            if (move_files(fs, temp_path, target_path)) {
+                return true;
+            }
+#if defined(_WIN32)
+            std::error_code ec;
+            std::filesystem::remove(target_path, ec);
+            return move_files(fs, temp_path, target_path);
+#else
+            return false;
+#endif
+        }
+
+        void write_merge_manifest(core::filesystem::local_file_system_t& fs,
+                                  const std::filesystem::path& directory,
                                   uint64_t merged_segment_id,
                                   const std::vector<uint64_t>& removed_segment_ids) {
             const auto manifest_path = merge_manifest_path(directory);
@@ -190,17 +220,15 @@ namespace services::index {
                     std::abort();
                 }
             }
-            std::error_code ec;
-            std::filesystem::remove(manifest_path, ec);
-            std::filesystem::rename(temp_path, manifest_path);
+            if (!publish_replacement_file(fs, temp_path, manifest_path)) {
+                assert(false && "bitcask I/O failure");
+                std::abort();
+            }
         }
 
-        void remove_merge_manifest(const std::filesystem::path& directory) {
-            std::error_code ec;
-            std::filesystem::remove(merge_manifest_path(directory), ec);
-        }
-
-        void write_current_segment_id(const std::filesystem::path& directory, uint64_t segment_id) {
+        void write_current_segment_id(core::filesystem::local_file_system_t& fs,
+                                      const std::filesystem::path& directory,
+                                      uint64_t segment_id) {
             const auto current_path = current_segment_path(directory);
             const auto temp_path = current_path.string() + ".tmp";
             {
@@ -218,9 +246,10 @@ namespace services::index {
                     std::abort();
                 }
             }
-            std::error_code ec;
-            std::filesystem::remove(current_path, ec);
-            std::filesystem::rename(temp_path, current_path);
+            if (!publish_replacement_file(fs, temp_path, current_path)) {
+                assert(false && "bitcask I/O failure");
+                std::abort();
+            }
         }
 
         void write_record(core::filesystem::file_handle_t& file,
@@ -555,7 +584,7 @@ namespace services::index {
             std::abort();
         }
         file_->seek(file_->file_size());
-        write_current_segment_id(path_, active_segment_id_);
+        write_current_segment_id(fs_, path_, active_segment_id_);
     }
 
     uint64_t bitcask_index_disk_t::allocate_next_segment_id() { return next_segment_id_.fetch_add(1); }
@@ -689,9 +718,11 @@ namespace services::index {
                                      std::pmr::string{"bitcask: applied-offset sidecar flush failed", resource_}};
             }
         }
-        std::error_code ec;
-        std::filesystem::remove(applied_path, ec);
-        std::filesystem::rename(temp_path, applied_path);
+        if (!publish_replacement_file(fs_, temp_path, applied_path)) {
+            remove_file(fs_, temp_path);
+            return core::error_t{core::error_code_t::index_create_fail,
+                                 std::pmr::string{"bitcask: applied-offset sidecar publish failed", resource_}};
+        }
         return core::error_t::no_error();
     }
 
@@ -1133,7 +1164,7 @@ namespace services::index {
             meta_file->sync();
             merged_file.reset();
             meta_file.reset();
-            write_merge_manifest(path_, merged_segment_id, removed_segment_ids);
+            write_merge_manifest(fs_, path_, merged_segment_id, removed_segment_ids);
             if (!move_files(fs_, temp_path, merged_path)) {
                 remove_merge_manifest(path_);
                 assert(false && "bitcask I/O failure");

@@ -132,11 +132,14 @@ find_package(BZip2 1.0.8 REQUIRED)
 find_package(actor-zeta REQUIRED)
 find_package(FastFloat REQUIRED)
 
-# hnswlib (header-only, Apache 2.0) — via conan.
 find_package(hnswlib REQUIRED)
 if (NOT TARGET hnswlib)
     add_library(hnswlib INTERFACE)
     target_link_libraries(hnswlib INTERFACE hnswlib::hnswlib)
+endif()
+
+if (ENABLE_ASAN OR ENABLE_UBSAN)
+    add_compile_definitions(NO_MANUAL_VECTORIZATION)
 endif()
 
 if(BUILD_PYTHON)

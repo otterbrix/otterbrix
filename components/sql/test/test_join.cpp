@@ -34,23 +34,23 @@ TEST_CASE("components::sql::join") {
 
     SECTION("join types") {
         TEST_JOIN(R"_(select * from col1 join col2 on col1.id = col2.id_col1;)_",
-                  R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}})_",
+                  R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "col1/id": {$eq: "col2/id_col1"}}})_",
                   vec());
 
         TEST_JOIN(R"_(select * from col1 inner join col2 on col1.id = col2.id_col1;)_",
-                  R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}})_",
+                  R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "col1/id": {$eq: "col2/id_col1"}}})_",
                   vec());
 
         TEST_JOIN(R"_(select * from col1 full outer join col2 on col1.id = col2.id_col1;)_",
-                  R"_($aggregate: {$join: {$type: full, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}})_",
+                  R"_($aggregate: {$join: {$type: full, $aggregate: {}, $aggregate: {}, "col1/id": {$eq: "col2/id_col1"}}})_",
                   vec());
 
         TEST_JOIN(R"_(select * from col1 left outer join col2 on col1.id = col2.id_col1;)_",
-                  R"_($aggregate: {$join: {$type: left, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}})_",
+                  R"_($aggregate: {$join: {$type: left, $aggregate: {}, $aggregate: {}, "col1/id": {$eq: "col2/id_col1"}}})_",
                   vec());
 
         TEST_JOIN(R"_(select * from col1 right outer join col2 on col1.id = col2.id_col1;)_",
-                  R"_($aggregate: {$join: {$type: right, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}})_",
+                  R"_($aggregate: {$join: {$type: right, $aggregate: {}, $aggregate: {}, "col1/id": {$eq: "col2/id_col1"}}})_",
                   vec());
 
         TEST_JOIN(R"_(select * from col1 cross join col2;)_",
@@ -61,29 +61,29 @@ TEST_CASE("components::sql::join") {
     SECTION("join specifics") {
         TEST_JOIN(
             R"_(select col1.id, col2.id_col1 from db.col as col1 JOIN col2 on col1.id = col2.id_col1;)_",
-            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}, $select: {id, id_col1}})_",
+            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "col1/id": {$eq: "col2/id_col1"}}, $select: {col1/id, col2/id_col1}})_",
             vec());
 
         TEST_JOIN(
             R"_(select * from col1 join col2 on col1.id = col2.id_col1 and col1.name = col2.name;)_",
-            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $and: ["id": {$eq: "id_col1"}, "name": {$eq: "name"}]}})_",
+            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $and: ["col1/id": {$eq: "col2/id_col1"}, "col1/name": {$eq: "col2/name"}]}})_",
             vec());
 
         TEST_JOIN(
             R"_(select * from col1 join col2 on col1.id = col2.id_col1 )_"
             R"_(join col3 on id = col3.id_col1 and id = col3.id_col2;)_",
-            R"_($aggregate: {$join: {$type: inner, $join: {$type: inner, $aggregate: {}, $aggregate: {}, "id": {$eq: "id_col1"}}, )_"
-            R"_($aggregate: {}, $and: ["id": {$eq: "id_col1"}, "id": {$eq: "id_col2"}]}})_",
+            R"_($aggregate: {$join: {$type: inner, $join: {$type: inner, $aggregate: {}, $aggregate: {}, "col1/id": {$eq: "col2/id_col1"}}, )_"
+            R"_($aggregate: {}, $and: ["id": {$eq: "col3/id_col1"}, "id": {$eq: "col3/id_col2"}]}})_",
             vec());
 
         TEST_JOIN(
             R"_(select * from col1 join col2 on (col1.struct_type).field = (col2.struct_type).field;)_",
-            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "struct_type/field": {$eq: "struct_type/field"}}})_",
+            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "col1/struct_type/field": {$eq: "col2/struct_type/field"}}})_",
             vec());
 
         TEST_JOIN(
             R"_(select * from col1 join col2 on col1.array_type[1] = col2.array_type[2];)_",
-            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "array_type/1": {$eq: "array_type/2"}}})_",
+            R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, "col1/array_type/1": {$eq: "col2/array_type/2"}}})_",
             vec());
     }
 
@@ -124,12 +124,12 @@ TEST_CASE("components::sql::join") {
     SECTION("left outer join regression") {
         TEST_JOIN(
             R"_(select * from a left outer join b on a.x = b.x and a.y = b.y;)_",
-            R"_($aggregate: {$join: {$type: left, $aggregate: {}, $aggregate: {}, $and: ["x": {$eq: "x"}, "y": {$eq: "y"}]}})_",
+            R"_($aggregate: {$join: {$type: left, $aggregate: {}, $aggregate: {}, $and: ["a/x": {$eq: "b/x"}, "a/y": {$eq: "b/y"}]}})_",
             vec());
 
         TEST_JOIN(
             R"_(select * from a left outer join b on a.id = b.fk where b.status = 'active';)_",
-            R"_($aggregate: {$join: {$type: left, $aggregate: {}, $aggregate: {}, "id": {$eq: "fk"}}, $match: {"status": {$eq: #0}}})_",
+            R"_($aggregate: {$join: {$type: left, $aggregate: {}, $aggregate: {}, "a/id": {$eq: "b/fk"}}, $match: {"b/status": {$eq: #0}}})_",
             vec({v(&resource, "active")}));
     }
 
@@ -152,7 +152,7 @@ TEST_CASE("components::sql::join") {
         // sibling match_t (not shown in the join's to_string).
         TEST_JOIN(
             R"_(select * from col1, col2 where col1.id = col2.id_col1;)_",
-            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {"id": {$eq: "id_col1"}}})_",
+            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {"col1/id": {$eq: "col2/id_col1"}}})_",
             vec());
 
         // Three-table comma-join. Left-deep synthesis yields
@@ -160,23 +160,23 @@ TEST_CASE("components::sql::join") {
         // exactly mirroring `T1 JOIN T2 ON ... JOIN T3 ON ...`.
         TEST_JOIN(
             R"_(select * from col1, col2, col3 where col1.id = col2.id_col1 and col1.id = col3.id_col1;)_",
-            R"_($aggregate: {$join: {$type: cross, $join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $aggregate: {}, $all_true}, $match: {$and: ["id": {$eq: "id_col1"}, "id": {$eq: "id_col1"}]}})_",
+            R"_($aggregate: {$join: {$type: cross, $join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $aggregate: {}, $all_true}, $match: {$and: ["col1/id": {$eq: "col2/id_col1"}, "col1/id": {$eq: "col3/id_col1"}]}})_",
             vec());
 
         // WHERE with a multi-clause AND: both predicates land in the same
         // match_t. Cross-join itself stays $all_true.
         TEST_JOIN(
             R"_(select * from col1, col2 where col1.id = col2.id_col1 and col1.name = col2.name;)_",
-            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {$and: ["id": {$eq: "id_col1"}, "name": {$eq: "name"}]}})_",
+            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {$and: ["col1/id": {$eq: "col2/id_col1"}, "col1/name": {$eq: "col2/name"}]}})_",
             vec());
 
         // Column ambiguity case: both tables carry `id`. The unqualified
         // `id` on the WHERE LHS still parses through the transformer; the
         // validator later resolves it against the merged join schema.
-        // Transformer output keeps the bare name with no side annotation.
+        // Output keeps the LHS bare and the qualified RHS as written.
         TEST_JOIN(
             R"_(select * from col1, col2 where id = col2.id;)_",
-            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {"id": {$eq: "id"}}})_",
+            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {"id": {$eq: "col2/id"}}})_",
             vec());
 
         // SELECT-projection over comma-join: column references on both sides
@@ -184,7 +184,7 @@ TEST_CASE("components::sql::join") {
         // qualified columns survive into the $select clause.
         TEST_JOIN(
             R"_(select col1.id, col2.id_col1 from col1, col2 where col1.id = col2.id_col1;)_",
-            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {"id": {$eq: "id_col1"}}, $select: {id, id_col1}})_",
+            R"_($aggregate: {$join: {$type: cross, $aggregate: {}, $aggregate: {}, $all_true}, $match: {"col1/id": {$eq: "col2/id_col1"}}, $select: {col1/id, col2/id_col1}})_",
             vec());
     }
 }

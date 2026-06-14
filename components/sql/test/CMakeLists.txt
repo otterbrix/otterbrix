@@ -29,4 +29,4 @@ target_link_libraries(
 
 include(CTest)
 include(Catch)
-catch_discover_tests(${PROJECT_NAME})
+otterbrix_discover_tests(${PROJECT_NAME})

@@ -99,10 +99,12 @@ namespace components::sql::transform {
 
             if (names.is_left_table(strVal(lst.begin()->data))) {
                 table_name = strVal(it->data);
+                field_path.emplace_back(std::pmr::string{table_name, resource});
                 ++it;
                 side = expressions::side_t::left;
             } else if (names.is_right_table(strVal(lst.begin()->data))) {
                 table_name = strVal(it->data);
+                field_path.emplace_back(std::pmr::string{table_name, resource});
                 ++it;
                 side = expressions::side_t::right;
             } else if (lst.size() >= 3) {
@@ -112,11 +114,13 @@ namespace components::sql::transform {
                 if (names.is_left_table(second_name)) {
                     ++it;
                     table_name = strVal(it->data);
+                    field_path.emplace_back(std::pmr::string{table_name, resource});
                     ++it;
                     side = expressions::side_t::left;
                 } else if (names.is_right_table(second_name)) {
                     ++it;
                     table_name = strVal(it->data);
+                    field_path.emplace_back(std::pmr::string{table_name, resource});
                     ++it;
                     side = expressions::side_t::right;
                 }

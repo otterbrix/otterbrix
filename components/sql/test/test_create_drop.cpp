@@ -4,6 +4,7 @@
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <string_view>
 
 using namespace components::sql;
 using namespace components::logical_plan;
@@ -85,6 +86,59 @@ TEST_CASE("components::sql::table") {
 
     TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", R"_($sequence[2])_");
     TEST_TRANSFORMER_OK("CREATE TABLE table_name()", R"_($create_collection: table_name)_");
+
+    SECTION("create disk table using pax") {
+        auto stmt =
+            raw_parser(&arena_resource, "CREATE TABLE table_name(id bigint) WITH(storage='disk') USING PAX")
+                ->lst.front()
+                .data;
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().sub_queries.back();
+        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        REQUIRE(data->is_disk_storage());
+        REQUIRE(data->storage_format() == create_collection_storage_format_t::disk_pax);
+    }
+
+    SECTION("create disk table using columnar") {
+        auto stmt =
+            raw_parser(&arena_resource, "CREATE TABLE table_name(name string) WITH(storage='disk') USING COLUMNAR")
+                ->lst.front()
+                .data;
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().sub_queries.back();
+        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        REQUIRE(data->is_disk_storage());
+        REQUIRE(data->storage_format() == create_collection_storage_format_t::disk_columnar);
+    }
+
+    SECTION("using pax requires disk storage") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE table_name(id bigint) USING PAX"));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(result.has_error());
+        REQUIRE(std::string_view{result.error().what}.find("WITH(storage='disk')") != std::string::npos);
+    }
+
+    SECTION("using pax accepts mixed root schema") {
+        // PAX allows mixing fixed-width and string/nested root columns.
+        auto stmt = linitial(
+            raw_parser(&arena_resource, "CREATE TABLE table_name(name string, count bigint) WITH(storage='disk') USING PAX"));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().sub_queries.back();
+        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        REQUIRE(data->is_disk_storage());
+        REQUIRE(data->storage_format() == create_collection_storage_format_t::disk_pax);
+    }
+
+    SECTION("using pax rejects columnar fallback roots") {
+        auto stmt = linitial(
+            raw_parser(&arena_resource, "CREATE TABLE table_name(gap interval) WITH(storage='disk') USING PAX"));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(result.has_error());
+        REQUIRE(std::string_view{result.error().what}.find("not supported by USING PAX") != std::string::npos);
+    }
 
     // DROP TABLE is wrapped in sequence_t(resolve_ns?, resolve_table?, drop_collection).
     // The drop node itself carries no user-typed names; routing is OID-only

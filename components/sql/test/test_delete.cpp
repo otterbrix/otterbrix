@@ -56,6 +56,6 @@ TEST_CASE("components::sql::delete_from_where") {
 
     TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection USING TestDatabase.OtherTestCollection WHERE "
                        "TestCollection.number = OtherTestCollection.number;",
-                       R"_($delete: <oid:0> {$match: {"number": {$eq: "number"}}, $limit: -1})_",
+                       R"_($delete: <oid:0> {$match: {"testcollection/number": {$eq: "othertestcollection/number"}}, $limit: -1})_",
                        vec());
 }

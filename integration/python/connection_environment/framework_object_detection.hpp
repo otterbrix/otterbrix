@@ -1,9 +1,19 @@
 #pragma once
 
 #include <pybind11/pybind_wrapper.hpp>
-#include <numpy/numpy_type.hpp>
+
+#include <cstdint>
 
 namespace otterbrix {
+
+    enum class numpy_object_type_t : uint8_t {
+        //! To identify supported Numpy objects for scaning
+        INVALID,   //! unsupported numpy object
+        NDARRAY1D, //! numpy array with shape (n, )
+        NDARRAY2D, //! numpy array with shape (n_rows, n_cols)
+        LIST,      //! list of numpy arrays of shape (n,)
+        DICT,      //! dict of numpy arrays of shape (n,)
+    };
 
     class framework_object_detection_t {
     public:

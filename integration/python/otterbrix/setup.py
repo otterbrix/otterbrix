@@ -22,7 +22,7 @@ setup(
     author=" ",
     license=" ",
     packages=['otterbrix'],
-    python_requires='>=3.7',
+    python_requires='>=3.9',
     include_package_data=True,
     extras_require={"test": ["pytest"]},
     cmake_args=[

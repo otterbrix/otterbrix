@@ -25,6 +25,9 @@ namespace services::index {
     public:
         static constexpr uint64_t default_flush_threshold_{1000};
         static constexpr uint64_t default_segment_record_limit_{10000};
+        // Regular (non-merged) segments start at 2; id 0–1 are reserved for merged
+        // output so merged data is always replayed before rotated segments.
+        static constexpr uint64_t regular_segment_id_start_{2};
 
         // committed_txn_ids: WAL-replay set of committed transaction ids. The
         // txn-log recover gate (M1.1) applies a frame only when its txn_id is in
@@ -114,6 +117,7 @@ namespace services::index {
 
         void initialize_storage();
         void load_from_disk();
+        void apply_merge_recovery_cleanup();
         std::vector<segment_info_t> collect_segments() const;
         void open_active_segment();
         void rotate_active_segment();
@@ -156,7 +160,7 @@ namespace services::index {
         std::unique_ptr<core::filesystem::file_handle_t> txn_log_file_;
         disk_hash_table_ptr hash_index_;
         uint64_t next_timestamp_{0};
-        std::atomic<uint64_t> next_segment_id_{1};
+        std::atomic<uint64_t> next_segment_id_{regular_segment_id_start_};
         uint64_t active_segment_id_{0};
         uint64_t active_segment_records_{0};
         uint64_t segment_record_limit_{default_segment_record_limit_};

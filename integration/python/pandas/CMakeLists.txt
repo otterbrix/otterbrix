@@ -1,0 +1,8 @@
+set(ALL_OBJECT_FILES 
+    ${ALL_OBJECT_FILES}
+    ${CMAKE_CURRENT_SOURCE_DIR}/analyzer.cpp 
+    ${CMAKE_CURRENT_SOURCE_DIR}/bind.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/scan.cpp
+    
+    PARENT_SCOPE
+)

@@ -197,8 +197,11 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
 
     // Simulate two segments with non-overlapping ranges
     // Segment 1: [1..50], Segment 2: [51..100]
-    auto seg1 =
-        column_segment_t::create_segment(buffer_manager, complex_logical_type{logical_type::BIGINT}, 0, 262144, 262144);
+    auto seg1 = column_segment_t::create_segment(buffer_manager,
+                                                 complex_logical_type{logical_type::BIGINT},
+                                                 0,
+                                                 block_manager.block_size(),
+                                                 block_manager.block_size());
     {
         base_statistics_t s1(&resource, logical_type::BIGINT);
         s1.set_min(logical_value_t{&resource, int64_t(1)});
@@ -209,8 +212,8 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     auto seg2 = column_segment_t::create_segment(buffer_manager,
                                                  complex_logical_type{logical_type::BIGINT},
                                                  50,
-                                                 262144,
-                                                 262144);
+                                                 block_manager.block_size(),
+                                                 block_manager.block_size());
     {
         base_statistics_t s2(&resource, logical_type::BIGINT);
         s2.set_min(logical_value_t{&resource, int64_t(51)});

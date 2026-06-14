@@ -980,6 +980,16 @@ TEST_CASE("services::index::bitcask_index_disk::max_size_t_row_id_persists") {
     }
 }
 
+// Load/stress test — DELIBERATELY long-running. 8 threads issue 320k mixed
+// insert/remove/find ops against one disk index, then it is reopened and the
+// recovered state is compared key-by-key. Every insert/remove takes the index's
+// exclusive lock and writes to disk under it, so the threads serialize (~100% of
+// one core, no real parallelism by design); the goal is to surface concurrency
+// races and verify durable recovery, not throughput. Expect minutes in a -O0
+// debug build (much faster in release). Under a parallel `ctest` run it competes
+// for cores and can take 15-20+ min and look hung — it is not deadlocked, it
+// completes. Tagged [stress][long]; run it serially or filter it out (ctest -LE
+// long) if a fast run is needed.
 TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_stress", "[stress][long]") {
     auto resource = std::pmr::synchronized_pool_resource();
 

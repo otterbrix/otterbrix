@@ -8,6 +8,9 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
+#include <cstdio>
+#include <cstdlib>
+
 #include <components/logical_plan/forward.hpp>
 #include <components/logical_plan/node_allocate_oids.hpp>
 #include <components/logical_plan/node_catalog_resolve_function.hpp>
@@ -50,6 +53,36 @@
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 using namespace components::cursor;
+
+namespace {
+
+    bool trace_exec_errors_enabled() {
+        const char* raw = std::getenv("OTTERBRIX_EXEC_TRACE_ERRORS");
+        return raw && raw[0] != '\0' && raw[0] != '0';
+    }
+
+    void trace_exec_error(const char* where, const core::error_t& err, int operator_type = -1) {
+        if (!trace_exec_errors_enabled()) {
+            return;
+        }
+        std::fprintf(stderr,
+                     "[EXEC_ERROR] where=%s op=%d code=%d what='%s'\n",
+                     where,
+                     operator_type,
+                     static_cast<int>(err.type),
+                     err.what.c_str());
+        std::fflush(stderr);
+    }
+
+    // NOTE (merge): the feature branch's local find_effective_dml_type helper
+    // (which unwrapped planner check_constraint / sequence wrappers to the base
+    // DML node) was dropped here because origin/main's refactor replaced every
+    // caller with the shared services::catalog_resolve::effective_root_node
+    // helper (see enrich_logical_plan.cpp / dispatcher.cpp). Keeping the local
+    // copy would be dead code and trip -Werror=unused-function in the
+    // non-sanitizer build. The unwrap intent survives via effective_root_node.
+
+} // namespace
 
 namespace services::collection::executor {
 
@@ -1898,6 +1931,7 @@ namespace services::collection::executor {
             plan->on_execute(&pipeline_context);
 
             if (plan->has_error()) {
+                trace_exec_error("plan_after_execute", plan->get_error(), static_cast<int>(plan->type()));
                 cursor = make_cursor(resource(), plan->get_error());
                 break;
             }
@@ -1923,6 +1957,9 @@ namespace services::collection::executor {
                 // Propagate errors set during async resume (fk_check, fk_cascade,
                 // DML on disk failure, etc.)
                 if (waiting_op->has_error()) {
+                    trace_exec_error("waiting_op_after_await",
+                                     waiting_op->get_error(),
+                                     static_cast<int>(waiting_op->type()));
                     cursor = make_cursor(resource(), waiting_op->get_error());
                     break;
                 }
@@ -1935,6 +1972,7 @@ namespace services::collection::executor {
 
             // Detect errors set asynchronously in operators (e.g. fk_cascade root with RESTRICT).
             if (plan->has_error()) {
+                trace_exec_error("plan_after_resume", plan->get_error(), static_cast<int>(plan->type()));
                 cursor = make_cursor(resource(), plan->get_error());
                 break;
             }

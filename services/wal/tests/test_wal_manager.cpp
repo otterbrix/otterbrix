@@ -51,7 +51,7 @@ using test_pool_resource_t = std::pmr::synchronized_pool_resource;
 
 // The manager self-drives on an internal loop thread and runs its children on
 // the real shared_work scheduler, so futures from a send() to it become ready
-// asynchronously. Poll until ready before take_ready (which asserts readiness).
+// asynchronously. Poll until ready, then get() (already ready, so it won't block).
 template<typename F>
 static decltype(auto) await_ready(F& fut) {
     // Wall-clock deadline, not iteration-bounded: under TSAN or parallel-ctest
@@ -62,7 +62,7 @@ static decltype(auto) await_ready(F& fut) {
         std::this_thread::yield();
     }
     REQUIRE(fut.is_ready());
-    return std::move(fut).take_ready();
+    return std::move(fut).get();
 }
 
 constexpr auto kMainDb = catalog::well_known_oid::main_database;

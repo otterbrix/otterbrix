@@ -91,6 +91,11 @@ namespace services::dispatcher {
                     return components::vector::arithmetic_op::add;
             }
         }
+
+        std::string result_alias_for_projected_key(const components::expressions::key_t& key,
+                                                   const std::string& fallback) {
+            return key.storage().size() > 1 ? std::string(key.storage().front()) : fallback;
+        }
         // plan_resolve_index_t + helpers live in
         // services/dispatcher/plan_resolve_index.hpp so
         // enrich_logical_plan.cpp can use the same probe-then-fallback
@@ -166,6 +171,34 @@ namespace services::dispatcher {
             return merged;
         }
 
+        const char* side_name(side_t side) {
+            switch (side) {
+                case side_t::left:
+                    return "left";
+                case side_t::right:
+                    return "right";
+                default:
+                    return "undefined";
+            }
+        }
+
+        std::string describe_schema(const named_schema& schema) {
+            std::string out = "[";
+            for (size_t i = 0; i < schema.size(); ++i) {
+                if (i > 0) {
+                    out += ", ";
+                }
+                out += schema[i].result_alias.empty() ? "<no-table>" : schema[i].result_alias;
+                out += ".";
+                out += schema[i].type.has_alias() ? schema[i].type.alias() : "<no-column>";
+                out += "(";
+                out += side_name(schema[i].side);
+                out += ")";
+            }
+            out += "]";
+            return out;
+        }
+
         [[nodiscard]] core::result_wrapper_t<type_paths> find_types(std::pmr::memory_resource* resource,
                                                                     components::expressions::key_t& key,
                                                                     const named_schema& schema) {
@@ -209,6 +242,16 @@ namespace services::dispatcher {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 2});
                 } else if (core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
+                } else if (truncated_key.storage().size() > 1 && schema[i].result_alias.empty() &&
+                           core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(1))) {
+                    // No-table node_data input (e.g. spliced raw_data in a federation JOIN):
+                    // the schema column carries no table alias, so a side-qualified key like
+                    // `p/campaign_id` is matched on the column name (`campaign_id`) alone,
+                    // dropping the unresolvable table qualifier. Scoped to no-table schemas
+                    // (result_alias empty) so normal table-qualified joins are unaffected; the
+                    // JOIN validates each side's key against that side's schema, so the bare
+                    // column name is unambiguous per side.
+                    matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 2});
                 }
             }
 
@@ -357,7 +400,9 @@ namespace services::dispatcher {
 
             if (result.empty()) {
                 return core::error_t(core::error_code_t::schema_error,
-                                     std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
+                                     std::pmr::string{"path: \'" + key.as_string() + "\' was not found in schema " +
+                                                          describe_schema(schema),
+                                                      resource});
             }
             // Store path inside a key, since we will need it later
             key.set_path(result.front().path);
@@ -675,6 +720,10 @@ namespace services::dispatcher {
                 return find_types(resource, key, schema);
             } else if (std::holds_alternative<expression_ptr>(param)) {
                 auto& sub = std::get<expression_ptr>(param);
+                if (!sub) {
+                    return core::error_t(core::error_code_t::invalid_parameter,
+                                         std::pmr::string{"null expression while resolving key paths", resource});
+                }
                 if (sub->group() == expression_group::scalar) {
                     auto* scalar = static_cast<scalar_expression_t*>(sub.get());
                     auto res = resolve_key_paths_in_group(resource, scalar->params(), schema);
@@ -683,6 +732,16 @@ namespace services::dispatcher {
                     }
                 } else if (sub->group() == expression_group::compare) {
                     auto* cmp = static_cast<compare_expression_t*>(sub.get());
+                    if (cmp->is_union()) {
+                        for (auto& child : cmp->children()) {
+                            param_storage child_param{child};
+                            auto res = resolve_key_path(resource, child_param, schema);
+                            if (res.has_error()) {
+                                return res;
+                            }
+                        }
+                        return type_paths{resource};
+                    }
                     auto res = resolve_key_path(resource, cmp->left(), schema);
                     if (res.has_error()) {
                         return res;
@@ -692,16 +751,10 @@ namespace services::dispatcher {
                         return res;
                     }
                     for (auto& child : cmp->children()) {
-                        if (child->group() == expression_group::compare) {
-                            auto* child_cmp = static_cast<compare_expression_t*>(child.get());
-                            res = resolve_key_path(resource, child_cmp->left(), schema);
-                            if (res.has_error()) {
-                                return res;
-                            }
-                            res = resolve_key_path(resource, child_cmp->right(), schema);
-                            if (res.has_error()) {
-                                return res;
-                            }
+                        param_storage child_param{child};
+                        res = resolve_key_path(resource, child_param, schema);
+                        if (res.has_error()) {
+                            return res;
                         }
                     }
                 }
@@ -1594,8 +1647,25 @@ namespace services::dispatcher {
                         }
 
                         // Resolve key paths in node_select scalar expressions against incoming schema.
-                        // Aggregates are always in node_group_t now, so only scalar expressions appear here.
+                        // Aggregates live in node_group_t; scalar row/vector functions may appear here too.
+                        auto allowed_projection_function_types =
+                            components::compute::create_mask(components::compute::function_type_t::row,
+                                                             components::compute::function_type_t::vector);
                         for (auto& expr : node_select->expressions()) {
+                            if (expr->group() == expression_group::function) {
+                                auto* func_expr = reinterpret_cast<function_expression_t*>(expr.get());
+                                auto res = impl::validate_schema(resource,
+                                                                 func_expr,
+                                                                 parameters,
+                                                                 incoming_schema,
+                                                                 incoming_schema,
+                                                                 true,
+                                                                 allowed_projection_function_types);
+                                if (res.has_error()) {
+                                    return res.error();
+                                }
+                                continue;
+                            }
                             if (expr->group() != expression_group::scalar) {
                                 continue;
                             }
@@ -1620,6 +1690,125 @@ namespace services::dispatcher {
                                     return res.convert_error<named_schema>();
                                 }
                             }
+                        }
+                        named_schema selected_schema(resource);
+                        selected_schema.reserve(node_select->expressions().size());
+                        auto resolve_scalar_type = [&](param_storage& param, auto& self) -> complex_logical_type {
+                            if (std::holds_alternative<components::expressions::key_t>(param)) {
+                                auto& key = std::get<components::expressions::key_t>(param);
+                                assert(!key.path().empty());
+                                return incoming_schema[key.path()[0]].type;
+                            }
+                            if (std::holds_alternative<core::parameter_id_t>(param)) {
+                                return parameters.parameters.at(std::get<core::parameter_id_t>(param)).type();
+                            }
+                            auto& sub = std::get<expression_ptr>(param);
+                            if (sub->group() == expression_group::scalar) {
+                                auto* sub_s = static_cast<scalar_expression_t*>(sub.get());
+                                if (sub_s->type() == scalar_type::case_expr) {
+                                    return sub_s->params().size() >= 2 ? self(sub_s->params()[1], self)
+                                                                       : complex_logical_type(logical_type::NA);
+                                }
+                                if (!sub_s->params().empty()) {
+                                    auto lt = self(sub_s->params()[0], self);
+                                    auto rt = sub_s->params().size() > 1 ? self(sub_s->params()[1], self) : lt;
+                                    return complex_logical_type(
+                                        arithmetic_result_type(lt.type(), rt.type(), impl::scalar_to_arith_op(sub_s->type())));
+                                }
+                            }
+                            return complex_logical_type(logical_type::NA);
+                        };
+
+                        for (auto& expr : node_select->expressions()) {
+                            if (expr->group() == expression_group::function) {
+                                auto* func_expr = reinterpret_cast<function_expression_t*>(expr.get());
+                                auto fn_schema = impl::validate_schema(resource,
+                                                                       func_expr,
+                                                                       parameters,
+                                                                       incoming_schema,
+                                                                       incoming_schema,
+                                                                       true,
+                                                                       allowed_projection_function_types);
+                                if (fn_schema.has_error()) {
+                                    return fn_schema.error();
+                                }
+                                for (auto& entry : fn_schema.value()) {
+                                    auto out_type = entry.type;
+                                    if (!func_expr->result_alias().empty()) {
+                                        out_type.set_alias(func_expr->result_alias());
+                                    } else if (!out_type.has_alias()) {
+                                        out_type.set_alias(func_expr->name());
+                                    }
+                                    selected_schema.emplace_back(type_from_t{node->result_alias(), std::move(out_type)});
+                                }
+                                continue;
+                            }
+                            if (expr->group() != expression_group::scalar) {
+                                continue;
+                            }
+                            auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
+                            if (scalar_expr->type() == scalar_type::star_expand) {
+                                for (const auto& col : incoming_schema) {
+                                    selected_schema.emplace_back(col);
+                                }
+                                continue;
+                            }
+
+                            complex_logical_type out_type(logical_type::NA);
+                            if (scalar_expr->type() == scalar_type::get_field) {
+                                auto& key = scalar_expr->params().empty()
+                                                ? scalar_expr->key()
+                                                : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                out_type = incoming_schema[key.path()[0]].type;
+                            } else if (scalar_expr->type() == scalar_type::constant && !scalar_expr->params().empty() &&
+                                       std::holds_alternative<core::parameter_id_t>(scalar_expr->params().front())) {
+                                out_type =
+                                    parameters.parameters.at(std::get<core::parameter_id_t>(scalar_expr->params().front()))
+                                        .type();
+                            } else if (!scalar_expr->params().empty()) {
+                                out_type = scalar_expr->type() == scalar_type::case_expr
+                                               ? (scalar_expr->params().size() >= 2
+                                                      ? resolve_scalar_type(scalar_expr->params()[1], resolve_scalar_type)
+                                                      : complex_logical_type(logical_type::NA))
+                                               : complex_logical_type(arithmetic_result_type(
+                                                     resolve_scalar_type(scalar_expr->params()[0], resolve_scalar_type)
+                                                         .type(),
+                                                     scalar_expr->params().size() > 1
+                                                         ? resolve_scalar_type(scalar_expr->params()[1], resolve_scalar_type)
+                                                               .type()
+                                                         : resolve_scalar_type(scalar_expr->params()[0], resolve_scalar_type)
+                                                               .type(),
+                                                     impl::scalar_to_arith_op(scalar_expr->type())));
+                            }
+
+                            if (!scalar_expr->key().storage().empty()) {
+                                out_type.set_alias(std::string(scalar_expr->key().storage().back()));
+                            } else if (scalar_expr->type() == scalar_type::get_field) {
+                                auto& key = scalar_expr->params().empty()
+                                                ? scalar_expr->key()
+                                                : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                if (!key.storage().empty()) {
+                                    out_type.set_alias(std::string(key.storage().back()));
+                                }
+                            }
+                            selected_schema.emplace_back(type_from_t{node->result_alias(), std::move(out_type)});
+                        }
+                        // selected_schema is the fully-projected output schema for this
+                        // no-GROUP-BY SELECT (handles get_field, functions, constants,
+                        // arithmetic/case, and t.* expansion with correct column aliases).
+                        // Return it directly: the legacy node_select projection block
+                        // further below re-derives the schema by indexing the *incoming*
+                        // (pre-projection) schema with the SELECT keys' paths. Mutating
+                        // incoming_schema here used to feed that block a schema that had
+                        // already been narrowed to the projected columns, so those paths
+                        // (which index the original table schema) pointed at the wrong
+                        // column or out of bounds — collapsing the derived-table / CTE /
+                        // INSERT…SELECT / UNION-operand output schema (a regression
+                        // introduced when this richer projection block was added on top
+                        // of the legacy one during the merge). Falling through only when
+                        // selected_schema is empty preserves the legacy behaviour.
+                        if (!selected_schema.empty()) {
+                            return selected_schema;
                         }
                     } else {
                         // "SELECT *" / "SELECT t.*" — emit every column, including
@@ -1817,7 +2006,9 @@ namespace services::dispatcher {
                                         res_type = &res_type->child_type();
                                     }
                                 }
-                                result.emplace_back(type_from_t{node->result_alias(), *res_type});
+                                result.emplace_back(
+                                    type_from_t{impl::result_alias_for_projected_key(key, node->result_alias()),
+                                                *res_type});
                                 key_schema.emplace_back(result.back());
                             } else if (scalar_expr->type() == scalar_type::group_field) {
                                 // GROUP BY field: resolve key path and expose in output schema
@@ -1831,7 +2022,9 @@ namespace services::dispatcher {
                                 if (!key.storage().empty()) {
                                     out_type.set_alias(std::string(key.storage().back()));
                                 }
-                                result.emplace_back(type_from_t{node->result_alias(), out_type});
+                                result.emplace_back(
+                                    type_from_t{impl::result_alias_for_projected_key(key, node->result_alias()),
+                                                out_type});
                                 key_schema.emplace_back(result.back());
                             } else if (is_case_or_arithmetic(scalar_expr->type())) {
                                 // Try resolve against incoming_schema
@@ -2041,9 +2234,8 @@ namespace services::dispatcher {
                         }
                     }
 
-                    // Resolve node_select scalar expression key paths against the group output schema.
-                    // GROUP BY key columns are real columns addressable by name (key_schema).
-                    // Computed aggregate columns are internal artifacts — resolve positionally.
+                    // Resolve node_select scalar expression key paths against the group output schema:
+                    // both GROUP BY keys (which may still be table-qualified) and aggregate aliases.
                     if (node_select) {
                         size_t agg_cursor = 0;
                         for (auto& expr : node_select->expressions()) {
@@ -2057,7 +2249,7 @@ namespace services::dispatcher {
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
                                 if (key.path().empty()) {
-                                    auto res = impl::validate_key(resource, key, key_schema, key_schema, true);
+                                    auto res = impl::validate_key(resource, key, result, result, true);
                                     if (res.has_error()) {
                                         if (agg_cursor >= agg_result_positions.size()) {
                                             return res.convert_error<named_schema>();
@@ -2463,14 +2655,32 @@ namespace services::dispatcher {
                     incoming_schema = table_schema;
                     same_schema = true;
                 }
+                // The USING (DELETE) / FROM (UPDATE) table is a sibling resolve node,
+                // not a child, so it never reaches incoming_schema. Build its schema
+                // from table_oid_from() (catalog columns, right-stamped) so BOTH the
+                // join condition (node_match) and a joined RETURNING column resolve
+                // against it; target columns resolve against table_schema as before.
+                const auto from_oid = node->type() == node_type::update_t
+                                          ? reinterpret_cast<node_update_t*>(node)->table_oid_from()
+                                          : reinterpret_cast<node_delete_t*>(node)->table_oid_from();
+                named_schema from_schema(resource);
+                if (from_oid != components::catalog::INVALID_OID) {
+                    if (const auto* tbl_from = impl::tbl_md_for_oid(idx, from_oid)) {
+                        for (const auto& column : tbl_from->columns) {
+                            from_schema.emplace_back(
+                                type_from_t{tbl_from->name, column.type, components::expressions::side_t::right});
+                        }
+                    }
+                }
+                const bool has_join = !from_schema.empty();
                 if (node_match) {
                     auto node_match_res = impl::validate_schema(resource,
                                                                 idx,
                                                                 node_match,
                                                                 parameters,
                                                                 table_schema,
-                                                                incoming_schema,
-                                                                same_schema);
+                                                                has_join ? from_schema : incoming_schema,
+                                                                has_join ? false : same_schema);
                     if (node_match_res.has_error()) {
                         return node_match_res;
                     }
@@ -2497,26 +2707,10 @@ namespace services::dispatcher {
                                           ? &reinterpret_cast<node_update_t*>(node)->returning()
                                           : &reinterpret_cast<node_delete_t*>(node)->returning();
                     if (!returning->empty() && !table_schema.empty()) {
-                        // The USING/FROM table is a sibling resolve node, not a
-                        // child, so it never reaches incoming_schema. Build its
-                        // schema from table_oid_from() (the catalog columns) and use
-                        // it as the right side: a right-stamped RETURNING key (a
-                        // joined column) resolves against it, while target columns
-                        // resolve against table_schema as before.
-                        const auto from_oid = node->type() == node_type::update_t
-                                                  ? reinterpret_cast<node_update_t*>(node)->table_oid_from()
-                                                  : reinterpret_cast<node_delete_t*>(node)->table_oid_from();
-                        named_schema from_schema(resource);
-                        if (from_oid != components::catalog::INVALID_OID) {
-                            if (const auto* tbl_from = impl::tbl_md_for_oid(idx, from_oid)) {
-                                for (const auto& column : tbl_from->columns) {
-                                    from_schema.emplace_back(type_from_t{tbl_from->name,
-                                                                         column.type,
-                                                                         components::expressions::side_t::right});
-                                }
-                            }
-                        }
-                        const bool has_join = !from_schema.empty();
+                        // from_schema / has_join were built above (shared with the
+                        // join-condition validation): a right-stamped RETURNING key (a
+                        // joined column) resolves against the USING/FROM table, while
+                        // target columns resolve against table_schema.
                         auto ret_err = impl::resolve_returning_columns(resource,
                                                                        returning,
                                                                        table_schema,
@@ -2691,6 +2885,19 @@ namespace services::dispatcher {
                 assert(false);
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"encountered an unknown state during plan validation", resource});
+        }
+
+        if (!node->output_column_aliases().empty()) {
+            if (node->output_column_aliases().size() != result.size()) {
+                return core::error_t(core::error_code_t::schema_error,
+                                     std::pmr::string{"derived table column alias count does not match output column "
+                                                      "count for alias '" +
+                                                          node->result_alias() + "'",
+                                                      resource});
+            }
+            for (size_t i = 0; i < result.size(); ++i) {
+                result[i].type.set_alias(std::string{node->output_column_aliases()[i]});
+            }
         }
 
         return result;

@@ -14,6 +14,8 @@
 //   pg_class      — no `reltuples/relpages` : optimizer reads counts live from data_table_t.
 //                 — no `reltype`             : composite-row types not implemented.
 //                 — adds `relstoragemode`    : 'd'/'m' for DISK/IN_MEMORY (otterbrix-specific).
+//                 — adds `relstorageformat`  : exact CREATE TABLE storage contract
+//                                              (in_memory/disk_auto/disk_columnar/disk_pax).
 //                 — relkind 'g' = computing : doc proposed 'c', but 'c' collides with
 //                                              PG's "composite type" relkind. 'g' aligns
 //                                              with PG GENERATED terminology.
@@ -86,6 +88,9 @@ namespace components::catalog {
                 str_col(),
                 true); // 'r' relation, 'i' index, 'S' sequence, 'v' view, 'm' macro, 'c' composite type, 'g' generated/computing
             c.emplace_back("relstoragemode", str_col(), true); // 'd' DISK, 'm' IN_MEMORY (otterbrix-specific)
+            c.emplace_back("relstorageformat",
+                           str_col(),
+                           false); // nullable; storage format (see header)
             return c;
         }
 

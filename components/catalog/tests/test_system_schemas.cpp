@@ -33,7 +33,7 @@ TEST_CASE("catalog::system_schemas::find_system_table") {
     REQUIRE(find_system_table("") == nullptr);
 }
 
-// 4. pg_class describes itself — has relname / relnamespace / relkind columns.
+// 4. pg_class describes itself — has relname / relnamespace / relkind plus storage metadata columns.
 TEST_CASE("catalog::system_schemas::pg_class_self_describable") {
     const auto* def = find_system_table("pg_class");
     REQUIRE(def != nullptr);
@@ -45,6 +45,8 @@ TEST_CASE("catalog::system_schemas::pg_class_self_describable") {
     REQUIRE(col_names.count("relname") == 1);
     REQUIRE(col_names.count("relnamespace") == 1);
     REQUIRE(col_names.count("relkind") == 1);
+    REQUIRE(col_names.count("relstoragemode") == 1);
+    REQUIRE(col_names.count("relstorageformat") == 1);
 }
 
 // 5. pg_attribute has the columns required for column lifecycle.

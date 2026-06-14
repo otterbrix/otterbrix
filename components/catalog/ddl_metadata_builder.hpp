@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory_resource>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace components::catalog {
@@ -31,7 +32,8 @@ namespace components::catalog {
                                                            bool is_disk_storage,
                                                            oid_t namespace_oid,
                                                            oid_batch_t& oid_batch,
-                                                           char relkind = relkind::regular);
+                                                           char relkind = relkind::regular,
+                                                           std::string_view storage_format_name = {});
 
     // Writes 1 row → pg_namespace (oid, nspname).
     // oid_batch must hold at least 1 OID.

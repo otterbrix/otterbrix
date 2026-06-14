@@ -5,6 +5,12 @@
 #include <stdexcept>
 
 namespace components::table::storage {
+    namespace {
+        template<typename T>
+        void store_unaligned(std::byte* ptr, const T& value) {
+            std::memcpy(ptr, &value, sizeof(T));
+        }
+    } // namespace
 
     metadata_writer_t::metadata_writer_t(metadata_manager_t& manager)
         : manager_(manager)
@@ -14,10 +20,8 @@ namespace components::table::storage {
         current_data_ = manager_.pin(current_pointer_);
 
         // initialize sub-block header: next_ptr = INVALID, next_offset = 0
-        auto* next_ptr = reinterpret_cast<uint64_t*>(current_data_);
-        *next_ptr = INVALID_INDEX;
-        auto* next_off = reinterpret_cast<uint32_t*>(current_data_ + sizeof(uint64_t));
-        *next_off = 0;
+        store_unaligned<uint64_t>(current_data_, INVALID_INDEX);
+        store_unaligned<uint32_t>(current_data_ + sizeof(uint64_t), 0);
 
         current_offset_ = SUB_BLOCK_HEADER_SIZE;
     }
@@ -32,16 +36,12 @@ namespace components::table::storage {
         auto* new_data = manager_.pin(new_pointer);
 
         // initialize new sub-block header
-        auto* new_next_ptr = reinterpret_cast<uint64_t*>(new_data);
-        *new_next_ptr = INVALID_INDEX;
-        auto* new_next_off = reinterpret_cast<uint32_t*>(new_data + sizeof(uint64_t));
-        *new_next_off = 0;
+        store_unaligned<uint64_t>(new_data, INVALID_INDEX);
+        store_unaligned<uint32_t>(new_data + sizeof(uint64_t), 0);
 
         // update current sub-block header to point to new one
-        auto* curr_next_ptr = reinterpret_cast<uint64_t*>(current_data_);
-        *curr_next_ptr = new_pointer.block_pointer;
-        auto* curr_next_off = reinterpret_cast<uint32_t*>(current_data_ + sizeof(uint64_t));
-        *curr_next_off = new_pointer.offset;
+        store_unaligned<uint64_t>(current_data_, new_pointer.block_pointer);
+        store_unaligned<uint32_t>(current_data_ + sizeof(uint64_t), new_pointer.offset);
 
         current_pointer_ = new_pointer;
         current_data_ = new_data;

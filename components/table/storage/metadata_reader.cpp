@@ -5,6 +5,14 @@
 #include <stdexcept>
 
 namespace components::table::storage {
+    namespace {
+        template<typename T>
+        T load_unaligned(const std::byte* ptr) {
+            T value;
+            std::memcpy(&value, ptr, sizeof(T));
+            return value;
+        }
+    } // namespace
 
     metadata_reader_t::metadata_reader_t(metadata_manager_t& manager, meta_block_pointer_t start)
         : manager_(manager)
@@ -19,11 +27,8 @@ namespace components::table::storage {
     }
 
     void metadata_reader_t::follow_chain() {
-        auto* next_ptr = reinterpret_cast<uint64_t*>(current_data_);
-        auto* next_off = reinterpret_cast<uint32_t*>(current_data_ + sizeof(uint64_t));
-
-        uint64_t next_bp = *next_ptr;
-        uint32_t next_offset = *next_off;
+        const auto next_bp = load_unaligned<uint64_t>(current_data_);
+        const auto next_offset = load_unaligned<uint32_t>(current_data_ + sizeof(uint64_t));
 
         if (next_bp == INVALID_INDEX) {
             finished_ = true;

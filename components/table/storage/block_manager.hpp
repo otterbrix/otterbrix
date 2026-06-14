@@ -11,6 +11,15 @@ namespace components::table::storage {
     class buffer_handle_t;
     class buffer_manager_t;
 
+    enum class row_group_layout_policy : uint8_t
+    {
+        AUTO = 0,
+        COLUMNAR_ONLY = 1,
+        PAX_ONLY = 2
+    };
+
+    inline constexpr uint16_t DEFAULT_PAX_ROWS_PER_PAGE = 256;
+
     class block_manager_t {
     public:
         block_manager_t() = delete;
@@ -49,6 +58,15 @@ namespace components::table::storage {
 
         uint64_t block_allocation_size() const { return block_alloc_size_; }
         uint64_t block_size() const { return block_alloc_size_ - DEFAULT_BLOCK_HEADER_SIZE; }
+        row_group_layout_policy layout_policy() const { return layout_policy_; }
+        void set_layout_policy(row_group_layout_policy policy) { layout_policy_ = policy; }
+        uint16_t pax_rows_per_page() const { return pax_rows_per_page_; }
+        void set_pax_rows_per_page(uint16_t rows_per_page) {
+            if (rows_per_page == 0) {
+                throw std::invalid_argument("PAX rows per page must be greater than zero");
+            }
+            pax_rows_per_page_ = rows_per_page;
+        }
         void set_block_allocation_size(uint64_t block_alloc_size) {
             if (block_alloc_size_ == INVALID_INDEX) {
                 throw std::runtime_error("the block allocation size must be set once");
@@ -60,6 +78,8 @@ namespace components::table::storage {
         std::mutex blocks_lock_;
         std::unordered_map<uint64_t, std::weak_ptr<block_handle_t>> blocks_;
         uint64_t block_alloc_size_;
+        row_group_layout_policy layout_policy_{row_group_layout_policy::AUTO};
+        uint16_t pax_rows_per_page_{DEFAULT_PAX_ROWS_PER_PAGE};
     };
 
 } // namespace components::table::storage

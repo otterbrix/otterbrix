@@ -51,6 +51,8 @@ namespace components::table::storage {
     }
 
     bool eviction_queue_t::add_to_eviction_queue(buffer_eviction_node_t&& node) {
+        // enqueue() pushes onto the lock-free queue and bumps approx_q_size_ atomically,
+        // so concurrent unpinning/eviction is already safe without taking purge_lock_ here.
         enqueue(std::move(node));
         return ++evict_queue_insertions_ % INSERT_INTERVAL == 0;
     }
@@ -138,8 +140,9 @@ namespace components::table::storage {
         for (;;) {
             buffer_eviction_node_t node;
             if (!try_dequeue(node)) {
-                // retry under purge_lock_: a concurrent purge may briefly
-                // hold alive nodes outside the queue (in purge_nodes_)
+                // Lock-free fast path was empty; retry under purge_lock_ so the
+                // pop is serialized against purge() (a concurrent purge may briefly
+                // hold alive nodes outside the queue, in purge_nodes_).
                 if (!try_dequeue_with_lock(node)) {
                     return;
                 }

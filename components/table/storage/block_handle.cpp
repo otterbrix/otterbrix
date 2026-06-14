@@ -198,6 +198,14 @@ namespace components::table::storage {
         if (readers_ > 0) {
             return false;
         }
+        // Transient blocks (block_id_ >= MAXIMUM_BLOCK) have no backing store, so
+        // unloading discards their data. BLOCK-condition ones hold live, unrecoverable
+        // table data; pin them until checkpoint persists them. EVICTION-condition ones
+        // are disposable and must stay evictable to avoid exhausting the buffer pool.
+        if (block_id_ >= MAXIMUM_BLOCK &&
+            destroy_condition_.load() == destroy_buffer_condition::BLOCK) {
+            return false;
+        }
         return true;
     }
 

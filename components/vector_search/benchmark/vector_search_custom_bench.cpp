@@ -71,7 +71,7 @@ namespace {
             std::size_t batch_size = std::min<std::size_t>(100, count - i);
             for (std::size_t j = 0; j < batch_size; ++j) {
                 auto vec = generate_random_vector(dim, rng);
-                int category = (rng() % 100) + 1;
+                int category = static_cast<int>(rng() % 100) + 1;
                 query << "(" << (i + j) << ", " << category << ", " << vector_to_string(vec) << ")";
                 if (j + 1 < batch_size) query << ", ";
             }

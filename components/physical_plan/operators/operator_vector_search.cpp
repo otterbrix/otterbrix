@@ -1,6 +1,7 @@
 #include "operator_vector_search.hpp"
 
 #include <cmath>
+#include <cstdint>
 
 #include <components/physical_plan/operators/scan/full_scan.hpp>
 #include <components/index/index_engine.hpp>

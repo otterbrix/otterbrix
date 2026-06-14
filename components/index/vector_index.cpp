@@ -1,6 +1,7 @@
 #include "vector_index.hpp"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace components::index {
 

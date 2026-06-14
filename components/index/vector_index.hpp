@@ -6,6 +6,7 @@
 #include <vector_search/distance_metrics.hpp>
 #include <vector_search/hnsw_index.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>

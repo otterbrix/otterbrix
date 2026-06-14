@@ -4,6 +4,7 @@
 #include <vector_search/distance_metrics.hpp>
 
 #include <cctype>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>

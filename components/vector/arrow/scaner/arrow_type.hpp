@@ -136,7 +136,9 @@ namespace components::vector::arrow {
 
         std::shared_ptr<arrow_array_wrapper_t> owned_data;
         std::unordered_map<size_t, std::unique_ptr<arrow_array_scan_state>> children;
-        std::unique_ptr<ArrowArray> arrow_dictionary = nullptr;
+        // Non-owning cache key: points into the parent ArrowArray (released via owned_data),
+        // so it must NOT own/free it. Only compared in cache_outdated().
+        ArrowArray* arrow_dictionary = nullptr;
         std::unique_ptr<vector_t> dictionary;
         arrow_run_end_encoding_state run_end_encoding;
 

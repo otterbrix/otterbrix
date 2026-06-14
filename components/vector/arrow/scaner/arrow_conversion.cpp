@@ -1504,6 +1504,16 @@ namespace components::vector::arrow::scaner {
         }
         assert(arrow_type.has_dictionary());
         const bool has_nulls = can_contain_null(array, parent_mask);
+        // The null-aware dictionary index/sentinel decode mis-places nulls (pre-existing,
+        // tracked separately). Report it via the error channel instead of returning wrong data;
+        // null-free dictionary/categorical columns decode correctly. (pandas categoricals never
+        // reach here — they are expanded to their values before the Arrow export.)
+        if (has_nulls) {
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string("arrow: dictionary-encoded (categorical/enum) columns with "
+                                                  "null values are not yet supported",
+                                                  vector.resource()));
+        }
         if (array_state.cache_outdated(array.dictionary)) {
             auto base_vector = std::make_unique<vector_t>(vector.resource(),
                                                           vector.type(),

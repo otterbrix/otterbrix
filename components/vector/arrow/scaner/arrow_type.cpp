@@ -532,8 +532,10 @@ namespace components::vector::arrow {
     void arrow_array_scan_state::add_dictionary(std::unique_ptr<vector_t> dictionary, ArrowArray* arrow_dict) {
         this->dictionary = std::move(dictionary);
         assert(owned_data);
-        arrow_dictionary = std::unique_ptr<ArrowArray>{arrow_dict};
-        dictionary->get_buffer()->set_auxiliary(std::make_unique<arrow_auxiliary_data_t>(owned_data));
+        // Non-owning: arrow_dict points into the parent ArrowArray (owned by owned_data).
+        arrow_dictionary = arrow_dict;
+        // NB: the `dictionary` parameter was moved-from above; use the member.
+        this->dictionary->get_buffer()->set_auxiliary(std::make_unique<arrow_auxiliary_data_t>(owned_data));
     }
 
     bool arrow_array_scan_state::has_dictionary() const { return dictionary != nullptr; }
@@ -542,7 +544,7 @@ namespace components::vector::arrow {
         if (!this->dictionary) {
             return true;
         }
-        if (dictionary == arrow_dictionary.get()) {
+        if (dictionary == arrow_dictionary) {
             return false;
         }
         return true;

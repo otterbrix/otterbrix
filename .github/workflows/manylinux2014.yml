@@ -69,6 +69,7 @@ jobs:
         run: |
           conan profile detect --force
           conan remote add otterbrix http://conan.otterbrix.com
+          conan export ./conan/hnswlib
 
       - name: Download and Install conan dependencies
         run: |

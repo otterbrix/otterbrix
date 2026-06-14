@@ -32,6 +32,7 @@ jobs:
             pip install conan==2.20.0 pytest==6.2.5
             conan profile detect --force
             conan remote add otterbrix http://conan.otterbrix.com --insert 0
+            conan export ./conan/hnswlib
             
             mkdir build
             pwd

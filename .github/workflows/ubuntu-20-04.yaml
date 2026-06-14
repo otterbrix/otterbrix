@@ -26,6 +26,7 @@ jobs:
           pip install conan==2.20.0
           conan profile detect --force
           conan remote add otterbrix http://conan.otterbrix.com
+          conan export ./conan/hnswlib
 
       - name: download dependencies
         run: |

@@ -131,6 +131,8 @@ TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
 }
 
 TEST_CASE("services::index::disk_hash_table::truncated_collision_requires_loader") {
+    // enc_a/enc_b collide only for seed=0 (plain FNV-1a); table uses random seed by default.
+    env_var_guard_t seed_guard("OTTERBRIX_DISK_HASH_SEED", "0");
     auto resource = std::pmr::synchronized_pool_resource();
     const auto path = mk_path("disk_hash_table_truncated_collision.data");
     std::filesystem::remove(path);

@@ -3,25 +3,42 @@
 #include <components/index/logical_value_binary_codec.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <random>
 #include <stdexcept>
 
 namespace services::index {
     namespace codec = components::index::codec;
 
     namespace {
-        uint32_t fnv1a_32(std::string_view s) {
+        uint32_t fnv1a_32_seeded(std::string_view s, uint32_t seed) {
             constexpr uint32_t offset = 2166136261u;
             constexpr uint32_t prime = 16777619u;
-            uint32_t h = offset;
+            uint32_t h = offset ^ seed;
             for (char ch : s) {
                 const auto c = static_cast<uint8_t>(ch);
                 h ^= c;
                 h *= prime;
             }
             return h;
+        }
+
+        uint32_t generate_hash_seed() {
+#ifdef DEV_MODE
+            if (const char* v = std::getenv("OTTERBRIX_DISK_HASH_SEED"); v != nullptr && *v != '\0') {
+                return static_cast<uint32_t>(std::strtoul(v, nullptr, 0));
+            }
+#endif
+            std::random_device rd;
+            std::array<uint32_t, 4> buf{{rd(), rd(), rd(), rd()}};
+            uint32_t seed = 0x9E3779B9u;
+            for (auto v : buf) {
+                seed ^= v + 0x9e3779b9u + (seed << 6U) + (seed >> 2U);
+            }
+            return seed == 0 ? 0xA5A5A5A5u : seed;
         }
 
         constexpr uint64_t overflow_page_id_base = 1ULL << 40;
@@ -398,6 +415,23 @@ namespace services::index {
         sync_files();
     }
 
+    void disk_hash_table_t::clear() {
+        std::unique_lock lock(mutex_);
+        file_.reset();
+        ovf_file_.reset();
+        std::error_code ec;
+        std::filesystem::remove(file_path_, ec);
+        std::filesystem::remove(overflow_file_path_, ec);
+        entry_count_ = 0;
+        rehash_in_progress_ = false;
+        suppress_auto_rehash_.store(false);
+        const uint32_t bucket_count =
+            header_.bucket_count_value > 0 ? header_.bucket_count_value : default_bucket_count;
+        header_ = header_t{};
+        header_.bucket_count_value = bucket_count;
+        open_or_create();
+    }
+
     void disk_hash_table_t::sync_files() {
         if (file_) {
             file_->sync();
@@ -437,6 +471,7 @@ namespace services::index {
     void disk_hash_table_t::initialize_new_file() {
         header_.page_size_value = page_size;
         header_.next_overflow_page = overflow_page_id_base;
+        header_.hash_seed_value = generate_hash_seed();
         initialize_linear_state_from_bucket_count();
 
         open_overflow_file();
@@ -462,6 +497,7 @@ namespace services::index {
         header_.next_overflow_page = codec::read_le_ptr<uint64_t>(hdr.data() + 20);
         header_.level_value = codec::read_le_ptr<uint32_t>(hdr.data() + 28);
         header_.split_bucket_value = codec::read_le_ptr<uint32_t>(hdr.data() + 32);
+        header_.hash_seed_value = hdr.size() >= 40 ? codec::read_le_ptr<uint32_t>(hdr.data() + 36) : 0;
         if (header_.page_size_value != page_size ||
             header_.bucket_count_value == 0) {
             throw std::runtime_error("disk_hash_table: incompatible header");
@@ -494,7 +530,9 @@ namespace services::index {
 
     uint64_t disk_hash_table_t::bucket_primary_page_id(uint32_t bucket_id) const { return 1 + bucket_id; }
 
-    uint32_t disk_hash_table_t::hash_key(std::string_view key) { return fnv1a_32(key); }
+    uint32_t disk_hash_table_t::hash_key(std::string_view key) const {
+        return fnv1a_32_seeded(key, header_.hash_seed_value);
+    }
 
     uint32_t disk_hash_table_t::bucket_id_for_hash(uint32_t key_hash) const {
         if (header_.bucket_count_value == 0) {
@@ -785,6 +823,7 @@ namespace services::index {
         codec::write_le_ptr<uint64_t>(hdr.data() + 20, header_.next_overflow_page);
         codec::write_le_ptr<uint32_t>(hdr.data() + 28, header_.level_value);
         codec::write_le_ptr<uint32_t>(hdr.data() + 32, header_.split_bucket_value);
+        codec::write_le_ptr<uint32_t>(hdr.data() + 36, header_.hash_seed_value);
         if (!file_->write(hdr.data(), page_size, 0)) {
             throw std::runtime_error("disk_hash_table: failed to write header page");
         }

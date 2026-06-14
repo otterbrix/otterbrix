@@ -130,6 +130,52 @@ struct setup_data_t {
     std::string database;
 };
 
+void parse_setup_line(const std::string& trimmed, setup_data_t& data, bool collect_sql, std::string& sql_lines) {
+    // Parse @database directive
+    if (trimmed.starts_with("-- @database ")) {
+        data.database = trim(trimmed.substr(13)); // strlen("-- @database ")
+        return;
+    }
+
+    // Parse @load_csv directives from comments
+    if (trimmed.starts_with("-- @load_csv ")) {
+        auto args = trimmed.substr(13); // strlen("-- @load_csv ")
+        std::istringstream iss(args);
+        sql_csv_entry_t entry;
+        iss >> entry.path >> entry.table;
+        std::string delim;
+        if (iss >> delim && !delim.empty()) {
+            entry.delimiter = delim[0];
+        }
+        if (!entry.path.empty() && !entry.table.empty()) {
+            data.csv_entries.push_back(std::move(entry));
+        }
+        return;
+    }
+
+    if (collect_sql) {
+        sql_lines += trimmed + "\n";
+    }
+}
+
+setup_data_t parse_setup_content(const std::string& content, bool collect_sql) {
+    setup_data_t data;
+    std::string sql_lines;
+
+    std::istringstream input(content);
+    std::string line;
+    while (std::getline(input, line)) {
+        parse_setup_line(trim(line), data, collect_sql, sql_lines);
+    }
+
+    if (collect_sql) {
+        data.sql = strip_comments_and_directives(sql_lines);
+        data.sql = trim(data.sql);
+    }
+
+    return data;
+}
+
 setup_data_t parse_setup_file(const std::filesystem::path& path) {
     setup_data_t data;
 
@@ -138,42 +184,9 @@ setup_data_t parse_setup_file(const std::filesystem::path& path) {
         return data;
     }
 
-    std::string line;
-    std::string sql_lines;
-
-    while (std::getline(file, line)) {
-        auto trimmed = trim(line);
-
-        // Parse @database directive
-        if (trimmed.starts_with("-- @database ")) {
-            data.database = trim(trimmed.substr(13)); // strlen("-- @database ")
-            continue;
-        }
-
-        // Parse @load_csv directives from comments
-        if (trimmed.starts_with("-- @load_csv ")) {
-            auto args = trimmed.substr(13); // strlen("-- @load_csv ")
-            std::istringstream iss(args);
-            sql_csv_entry_t entry;
-            iss >> entry.path >> entry.table;
-            std::string delim;
-            if (iss >> delim && !delim.empty()) {
-                entry.delimiter = delim[0];
-            }
-            if (!entry.path.empty() && !entry.table.empty()) {
-                data.csv_entries.push_back(std::move(entry));
-            }
-            continue;
-        }
-
-        sql_lines += line + "\n";
-    }
-
-    // Strip comments from the SQL portion
-    data.sql = strip_comments_and_directives(sql_lines);
-    data.sql = trim(data.sql);
-
-    return data;
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    return parse_setup_content(ss.str(), true);
 }
 
 // --- CSV helpers (same logic as interpreted_benchmark.cpp) ---
@@ -439,7 +452,7 @@ void sql_benchmark_t::load(benchmark_state_t& state) {
         }
     }
 
-    if (!setup_sql_.empty()) {
+    if (!disable_setup_ && !setup_sql_.empty()) {
         execute_sql_block(state, qualify_sql(setup_sql_));
         if (state.failed) return;
     }
@@ -479,6 +492,8 @@ sql_benchmark_t::load_from_file(const std::filesystem::path& path, const std::fi
     auto cleaned = strip_comments_and_directives(raw);
     auto queries = split_queries(cleaned);
     auto expected_rows = parse_expected_rows(raw);
+    // Append/incremental SQL files carry their own @load_csv directives in comments.
+    auto file_directives = parse_setup_content(raw, false);
 
     if (queries.empty()) {
         throw std::runtime_error("No SQL queries found in: " + path.string());
@@ -491,6 +506,9 @@ sql_benchmark_t::load_from_file(const std::filesystem::path& path, const std::fi
         setup = parse_setup_file(setup_path);
     }
 
+    auto csv_entries = !file_directives.csv_entries.empty() ? file_directives.csv_entries : setup.csv_entries;
+    auto database = !file_directives.database.empty() ? file_directives.database : setup.database;
+
     auto benchmark_dir = path.parent_path();
 
     std::vector<std::unique_ptr<sql_benchmark_t>> result;
@@ -500,15 +518,15 @@ sql_benchmark_t::load_from_file(const std::filesystem::path& path, const std::fi
     if (queries.size() == 1) {
         result.push_back(std::unique_ptr<sql_benchmark_t>(
             new sql_benchmark_t(base_name, group, std::move(queries[0]),
-                                setup.sql, setup.csv_entries, benchmark_dir,
-                                setup.database, expected_rows)));
+                                setup.sql, std::move(csv_entries), benchmark_dir,
+                                database, expected_rows)));
     } else {
         for (size_t i = 0; i < queries.size(); ++i) {
             auto name = base_name + "/q" + std::to_string(i + 1);
             result.push_back(std::unique_ptr<sql_benchmark_t>(
                 new sql_benchmark_t(name, group, std::move(queries[i]),
-                                    setup.sql, setup.csv_entries, benchmark_dir,
-                                    setup.database, expected_rows)));
+                                    setup.sql, csv_entries, benchmark_dir,
+                                    database, expected_rows)));
         }
     }
 

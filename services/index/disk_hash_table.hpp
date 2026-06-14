@@ -51,6 +51,9 @@ namespace services::index {
         uint32_t bucket_count() const;
         double load_factor() const;
         void sync() override;
+        // Wipe all buckets in place. Keeps the object identity so callers holding
+        // a shared disk_hash_table_ptr (e.g. disk_hash_single_field_index) stay in sync.
+        void clear();
 
     private:
         struct slot_t {

@@ -415,6 +415,23 @@ namespace services::index {
         sync_files();
     }
 
+    void disk_hash_table_t::clear() {
+        std::unique_lock lock(mutex_);
+        file_.reset();
+        ovf_file_.reset();
+        std::error_code ec;
+        std::filesystem::remove(file_path_, ec);
+        std::filesystem::remove(overflow_file_path_, ec);
+        entry_count_ = 0;
+        rehash_in_progress_ = false;
+        suppress_auto_rehash_.store(false);
+        const uint32_t bucket_count =
+            header_.bucket_count_value > 0 ? header_.bucket_count_value : default_bucket_count;
+        header_ = header_t{};
+        header_.bucket_count_value = bucket_count;
+        open_or_create();
+    }
+
     void disk_hash_table_t::sync_files() {
         if (file_) {
             file_->sync();

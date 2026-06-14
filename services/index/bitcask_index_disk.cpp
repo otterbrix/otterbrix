@@ -1152,11 +1152,11 @@ namespace services::index {
         // Close every open handle before unlinking so stale inodes are not held.
         file_.reset();
         txn_log_file_.reset();
-        hash_index_.reset();
 
         // Remove all on-disk bitcask artifacts: data segments, the CURRENT
-        // pointer, the txn log and its applied-offset sidecar, and the shared
-        // hash_index.bin (the buckets the engine-side disk_hash facade reads).
+        // pointer, the txn log and its applied-offset sidecar. The shared
+        // hash_index.bin is cleared in place when hash_index_ is present so
+        // disk_hash_single_field_index keeps reading the same storage object.
         // std::error_code overloads — no exceptions on a -fno-exceptions build.
         for (const auto& segment : collect_segments()) {
             remove_file(fs_, segment.path);
@@ -1167,7 +1167,6 @@ namespace services::index {
         }
         remove_file(fs_, txn_log_file_path());
         remove_file(fs_, txn_applied_file_path());
-        remove_file(fs_, hash_index_file_path_);
         reset_flush_state();
         next_timestamp_ = 0;
         next_segment_id_.store(1);
@@ -1180,9 +1179,15 @@ namespace services::index {
         // directory. A fresh executor replaces the stopped one.
         task_executor_ = std::make_unique<bitcask_task_executor_t>();
         initialize_storage();
-        hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
-                                                                 disk_hash_table_t::default_bucket_count,
-                                                                 resource_));
+        if (hash_index_) {
+            hash_index_->clear();
+        } else {
+            remove_file(fs_, hash_index_file_path_);
+            hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
+                                                                     disk_hash_table_t::default_bucket_count,
+                                                                     resource_));
+        }
+        install_hash_key_loader();
         load_from_disk();
         open_active_segment();
         // committed_txn_ids_ is intentionally left as-is: the txn log it gated

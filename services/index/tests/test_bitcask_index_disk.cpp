@@ -12,6 +12,7 @@
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <services/index/disk_hash_table.hpp>
+#include <components/index/logical_value_binary_codec.hpp>
 #include <set>
 #include <thread>
 #include <unordered_set>
@@ -1199,4 +1200,45 @@ TEST_CASE("services::index::bitcask_index_disk::fresh_instance_with_empty_set_wo
     REQUIRE(second.size() == 1);
     REQUIRE(second.front() == 82);
     REQUIRE(index.find(logical_value_t(&resource, 9999l)).empty());
+}
+
+TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage") {
+    using components::index::codec;
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+    using services::index::disk_hash_table_t;
+
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_clear_shared_hash"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    auto shared = boost::intrusive_ptr(new disk_hash_table_t(path / "hash_index.bin",
+                                                             disk_hash_table_t::default_bucket_count,
+                                                             &resource));
+    const auto* shared_ptr = shared.get();
+
+    bitcask_index_disk_t index(path,
+                               &resource,
+                               test_flush_threshold,
+                               test_segment_record_limit,
+                               std::pmr::set<std::uint64_t>{},
+                               std::move(shared));
+
+    index.insert(logical_value_t(&resource, int64_t(987)), 986);
+    const auto encoded =
+        codec::encode_disk_hash_key(logical_value_t(&resource, int64_t(987))
+                                        .cast_as(complex_logical_type(logical_type::BIGINT), {}));
+    REQUIRE(shared_ptr->get(encoded, false).has_value());
+
+    index.clear();
+
+    REQUIRE_FALSE(shared_ptr->get(encoded, false).has_value());
+
+    index.insert(logical_value_t(&resource, int64_t(987)), 986);
+    REQUIRE(shared_ptr->get(encoded, false).has_value());
+    const auto rows = index.find(logical_value_t(&resource, int64_t(987)));
+    REQUIRE(rows.size() == 1);
+    REQUIRE(rows.front() == 986);
 }

@@ -9,7 +9,7 @@ namespace otterbrix {
 
     namespace util {
 
-        std::string LogicalValueToString(const components::types::logical_value_t& value) {
+        std::string logical_value_to_string(const components::types::logical_value_t& value) {
             switch (value.type().to_physical_type()) {
                 case physical_type::NA:
                     return "NULL";
@@ -43,7 +43,7 @@ namespace otterbrix {
             }
         }
 
-        std::string ParseNumericToString(absl::int128 num) {
+        std::string parse_numeric_to_string(absl::int128 num) {
             std::string result;
             std::string sign;
             if (num < 0) {

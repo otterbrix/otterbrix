@@ -1,11 +1,11 @@
 #pragma once
 
 #include "pybind11/pybind_wrapper.hpp"
-#include <core/typedefs.hpp>
+#include <common/typedefs.hpp>
 
 namespace otterbrix {
 
-struct PyUtil {
+struct py_util_t {
 	static const char *PyUnicodeData(py::handle &obj) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wold-style-cast"

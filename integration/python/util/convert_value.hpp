@@ -6,7 +6,7 @@
 #include <components/cursor/cursor.hpp>
 #include <components/vector/data_chunk.hpp>
 
-#include <core/typedefs.hpp>
+#include <common/typedefs.hpp>
 #include <memory_resource>
 #include <string>
 #include <vector>
@@ -14,14 +14,14 @@
 namespace otterbrix {
 	namespace util {
 
-		py::object LogicalValueToPython(const components::types::logical_value_t& value,
+		py::object logical_value_to_python(const components::types::logical_value_t& value,
 				const components::types::complex_logical_type& type);
 
-		py::dict CursorRowToPythonDict(components::cursor::cursor_t_ptr& cursor,
+		py::dict cursor_row_to_python_dict(components::cursor::cursor_t_ptr& cursor,
 				uint64_t row_idx,
 				const std::vector<components::table::column_definition_t>& col_defs);
 
-		py::dict DataChunkRowToPythonDict(const components::vector::data_chunk_t& chunk,
+		py::dict data_chunk_row_to_python_dict(const components::vector::data_chunk_t& chunk,
 				uint64_t row_idx,
 				const std::vector<components::table::column_definition_t>& col_defs);
 	}

@@ -16,7 +16,7 @@ namespace otterbrix {
 
 using components::types::complex_logical_type;
 
-core::error_t NumpyBind::Bind(std::pmr::memory_resource *resource, py::handle df, std::vector<PandasColumnBindData> &bind_columns,
+core::error_t numpy_bind_t::bind(std::pmr::memory_resource *resource, py::handle df, std::vector<pandas_column_bind_data_t> &bind_columns,
                      std::vector<complex_logical_type> &return_types, std::vector<std::string> &names,
                      const configuration::config_pandas &cfg) {
 
@@ -36,10 +36,10 @@ core::error_t NumpyBind::Bind(std::pmr::memory_resource *resource, py::handle df
 	}
 	for (idx_t col_idx = 0; col_idx < py::len(df_columns); col_idx++) {
 		complex_logical_type otterbrix_col_type;
-		PandasColumnBindData bind_data;
+		pandas_column_bind_data_t bind_data;
 
 		names.emplace_back(py::str(df_columns[col_idx]));
-		auto numpy_type = ConvertNumpyType(resource, df_types[col_idx]);
+		auto numpy_type = convert_numpy_type(resource, df_types[col_idx]);
 		if (numpy_type.has_error()) {
 			return numpy_type.error();
 		}
@@ -47,26 +47,26 @@ core::error_t NumpyBind::Bind(std::pmr::memory_resource *resource, py::handle df
 
 		auto column = get_fun(df_columns[col_idx]);
 
-		if (bind_data.numpy_type.type == NumpyNullableType::FLOAT_16) {
-			bind_data.pandas_col = std::make_unique<PandasNumpyColumn>(py::array(column.attr("astype")("float32")));
-			bind_data.numpy_type.type = NumpyNullableType::FLOAT_32;
+		if (bind_data.numpy_type.type == numpy_nullable_type_t::FLOAT_16) {
+			bind_data.pandas_col = std::make_unique<pandas_numpy_column_t>(py::array(column.attr("astype")("float32")));
+			bind_data.numpy_type.type = numpy_nullable_type_t::FLOAT_32;
 		} else {
-			bind_data.pandas_col = std::make_unique<PandasNumpyColumn>(column);
+			bind_data.pandas_col = std::make_unique<pandas_numpy_column_t>(column);
 		}
-		auto col_type = NumpyToLogicalType(resource, bind_data.numpy_type);
+		auto col_type = numpy_to_logical_type(resource, bind_data.numpy_type);
 		if (col_type.has_error()) {
 			return col_type.error();
 		}
 		otterbrix_col_type = col_type.value();
 
-		if (bind_data.numpy_type.type == NumpyNullableType::OBJECT) {
-			PandasAnalyzer analyzer(resource, cfg);
-			auto analyzed = analyzer.Analyze(get_fun(df_columns[col_idx]));
+		if (bind_data.numpy_type.type == numpy_nullable_type_t::OBJECT) {
+			pandas_analyzer_t analyzer(resource, cfg);
+			auto analyzed = analyzer.analyze(get_fun(df_columns[col_idx]));
 			if (analyzed.has_error()) {
 				return analyzed.error();
 			}
 			if (analyzed.value()) {
-				otterbrix_col_type = analyzer.AnalyzedType();
+				otterbrix_col_type = analyzer.analyzed_type();
 			}
 		}
 

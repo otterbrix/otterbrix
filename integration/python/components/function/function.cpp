@@ -4,36 +4,36 @@
 
 namespace components::function {
 
-    FunctionData::~FunctionData() = default;
+    function_data_t::~function_data_t() = default;
     
-    bool FunctionData::Equals(const FunctionData *left, const FunctionData *right) {
+    bool function_data_t::equals(const function_data_t *left, const function_data_t *right) {
         if (left == right) {
             return true;
         }                          
         if (!left || !right) {
             return false;          
         }                          
-        return left->Equals(*right);    
+        return left->equals(*right);    
     }                
     
-    TableFunctionData::~TableFunctionData() = default;
+    table_function_data_t::~table_function_data_t() = default;
     
-    std::unique_ptr<FunctionData> TableFunctionData::Copy() const {
+    std::unique_ptr<function_data_t> table_function_data_t::copy() const {
         throw std::runtime_error("Copy not supported for TableFunctionData");
     }   
             
-    bool TableFunctionData::Equals(const FunctionData& /*other*/) const {
+    bool table_function_data_t::equals(const function_data_t& /*other*/) const {
         return false;
     }  
 
-    SimpleNamedParameterFunction::SimpleNamedParameterFunction(std::string name_p, 
+    simple_named_parameter_function_t::simple_named_parameter_function_t(std::string name_p, 
             std::vector<types::complex_logical_type> arguments_p)
         : name(std::move(name_p)), arguments(std::move(arguments_p)) {
     }
         
-    SimpleNamedParameterFunction::~SimpleNamedParameterFunction() = default;
+    simple_named_parameter_function_t::~simple_named_parameter_function_t() = default;
         
-    bool SimpleNamedParameterFunction::HasNamedParameters() const {
+    bool simple_named_parameter_function_t::has_named_parameters() const {
         return !named_parameters.empty();
     }
 } // namespace components::function

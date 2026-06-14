@@ -7,20 +7,20 @@
 #include <stdexcept>
 
 namespace otterbrix {
-     bool PandasDataFrame::check_(const py::handle &object) { // NOLINT
-         if (!ModuleIsLoaded<PandasCacheItem>()) {
+     bool pandas_data_frame_t::check_(const py::handle &object) { // NOLINT
+         if (!module_is_loaded<pandas_cache_item_t>()) {
              return false;
          } 
-         auto &import_cache = ConnectionEnvironment::ImportCache();
-         return py::isinstance(object, import_cache.pandas.DataFrame());
+         auto &import_cache = connection_environment_t::import_cache();
+         return py::isinstance(object, import_cache.pandas.data_frame());
      }
      
-     bool PandasDataFrame::IsPyArrowBacked(const py::handle &df) {
-         if (!PandasDataFrame::check_(df)) {
+     bool pandas_data_frame_t::is_py_arrow_backed(const py::handle &df) {
+         if (!pandas_data_frame_t::check_(df)) {
              return false;
          } 
      
-         auto &import_cache = ConnectionEnvironment::ImportCache();
+         auto &import_cache = connection_environment_t::import_cache();
          py::list dtypes = df.attr("dtypes");
          if (dtypes.empty()) {
              return false;
@@ -35,7 +35,7 @@ namespace otterbrix {
          return false;
      }
      
-     py::object PandasDataFrame::ToArrowTable(const py::object &df) {
+     py::object pandas_data_frame_t::to_arrow_table(const py::object &df) {
          assert(py::gil_check());
          try {
              return py::module_::import("pyarrow").attr("lib").attr("Table").attr("from_pandas")(df);

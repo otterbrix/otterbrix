@@ -1,3 +1,5 @@
+add_subdirectory(string_util)
+
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES}
     PARENT_SCOPE

@@ -9,10 +9,10 @@
 
 namespace otterbrix {
 
-// Pandas has two different sets of types
+// pandas_t has two different sets of types
 // NumPy dtypes (e.g., bool, int8,...)
-// Pandas Specific Types (e.g., categorical, datetime_tz,...)
-enum class NumpyNullableType : uint8_t {
+// pandas_t Specific Types (e.g., categorical, datetime_tz,...)
+enum class numpy_nullable_type_t : uint8_t {
 	//! NumPy dtypes
 	BOOL,        //! bool_, bool8
 	INT_8,       //! byte, int8
@@ -41,14 +41,14 @@ enum class NumpyNullableType : uint8_t {
 	STRING,   //! string
 };
 
-struct NumpyType {
-	NumpyNullableType type;
+struct numpy_type_t {
+	numpy_nullable_type_t type;
 	//! Optionally if the type is a DATETIME,
 	//! this indicates whether the type has timezone information
 	bool has_timezone = false;
 };
 
-enum class NumpyObjectType : uint8_t {
+enum class numpy_object_type_t : uint8_t {
 	//! To identify supported Numpy objects for scaning
 	INVALID,   //! unsupported numpy object
 	NDARRAY1D, //! numpy array with shape (n, )
@@ -57,7 +57,7 @@ enum class NumpyObjectType : uint8_t {
 	DICT,      //! dict of numpy arrays of shape (n,)
 };
 
-core::result_wrapper_t<NumpyType> ConvertNumpyType(std::pmr::memory_resource *resource, const py::handle &col_type);
-core::result_wrapper_t<components::types::complex_logical_type> NumpyToLogicalType(std::pmr::memory_resource *resource, const NumpyType &col_type);
+core::result_wrapper_t<numpy_type_t> convert_numpy_type(std::pmr::memory_resource *resource, const py::handle &col_type);
+core::result_wrapper_t<components::types::complex_logical_type> numpy_to_logical_type(std::pmr::memory_resource *resource, const numpy_type_t &col_type);
 
 } // namespace otterbrix

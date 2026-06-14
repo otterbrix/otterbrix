@@ -14,26 +14,26 @@ namespace otterbrix {
 
     // Minimal process-wide holder for the Python import cache plus a couple of
     // engine-space helpers. The execution / expression / relation surface that
-    // used to live here has been folded directly into PyConnection (which now
-    // inherits ExpressionFactory + RelationFactory and talks to
+    // used to live here has been folded directly into py_connection_t (which now
+    // inherits expression_factory_t + relation_factory_t and talks to
     // space->dispatcher() itself). This type remains only because the static
-    // ImportCache() entry point is referenced from many translation units
+    // import_cache() entry point is referenced from many translation units
     // (native/, arrow/, numpy/, pybind11/, import_cache/, framework detection).
-    class ConnectionEnvironment {
+    class connection_environment_t {
     public:
         static constexpr std::string_view DEFAULT_FOLDER = "default";
 
         static boost::intrusive_ptr<otterbrix_t>
-        MakeSpace(const std::filesystem::path& path = std::filesystem::current_path() / DEFAULT_FOLDER);
+        make_space(const std::filesystem::path& path = std::filesystem::current_path() / DEFAULT_FOLDER);
 
-        static void Cleanup();
-        static void ThrowConnectionException();
+        static void cleanup();
+        static void throw_connection_exception();
 
-        static bool IsJupyter();
+        static bool is_jupyter();
 
-        static PythonImportCache& ImportCache();
+        static python_import_cache_t& import_cache();
 
     private:
-        static std::shared_ptr<PythonImportCache> import_cache;
+        static std::shared_ptr<python_import_cache_t> import_cache_;
     };
 } // namespace otterbrix

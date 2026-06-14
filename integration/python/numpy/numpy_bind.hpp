@@ -12,10 +12,10 @@
 
 namespace otterbrix {
 
-struct PandasColumnBindData;
+struct pandas_column_bind_data_t;
 
-struct NumpyBind {
-	static core::error_t Bind(std::pmr::memory_resource *resource, py::handle df, std::vector<PandasColumnBindData> &out,
+struct numpy_bind_t {
+	static core::error_t bind(std::pmr::memory_resource *resource, py::handle df, std::vector<pandas_column_bind_data_t> &out,
 	                 std::vector<components::types::complex_logical_type> &return_types,
                      std::vector<std::string> &names,
                      const configuration::config_pandas &cfg = {});

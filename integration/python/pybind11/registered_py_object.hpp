@@ -4,11 +4,11 @@
 
 namespace otterbrix {
 
-class RegisteredObject {
+class registered_object_t {
 public:
-	explicit RegisteredObject(py::object obj_p) : obj(std::move(obj_p)) {
+	explicit registered_object_t(py::object obj_p) : obj(std::move(obj_p)) {
 	}
-	virtual ~RegisteredObject() {
+	virtual ~registered_object_t() {
 		py::gil_scoped_acquire acquire;
 		obj = py::none();
 	}

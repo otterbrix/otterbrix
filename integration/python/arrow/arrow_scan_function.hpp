@@ -6,36 +6,36 @@
 #include <components/vector/arrow/arrow_converter.hpp>
 #include <components/vector/arrow/arrow_wrapper.hpp>
 
-#include <core/external_dependencies.hpp>
+#include <common/external_dependencies.hpp>
 
 #include <memory>
 #include <mutex>
 
 namespace otterbrix {
 
-    //! Table function that drains a python Arrow object through the canonical core
+    //! arrow_table_t function that drains a python Arrow object through the canonical core
     //! components::vector::arrow path (schema_from_arrow + data_chunk_from_arrow).
     //!
-    //! Conventions match PandasScanFunction so the replacement-scan dispatcher in
+    //! Conventions match pandas_scan_function_t so the replacement-scan dispatcher in
     //! python_replacement_scan.cpp can drive it generically:
-    //!   inputs[0] : void* -> PythonTableArrowArrayStreamFactory*
-    struct ArrowScanFunction : public components::function::TableFunction {
+    //!   inputs[0] : void* -> python_table_arrow_array_stream_factory_t*
+    struct arrow_scan_function_t : public components::function::table_function_t {
     public:
-        ArrowScanFunction();
+        arrow_scan_function_t();
 
-        static std::unique_ptr<components::function::FunctionData>
-        ArrowScanBind(components::function::TableFunctionBindInput& input,
+        static std::unique_ptr<components::function::function_data_t>
+        ArrowScanBind(components::function::table_function_bind_input_t& input,
                       std::vector<components::types::complex_logical_type>& return_types,
                       std::vector<std::string>& names);
 
-        static std::unique_ptr<components::function::GlobalTableFunctionState>
-        ArrowScanInitGlobal(components::function::TableFunctionInitInput& input);
+        static std::unique_ptr<components::function::global_table_function_state_t>
+        ArrowScanInitGlobal(components::function::table_function_init_input_t& input);
 
-        static std::unique_ptr<components::function::LocalTableFunctionState>
-        ArrowScanInitLocal(components::function::TableFunctionInitInput& input,
-                           components::function::GlobalTableFunctionState* gstate);
+        static std::unique_ptr<components::function::local_table_function_state_t>
+        ArrowScanInitLocal(components::function::table_function_init_input_t& input,
+                           components::function::global_table_function_state_t* gstate);
 
-        static void ArrowScanFunc(components::function::TableFunctionInput& data_p,
+        static void ArrowScanFunc(components::function::table_function_input_t& data_p,
                                   components::vector::data_chunk_t& output);
     };
 

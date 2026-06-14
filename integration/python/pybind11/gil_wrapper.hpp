@@ -4,7 +4,7 @@
 
 namespace otterbrix {
 
-struct PythonGILWrapper {
+struct python_gil_wrapper_t {
 	py::gil_scoped_acquire acquire;
 };
 

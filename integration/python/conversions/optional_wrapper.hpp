@@ -8,10 +8,10 @@ namespace PYBIND11_NAMESPACE {
 namespace detail {
 
 template <class T>
-struct type_caster<otterbrix::Optional<T>> : public type_caster_base<otterbrix::Optional<T>> {
-    using base = type_caster_base<otterbrix::Optional<T>>;
+struct type_caster<otterbrix::py_optional_t<T>> : public type_caster_base<otterbrix::py_optional_t<T>> {
+    using base = type_caster_base<otterbrix::py_optional_t<T>>;
     using child = type_caster_base<T>; 
-    otterbrix::Optional<T> tmp;
+    otterbrix::py_optional_t<T> tmp;
 
 public:
     bool load(handle src, bool convert) {
@@ -23,7 +23,7 @@ public:
         return false;
     }
 
-    static handle cast(otterbrix::Optional<T> src, return_value_policy policy, handle parent) {
+    static handle cast(otterbrix::py_optional_t<T> src, return_value_policy policy, handle parent) {
         return base::cast(src, policy, parent);
     }
 };

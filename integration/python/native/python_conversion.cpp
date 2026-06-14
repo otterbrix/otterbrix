@@ -5,8 +5,8 @@
 #include <pybind11/pybind_wrapper.hpp>
 #include <connection_environment/connection_environment.hpp>
 
-#include <core/string_util/case_insensitive.hpp>
-#include <core/typedefs.hpp>
+#include <common/string_util/case_insensitive.hpp>
+#include <common/typedefs.hpp>
 
 #include <limits>
 #include <memory_resource>
@@ -56,7 +56,7 @@ namespace otterbrix
         return core::error_t::no_error();
     }
 
-    static logical_value_t EmptyMapValue(std::pmr::memory_resource* r)
+    static logical_value_t empty_map_value(std::pmr::memory_resource* r)
     {
         return logical_value_t::create_map(r,
                                            logical_type::NA, logical_type::NA,
@@ -65,7 +65,7 @@ namespace otterbrix
     }
 
 
-    std::vector<std::string> TransformStructKeys(py::handle keys, idx_t size)
+    std::vector<std::string> transform_struct_keys(py::handle keys, idx_t size)
     {
         std::vector<std::string> res;
         res.reserve(size);
@@ -76,7 +76,7 @@ namespace otterbrix
         return res;
     }
 
-    static bool IsValidMapComponent(const py::handle& component)
+    static bool is_valid_map_component(const py::handle& component)
     {
         // The component is either NULL
         if (py::none().is(component))
@@ -94,7 +94,7 @@ namespace otterbrix
         return true;
     }
 
-    bool DictionaryHasMapFormat(const PyDictionary& dict)
+    bool dictionary_has_map_format(const py_dictionary_t& dict)
     {
         if (dict.len != 2)
         {
@@ -111,11 +111,11 @@ namespace otterbrix
             return false;
         }
 
-        if (!IsValidMapComponent(keys))
+        if (!is_valid_map_component(keys))
         {
             return false;
         }
-        if (!IsValidMapComponent(values))
+        if (!is_valid_map_component(values))
         {
             return false;
         }
@@ -135,12 +135,12 @@ namespace otterbrix
         return true;
     }
 
-    core::result_wrapper_t<logical_value_t> TransformDictionaryToStruct(
+    core::result_wrapper_t<logical_value_t> transform_dictionary_to_struct(
         std::pmr::memory_resource* r,
-        const PyDictionary& dict,
+        const py_dictionary_t& dict,
         const complex_logical_type& target_type = logical_type::UNKNOWN)
     {
-        auto struct_keys = TransformStructKeys(dict.keys, dict.len);
+        auto struct_keys = transform_struct_keys(dict.keys, dict.len);
 
         bool struct_target = target_type.type() == logical_type::STRUCT;
         components::types::struct_logical_type_extension* struct_extension = nullptr;
@@ -151,7 +151,7 @@ namespace otterbrix
             if (dict.len != struct_extension->child_types().size())
             {
                 return make_error(r,
-                    "We could not convert the object " + dict.ToString() + " to the target struct type with " +
+                    "We could not convert the object " + dict.to_string() + " to the target struct type with " +
                     std::to_string(struct_extension->child_types().size()) + " fields"
                 );
             }
@@ -171,7 +171,7 @@ namespace otterbrix
                 auto& key = struct_extension->child_types().at(i).alias();
                 auto value_index = key_mapping[key];
                 auto& child_type = target_type.child_types().at(i);
-                auto val = TransformPythonValue(r, dict.values.attr("__getitem__")(value_index), child_type);
+                auto val = transform_python_value(r, dict.values.attr("__getitem__")(value_index), child_type);
                 if (val.has_error())
                 {
                     return val.error();
@@ -184,7 +184,7 @@ namespace otterbrix
                 auto& key = struct_keys[i];
                 auto value_index = key_mapping[key];
                 auto child_type = logical_type::UNKNOWN;
-                auto val = TransformPythonValue(r, dict.values.attr("__getitem__")(value_index), child_type);
+                auto val = transform_python_value(r, dict.values.attr("__getitem__")(value_index), child_type);
                 if (val.has_error())
                 {
                     return val.error();
@@ -209,12 +209,12 @@ namespace otterbrix
         return logical_value_t::create_struct(r, struct_type, struct_values);
     }
 
-    core::result_wrapper_t<logical_value_t> TransformStructFormatDictionaryToMap(std::pmr::memory_resource* r, const PyDictionary& dict,
+    core::result_wrapper_t<logical_value_t> transform_struct_format_dictionary_to_map(std::pmr::memory_resource* r, const py_dictionary_t& dict,
                                                          const complex_logical_type& target_type)
     {
         if (dict.len == 0)
         {
-            return EmptyMapValue(r);
+            return empty_map_value(r);
         }
 
         if (target_type.type() != logical_type::MAP)
@@ -242,12 +242,12 @@ namespace otterbrix
 
         for (idx_t i = 0; i < size; i++)
         {
-            auto new_key = TransformPythonValue(r, dict.keys.attr("__getitem__")(i), key_target);
+            auto new_key = transform_python_value(r, dict.keys.attr("__getitem__")(i), key_target);
             if (new_key.has_error())
             {
                 return new_key.error();
             }
-            auto new_value = TransformPythonValue(r, dict.values.attr("__getitem__")(i), value_target);
+            auto new_value = transform_python_value(r, dict.values.attr("__getitem__")(i), value_target);
             if (new_value.has_error())
             {
                 return new_value.error();
@@ -280,13 +280,13 @@ namespace otterbrix
         return logical_value_t::create_map(r, key_type, value_type, key_values, value_values);
     }
 
-    core::result_wrapper_t<logical_value_t> TransformDictionaryToMap(std::pmr::memory_resource* r, const PyDictionary& dict,
+    core::result_wrapper_t<logical_value_t> transform_dictionary_to_map(std::pmr::memory_resource* r, const py_dictionary_t& dict,
                                              const complex_logical_type& target_type = logical_type::UNKNOWN)
     {
-        if (target_type.type() != logical_type::UNKNOWN && !DictionaryHasMapFormat(dict))
+        if (target_type.type() != logical_type::UNKNOWN && !dictionary_has_map_format(dict))
         {
             // dict == { 'k1': v1, 'k2': v2, ..., 'kn': vn }
-            return TransformStructFormatDictionaryToMap(r, dict, target_type);
+            return transform_struct_format_dictionary_to_map(r, dict, target_type);
         }
 
         auto keys = dict.values.attr("__getitem__")(0);
@@ -302,7 +302,7 @@ namespace otterbrix
         if (key_size == 0)
         {
             // dict == { 'key': [], 'value': [] }
-            return EmptyMapValue(r);
+            return empty_map_value(r);
         }
 
         // dict == { 'key': [ ... ], 'value' : [ ... ] }
@@ -316,12 +316,12 @@ namespace otterbrix
             value_target = complex_logical_type::create_list(map_extension->value());
         }
 
-        auto key_list = TransformPythonValue(r, keys, key_target);
+        auto key_list = transform_python_value(r, keys, key_target);
         if (key_list.has_error())
         {
             return key_list.error();
         }
-        auto value_list = TransformPythonValue(r, values, value_target);
+        auto value_list = transform_python_value(r, values, value_target);
         if (value_list.has_error())
         {
             return value_list.error();
@@ -359,7 +359,7 @@ namespace otterbrix
         return logical_value_t::create_map(r, key_type, value_type, key_values, value_values);
     }
 
-    core::result_wrapper_t<logical_value_t> TransformTupleToStruct(std::pmr::memory_resource* r, py::handle ele,
+    core::result_wrapper_t<logical_value_t> transform_tuple_to_struct(std::pmr::memory_resource* r, py::handle ele,
                                            const complex_logical_type& target_type = logical_type::UNKNOWN)
     {
         auto tuple = py::cast<py::tuple>(ele);
@@ -381,7 +381,7 @@ namespace otterbrix
             auto& type = child_types[i];
             const auto& name = target_type.child_types()[i].alias();
             auto element = py::handle(tuple[i]);
-            auto converted_value = TransformPythonValue(r, element, type);
+            auto converted_value = transform_python_value(r, element, type);
             if (converted_value.has_error())
             {
                 return converted_value.error();
@@ -392,7 +392,7 @@ namespace otterbrix
         return logical_value_t::create_struct(r, target_type, children);
     }
 
-    core::result_wrapper_t<logical_value_t> TransformListValue(std::pmr::memory_resource* r, py::handle ele,
+    core::result_wrapper_t<logical_value_t> transform_list_value(std::pmr::memory_resource* r, py::handle ele,
                                        const complex_logical_type& target_type = logical_type::UNKNOWN)
     {
         auto size = py::len(ele);
@@ -406,7 +406,7 @@ namespace otterbrix
         complex_logical_type element_type = list_target ? child_type : complex_logical_type(logical_type::NA);
         for (idx_t i = 0; i < size; i++)
         {
-            auto new_value = TransformPythonValue(r, ele.attr("__getitem__")(i), child_type);
+            auto new_value = transform_python_value(r, ele.attr("__getitem__")(i), child_type);
             if (new_value.has_error())
             {
                 return new_value.error();
@@ -423,7 +423,7 @@ namespace otterbrix
         return logical_value_t::create_list(r, element_type, values);
     }
 
-    core::result_wrapper_t<logical_value_t> TransformArrayValue(std::pmr::memory_resource* r, py::handle ele,
+    core::result_wrapper_t<logical_value_t> transform_array_value(std::pmr::memory_resource* r, py::handle ele,
                                         const complex_logical_type& target_type = logical_type::UNKNOWN)
     {
         auto size = py::len(ele);
@@ -437,7 +437,7 @@ namespace otterbrix
         complex_logical_type element_type = array_target ? child_type : complex_logical_type(logical_type::NA);
         for (idx_t i = 0; i < size; i++)
         {
-            auto new_value = TransformPythonValue(r, ele.attr("__getitem__")(i), child_type);
+            auto new_value = transform_python_value(r, ele.attr("__getitem__")(i), child_type);
             if (new_value.has_error())
             {
                 return new_value.error();
@@ -455,7 +455,7 @@ namespace otterbrix
         return logical_value_t::create_array(r, element_type, values);
     }
 
-    core::result_wrapper_t<logical_value_t> TransformDictionary(std::pmr::memory_resource* r, const PyDictionary& dict)
+    core::result_wrapper_t<logical_value_t> transform_dictionary(std::pmr::memory_resource* r, const py_dictionary_t& dict)
     {
         //! DICT -> MAP FORMAT
         // keys() = [key, value]
@@ -467,17 +467,17 @@ namespace otterbrix
         if (dict.len == 0)
         {
             // dict == {}
-            return EmptyMapValue(r);
+            return empty_map_value(r);
         }
 
-        if (DictionaryHasMapFormat(dict))
+        if (dictionary_has_map_format(dict))
         {
-            return TransformDictionaryToMap(r, dict);
+            return transform_dictionary_to_map(r, dict);
         }
-        return TransformDictionaryToStruct(r, dict);
+        return transform_dictionary_to_struct(r, dict);
     }
 
-    bool TryTransformPythonIntegerToDouble(logical_value_t& res, py::handle ele)
+    bool try_transform_python_integer_to_double(logical_value_t& res, py::handle ele)
     {
         double number = PyLong_AsDouble(ele.ptr());
 #pragma GCC diagnostic push
@@ -492,7 +492,7 @@ namespace otterbrix
         return true;
     }
 
-    void TransformPythonUnsigned(uint64_t value, logical_value_t& res)
+    void transform_python_unsigned(uint64_t value, logical_value_t& res)
     {
         auto* r = res.resource();
         if (value > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()))
@@ -513,7 +513,7 @@ namespace otterbrix
         }
     }
 
-    bool TrySniffPythonNumeric(logical_value_t& res, int64_t value)
+    bool try_sniff_python_numeric(logical_value_t& res, int64_t value)
     {
         auto* r = res.resource();
         if (value < static_cast<int64_t>(std::numeric_limits<int32_t>::min()) || value > static_cast<int64_t>(std::numeric_limits<
@@ -531,7 +531,7 @@ namespace otterbrix
     }
 
 
-    bool TryTransformPythonNumeric(logical_value_t& res, py::handle ele, const complex_logical_type& target_type)
+    bool try_transform_python_numeric(logical_value_t& res, py::handle ele, const complex_logical_type& target_type)
     {
         // Hot per-cell path: write results into the caller-provided value's resource (R14-local),
         // and report hard failures as a false return rather than throwing (R2 hot-path carve-out).
@@ -593,11 +593,11 @@ namespace otterbrix
             if (PyErr_Occurred())
             {
                 PyErr_Clear();
-                return TryTransformPythonIntegerToDouble(res, ele);
+                return try_transform_python_integer_to_double(res, ele);
             }
             else
             {
-                TransformPythonUnsigned(unsigned_value, res);
+                transform_python_unsigned(unsigned_value, res);
             }
             PyErr_Clear();
             return true;
@@ -612,7 +612,7 @@ namespace otterbrix
         switch (target_type.type())
         {
         case logical_type::UNKNOWN:
-            return TrySniffPythonNumeric(res, value);
+            return try_sniff_python_numeric(res, value);
         case logical_type::HUGEINT:
             {
                 // OtterBrix has no a logical_value_t constructor for hugeint/uhugeint
@@ -697,129 +697,129 @@ namespace otterbrix
             }
         default:
             {
-                return TrySniffPythonNumeric(res, value);
+                return try_sniff_python_numeric(res, value);
             }
         }
     }
 
-    PythonObjectType GetPythonObjectType(py::handle& ele)
+    python_object_type_t get_python_object_type(py::handle& ele)
     {
-        auto& import_cache = ConnectionEnvironment::ImportCache();
+        auto& import_cache = connection_environment_t::import_cache();
 
         if (ele.is_none())
         {
-            return PythonObjectType::None;
+            return python_object_type_t::None;
         }
-        else if (ele.is(import_cache.pandas.NaT()))
+        else if (ele.is(import_cache.pandas.na_t()))
         {
-            return PythonObjectType::None;
+            return python_object_type_t::None;
         }
         else if (ele.is(import_cache.pandas.NA()))
         {
-            return PythonObjectType::None;
+            return python_object_type_t::None;
         }
         else if (py::isinstance<py::bool_>(ele))
         {
-            return PythonObjectType::Bool;
+            return python_object_type_t::Bool;
         }
         else if (py::isinstance<py::int_>(ele))
         {
-            return PythonObjectType::Integer;
+            return python_object_type_t::Integer;
         }
         else if (py::isinstance<py::float_>(ele))
         {
-            return PythonObjectType::Float;
+            return python_object_type_t::Float;
         }
         else if (py::isinstance(ele, import_cache.decimal.Decimal()))
         {
-            return PythonObjectType::Decimal;
+            return python_object_type_t::Decimal;
         }
         else if (py::isinstance(ele, import_cache.uuid.UUID()))
         {
-            return PythonObjectType::Uuid;
+            return python_object_type_t::Uuid;
         }
         else if (py::isinstance(ele, import_cache.datetime.datetime()))
         {
-            return PythonObjectType::Datetime;
+            return python_object_type_t::Datetime;
         }
         else if (py::isinstance(ele, import_cache.datetime.time()))
         {
-            return PythonObjectType::Time;
+            return python_object_type_t::Time;
         }
         else if (py::isinstance(ele, import_cache.datetime.date()))
         {
-            return PythonObjectType::Date;
+            return python_object_type_t::Date;
         }
         else if (py::isinstance(ele, import_cache.datetime.timedelta()))
         {
-            return PythonObjectType::Timedelta;
+            return python_object_type_t::Timedelta;
         }
         else if (py::isinstance<py::str>(ele))
         {
-            return PythonObjectType::String;
+            return python_object_type_t::String;
         }
         else if (py::isinstance<py::bytearray>(ele))
         {
-            return PythonObjectType::ByteArray;
+            return python_object_type_t::ByteArray;
         }
         else if (py::isinstance<py::memoryview>(ele))
         {
-            return PythonObjectType::MemoryView;
+            return python_object_type_t::MemoryView;
         }
         else if (py::isinstance<py::bytes>(ele))
         {
-            return PythonObjectType::Bytes;
+            return python_object_type_t::Bytes;
         }
         else if (py::isinstance<py::list>(ele))
         {
-            return PythonObjectType::List;
+            return python_object_type_t::List;
         }
         else if (py::isinstance<py::tuple>(ele))
         {
-            return PythonObjectType::Tuple;
+            return python_object_type_t::Tuple;
         }
         else if (py::isinstance<py::dict>(ele))
         {
-            return PythonObjectType::Dict;
+            return python_object_type_t::Dict;
         }
         else if (ele.is(import_cache.numpy.ma.masked()))
         {
-            return PythonObjectType::None;
+            return python_object_type_t::None;
         }
         else if (py::isinstance(ele, import_cache.numpy.ndarray()))
         {
-            return PythonObjectType::NdArray;
+            return python_object_type_t::NdArray;
         }
         else if (py::isinstance(ele, import_cache.numpy.datetime64()))
         {
-            return PythonObjectType::NdDatetime;
+            return python_object_type_t::NdDatetime;
         }
         else
         {
-            return PythonObjectType::Other;
+            return python_object_type_t::Other;
         }
     }
 
-    core::result_wrapper_t<logical_value_t> TransformPythonValue(std::pmr::memory_resource* resource, py::handle ele, const complex_logical_type& target_type, bool nan_as_null)
+    core::result_wrapper_t<logical_value_t> transform_python_value(std::pmr::memory_resource* resource, py::handle ele, const complex_logical_type& target_type, bool nan_as_null)
     {
-        auto object_type = GetPythonObjectType(ele);
+        auto object_type = get_python_object_type(ele);
 
         switch (object_type)
         {
-        case PythonObjectType::None:
+        case python_object_type_t::None:
             return logical_value_t(resource, logical_type::NA);
-        case PythonObjectType::Bool:
+        case python_object_type_t::Bool:
             return logical_value_t(resource, ele.cast<bool>());
-        case PythonObjectType::Integer:
+        case python_object_type_t::Integer:
             {
                 logical_value_t integer(resource, logical_type::UNKNOWN);
-                if (!TryTransformPythonNumeric(integer, ele, target_type))
+                if (!try_transform_python_numeric(integer, ele, target_type))
                 {
                     return make_error(resource, "An error occurred attempting to convert a python integer");
                 }
                 return integer;
             }
-        case PythonObjectType::Float:
+        case python_object_type_t::Float:
             if (nan_as_null && std::isnan(PyFloat_AsDouble(ele.ptr())))
             {
                 return logical_value_t(resource, logical_type::NA);
@@ -842,16 +842,16 @@ namespace otterbrix
             default:
                 return make_error(resource, "Could not convert 'float' to type ");
             }
-        case PythonObjectType::Decimal:
+        case python_object_type_t::Decimal:
             {
-                PyDecimal decimal(ele);
+                py_decimal_t decimal(ele);
                 return decimal.to_logical_value(resource);
             }
-        case PythonObjectType::Uuid:
+        case python_object_type_t::Uuid:
             {
                 return logical_value_t(resource, py::str(ele).cast<std::string>());
             }
-        case PythonObjectType::String:
+        case python_object_type_t::String:
             {
                 auto stringified = ele.cast<std::string>();
                 if (target_type.type() == logical_type::UNKNOWN
@@ -861,16 +861,16 @@ namespace otterbrix
                 }
                 return logical_value_t(resource, stringified).cast_as(target_type, core::date::timezone_offset_t{});
             }
-        case PythonObjectType::ByteArray:
+        case python_object_type_t::ByteArray:
             {
                 return make_error(resource, "OtterBrix doens\'t support byte array conversation");
             }
-        case PythonObjectType::MemoryView:
+        case python_object_type_t::MemoryView:
             {
                 py::memoryview py_view = ele.cast<py::memoryview>();
                 return make_error(resource, "OtterBrix doens\'t support memory view conversation");
             }
-        case PythonObjectType::Bytes:
+        case python_object_type_t::Bytes:
             {
                 const std::string& ele_string = ele.cast<std::string>();
                 switch (target_type.type())
@@ -884,47 +884,47 @@ namespace otterbrix
                     return make_error(resource, "Could not convert 'bytes' to type");
                 }
             }
-        case PythonObjectType::List:
+        case python_object_type_t::List:
             if (target_type.type() == logical_type::ARRAY)
             {
-                return TransformArrayValue(resource, ele, target_type);
+                return transform_array_value(resource, ele, target_type);
             }
             else
             {
-                return TransformListValue(resource, ele, target_type);
+                return transform_list_value(resource, ele, target_type);
             }
-        case PythonObjectType::Dict:
+        case python_object_type_t::Dict:
             {
-                PyDictionary dict = PyDictionary(py::reinterpret_borrow<py::object>(ele));
+                py_dictionary_t dict = py_dictionary_t(py::reinterpret_borrow<py::object>(ele));
                 switch (target_type.type())
                 {
                 case logical_type::STRUCT:
-                    return TransformDictionaryToStruct(resource, dict, target_type);
+                    return transform_dictionary_to_struct(resource, dict, target_type);
                 case logical_type::MAP:
-                    return TransformDictionaryToMap(resource, dict, target_type);
+                    return transform_dictionary_to_map(resource, dict, target_type);
                 default:
-                    return TransformDictionary(resource, dict);
+                    return transform_dictionary(resource, dict);
                 }
             }
-        case PythonObjectType::Tuple:
+        case python_object_type_t::Tuple:
             {
                 switch (target_type.type())
                 {
                 case logical_type::STRUCT:
-                    return TransformTupleToStruct(resource, ele, target_type);
+                    return transform_tuple_to_struct(resource, ele, target_type);
                 case logical_type::UNKNOWN:
                 case logical_type::LIST:
-                    return TransformListValue(resource, ele, target_type);
+                    return transform_list_value(resource, ele, target_type);
                 case logical_type::ARRAY:
-                    return TransformArrayValue(resource, ele, target_type);
+                    return transform_array_value(resource, ele, target_type);
                 default:
                     return make_error(resource, "Can't convert tuple to a Value of type ");
                 }
             }
-        case PythonObjectType::NdArray:
-        case PythonObjectType::NdDatetime:
-            return TransformPythonValue(resource, ele.attr("tolist")(), target_type, nan_as_null);
-        case PythonObjectType::Other:
+        case python_object_type_t::NdArray:
+        case python_object_type_t::NdDatetime:
+            return transform_python_value(resource, ele.attr("tolist")(), target_type, nan_as_null);
+        case python_object_type_t::Other:
             return make_error(resource, "No implementation: Unable to transform python value of type " +
                 py::str(ele.get_type()).cast<std::string>() +
                 " to OtterBrix logical_type");

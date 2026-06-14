@@ -25,28 +25,28 @@ namespace otterbrix {
 
     namespace {
 
-        struct ArrowScanFunctionData : public TableFunctionData {
-            ArrowScanFunctionData(uintptr_t factory_ptr_p, DependencyItem* dependency_p)
+        struct arrow_scan_function_data_t : public table_function_data_t {
+            arrow_scan_function_data_t(uintptr_t factory_ptr_p, dependency_item_t* dependency_p)
                 : factory_ptr(factory_ptr_p)
                 , dependency(dependency_p) {}
 
-            std::unique_ptr<FunctionData> Copy() const override {
+            std::unique_ptr<function_data_t> copy() const override {
                 throw std::runtime_error("ArrowScanFunctionData::Copy not supported");
             }
-            bool Equals(const FunctionData&) const override { return false; }
+            bool equals(const function_data_t&) const override { return false; }
 
-            //! Pointer to the PythonTableArrowArrayStreamFactory. The owning ExternalDependency
-            //! (held by the TableRef) outlives this FunctionData, so `dependency` is a non-owning
+            //! Pointer to the python_table_arrow_array_stream_factory_t. The owning external_dependency_t
+            //! (held by the table_ref_t) outlives this function_data_t, so `dependency` is a non-owning
             //! observer kept only to document the borrow.
             uintptr_t factory_ptr;
-            DependencyItem* dependency;
+            dependency_item_t* dependency;
         };
 
-        struct ArrowScanGlobalState : public GlobalTableFunctionState {
-            explicit ArrowScanGlobalState(std::unique_ptr<arrow_array_schema_wrapper_t> stream_p)
+        struct arrow_scan_global_state_t : public global_table_function_state_t {
+            explicit arrow_scan_global_state_t(std::unique_ptr<arrow_array_schema_wrapper_t> stream_p)
                 : stream(std::move(stream_p)) {}
 
-            uint64_t MaxThreads() const override { return 1; }
+            uint64_t max_threads() const override { return 1; }
 
             std::mutex lock;
             std::unique_ptr<arrow_array_schema_wrapper_t> stream;
@@ -59,7 +59,7 @@ namespace otterbrix {
             bool done = false;
         };
 
-        struct ArrowScanLocalState : public LocalTableFunctionState {};
+        struct arrow_scan_local_state_t : public local_table_function_state_t {};
 
         //! Build a throw-away arrow_table_schema_t to extract the otterbrix return types and column names.
         //! Uses a stack-backed PMR resource (no get_default_resource); types/names are deep-copied out.
@@ -80,15 +80,15 @@ namespace otterbrix {
 
     } // namespace
 
-    ArrowScanFunction::ArrowScanFunction()
-        : TableFunction("arrow_scan",
+    arrow_scan_function_t::arrow_scan_function_t()
+        : table_function_t("arrow_scan",
                         {components::types::logical_type::POINTER},
                         ArrowScanFunc,
                         ArrowScanBind,
                         ArrowScanInitGlobal,
                         ArrowScanInitLocal) {}
 
-    std::unique_ptr<FunctionData> ArrowScanFunction::ArrowScanBind(TableFunctionBindInput& input,
+    std::unique_ptr<function_data_t> arrow_scan_function_t::ArrowScanBind(table_function_bind_input_t& input,
                                                               std::vector<complex_logical_type>& return_types,
                                                               std::vector<std::string>& names) {
         if (input.inputs[0].is_null()) {
@@ -96,36 +96,36 @@ namespace otterbrix {
         }
         auto factory_ptr = reinterpret_cast<uintptr_t>(input.inputs[0].value<void*>());
 
-        DependencyItem* dependency = nullptr;
+        dependency_item_t* dependency = nullptr;
         if (input.ref.external_dependency) {
-            dependency = input.ref.external_dependency->GetDependency("replacement_cache");
+            dependency = input.ref.external_dependency->get_dependency("replacement_cache");
         }
 
         // Pull the schema out of the python arrow object and derive the otterbrix types.
         arrow_schema_wrapper_t schema_root;
-        PythonTableArrowArrayStreamFactory::GetSchema(factory_ptr, schema_root);
+        python_table_arrow_array_stream_factory_t::get_schema(factory_ptr, schema_root);
         derive_types(schema_root, return_types, names);
 
         if (return_types.empty()) {
             throw std::runtime_error("Provided table/dataframe must have at least one column");
         }
-        return std::make_unique<ArrowScanFunctionData>(factory_ptr, dependency);
+        return std::make_unique<arrow_scan_function_data_t>(factory_ptr, dependency);
     }
 
-    std::unique_ptr<GlobalTableFunctionState>
-    ArrowScanFunction::ArrowScanInitGlobal(TableFunctionInitInput& input) {
-        auto& bind_data = input.bind_data->Cast<ArrowScanFunctionData>();
-        auto stream = PythonTableArrowArrayStreamFactory::Produce(bind_data.factory_ptr);
-        return std::make_unique<ArrowScanGlobalState>(std::move(stream));
+    std::unique_ptr<global_table_function_state_t>
+    arrow_scan_function_t::ArrowScanInitGlobal(table_function_init_input_t& input) {
+        auto& bind_data = input.bind_data->cast<arrow_scan_function_data_t>();
+        auto stream = python_table_arrow_array_stream_factory_t::produce(bind_data.factory_ptr);
+        return std::make_unique<arrow_scan_global_state_t>(std::move(stream));
     }
 
-    std::unique_ptr<LocalTableFunctionState>
-    ArrowScanFunction::ArrowScanInitLocal(TableFunctionInitInput&, GlobalTableFunctionState*) {
-        return std::make_unique<ArrowScanLocalState>();
+    std::unique_ptr<local_table_function_state_t>
+    arrow_scan_function_t::ArrowScanInitLocal(table_function_init_input_t&, global_table_function_state_t*) {
+        return std::make_unique<arrow_scan_local_state_t>();
     }
 
-    void ArrowScanFunction::ArrowScanFunc(TableFunctionInput& data_p, components::vector::data_chunk_t& output) {
-        auto& global_state = data_p.global_state->Cast<ArrowScanGlobalState>();
+    void arrow_scan_function_t::ArrowScanFunc(table_function_input_t& data_p, components::vector::data_chunk_t& output) {
+        auto& global_state = data_p.global_state->cast<arrow_scan_global_state_t>();
         std::lock_guard<std::mutex> guard(global_state.lock);
         if (global_state.done) {
             output.set_cardinality(0);

@@ -17,24 +17,24 @@
 
 namespace otterbrix {
 
-struct RegisteredArray {
-	explicit RegisteredArray(py::array numpy_array) : numpy_array(std::move(numpy_array)) {
+struct registered_array_t {
+	explicit registered_array_t(py::array numpy_array) : numpy_array(std::move(numpy_array)) {
 	}
 	py::array numpy_array;
 };
 
-struct PandasColumnBindData {
-	NumpyType numpy_type;
-	std::unique_ptr<PandasColumn> pandas_col;
-	std::unique_ptr<RegisteredArray> mask;
+struct pandas_column_bind_data_t {
+	numpy_type_t numpy_type;
+	std::unique_ptr<pandas_column_t> pandas_col;
+	std::unique_ptr<registered_array_t> mask;
 	//! Only for categorical types
 	std::string internal_categorical_type;
 	//! Hold ownership of objects created during scanning
-	PythonObjectContainer object_str_val;
+	python_object_container_t object_str_val;
 };
 
-struct Pandas {
-	static core::error_t Bind(std::pmr::memory_resource *resource, py::handle df, std::vector<PandasColumnBindData> &out,
+struct pandas_t {
+	static core::error_t bind(std::pmr::memory_resource *resource, py::handle df, std::vector<pandas_column_bind_data_t> &out,
 	                 std::vector<components::types::complex_logical_type> &return_types,
                      std::vector<std::string> &names,
                      const configuration::config_pandas &cfg = {});

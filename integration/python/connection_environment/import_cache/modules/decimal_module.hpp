@@ -4,18 +4,18 @@
 
 namespace otterbrix {
 
-struct DecimalCacheItem : public PythonImportCacheItem {
+struct decimal_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "decimal";
+	static constexpr const char *name = "decimal";
 
 public:
-	DecimalCacheItem() : PythonImportCacheItem("decimal"), Decimal("Decimal", this) {
+	decimal_cache_item_t() : python_import_cache_item_t("decimal"), Decimal("Decimal", this) {
 	}
-	~DecimalCacheItem() override {
+	~decimal_cache_item_t() override {
 	}
 
-	PythonImportCacheItem Decimal;
+	python_import_cache_item_t Decimal;
 };
 
 } // namespace otterbrix

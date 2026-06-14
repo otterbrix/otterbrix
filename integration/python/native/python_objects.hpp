@@ -8,7 +8,7 @@
 #include <components/types/logical_value.hpp>
 
 #include <core/result_wrapper.hpp>
-#include <core/typedefs.hpp>
+#include <common/typedefs.hpp>
 
 #include <memory_resource>
 
@@ -33,9 +33,9 @@
 
 namespace otterbrix {
 
-	struct PyDictionary {
+	struct py_dictionary_t {
 	public:
-		PyDictionary(py::object dict);
+		py_dictionary_t(py::object dict);
 		// These are cached so we don't have to create new objects all the time
 		// The CPython API offers PyDict_Keys but that creates a new reference every time, same for values
 		py::object keys;
@@ -48,7 +48,7 @@ namespace otterbrix {
 		}
 
 	public:
-		std::string ToString() const {
+		std::string to_string() const {
 			return std::string(py::str(dict));
 		}
 
@@ -56,16 +56,16 @@ namespace otterbrix {
 		py::object dict;
 	};
 
-	enum class PyDecimalExponentType {
+	enum class py_decimal_exponent_type_t {
 		EXPONENT_SCALE,    //! Amount of digits after the decimal point
 		EXPONENT_POWER,    //! How many zeros behind the decimal point
 		EXPONENT_INFINITY, //! Decimal is INFINITY
 		EXPONENT_NAN       //! Decimal is NAN
 	};
 
-	struct PyDecimal {
+	struct py_decimal_t {
 
-		struct PyDecimalScaleConverter {
+		struct py_decimal_scale_converter_t {
 			template <typename T, typename = std::enable_if<std::numeric_limits<T>::is_integer, T>>
 			static components::types::logical_value_t Operation(
 					std::pmr::memory_resource* r,
@@ -84,7 +84,7 @@ namespace otterbrix {
 			}
 		};
 
-		struct PyDecimalPowerConverter {
+		struct py_decimal_power_converter_t {
 		private:
 			template <std::size_t... Ints>
 			static constexpr auto make_pow10_sequence(std::index_sequence<Ints...>) {
@@ -130,35 +130,35 @@ namespace otterbrix {
 		};
 
 	public:
-		PyDecimal(py::handle &obj);
+		py_decimal_t(py::handle &obj);
 		std::vector<uint8_t> digits;
 		bool signed_value = false;
 
-		PyDecimalExponentType exponent_type;
+		py_decimal_exponent_type_t exponent_type;
 		int32_t exponent_value;
 		//! false when the python Decimal's exponent could not be recognized during construction;
-		//! consumers (TryGetType / to_logical_value) surface this without throwing.
+		//! consumers (try_get_type / to_logical_value) surface this without throwing.
 		bool exponent_recognized = true;
 
 	public:
-		bool TryGetType(components::types::complex_logical_type &type);
+		bool try_get_type(components::types::complex_logical_type &type);
 		core::result_wrapper_t<components::types::logical_value_t> to_logical_value(std::pmr::memory_resource* r);
 
 	private:
-		void SetExponent(py::handle &exponent);
+		void set_exponent(py::handle &exponent);
 		py::handle &obj;
 	};
 
-	struct PythonObject {
-		static void Initialize();
-		static core::result_wrapper_t<py::object> FromStruct(std::pmr::memory_resource* r, const components::types::logical_value_t &value, const components::types::complex_logical_type &id);
-		static core::result_wrapper_t<py::object> FromValue(std::pmr::memory_resource* r, const components::types::logical_value_t &value, const components::types::complex_logical_type &id);
+	struct python_object_t {
+		static void initialize();
+		static core::result_wrapper_t<py::object> from_struct(std::pmr::memory_resource* r, const components::types::logical_value_t &value, const components::types::complex_logical_type &id);
+		static core::result_wrapper_t<py::object> from_value(std::pmr::memory_resource* r, const components::types::logical_value_t &value, const components::types::complex_logical_type &id);
 	};
 
 	template <class T>
-	class Optional : public py::object {
+	class py_optional_t : public py::object {
 	public:
-		Optional(const py::object &o) : py::object(o, borrowed_t {}) {
+		py_optional_t(const py::object &o) : py::object(o, borrowed_t {}) {
 		}
 		using py::object::object;
 
@@ -168,9 +168,9 @@ namespace otterbrix {
 		}
 	};
 
-	class FileLikeObject : public py::object {
+	class file_like_object_t : public py::object {
 	public:
-		FileLikeObject(const py::object &o) : py::object(o, borrowed_t {}) {
+		file_like_object_t(const py::object &o) : py::object(o, borrowed_t {}) {
 		}
 		using py::object::object;
 
@@ -185,7 +185,7 @@ namespace otterbrix {
 namespace pybind11 {
 	namespace detail {
 		template <typename T>
-		struct handle_type_name<otterbrix::Optional<T>> {
+		struct handle_type_name<otterbrix::py_optional_t<T>> {
 			static constexpr auto name = const_name("typing.Optional[") + concat(make_caster<T>::name) + const_name("]");
 		};
 	} // namespace detail

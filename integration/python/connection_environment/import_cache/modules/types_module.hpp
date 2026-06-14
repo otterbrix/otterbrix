@@ -4,22 +4,22 @@
 
 namespace otterbrix {
 
-struct TypesCacheItem : public PythonImportCacheItem {
+struct types_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "types";
+	static constexpr const char *name = "types";
 
 public:
-	TypesCacheItem()
-	    : PythonImportCacheItem("types"), UnionType("UnionType", this), GenericAlias("GenericAlias", this),
-	      BuiltinFunctionType("BuiltinFunctionType", this) {
+	types_cache_item_t()
+	    : python_import_cache_item_t("types"), union_type("UnionType", this), generic_alias("GenericAlias", this),
+	      builtin_function_type("BuiltinFunctionType", this) {
 	}
-	~TypesCacheItem() override {
+	~types_cache_item_t() override {
 	}
 
-	PythonImportCacheItem UnionType;
-	PythonImportCacheItem GenericAlias;
-	PythonImportCacheItem BuiltinFunctionType;
+	python_import_cache_item_t union_type;
+	python_import_cache_item_t generic_alias;
+	python_import_cache_item_t builtin_function_type;
 };
 
 } // namespace otterbrix

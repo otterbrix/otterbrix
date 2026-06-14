@@ -9,7 +9,7 @@
 
 namespace otterbrix {
 
-    class PyGenericAlias : public py::object {
+    class py_generic_alias_t : public py::object {
     public:
         using py::object::object;
     
@@ -17,7 +17,7 @@ namespace otterbrix {
         static bool check_(const py::handle &object);
     };
     
-    class PyUnionType : public py::object {
+    class py_union_type_t : public py::object {
     public:
         using py::object::object;
     
@@ -25,23 +25,23 @@ namespace otterbrix {
         static bool check_(const py::handle &object);
     };
     
-    class OtterBrixPyType : public std::enable_shared_from_this<OtterBrixPyType> {
+    class otterbrix_py_type_t : public std::enable_shared_from_this<otterbrix_py_type_t> {
     public:
-        explicit OtterBrixPyType(components::types::complex_logical_type type);
+        explicit otterbrix_py_type_t(components::types::complex_logical_type type_);
     
     public:
-        static void Initialize(py::handle &m);
+        static void initialize(py::handle &m);
     
     public:
-        bool Equals(const std::shared_ptr<OtterBrixPyType> &other) const;
-        std::shared_ptr<OtterBrixPyType> GetAttribute(const std::string &name) const;
-        py::list Children() const;
-        std::string ToString() const;
-        const components::types::complex_logical_type &Type() const;
-        std::string GetId() const;
+        bool equals(const std::shared_ptr<otterbrix_py_type_t> &other) const;
+        std::shared_ptr<otterbrix_py_type_t> get_attribute(const std::string &name) const;
+        py::list children() const;
+        std::string to_string() const;
+        const components::types::complex_logical_type &type() const;
+        std::string get_id() const;
     
     private:
-        components::types::complex_logical_type type;
+        components::types::complex_logical_type type_;
     };
 
 } // namespace otterbrix

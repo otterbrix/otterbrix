@@ -14,102 +14,102 @@
 
 namespace otterbrix {
 
-    class PyExpression;
+    class py_expression_t;
 
-    //! R14: std::shared_ptr<PyExpression> is MANDATED here -- it is the pybind11 holder type registered
-    //! in expression_initialize.cpp as py::class_<PyExpression, std::shared_ptr<PyExpression>>. It is not
+    //! R14: std::shared_ptr<py_expression_t> is MANDATED here -- it is the pybind11 holder type registered
+    //! in expression_initialize.cpp as py::class_<py_expression_t, std::shared_ptr<py_expression_t>>. It is not
     //! a free-form internal ownership choice and cannot be replaced without breaking the binding.
-    using pyexpr_ptr = std::shared_ptr<PyExpression>;
+    using pyexpr_ptr = std::shared_ptr<py_expression_t>;
 
-    //! The former std::enable_shared_from_this<PyExpression> base was removed: PyExpression never calls
+    //! The former std::enable_shared_from_this<py_expression_t> base was removed: py_expression_t never calls
     //! shared_from_this(); all instances are produced via make_shared and handed to pybind as the
     //! holder above.
-    class PyExpression {
+    class py_expression_t {
     public:
-        PyExpression(Expression expr, PyConnection& conn);
-        PyExpression(Expression expr, ExpressionFactory* factory);
+        py_expression_t(expression_wrapper_t expr, py_connection_t& conn);
+        py_expression_t(expression_wrapper_t expr, expression_factory_t* factory);
 
-        ~PyExpression();
-        static void Initialize(py::module_ &m);
+        ~py_expression_t();
+        static void initialize(py::module_ &m);
 
-        static pyexpr_ptr ColumnExpression(const std::string& column_name, PyConnection& conn, const std::string& side = "");
+        static pyexpr_ptr column_expression(const std::string& column_name, py_connection_t& conn, const std::string& side = "");
 
-        static pyexpr_ptr ConstantExpression(const py::object& value, PyConnection& conn);
+        static pyexpr_ptr constant_expression(const py::object& value, py_connection_t& conn);
         
-        static pyexpr_ptr CountExpression(PyConnection& conn);
+        static pyexpr_ptr count_expression(py_connection_t& conn);
 
 
     public:
 
-        std::string ToString() const;
-        void Print() const;        
+        std::string to_string() const;
+        void print() const;        
 
         // Aggregation operations
-        pyexpr_ptr Count();
-        pyexpr_ptr Sum();
-        pyexpr_ptr Min();
-        pyexpr_ptr Max();
-        pyexpr_ptr Avg();
+        pyexpr_ptr count();
+        pyexpr_ptr sum();
+        pyexpr_ptr min();
+        pyexpr_ptr max();
+        pyexpr_ptr avg();
 
         // Scalar operations
-        pyexpr_ptr Round();
-        pyexpr_ptr Ceil();
-        pyexpr_ptr Floor();
-        pyexpr_ptr Abs();
-        pyexpr_ptr Negate();
+        pyexpr_ptr round();
+        pyexpr_ptr ceil();
+        pyexpr_ptr floor();
+        pyexpr_ptr abs();
+        pyexpr_ptr negate();
 
-        pyexpr_ptr Add(const PyExpression &other);
-        pyexpr_ptr Subtract(const PyExpression &other);
-        pyexpr_ptr Multiply(const PyExpression &other);
-        pyexpr_ptr Division(const PyExpression &other);
-        pyexpr_ptr Modulo(const PyExpression &other);
-        pyexpr_ptr Power(const PyExpression &other);
+        pyexpr_ptr add(const py_expression_t &other);
+        pyexpr_ptr subtract(const py_expression_t &other);
+        pyexpr_ptr multiply(const py_expression_t &other);
+        pyexpr_ptr division(const py_expression_t &other);
+        pyexpr_ptr modulo(const py_expression_t &other);
+        pyexpr_ptr power(const py_expression_t &other);
 
-        // Equality operations
-        pyexpr_ptr Equality(const PyExpression &other);
-        pyexpr_ptr Inequality(const PyExpression &other);
-        pyexpr_ptr GreaterThan(const PyExpression &other);
-        pyexpr_ptr GreaterThanOrEqual(const PyExpression &other);
-        pyexpr_ptr LessThan(const PyExpression &other);
-        pyexpr_ptr LessThanOrEqual(const PyExpression &other);
+        // equality operations
+        pyexpr_ptr equality(const py_expression_t &other);
+        pyexpr_ptr inequality(const py_expression_t &other);
+        pyexpr_ptr greater_than(const py_expression_t &other);
+        pyexpr_ptr greater_than_or_equal(const py_expression_t &other);
+        pyexpr_ptr less_than(const py_expression_t &other);
+        pyexpr_ptr less_than_or_equal(const py_expression_t &other);
 
-        pyexpr_ptr Regex(const PyExpression &other);
+        pyexpr_ptr regex(const py_expression_t &other);
 
-        pyexpr_ptr SetAlias(const std::string& alias);
+        pyexpr_ptr set_alias(const std::string& alias);
     
         // AND, OR and NOT
 
-        pyexpr_ptr Not();
-        pyexpr_ptr And(const PyExpression &other);
-        pyexpr_ptr Or(const PyExpression &other);
+        pyexpr_ptr not_();
+        pyexpr_ptr and_(const py_expression_t &other);
+        pyexpr_ptr or_(const py_expression_t &other);
 
-        pyexpr_ptr Ascending();
-        pyexpr_ptr Descending();
+        pyexpr_ptr ascending();
+        pyexpr_ptr descending();
 
     public:
 	    // Internal functions (not exposed to Python)
         
-        const Expression& GetExpression();
+        const expression_wrapper_t& get_expression();
 
-        static pyexpr_ptr AggregationExpression(const std::string& function_name,
-            const PyExpression& expr);
+        static pyexpr_ptr aggregation_expression(const std::string& function_name,
+            const py_expression_t& expr);
 
-        static pyexpr_ptr ScalarBinaryExpression(components::expressions::scalar_type type, 
-            const PyExpression& left, const PyExpression& right);
+        static pyexpr_ptr scalar_binary_expression(components::expressions::scalar_type type, 
+            const py_expression_t& left, const py_expression_t& right);
 
-        static pyexpr_ptr ScalarUnaryExpression(components::expressions::scalar_type type, 
-            const PyExpression& expr);
+        static pyexpr_ptr scalar_unary_expression(components::expressions::scalar_type type, 
+            const py_expression_t& expr);
 
-        static pyexpr_ptr ComparisonExpression(components::expressions::compare_type type, 
-            const PyExpression& left, const PyExpression& right);
+        static pyexpr_ptr comparison_expression(components::expressions::compare_type type, 
+            const py_expression_t& left, const py_expression_t& right);
 
-        static pyexpr_ptr ComparisonUnionExpression(components::expressions::compare_type type, 
-            const PyExpression& left, const PyExpression& right);
+        static pyexpr_ptr comparison_union_expression(components::expressions::compare_type type, 
+            const py_expression_t& left, const py_expression_t& right);
 
-        static pyexpr_ptr SortExpression(components::expressions::sort_order type, const PyExpression& expr);
+        static pyexpr_ptr sort_expression(components::expressions::sort_order type, const py_expression_t& expr);
     private:
-        Expression expr;
-        ExpressionFactory* factory;
+        expression_wrapper_t expr;
+        expression_factory_t* factory;
     };
 
 

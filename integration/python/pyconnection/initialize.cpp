@@ -5,46 +5,34 @@
 
 namespace otterbrix {
 
-    void InitializeConnectionMethods(py::class_<PyConnection, std::shared_ptr<PyConnection>> &m) {
-        m.def("cursor", &PyConnection::Cursor, "Create a duplicate of the current connection");
-        // PyConnection::Execute is overloaded (py::object query / logical_plan node);
+    void initialize_connection_methods(py::class_<py_connection_t, std::shared_ptr<py_connection_t>> &m) {
+        m.def("cursor", &py_connection_t::cursor, "Create a duplicate of the current connection");
+        // py_connection_t::execute is overloaded (py::object query / logical_plan node);
         // bind the Python-facing string-query overload explicitly.
         m.def("execute",
-                static_cast<pycursor_ptr (PyConnection::*)(const py::object&)>(&PyConnection::Execute),
+                static_cast<pycursor_ptr (py_connection_t::*)(const py::object&)>(&py_connection_t::execute),
                 "Execute the given SQL statement",
                 py::arg("query"));
-        m.def("sql", &PyConnection::RunQuery,
-                "Run a SQL query. If it is a SELECT statement, create a relation object from the given SQL query, otherwise "
-                "run the query as-is.",
-                py::arg("query"), py::kw_only(), py::arg("alias") = "");
-        m.def("query", &PyConnection::RunQuery,
-                "Run a SQL query. If it is a SELECT statement, create a relation object from the given SQL query, otherwise "
-                "run the query as-is.",
-                py::arg("query"), py::kw_only(), py::arg("alias") = "");
-        m.def("from_query", &PyConnection::RunQuery,
-                "Run a SQL query. If it is a SELECT statement, create a relation object from the given SQL query, otherwise "
-                "run the query as-is.",
-                py::arg("query"), py::kw_only(), py::arg("alias") = "");
 
-        m.def("from_df", &PyConnection::FromDF,
+        m.def("from_df", &py_connection_t::from_df,
                 "Create a relation object from the DataFrame in df", py::arg("df"));
-        m.def("from_object", &PyConnection::FromObject,
+        m.def("from_object", &py_connection_t::from_object,
                 "Create a relation object from the object in obj", py::arg("obj"));
-        m.def("close", &PyConnection::Close, "Close the connection");
+        m.def("close", &py_connection_t::close, "Close the connection");
     }
 
-    void PyConnection::Initialize(py::handle& m) {
-        auto connection_module = py::class_<PyConnection, std::shared_ptr<PyConnection>>(
+    void py_connection_t::initialize(py::handle& m) {
+        auto connection_module = py::class_<py_connection_t, std::shared_ptr<py_connection_t>>(
                 m, "OtterBrixPyConnection", py::module_local());
         
         connection_module
-                .def("listTables", &PyConnection::ListTables);
+                .def("listTables", &py_connection_t::list_tables);
     
         connection_module
-            .def("__enter__", &PyConnection::Enter)
-            .def("__exit__", &PyConnection::Exit,
+            .def("__enter__", &py_connection_t::enter)
+            .def("__exit__", &py_connection_t::exit,
                     py::arg("exc_type"), py::arg("exc"), py::arg("traceback"))
-            .def("__del__", &PyConnection::Close);
-        InitializeConnectionMethods(connection_module);
+            .def("__del__", &py_connection_t::close);
+        initialize_connection_methods(connection_module);
     }
 } // namespace otterbrix

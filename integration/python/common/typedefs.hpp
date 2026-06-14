@@ -42,7 +42,7 @@ namespace otterbrix {
     }
 
     template<class Target>
-    uintptr_t CastPointerToValue(Target *src) {
+    uintptr_t cast_pointer_to_value(Target *src) {
         return reinterpret_cast<uintptr_t>(src);
     }
 
@@ -57,14 +57,14 @@ namespace otterbrix {
     }
 
     template <typename T>
-    const T Load(const_data_ptr_t ptr) {
+    const T load(const_data_ptr_t ptr) {
         T ret;
         std::memcpy(&ret, ptr, sizeof(ret)); // NOLINT
         return ret;
     }
 
     template <typename T>
-    void Store(const T &val, data_ptr_t ptr) {
+    void store(const T &val, data_ptr_t ptr) {
         std::memcpy(ptr, static_cast<const void *>(&val), sizeof(val)); // NOLINT
     }
 

@@ -8,28 +8,28 @@
 #include <string>
 
 namespace otterbrix {
-    static void InitializeStaticMethods(py::module_ &m) {
+    static void initialize_static_methods(py::module_ &m) {
 	    const char *docs;
 
-        // Constant Expression
+        // Constant expression_wrapper_t
 	    docs = "Create a constant expression from the provided value";
-	    m.def("ConstantExpression", &PyExpression::ConstantExpression, 
+	    m.def("ConstantExpression", &py_expression_t::constant_expression, 
             py::arg("value"), py::arg("pyconnection"), docs);
         
-	    // ColumnRef Expression
+	    // ColumnRef expression_wrapper_t
 	    docs = "Create a column reference from the provided column name. `side` is one of \"left\", \"right\" or empty, used to disambiguate join conditions where both sides have the same column name.";
-	    m.def("ColumnExpression", &PyExpression::ColumnExpression,
+	    m.def("ColumnExpression", &py_expression_t::column_expression,
               py::arg("name"), py::arg("pyconnection"), py::arg("side") = std::string{}, docs);
        
-        // Count Expression 
+        // count expression_wrapper_t 
         docs = "Create a count expression for aggregation operations";
-        m.def("CountExpression", &PyExpression::CountExpression, py::arg("pyconnection"), docs);
+        m.def("CountExpression", &py_expression_t::count_expression, py::arg("pyconnection"), docs);
     }
 
-    static void InitializeDunderMethods(py::class_<PyExpression, std::shared_ptr<PyExpression>> &m) {
+    static void initialize_dunder_methods(py::class_<py_expression_t, std::shared_ptr<py_expression_t>> &m) {
 	    const char *docs;
 
-		m.def("__round__", &PyExpression::Round);
+		m.def("__round__", &py_expression_t::round);
 		docs = R"(
 			Computes the ceiling of the given value.
 
@@ -38,8 +38,8 @@ namespace otterbrix {
 			Returns:
 				A column for the computed results.
 		)";
-        m.def("__ceil__", &PyExpression::Ceil, docs);
-        m.def("__floor__", &PyExpression::Floor);
+        m.def("__ceil__", &py_expression_t::ceil, docs);
+        m.def("__floor__", &py_expression_t::floor);
 		docs = R"(
 			Mathematical Function: Computes the absolute value of the given column or expression.
 
@@ -48,9 +48,9 @@ namespace otterbrix {
 			Returns:
 				A new column object representing the absolute value of the input.
 		)";
-		m.def("__abs__",&PyExpression::Abs, docs);
+		m.def("__abs__",&py_expression_t::abs, docs);
      	docs = R"(
-    		Add expr to self
+    		add expr to self
     
     		Parameters:
     			expr: The expression to add together with
@@ -59,19 +59,19 @@ namespace otterbrix {
     			FunctionExpression: self '+' expr
     	)";
     
-    	m.def("__add__", &PyExpression::Add, py::arg("expr"), docs);
-    	m.def("__radd__", &PyExpression::Add, py::arg("expr"), docs);
+    	m.def("__add__", &py_expression_t::add, py::arg("expr"), docs);
+    	m.def("__radd__", &py_expression_t::add, py::arg("expr"), docs);
     
     	docs = R"(
-    		Negate the expression.
+    		negate the expression.
     
     		Returns:
     			FunctionExpression: -self
     	)";
-    	m.def("__neg__", &PyExpression::Negate, docs);
+    	m.def("__neg__", &py_expression_t::negate, docs);
     
     	docs = R"(
-    		Subtract expr from self
+    		subtract expr from self
     
     		Parameters:
     			expr: The expression to subtract from
@@ -79,11 +79,11 @@ namespace otterbrix {
     		Returns:
     			FunctionExpression: self '-' expr
     	)";
-    	m.def("__sub__", &PyExpression::Subtract, docs);
-    	m.def("__rsub__", &PyExpression::Subtract, docs);
+    	m.def("__sub__", &py_expression_t::subtract, docs);
+    	m.def("__rsub__", &py_expression_t::subtract, docs);
     
     	docs = R"(
-    		Multiply self by expr
+    		multiply self by expr
     
     		Parameters:
     			expr: The expression to multiply by
@@ -91,8 +91,8 @@ namespace otterbrix {
     		Returns:
     			FunctionExpression: self '*' expr
     	)";
-    	m.def("__mul__", &PyExpression::Multiply, docs);
-    	m.def("__rmul__", &PyExpression::Multiply, docs);
+    	m.def("__mul__", &py_expression_t::multiply, docs);
+    	m.def("__rmul__", &py_expression_t::multiply, docs);
     
     	docs = R"(
     		Divide self by expr
@@ -103,14 +103,14 @@ namespace otterbrix {
     		Returns:
     			FunctionExpression: self '/' expr
     	)";
-    	m.def("__div__", &PyExpression::Division, docs);
-    	m.def("__rdiv__", &PyExpression::Division, docs);
+    	m.def("__div__", &py_expression_t::division, docs);
+    	m.def("__rdiv__", &py_expression_t::division, docs);
     
-    	m.def("__truediv__", &PyExpression::Division, docs);
-    	m.def("__rtruediv__", &PyExpression::Division, docs);
+    	m.def("__truediv__", &py_expression_t::division, docs);
+    	m.def("__rtruediv__", &py_expression_t::division, docs);
     
     	docs = R"(
-    		Modulo self by expr
+    		modulo self by expr
     
     		Parameters:
     			expr: The expression to modulo by
@@ -118,11 +118,11 @@ namespace otterbrix {
     		Returns:
     			FunctionExpression: self '%' expr
     	)";
-    	m.def("__mod__", &PyExpression::Modulo, docs);
-    	m.def("__rmod__", &PyExpression::Modulo, docs);
+    	m.def("__mod__", &py_expression_t::modulo, docs);
+    	m.def("__rmod__", &py_expression_t::modulo, docs);
     
     	docs = R"(
-    		Power self by expr
+    		power self by expr
     
     		Parameters:
     			expr: The expression to power by
@@ -130,11 +130,11 @@ namespace otterbrix {
     		Returns:
     			FunctionExpression: self '**' expr
     	)";
-    	m.def("__pow__", &PyExpression::Power, docs);
-    	m.def("__rpow__", &PyExpression::Power, docs);
+    	m.def("__pow__", &py_expression_t::power, docs);
+    	m.def("__rpow__", &py_expression_t::power, docs);
     
     	docs = R"(
-    		Create an equality expression between two expressions
+    		create an equality expression between two expressions
     
     		Parameters:
     			expr: The expression to check equality with
@@ -144,7 +144,7 @@ namespace otterbrix {
     	)";
        
         docs = R"(
-            Create an equality expression between two expressions
+            create an equality expression between two expressions
 
             Parameters:
                 expr: The expression to check equality with
@@ -152,10 +152,10 @@ namespace otterbrix {
             Returns:
                 FunctionExpression: self '=' expr
         )";
-        m.def("__eq__", &PyExpression::Equality, docs);
+        m.def("__eq__", &py_expression_t::equality, docs);
 
         docs = R"(
-            Create an inequality expression between two expressions
+            create an inequality expression between two expressions
 
             Parameters:
                 expr: The expression to check inequality with
@@ -163,10 +163,10 @@ namespace otterbrix {
             Returns:
                 FunctionExpression: self '!=' expr
         )";
-        m.def("__ne__", &PyExpression::Inequality, docs);
+        m.def("__ne__", &py_expression_t::inequality, docs);
 
         docs = R"(
-            Create a greater than expression between two expressions
+            create a greater than expression between two expressions
 
             Parameters:
                 expr: The expression to check
@@ -174,10 +174,10 @@ namespace otterbrix {
             Returns:
                 FunctionExpression: self '>' expr
         )";
-        m.def("__gt__", &PyExpression::GreaterThan, docs);
+        m.def("__gt__", &py_expression_t::greater_than, docs);
 
         docs = R"(
-            Create a greater than or equal expression between two expressions
+            create a greater than or equal expression between two expressions
 
             Parameters:
                 expr: The expression to check
@@ -185,10 +185,10 @@ namespace otterbrix {
             Returns:
                 FunctionExpression: self '>=' expr
         )";
-        m.def("__ge__", &PyExpression::GreaterThanOrEqual, docs);
+        m.def("__ge__", &py_expression_t::greater_than_or_equal, docs);
 
         docs = R"(
-            Create a less than expression between two expressions
+            create a less than expression between two expressions
 
             Parameters:
                 expr: The expression to check
@@ -196,10 +196,10 @@ namespace otterbrix {
             Returns:
                 FunctionExpression: self '<' expr
         )";
-        m.def("__lt__", &PyExpression::LessThan, docs);
+        m.def("__lt__", &py_expression_t::less_than, docs);
 
         docs = R"(
-            Create a less than or equal expression between two expressions
+            create a less than or equal expression between two expressions
 
             Parameters:
                 expr: The expression to check
@@ -207,7 +207,7 @@ namespace otterbrix {
             Returns:
                 FunctionExpression: self '<=' expr
         )";
-        m.def("__le__", &PyExpression::LessThanOrEqual, docs);
+        m.def("__le__", &py_expression_t::less_than_or_equal, docs);
 
         docs = R"(
             A rlike expression based on a SQL REGEX match
@@ -218,9 +218,9 @@ namespace otterbrix {
             Returns:
                 FunctionExpression: selt REGEX pattern
         )";
-        m.def("rlike", &PyExpression::Regex, docs);
+        m.def("rlike", &py_expression_t::regex, docs);
 
-    	m.def("__and__", &PyExpression::And, docs);
+    	m.def("__and__", &py_expression_t::and_, docs);
     
     	docs = R"(
     		Binary-or self together with expr
@@ -231,15 +231,15 @@ namespace otterbrix {
     		Returns:
     			FunctionExpression: self '|' expr
     	)";
-    	m.def("__or__", &PyExpression::Or, docs);
+    	m.def("__or__", &py_expression_t::or_, docs);
     
     	docs = R"(
-    		Create a binary-not expression from self
+    		create a binary-not expression from self
     
     		Returns:
     			FunctionExpression: ~self
     	)";
-    	m.def("__invert__", &PyExpression::Not, docs);
+    	m.def("__invert__", &py_expression_t::not_, docs);
     
     	docs = R"(
     		Binary-and self together with expr
@@ -250,7 +250,7 @@ namespace otterbrix {
     		Returns:
     			FunctionExpression: expr '&' self
     	)";
-    	m.def("__rand__", &PyExpression::And, docs);
+    	m.def("__rand__", &py_expression_t::and_, docs);
     
     	docs = R"(
     		Binary-or self together with expr
@@ -261,33 +261,33 @@ namespace otterbrix {
     		Returns:
     			FunctionExpression: expr '|' self
     	)";
-    	m.def("__ror__", &PyExpression::Or, docs);
+    	m.def("__ror__", &py_expression_t::or_, docs);
     }
     
-    static void InitializeImplicitConversion(py::class_<PyExpression, std::shared_ptr<PyExpression>> & /*m*/) {
+    static void initialize_implicit_conversion(py::class_<py_expression_t, std::shared_ptr<py_expression_t>> & /*m*/) {
     }
-    void PyExpression::Initialize(py::module_ &m) {
+    void py_expression_t::initialize(py::module_ &m) {
         auto expression =
-	        py::class_<PyExpression, std::shared_ptr<PyExpression>>(m, "Expression", py::module_local());
-        InitializeStaticMethods(m);
-        InitializeDunderMethods(expression);
-	    InitializeImplicitConversion(expression);
+	        py::class_<py_expression_t, std::shared_ptr<py_expression_t>>(m, "Expression", py::module_local());
+        initialize_static_methods(m);
+        initialize_dunder_methods(expression);
+	    initialize_implicit_conversion(expression);
     	const char *docs;
     
     	docs = R"(
-    		Print the stringified version of the expression.
+    		print the stringified version of the expression.
     	)";
-    	expression.def("show", &PyExpression::Print, docs);
+    	expression.def("show", &py_expression_t::print, docs);
     
     	docs = R"(
-    		Set the order by modifier to ASCENDING.
+    		set the order by modifier to ASCENDING.
     	)";
-    	expression.def("asc", &PyExpression::Ascending, docs);
+    	expression.def("asc", &py_expression_t::ascending, docs);
     
     	docs = R"(
-    		Set the order by modifier to DESCENDING.
+    		set the order by modifier to DESCENDING.
     	)";
-    	expression.def("desc", &PyExpression::Descending, docs);
+    	expression.def("desc", &py_expression_t::descending, docs);
 
      	docs = R"(
      		Return the stringified version of the expression.
@@ -295,24 +295,24 @@ namespace otterbrix {
      		Returns:
      			str: The std::string representation.
      	)";
-     	expression.def("__repr__", &PyExpression::ToString, docs);
+     	expression.def("__repr__", &py_expression_t::to_string, docs);
      
      	docs = R"(
-     		Create a copy of this expression with the given alias.
+     		create a copy of this expression with the given alias.
      
      		Parameters:
      			name: The alias to use for the expression, this will affect how it can be referenced.
      
      		Returns:
-     			Expression: self with an alias.
+     			expression_wrapper_t: self with an alias.
      	)";
-     	expression.def("alias", &PyExpression::SetAlias, docs);
+     	expression.def("alias", &py_expression_t::set_alias, docs);
 
-		expression.def("count", &PyExpression::Count);
-        expression.def("sum", &PyExpression::Sum);
-        expression.def("min", &PyExpression::Min);
-        expression.def("max", &PyExpression::Max);
-        expression.def("avg", &PyExpression::Avg);
+		expression.def("count", &py_expression_t::count);
+        expression.def("sum", &py_expression_t::sum);
+        expression.def("min", &py_expression_t::min);
+        expression.def("max", &py_expression_t::max);
+        expression.def("avg", &py_expression_t::avg);
 
     }
 } // namespace otterbrix

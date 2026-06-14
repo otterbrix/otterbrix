@@ -6,12 +6,12 @@
 
 namespace otterbrix {             
 
-    class OtterBrixPyTyping {         
+    class otterbrix_py_typing_t {         
     public:                        
-        OtterBrixPyTyping() = delete; 
+        otterbrix_py_typing_t() = delete; 
     
     public:
-        static void Initialize(py::module_ &m);
+        static void initialize(py::module_ &m);
     };
   
 } // namespace otterbrix

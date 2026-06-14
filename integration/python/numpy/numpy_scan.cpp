@@ -25,7 +25,7 @@ static core::error_t make_error(std::pmr::memory_resource *resource, const std::
 }
 
 template <class T>
-void ScanNumpyColumn(py::array &numpy_col, idx_t stride, idx_t offset, vector_t &out, idx_t count) {
+void scan_numpy_column(py::array &numpy_col, idx_t stride, idx_t offset, vector_t &out, idx_t count) {
 	auto src_ptr = static_cast<const T*>(numpy_col.data());
 	auto tgt_ptr = out.data<T>();
 	if (stride == sizeof(T)) {
@@ -39,7 +39,7 @@ void ScanNumpyColumn(py::array &numpy_col, idx_t stride, idx_t offset, vector_t 
 }
 
 template <class T, class V>
-void ScanNumpyCategoryTemplated(py::array &column, idx_t offset, vector_t &out, idx_t count) {
+void scan_numpy_category_templated(py::array &column, idx_t offset, vector_t &out, idx_t count) {
 	auto src_ptr = static_cast<const T*>(column.data());
 	auto tgt_ptr = out.data<T>(); 
 	auto &tgt_mask = out.validity();
@@ -54,21 +54,21 @@ void ScanNumpyCategoryTemplated(py::array &column, idx_t offset, vector_t &out, 
 }
 
 template <class T>
-core::error_t ScanNumpyCategory(std::pmr::memory_resource *resource, py::array &column, idx_t count, idx_t offset, vector_t &out, std::string &src_type) {
+core::error_t scan_numpy_category(std::pmr::memory_resource *resource, py::array &column, idx_t count, idx_t offset, vector_t &out, std::string &src_type) {
 	if (src_type == "int8") {
-		ScanNumpyCategoryTemplated<int8_t, T>(column, offset, out, count);
+		scan_numpy_category_templated<int8_t, T>(column, offset, out, count);
 	} else if (src_type == "int16") {
-		ScanNumpyCategoryTemplated<int16_t, T>(column, offset, out, count);
+		scan_numpy_category_templated<int16_t, T>(column, offset, out, count);
 	} else if (src_type == "int32") {
-		ScanNumpyCategoryTemplated<int32_t, T>(column, offset, out, count);
+		scan_numpy_category_templated<int32_t, T>(column, offset, out, count);
 	} else if (src_type == "int64") {
-		ScanNumpyCategoryTemplated<int64_t, T>(column, offset, out, count);
+		scan_numpy_category_templated<int64_t, T>(column, offset, out, count);
 	} else {
 		return make_error(resource, "The Pandas type " + src_type + " for categorical types is not implemented yet");
 	}
 	return core::error_t::no_error();
 }
-static void ApplyMask(PandasColumnBindData &bind_data, components::vector::validity_mask_t &validity, idx_t count, idx_t offset) {
+static void apply_mask(pandas_column_bind_data_t &bind_data, components::vector::validity_mask_t &validity, idx_t count, idx_t offset) {
     assert(bind_data.mask);
     auto mask = reinterpret_cast<const bool *>(bind_data.mask->numpy_array.data());
     for (idx_t i = 0; i < count; i++) {
@@ -81,19 +81,19 @@ static void ApplyMask(PandasColumnBindData &bind_data, components::vector::valid
 
 
 template <class T>
-void ScanNumpyMasked(PandasColumnBindData &bind_data, idx_t count, idx_t offset, vector_t &out) {
-	assert(bind_data.pandas_col->Backend() == PandasColumnBackend::NUMPY);
-	auto &numpy_col = reinterpret_cast<PandasNumpyColumn &>(*bind_data.pandas_col);
-	ScanNumpyColumn<T>(numpy_col.array, numpy_col.stride, offset, out, count);
+void scan_numpy_masked(pandas_column_bind_data_t &bind_data, idx_t count, idx_t offset, vector_t &out) {
+	assert(bind_data.pandas_col->backend() == pandas_column_backend_t::NUMPY);
+	auto &numpy_col = reinterpret_cast<pandas_numpy_column_t &>(*bind_data.pandas_col);
+	scan_numpy_column<T>(numpy_col.array, numpy_col.stride, offset, out, count);
     if (bind_data.mask) {
         auto &result_mask = out.validity();
-        ApplyMask(bind_data, result_mask, count, offset);
+        apply_mask(bind_data, result_mask, count, offset);
     }
 
 }
 
 template <class T>
-void ScanNumpyFpColumn(PandasColumnBindData &bind_data, const T *src_ptr, idx_t stride, idx_t count, idx_t offset, vector_t &out) {
+void scan_numpy_fp_column(pandas_column_bind_data_t &bind_data, const T *src_ptr, idx_t stride, idx_t count, idx_t offset, vector_t &out) {
 	auto &mask = out.validity();
 	auto tgt_ptr = out.data<T>();
 	if (stride == sizeof(T)) {
@@ -114,14 +114,14 @@ void ScanNumpyFpColumn(PandasColumnBindData &bind_data, const T *src_ptr, idx_t 
 	}
     if (bind_data.mask) {
         auto &result_mask = out.validity();
-        ApplyMask(bind_data, result_mask, count, offset);
+        apply_mask(bind_data, result_mask, count, offset);
 
     }
 }
 
 
 template <class T>
-static std::string_view DecodePythonUnicode(T *codepoints, idx_t codepoint_count, vector_t &out) {
+static std::string_view decode_python_unicode(T *codepoints, idx_t codepoint_count, vector_t &out) {
 	// first figure out how many bytes to allocate
 	idx_t utf8_length = 0;
 	for (idx_t i = 0; i < codepoint_count; i++) {
@@ -155,28 +155,28 @@ static std::string_view DecodePythonUnicode(T *codepoints, idx_t codepoint_count
 	return result;
 }
 
-static void SetInvalidRecursive(vector_t &out, idx_t index) {
+static void set_invalid_recursive(vector_t &out, idx_t index) {
 	auto &validity = out.validity(); 
 	validity.set_invalid(index);
 	if (out.type().to_physical_type() == components::types::physical_type::STRUCT) {
 		auto &children = out.entries(); 
 		for (idx_t i = 0; i < children.size(); i++) {
-			SetInvalidRecursive(*children[i], index);
+			set_invalid_recursive(*children[i], index);
 		}
 	}
 }
 
 //! 'count' is the amount of rows in the 'out' vector
 //! 'offset' is the current row number within this vector
-core::error_t ScanNumpyObject(std::pmr::memory_resource *resource, PyObject *object, idx_t offset, vector_t &out) {
+core::error_t scan_numpy_object(std::pmr::memory_resource *resource, PyObject *object, idx_t offset, vector_t &out) {
 
 	// handle None
 	if (object == Py_None) {
-		SetInvalidRecursive(out, offset);
+		set_invalid_recursive(out, offset);
 		return core::error_t::no_error();
 	}
 
-	auto val = TransformPythonValue(resource, object, out.type());
+	auto val = transform_python_value(resource, object, out.type());
 	if (val.has_error()) {
 		return val.error();
 	}
@@ -185,22 +185,22 @@ core::error_t ScanNumpyObject(std::pmr::memory_resource *resource, PyObject *obj
 	return core::error_t::no_error();
 }
 
-core::error_t NumpyScan::ScanObjectColumn(std::pmr::memory_resource *resource, PyObject **col, idx_t stride, idx_t count, idx_t offset, vector_t &out) {
+core::error_t numpy_scan_t::scan_object_column(std::pmr::memory_resource *resource, PyObject **col, idx_t stride, idx_t count, idx_t offset, vector_t &out) {
 	// numpy_col is a sequential list of objects, that make up one "column" (Vector)
 	out.set_vector_type(components::vector::vector_type::FLAT);
-	PythonGILWrapper gil; // We're creating python objects here, so we need the GIL
+	python_gil_wrapper_t gil; // We're creating python objects here, so we need the GIL
 
 	if (stride == sizeof(PyObject *)) {
 		auto src_ptr = col + offset;
 		for (idx_t i = 0; i < count; i++) {
-			if (auto err = ScanNumpyObject(resource, src_ptr[i], i, out); err.contains_error()) {
+			if (auto err = scan_numpy_object(resource, src_ptr[i], i, out); err.contains_error()) {
 				return err;
 			}
 		}
 	} else {
 		for (idx_t i = 0; i < count; i++) {
 			auto src_ptr = col[stride / sizeof(PyObject *) * (i + offset)];
-			if (auto err = ScanNumpyObject(resource, src_ptr, i, out); err.contains_error()) {
+			if (auto err = scan_numpy_object(resource, src_ptr, i, out); err.contains_error()) {
 				return err;
 			}
 		}
@@ -210,77 +210,77 @@ core::error_t NumpyScan::ScanObjectColumn(std::pmr::memory_resource *resource, P
 
 //! 'offset' is the offset within the column
 //! 'count' is the amount of values we will convert in this batch
-core::error_t NumpyScan::Scan(std::pmr::memory_resource *resource, PandasColumnBindData &bind_data, idx_t count, idx_t offset, vector_t &out) {
-	assert(bind_data.pandas_col->Backend() == PandasColumnBackend::NUMPY);
-	auto &numpy_col = reinterpret_cast<PandasNumpyColumn &>(*bind_data.pandas_col);
+core::error_t numpy_scan_t::scan(std::pmr::memory_resource *resource, pandas_column_bind_data_t &bind_data, idx_t count, idx_t offset, vector_t &out) {
+	assert(bind_data.pandas_col->backend() == pandas_column_backend_t::NUMPY);
+	auto &numpy_col = reinterpret_cast<pandas_numpy_column_t &>(*bind_data.pandas_col);
 	auto &array = numpy_col.array;
 
 	switch (bind_data.numpy_type.type) {
-	case NumpyNullableType::BOOL:
-		ScanNumpyMasked<bool>(bind_data, count, offset, out);
+	case numpy_nullable_type_t::BOOL:
+		scan_numpy_masked<bool>(bind_data, count, offset, out);
 		break;
-	case NumpyNullableType::UINT_8:
-		ScanNumpyMasked<uint8_t>(bind_data, count, offset, out);
+	case numpy_nullable_type_t::UINT_8:
+		scan_numpy_masked<uint8_t>(bind_data, count, offset, out);
 		break;
-	case NumpyNullableType::UINT_16:
-		ScanNumpyMasked<uint16_t>(bind_data, count, offset, out);
+	case numpy_nullable_type_t::UINT_16:
+		scan_numpy_masked<uint16_t>(bind_data, count, offset, out);
 		break;
-	case NumpyNullableType::UINT_32:
-		ScanNumpyMasked<uint32_t>(bind_data, count, offset, out);
+	case numpy_nullable_type_t::UINT_32:
+		scan_numpy_masked<uint32_t>(bind_data, count, offset, out);
 		break;
-	case NumpyNullableType::UINT_64:
-		ScanNumpyMasked<uint64_t>(bind_data, count, offset, out);
+	case numpy_nullable_type_t::UINT_64:
+		scan_numpy_masked<uint64_t>(bind_data, count, offset, out);
 		break;
-	case NumpyNullableType::INT_8:
-		ScanNumpyMasked<int8_t>(bind_data, count, offset, out);
+	case numpy_nullable_type_t::INT_8:
+		scan_numpy_masked<int8_t>(bind_data, count, offset, out);
 		break;
-	case NumpyNullableType::INT_16:
-		ScanNumpyMasked<int16_t>(bind_data, count, offset, out);
+	case numpy_nullable_type_t::INT_16:
+		scan_numpy_masked<int16_t>(bind_data, count, offset, out);
 		break;
-	case NumpyNullableType::INT_32:
-		ScanNumpyMasked<int32_t>(bind_data, count, offset, out);
+	case numpy_nullable_type_t::INT_32:
+		scan_numpy_masked<int32_t>(bind_data, count, offset, out);
 		break;
-	case NumpyNullableType::INT_64:
-		ScanNumpyMasked<int64_t>(bind_data, count, offset, out);
+	case numpy_nullable_type_t::INT_64:
+		scan_numpy_masked<int64_t>(bind_data, count, offset, out);
 		break;
-	case NumpyNullableType::FLOAT_32:
-		ScanNumpyFpColumn<float>(bind_data, reinterpret_cast<const float *>(array.data()), numpy_col.stride, count, offset, out);
+	case numpy_nullable_type_t::FLOAT_32:
+		scan_numpy_fp_column<float>(bind_data, reinterpret_cast<const float *>(array.data()), numpy_col.stride, count, offset, out);
 		break;
-	case NumpyNullableType::FLOAT_64:
-		ScanNumpyFpColumn<double>(bind_data, reinterpret_cast<const double *>(array.data()), numpy_col.stride, count, offset, out);
+	case numpy_nullable_type_t::FLOAT_64:
+		scan_numpy_fp_column<double>(bind_data, reinterpret_cast<const double *>(array.data()), numpy_col.stride, count, offset, out);
 		break;
-	case NumpyNullableType::STRING:
-	case NumpyNullableType::OBJECT: {
-		// Get the source pointer of the numpy array
+	case numpy_nullable_type_t::STRING:
+	case numpy_nullable_type_t::OBJECT: {
+		// get the source pointer of the numpy array
 		auto src_ptr = reinterpret_cast<PyObject **>(const_cast<void *>(array.data())); // NOLINT
-		const bool is_object_col = bind_data.numpy_type.type == NumpyNullableType::OBJECT;
+		const bool is_object_col = bind_data.numpy_type.type == numpy_nullable_type_t::OBJECT;
 		if (is_object_col && out.type().type() != components::types::logical_type::STRING_LITERAL) {
 			//! We have determined the underlying logical type of this object column
-			return NumpyScan::ScanObjectColumn(resource, src_ptr, numpy_col.stride, count, offset, out);
+			return numpy_scan_t::scan_object_column(resource, src_ptr, numpy_col.stride, count, offset, out);
 		}
 
-		// Get the data pointer and the validity mask of the result vector
+		// get the data pointer and the validity mask of the result vector
 		auto tgt_ptr = out.data<std::string_view>(); 
 		auto &out_mask = out.validity();
-		std::unique_ptr<PythonGILWrapper> gil;
-		auto &import_cache = ConnectionEnvironment::ImportCache();
+		std::unique_ptr<python_gil_wrapper_t> gil;
+		auto &import_cache = connection_environment_t::import_cache();
 
 		// Loop over every row of the arrays contents
 		auto stride = numpy_col.stride;
 		for (idx_t row = 0; row < count; row++) {
 			auto source_idx = stride / sizeof(PyObject *) * (row + offset);
 
-			// Get the pointer to the object
+			// get the pointer to the object
 			PyObject *val = src_ptr[source_idx];
 			if (!py::isinstance<py::str>(val)) {
 				if (val == Py_None) {
 					out_mask.set_invalid(row);
 					continue;
 				}
-				if (import_cache.pandas.NaT(false)) {
-					// If pandas is imported, check if this is pandas.NaT
+				if (import_cache.pandas.na_t(false)) {
+					// If pandas is imported, check if this is pandas.na_t
 					py::handle value(val);
-					if (value.is(import_cache.pandas.NaT())) {
+					if (value.is(import_cache.pandas.na_t())) {
 						out_mask.set_invalid(row);
 						continue;
 					}
@@ -299,10 +299,10 @@ core::error_t NumpyScan::Scan(std::pmr::memory_resource *resource, PandasColumnB
 				}
 				if (!py::isinstance<py::str>(val)) {
 					if (!gil) {
-						gil = std::make_unique<PythonGILWrapper>();
+						gil = std::make_unique<python_gil_wrapper_t>();
 					}
-					bind_data.object_str_val.Push(std::move(py::str(val)));
-					val = reinterpret_cast<PyObject *>(bind_data.object_str_val.LastAddedObject().ptr());
+					bind_data.object_str_val.push(std::move(py::str(val)));
+					val = reinterpret_cast<PyObject *>(bind_data.object_str_val.last_added_object().ptr());
 				}
 			}
 			// Python 3 string representation:
@@ -318,7 +318,7 @@ core::error_t NumpyScan::Scan(std::pmr::memory_resource *resource, PandasColumnB
 #pragma GCC diagnostic pop
 			{
 				// ascii string: we can zero copy
-				tgt_ptr[row] = std::string_view(PyUtil::PyUnicodeData(val_handle), PyUtil::PyUnicodeGetLength(val_handle));
+				tgt_ptr[row] = std::string_view(py_util_t::PyUnicodeData(val_handle), py_util_t::PyUnicodeGetLength(val_handle));
 			} else {
 				// unicode gunk
 				auto unicode_obj = reinterpret_cast<PyCompactUnicodeObject *>(val);
@@ -326,21 +326,21 @@ core::error_t NumpyScan::Scan(std::pmr::memory_resource *resource, PandasColumnB
 				if (unicode_obj->utf8) {
 					// there is! zero copy
 					tgt_ptr[row] = std::string_view(const_char_ptr_cast(unicode_obj->utf8), static_cast<std::string_view::size_type>(unicode_obj->utf8_length));
-				} else if (PyUtil::PyUnicodeIsCompact(unicode_obj) &&
-				           !PyUtil::PyUnicodeIsASCII(unicode_obj)) { // NOLINT
-					auto kind = PyUtil::PyUnicodeKind(val_handle);
+				} else if (py_util_t::PyUnicodeIsCompact(unicode_obj) &&
+				           !py_util_t::PyUnicodeIsASCII(unicode_obj)) { // NOLINT
+					auto kind = py_util_t::PyUnicodeKind(val_handle);
 					switch (kind) {
 					case PyUnicode_1BYTE_KIND:
-						tgt_ptr[row] = DecodePythonUnicode<Py_UCS1>(PyUtil::PyUnicode1ByteData(val_handle),
-						                                            PyUtil::PyUnicodeGetLength(val_handle), out);
+						tgt_ptr[row] = decode_python_unicode<Py_UCS1>(py_util_t::PyUnicode1ByteData(val_handle),
+						                                            py_util_t::PyUnicodeGetLength(val_handle), out);
 						break;
 					case PyUnicode_2BYTE_KIND:
-						tgt_ptr[row] = DecodePythonUnicode<Py_UCS2>(PyUtil::PyUnicode2ByteData(val_handle),
-						                                            PyUtil::PyUnicodeGetLength(val_handle), out);
+						tgt_ptr[row] = decode_python_unicode<Py_UCS2>(py_util_t::PyUnicode2ByteData(val_handle),
+						                                            py_util_t::PyUnicodeGetLength(val_handle), out);
 						break;
 					case PyUnicode_4BYTE_KIND:
-						tgt_ptr[row] = DecodePythonUnicode<Py_UCS4>(PyUtil::PyUnicode4ByteData(val_handle),
-						                                            PyUtil::PyUnicodeGetLength(val_handle), out);
+						tgt_ptr[row] = decode_python_unicode<Py_UCS4>(py_util_t::PyUnicode4ByteData(val_handle),
+						                                            py_util_t::PyUnicodeGetLength(val_handle), out);
 						break;
 					default:
 						return make_error(resource,
@@ -353,7 +353,7 @@ core::error_t NumpyScan::Scan(std::pmr::memory_resource *resource, PandasColumnB
 		}
 		break;
 	}
-	case NumpyNullableType::CATEGORY:
+	case numpy_nullable_type_t::CATEGORY:
 			return make_error(resource, "OtterBrix doen\'t support Categories/ENUMs");
 
 	default:

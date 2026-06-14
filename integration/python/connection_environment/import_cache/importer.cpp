@@ -6,14 +6,14 @@
 
 namespace otterbrix {
 
-py::handle PythonImporter::Import(std::stack<std::reference_wrapper<PythonImportCacheItem>> &hierarchy, bool load) {
-    auto &import_cache = ConnectionEnvironment::ImportCache();
+py::handle python_importer_t::import(std::stack<std::reference_wrapper<python_import_cache_item_t>> &hierarchy, bool load) {
+    auto &import_cache = connection_environment_t::import_cache();
     py::handle source(nullptr);
     while (!hierarchy.empty()) {
         // From top to bottom, import them
         auto &item = hierarchy.top();
         hierarchy.pop();
-        source = item.get().Load(import_cache, source, load);
+        source = item.get().load(import_cache, source, load);
         if (!source) {
             // If load is false, or the module load fails and is not required, we return early
             break;

@@ -10,9 +10,9 @@
 
 namespace otterbrix {
 
-struct PythonImporter {
+struct python_importer_t {
 public:
-	static py::handle Import(std::stack<std::reference_wrapper<PythonImportCacheItem>> &hierarchy, bool load = true);
+	static py::handle import(std::stack<std::reference_wrapper<python_import_cache_item_t>> &hierarchy, bool load = true);
 };
 
 } // namespace otterbrix

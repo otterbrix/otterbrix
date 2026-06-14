@@ -4,21 +4,21 @@
 
 namespace otterbrix {
 
-struct PathlibCacheItem : public PythonImportCacheItem {
+struct pathlib_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "pathlib";
+	static constexpr const char *name = "pathlib";
 
 public:
-	PathlibCacheItem() : PythonImportCacheItem("pathlib"), Path("Path", this) {
+	pathlib_cache_item_t() : python_import_cache_item_t("pathlib"), Path("Path", this) {
 	}
-	~PathlibCacheItem() override {
+	~pathlib_cache_item_t() override {
 	}
 
-	PythonImportCacheItem Path;
+	python_import_cache_item_t Path;
 
 protected:
-	bool IsRequired() const override final {
+	bool is_required() const override final {
 		return false;
 	}
 };

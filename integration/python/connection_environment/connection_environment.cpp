@@ -6,27 +6,27 @@
 
 namespace otterbrix {
 
-    std::shared_ptr<PythonImportCache> ConnectionEnvironment::import_cache = nullptr;
+    std::shared_ptr<python_import_cache_t> connection_environment_t::import_cache_ = nullptr;
 
-    boost::intrusive_ptr<otterbrix_t> ConnectionEnvironment::MakeSpace(const std::filesystem::path& path) {
+    boost::intrusive_ptr<otterbrix_t> connection_environment_t::make_space(const std::filesystem::path& path) {
         std::filesystem::remove_all(path);
         std::filesystem::create_directory(path);
         return make_otterbrix(configuration::config::create_config(path));
     }
 
-    void ConnectionEnvironment::Cleanup() { import_cache.reset(); }
+    void connection_environment_t::cleanup() { import_cache_.reset(); }
 
-    void ConnectionEnvironment::ThrowConnectionException() {
+    void connection_environment_t::throw_connection_exception() {
         throw std::runtime_error("Connection already closed!");
     }
 
-    bool ConnectionEnvironment::IsJupyter() { return false; }
+    bool connection_environment_t::is_jupyter() { return false; }
 
-    PythonImportCache& ConnectionEnvironment::ImportCache() {
-        if (!import_cache) {
-            import_cache = std::make_shared<PythonImportCache>();
+    python_import_cache_t& connection_environment_t::import_cache() {
+        if (!import_cache_) {
+            import_cache_ = std::make_shared<python_import_cache_t>();
         }
-        return *(import_cache.get());
+        return *(import_cache_.get());
     }
 
 } // namespace otterbrix

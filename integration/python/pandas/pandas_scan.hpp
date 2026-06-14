@@ -4,7 +4,7 @@
 #include <memory>
 
 #include <pybind11/pybind_wrapper.hpp>
-#include <core/typedefs.hpp> 
+#include <common/typedefs.hpp> 
 #include <components/function/function.hpp>
 #include <components/function/table_function.hpp>
 #include <components/types/types.hpp>
@@ -15,39 +15,39 @@
 
 namespace otterbrix {
 
-struct PandasScanFunction : public components::function::TableFunction {
+struct pandas_scan_function_t : public components::function::table_function_t {
 public:
     static constexpr idx_t PANDAS_PARTITION_COUNT = 50 * components::vector::DEFAULT_VECTOR_CAPACITY;
 
 public:
-    PandasScanFunction();
+    pandas_scan_function_t();
 
-    static std::unique_ptr<components::function::FunctionData> PandasScanBind(components::function::TableFunctionBindInput &input,
+    static std::unique_ptr<components::function::function_data_t> pandas_scan_bind(components::function::table_function_bind_input_t &input,
             std::vector<components::types::complex_logical_type> &return_types, std::vector<std::string> &names);
 
-    static std::unique_ptr<components::function::GlobalTableFunctionState> PandasScanInitGlobal(components::function::TableFunctionInitInput &input);
+    static std::unique_ptr<components::function::global_table_function_state_t> pandas_scan_init_global(components::function::table_function_init_input_t &input);
 
-    static std::unique_ptr<components::function::LocalTableFunctionState>PandasScanInitLocal(components::function::TableFunctionInitInput &input, 
-            components::function::GlobalTableFunctionState *gstate);
+    static std::unique_ptr<components::function::local_table_function_state_t>pandas_scan_init_local(components::function::table_function_init_input_t &input, 
+            components::function::global_table_function_state_t *gstate);
 
-    static idx_t PandasScanMaxThreads(const components::function::FunctionData *bind_data_p);
+    static idx_t pandas_scan_max_threads(const components::function::function_data_t *bind_data_p);
 
-    static bool PandasScanParallelStateNext(const components::function::FunctionData *bind_data_p,
-            components::function::LocalTableFunctionState *lstate, 
-            components::function::GlobalTableFunctionState *gstate);
+    static bool pandas_scan_parallel_state_next(const components::function::function_data_t *bind_data_p,
+            components::function::local_table_function_state_t *lstate, 
+            components::function::global_table_function_state_t *gstate);
 
     //! The main pandas scan function: note that this can be called in parallel without the GIL
     //! hence this needs to be GIL-safe, i.e. no methods that create Python objects are allowed
-    static void PandasScanFunc(components::function::TableFunctionInput &data_p, components::vector::data_chunk_t &output);
+    static void pandas_scan_func(components::function::table_function_input_t &data_p, components::vector::data_chunk_t &output);
 
-    static idx_t PandasScanGetBatchIndex(const components::function::FunctionData *bind_data_p,
-            components::function::LocalTableFunctionState *local_state,
-            components::function::GlobalTableFunctionState *global_state);
+    static idx_t pandas_scan_get_batch_index(const components::function::function_data_t *bind_data_p,
+            components::function::local_table_function_state_t *local_state,
+            components::function::global_table_function_state_t *global_state);
 
     // Helper function that transform pandas df names to make them work with our binder
-    static py::object PandasReplaceCopiedNames(const py::object &original_df);
+    static py::object pandas_replace_copied_names(const py::object &original_df);
 
-    static void PandasBackendScanSwitch(PandasColumnBindData &bind_data,
+    static void pandas_backend_scan_switch(pandas_column_bind_data_t &bind_data,
             idx_t count, idx_t offset, components::vector::vector_t &out);
 };
 

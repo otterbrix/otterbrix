@@ -4,22 +4,22 @@
 
 namespace otterbrix {
 
-struct PolarsCacheItem : public PythonImportCacheItem {
+struct polars_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "polars";
+	static constexpr const char *name = "polars";
 
 public:
-	PolarsCacheItem() : PythonImportCacheItem("polars"), DataFrame("DataFrame", this), LazyFrame("LazyFrame", this) {
+	polars_cache_item_t() : python_import_cache_item_t("polars"), data_frame("DataFrame", this), lazy_frame("LazyFrame", this) {
 	}
-	~PolarsCacheItem() override {
+	~polars_cache_item_t() override {
 	}
 
-	PythonImportCacheItem DataFrame;
-	PythonImportCacheItem LazyFrame;
+	python_import_cache_item_t data_frame;
+	python_import_cache_item_t lazy_frame;
 
 protected:
-	bool IsRequired() const override final {
+	bool is_required() const override final {
 		return false;
 	}
 };

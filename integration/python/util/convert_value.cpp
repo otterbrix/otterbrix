@@ -1,7 +1,7 @@
 #include "convert_value.hpp"
 
 #include <native/python_objects.hpp>
-#include <core/typedefs.hpp>
+#include <common/typedefs.hpp>
 
 #include <stdexcept>
 #include <string>
@@ -64,7 +64,7 @@ namespace otterbrix {
 
         } // namespace
 
-        py::object LogicalValueToPython(const logical_value_t& value,
+        py::object logical_value_to_python(const logical_value_t& value,
                 const complex_logical_type& type) {
             if (value.is_null()) {
                 return py::none();
@@ -75,31 +75,31 @@ namespace otterbrix {
                 convertible_numeric_physical_to_double(physical)) {
                 return py::cast(numeric_logical_value_as_double(value));
             }
-            auto result = PythonObject::FromValue(value.resource(), value, type);
+            auto result = python_object_t::from_value(value.resource(), value, type);
             if (result.has_error()) {
                 throw std::runtime_error(std::string(result.error().what));
             }
             return std::move(result.value());
         }
 
-        py::dict CursorRowToPythonDict(components::cursor::cursor_t_ptr& cursor,
+        py::dict cursor_row_to_python_dict(components::cursor::cursor_t_ptr& cursor,
                 uint64_t row_idx,
                 const std::vector<components::table::column_definition_t>& col_defs) {
             py::dict result;
             for (idx_t i = 0; i < col_defs.size(); i++) {
                 auto val = cursor->value(i, row_idx);
-                result[py::str(col_defs[i].name())] = LogicalValueToPython(val, col_defs[i].type());
+                result[py::str(col_defs[i].name())] = logical_value_to_python(val, col_defs[i].type());
             }
             return result;
         }
 
-        py::dict DataChunkRowToPythonDict(const components::vector::data_chunk_t& chunk,
+        py::dict data_chunk_row_to_python_dict(const components::vector::data_chunk_t& chunk,
                 uint64_t row_idx,
                 const std::vector<components::table::column_definition_t>& col_defs) {
             py::dict result;
             for (idx_t i = 0; i < col_defs.size(); i++) {
                 auto val = chunk.value(i, row_idx);
-                result[py::str(col_defs[i].name())] = LogicalValueToPython(val, col_defs[i].type());
+                result[py::str(col_defs[i].name())] = logical_value_to_python(val, col_defs[i].type());
             }
             return result;
         }

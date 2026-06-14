@@ -23,13 +23,13 @@ using namespace otterbrix;
 
 PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
 
-    OtterBrixPyTyping::Initialize(m);
-    TypeCreation::Initialize(m);
-    PyExpression::Initialize(m);
-    PyRelation::Initialize(m);
-    PyConnection::Initialize(m);
+    otterbrix_py_typing_t::initialize(m);
+    type_creation::initialize(m);
+    py_expression_t::initialize(m);
+    py_relation_t::initialize(m);
+    py_connection_t::initialize(m);
 
-    m.def("connect", &PyConnection::Connect,
+    m.def("connect", &py_connection_t::connect,
           "Create a OtterBrix database instance. Can take a database file name to read/write persistent data and a "
           "read_only flag if no changes are desired",
           pybind11::arg("database") = "default", pybind11::arg("read_only") = false,
@@ -37,7 +37,7 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
 
     // https://pybind11.readthedocs.io/en/stable/advanced/misc.html#module-destructors
     auto clean_default_connection = []() {
-        PyConnection::Cleanup();
+        py_connection_t::cleanup();
     };
     m.add_object("_clean_default_connection", pybind11::capsule(clean_default_connection));
 

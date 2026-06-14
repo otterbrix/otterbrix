@@ -32,26 +32,25 @@ namespace otterbrix {
         std::pmr::vector<components::table::column_definition_t> columns;
     };
 
-    class RelationFactory {
+    class relation_factory_t {
     public:
-        RelationFactory(const boost::intrusive_ptr<otterbrix_t>& space);
-        virtual ~RelationFactory();
-        void SetNullSpace();
+        relation_factory_t(const boost::intrusive_ptr<otterbrix_t>& space);
+        virtual ~relation_factory_t();
+        void set_null_space();
 
         // Chaining operations: each takes the source node + its column schema
         // and returns the new node + its (eagerly recomputed) column schema.
-        built_relation_t FilterRelation(const built_relation_t& relation, const Expression& condition);
-        built_relation_t SortRelation(const built_relation_t& relation, const std::vector<Expression>& exprs);
-        built_relation_t GroupRelation(const built_relation_t& relation, const std::vector<Expression>& exprs);
-        built_relation_t SelectRelation(const built_relation_t& relation, const std::vector<Expression>& exprs);
+        built_relation_t filter_relation(const built_relation_t& relation, const expression_wrapper_t& condition);
+        built_relation_t sort_relation(const built_relation_t& relation, const std::vector<expression_wrapper_t>& exprs);
+        built_relation_t group_relation(const built_relation_t& relation, const std::vector<expression_wrapper_t>& exprs);
+        built_relation_t select_relation(const built_relation_t& relation, const std::vector<expression_wrapper_t>& exprs);
 
-        built_relation_t JoinRelation(const built_relation_t& relation, const built_relation_t& other,
-                const std::vector<Expression>& exprs, components::logical_plan::join_type type);
+        built_relation_t join_relation(const built_relation_t& relation, const built_relation_t& other,
+                const std::vector<expression_wrapper_t>& exprs, components::logical_plan::join_type type);
 
-        built_relation_t LimitRelation(const built_relation_t& relation, int64_t count);
+        built_relation_t limit_relation(const built_relation_t& relation, int64_t count);
 
-        built_relation_t CreateFromSelect(components::logical_plan::node_ptr plan);
-        built_relation_t CreateDFRelation(std::unique_ptr<components::tableref::TableRef> tableref);
+        built_relation_t create_df_relation(std::unique_ptr<components::tableref::table_ref_t> tableref);
 
     private:
         // Wrap a source node in an aggregate node carrying one of

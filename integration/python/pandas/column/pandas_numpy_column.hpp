@@ -4,13 +4,13 @@
 
 #include <pybind11/pybind_wrapper.hpp>
 
-#include<core/typedefs.hpp>
+#include<common/typedefs.hpp>
 
 namespace otterbrix {
 
-class PandasNumpyColumn : public PandasColumn {
+class pandas_numpy_column_t : public pandas_column_t {
 public:
-	PandasNumpyColumn(py::array array_p) : PandasColumn(PandasColumnBackend::NUMPY), array(std::move(array_p)) {
+	pandas_numpy_column_t(py::array array_p) : pandas_column_t(pandas_column_backend_t::NUMPY), array(std::move(array_p)) {
 		assert(py::hasattr(array, "strides"));
 		stride = array.attr("strides").attr("__getitem__")(0).cast<idx_t>();
 	}

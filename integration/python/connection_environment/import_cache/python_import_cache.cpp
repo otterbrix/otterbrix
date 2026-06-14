@@ -11,42 +11,42 @@
 namespace otterbrix {
 
 //===--------------------------------------------------------------------===//
-// PythonImportCacheItem (SUPER CLASS)
+// python_import_cache_item_t (SUPER CLASS)
 //===--------------------------------------------------------------------===//
 
-py::handle PythonImportCacheItem::operator()(bool load) {
-	if (IsLoaded()) {
+py::handle python_import_cache_item_t::operator()(bool load) {
+	if (is_loaded()) {
 		return object;
 	}
-	std::stack<std::reference_wrapper<PythonImportCacheItem>> hierarchy;
+	std::stack<std::reference_wrapper<python_import_cache_item_t>> hierarchy;
 
-	optional_ptr<PythonImportCacheItem> item = this;
+	optional_ptr<python_import_cache_item_t> item = this;
 	while (item) {
 		hierarchy.emplace(*item);
 		item = item->parent;
 	}
-	return PythonImporter::Import(hierarchy, load);
+	return python_importer_t::import(hierarchy, load);
 }
 
-bool PythonImportCacheItem::LoadSucceeded() const {
-	return load_succeeded;
+bool python_import_cache_item_t::load_succeeded() const {
+	return load_succeeded_;
 }
 
-inline bool PythonImportCacheItem::IsLoaded() const {
+inline bool python_import_cache_item_t::is_loaded() const {
 	return object.ptr() != nullptr;
 }
 
-py::handle PythonImportCacheItem::AddCache(PythonImportCache &cache, py::object object) {
-	return cache.AddCache(std::move(object));
+py::handle python_import_cache_item_t::add_cache(python_import_cache_t &cache, py::object object) {
+	return cache.add_cache(std::move(object));
 }
 
-void PythonImportCacheItem::LoadModule(PythonImportCache &cache) {
+void python_import_cache_item_t::load_module(python_import_cache_t &cache) {
 	try {
 		py::gil_assert();
-		object = AddCache(cache, std::move(py::module::import(name.c_str())));
-		load_succeeded = true;
+		object = add_cache(cache, std::move(py::module::import(name.c_str())));
+		load_succeeded_ = true;
 	} catch (py::error_already_set &e) {
-		if (IsRequired()) {
+		if (is_required()) {
 			throw std::runtime_error(
 			    "Required module "+name+" failed to import, due to the following Python exception:\n"+e.what());
 		}
@@ -55,16 +55,16 @@ void PythonImportCacheItem::LoadModule(PythonImportCache &cache) {
 	}
 }
 
-void PythonImportCacheItem::LoadAttribute(PythonImportCache &cache, py::handle source) {
+void python_import_cache_item_t::load_attribute(python_import_cache_t &cache, py::handle source) {
 	if (py::hasattr(source, name.c_str())) {
-		object = AddCache(cache, std::move(source.attr(name.c_str())));
+		object = add_cache(cache, std::move(source.attr(name.c_str())));
 	} else {
 		object = nullptr;
 	}
 }
 
-py::handle PythonImportCacheItem::Load(PythonImportCache &cache, py::handle source, bool load) {
-	if (IsLoaded()) {
+py::handle python_import_cache_item_t::load(python_import_cache_t &cache, py::handle source, bool load) {
+	if (is_loaded()) {
 		return object;
 	}
 	if (!load) {
@@ -72,20 +72,20 @@ py::handle PythonImportCacheItem::Load(PythonImportCache &cache, py::handle sour
 		return object;
 	}
 	if (is_module) {
-		LoadModule(cache);
+		load_module(cache);
 	} else {
-		LoadAttribute(cache, source);
+		load_attribute(cache, source);
 	}
 	return object;
 }
 
 //===--------------------------------------------------------------------===//
-// PythonImportCache (CONTAINER)
+// python_import_cache_t (CONTAINER)
 //===--------------------------------------------------------------------===//
 
-PythonImportCache::PythonImportCache() = default;
+python_import_cache_t::python_import_cache_t() = default;
 
-PythonImportCache::~PythonImportCache() {
+python_import_cache_t::~python_import_cache_t() {
 	try {
 		py::gil_scoped_acquire acquire;
 		owned_objects.clear();
@@ -93,7 +93,7 @@ PythonImportCache::~PythonImportCache() {
 	}
 }
 
-py::handle PythonImportCache::AddCache(py::object item) {
+py::handle python_import_cache_t::add_cache(py::object item) {
 	auto object_ptr = item.ptr();
 	owned_objects.push_back(std::move(item));
 	return object_ptr;

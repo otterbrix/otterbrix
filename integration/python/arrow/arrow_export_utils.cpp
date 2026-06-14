@@ -11,7 +11,7 @@
 
 namespace otterbrix {
 
-    void TransformOtterbrixToArrowChunk(ArrowSchema& arrow_schema, ArrowArray& data, py::list& batches) {
+    void transform_otterbrix_to_arrow_chunk(ArrowSchema& arrow_schema, ArrowArray& data, py::list& batches) {
         py::gil_assert();
         auto pyarrow_lib_module = py::module::import("pyarrow").attr("lib");
         auto batch_import_func = pyarrow_lib_module.attr("RecordBatch").attr("_import_from_c");
@@ -21,7 +21,7 @@ namespace otterbrix {
 
     namespace pyarrow {
 
-        py::object ToArrowTable(const std::vector<components::types::complex_logical_type>& types,
+        py::object to_arrow_table(const std::vector<components::types::complex_logical_type>& types,
                                 const std::vector<std::string>& names,
                                 const py::list& batches) {
             py::gil_scoped_acquire acquire;
@@ -45,7 +45,7 @@ namespace otterbrix {
             components::vector::arrow::to_arrow_schema(&schema, schema_types);
             auto schema_obj = schema_import_func(reinterpret_cast<uint64_t>(&schema));
 
-            return py::cast<otterbrix::pyarrow::Table>(from_batches_func(batches, schema_obj));
+            return py::cast<otterbrix::pyarrow::arrow_table_t>(from_batches_func(batches, schema_obj));
         }
 
     } // namespace pyarrow

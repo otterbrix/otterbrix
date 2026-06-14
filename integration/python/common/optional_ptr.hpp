@@ -6,7 +6,7 @@
 namespace otterbrix {
 
 template <bool IS_ENABLED>
-struct MemorySafety {
+struct memory_safety_t {
 #ifdef DEBUG
     // In DEBUG mode safety is always on
 	static constexpr bool ENABLED = true;
@@ -29,8 +29,8 @@ public:
 	optional_ptr(const std::shared_ptr<T> &ptr_p) : ptr(ptr_p.get()) { // NOLINT: allow implicit creation from shared pointer
 	}
 
-	void CheckValid() const {
-		if (MemorySafety<SAFE>::ENABLED) {
+	void check_valid() const {
+		if (memory_safety_t<SAFE>::ENABLED) {
 			if (!ptr) {
 				throw std::runtime_error("Attempting to dereference an optional pointer that is not set");
 			}
@@ -41,32 +41,32 @@ public:
 		return ptr;
 	}
 	T &operator*() {
-		CheckValid();
+		check_valid();
 		return *ptr;
 	}
 	const T &operator*() const {
-		CheckValid();
+		check_valid();
 		return *ptr;
 	}
 	T *operator->() {
-		CheckValid();
+		check_valid();
 		return ptr;
 	}
 	const T *operator->() const {
-		CheckValid();
+		check_valid();
 		return ptr;
 	}
 	T *get() { // NOLINT: mimic std casing
-		// CheckValid();
+		// check_valid();
 		return ptr;
 	}
 	const T *get() const { // NOLINT: mimic std casing
-		// CheckValid();
+		// check_valid();
 		return ptr;
 	}
 	// this looks dirty - but this is the default behavior of raw pointers
 	T *get_mutable() const { // NOLINT: mimic std casing
-		// CheckValid();
+		// check_valid();
 		return ptr;
 	}
 

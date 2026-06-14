@@ -23,7 +23,7 @@ static core::error_t make_error(std::pmr::memory_resource* r, const std::string&
 	return core::error_t{core::error_code_t::other_error, std::pmr::string{what, r}};
 }
 
-PyDictionary::PyDictionary(py::object dict) {
+py_dictionary_t::py_dictionary_t(py::object dict) {
 	keys = py::list(dict.attr("keys")());
 	values = py::list(dict.attr("values")());
 	len = py::len(keys);
@@ -31,11 +31,11 @@ PyDictionary::PyDictionary(py::object dict) {
 }
 
 
-PyDecimal::PyDecimal(py::handle &obj) : obj(obj) {
+py_decimal_t::py_decimal_t(py::handle &obj) : obj(obj) {
 	auto as_tuple = obj.attr("as_tuple")();
 
 	py::object exponent = as_tuple.attr("exponent");
-	SetExponent(exponent);
+	set_exponent(exponent);
 
 	auto sign = py::cast<int8_t>(as_tuple.attr("sign"));
 	signed_value = sign != 0;
@@ -48,7 +48,7 @@ PyDecimal::PyDecimal(py::handle &obj) : obj(obj) {
 	}
 }
 
-bool PyDecimal::TryGetType(complex_logical_type &type) {
+bool py_decimal_t::try_get_type(complex_logical_type &type) {
 	int32_t width = digits.size();
 
 	if (!exponent_recognized) {
@@ -57,10 +57,10 @@ bool PyDecimal::TryGetType(complex_logical_type &type) {
 	}
 
 	switch (exponent_type) {
-	case PyDecimalExponentType::EXPONENT_SCALE: {
-	case PyDecimalExponentType::EXPONENT_POWER: {
+	case py_decimal_exponent_type_t::EXPONENT_SCALE: {
+	case py_decimal_exponent_type_t::EXPONENT_POWER: {
 		auto scale = exponent_value;
-		if (exponent_type == PyDecimalExponentType::EXPONENT_POWER) {
+		if (exponent_type == py_decimal_exponent_type_t::EXPONENT_POWER) {
 			width += scale;
 		}
 		if (scale > width) {
@@ -75,11 +75,11 @@ bool PyDecimal::TryGetType(complex_logical_type &type) {
 		type = complex_logical_type::create_decimal(width, scale);
 		return true;
 	}
-	case PyDecimalExponentType::EXPONENT_INFINITY: {
+	case py_decimal_exponent_type_t::EXPONENT_INFINITY: {
 		type = logical_type::FLOAT;
 		return true;
 	}
-	case PyDecimalExponentType::EXPONENT_NAN: {
+	case py_decimal_exponent_type_t::EXPONENT_NAN: {
 		type = logical_type::FLOAT;
 		return true;
 	}
@@ -90,82 +90,82 @@ bool PyDecimal::TryGetType(complex_logical_type &type) {
 	return true;
 }
 
-void PyDecimal::SetExponent(py::handle &exponent) {
+void py_decimal_t::set_exponent(py::handle &exponent) {
 	if (py::isinstance<py::int_>(exponent)) {
 		this->exponent_value = py::cast<int32_t>(exponent);
 		if (this->exponent_value >= 0) {
-			exponent_type = PyDecimalExponentType::EXPONENT_POWER;
+			exponent_type = py_decimal_exponent_type_t::EXPONENT_POWER;
 			return;
 		}
 		exponent_value *= -1;
-		exponent_type = PyDecimalExponentType::EXPONENT_SCALE;
+		exponent_type = py_decimal_exponent_type_t::EXPONENT_SCALE;
 		return;
 	}
 	if (py::isinstance<py::str>(exponent)) {
 		std::string exponent_string = py::str(exponent);
 		if (exponent_string == "n") {
-			exponent_type = PyDecimalExponentType::EXPONENT_NAN;
+			exponent_type = py_decimal_exponent_type_t::EXPONENT_NAN;
 			return;
 		}
 		if (exponent_string == "F") {
-			exponent_type = PyDecimalExponentType::EXPONENT_INFINITY;
+			exponent_type = py_decimal_exponent_type_t::EXPONENT_INFINITY;
 			return;
 		}
 	}
 	// LCOV_EXCL_START
 	// Failed to convert decimal.Decimal value, exponent type is unknown.
-	// Recorded here without throwing; surfaced by TryGetType / to_logical_value.
+	// Recorded here without throwing; surfaced by try_get_type / to_logical_value.
 	exponent_recognized = false;
 	// LCOV_EXCL_STOP
 }
 
-static bool WidthFitsInDecimal(int32_t width) {
+static bool width_fits_in_decimal(int32_t width) {
 	return width >= 0 && width <= std::numeric_limits<int64_t>::digits10; 
 }
 
 template <class OP>
-logical_value_t PyDecimalCastSwitch(std::pmr::memory_resource* r, PyDecimal &decimal, uint8_t width, uint8_t scale) {
+logical_value_t PyDecimalCastSwitch(std::pmr::memory_resource* r, py_decimal_t &decimal, uint8_t width, uint8_t scale) {
 		return OP::template Operation<int64_t>(r, decimal.signed_value, decimal.digits, width, scale);
 }
 
 // Wont fit in a DECIMAL, fall back to DOUBLE
-static logical_value_t CastToDouble(std::pmr::memory_resource* r, py::handle &obj) {
+static logical_value_t cast_to_double(std::pmr::memory_resource* r, py::handle &obj) {
 	return logical_value_t(r, py::cast<double>(obj));
 }
 
-core::result_wrapper_t<logical_value_t> PyDecimal::to_logical_value(std::pmr::memory_resource* r) {
+core::result_wrapper_t<logical_value_t> py_decimal_t::to_logical_value(std::pmr::memory_resource* r) {
 	if (!exponent_recognized) {
 		return make_error(r, "Failed to convert decimal.Decimal value, exponent type is unknown");
 	}
 	int32_t width = digits.size();
-	if (!WidthFitsInDecimal(width)) {
-		return CastToDouble(r, obj);
+	if (!width_fits_in_decimal(width)) {
+		return cast_to_double(r, obj);
 	}
 	switch (exponent_type) {
-	case PyDecimalExponentType::EXPONENT_SCALE: {
+	case py_decimal_exponent_type_t::EXPONENT_SCALE: {
 		uint8_t scale = exponent_value;
-		assert(WidthFitsInDecimal(width));
+		assert(width_fits_in_decimal(width));
 		if (scale > width) {
 			// Values like '0.001'
 			width = scale + 1; // leave 1 room for the non-decimal value
 		}
-		if (!WidthFitsInDecimal(width)) {
-			return CastToDouble(r, obj);
+		if (!width_fits_in_decimal(width)) {
+			return cast_to_double(r, obj);
 		}
-		return PyDecimalCastSwitch<PyDecimalScaleConverter>(r, *this, width, scale);
+		return PyDecimalCastSwitch<py_decimal_scale_converter_t>(r, *this, width, scale);
 	}
-	case PyDecimalExponentType::EXPONENT_POWER: {
+	case py_decimal_exponent_type_t::EXPONENT_POWER: {
 		uint8_t scale = exponent_value;
 		width += scale;
-		if (!WidthFitsInDecimal(width)) {
-			return CastToDouble(r, obj);
+		if (!width_fits_in_decimal(width)) {
+			return cast_to_double(r, obj);
 		}
-		return PyDecimalCastSwitch<PyDecimalPowerConverter>(r, *this, width, scale);
+		return PyDecimalCastSwitch<py_decimal_power_converter_t>(r, *this, width, scale);
 	}
-	case PyDecimalExponentType::EXPONENT_NAN: {
+	case py_decimal_exponent_type_t::EXPONENT_NAN: {
 		return logical_value_t(r, NAN);
 	}
-	case PyDecimalExponentType::EXPONENT_INFINITY: {
+	case py_decimal_exponent_type_t::EXPONENT_INFINITY: {
 		return logical_value_t(r, INFINITY);
 	}
 	// LCOV_EXCL_START
@@ -175,23 +175,23 @@ core::result_wrapper_t<logical_value_t> PyDecimal::to_logical_value(std::pmr::me
 	}
 }
 
-enum class InfinityType : uint8_t { NONE, POSITIVE, NEGATIVE };
+enum class infinity_type_t : uint8_t { NONE, POSITIVE, NEGATIVE };
 
 // OtterBrix timestamp
 using timestamp_t = int64_t;
 
-InfinityType GetTimestampInfinityType(timestamp_t &timestamp) {
+infinity_type_t get_timestamp_infinity_type(timestamp_t &timestamp) {
 	// constans for Unix timestamp
 	if (timestamp == std::numeric_limits<timestamp_t>::max()) {
-		return InfinityType::POSITIVE;
+		return infinity_type_t::POSITIVE;
 	}
 	if (timestamp ==std::numeric_limits<timestamp_t>::min()) {
-		return InfinityType::NEGATIVE;
+		return infinity_type_t::NEGATIVE;
 	}
-	return InfinityType::NONE;
+	return infinity_type_t::NONE;
 }
 
-core::result_wrapper_t<py::object> PythonObject::FromStruct(std::pmr::memory_resource* r, const logical_value_t &val, const complex_logical_type &type) {
+core::result_wrapper_t<py::object> python_object_t::from_struct(std::pmr::memory_resource* r, const logical_value_t &val, const complex_logical_type &type) {
 	auto &struct_values = val.children();
 
 	auto &child_types = type.child_types();
@@ -201,7 +201,7 @@ core::result_wrapper_t<py::object> PythonObject::FromStruct(std::pmr::memory_res
 		for (idx_t i = 0; i < struct_values.size(); i++) {
 			auto &child_type = child_types[i];
 			assert(child_type.alias().empty());
-			auto field = FromValue(r, struct_values[i], child_type);
+			auto field = from_value(r, struct_values[i], child_type);
 			if (field.has_error()) {
 				return field.error();
 			}
@@ -212,7 +212,7 @@ core::result_wrapper_t<py::object> PythonObject::FromStruct(std::pmr::memory_res
 		py::dict py_struct;
 		for (idx_t i = 0; i < struct_values.size(); i++) {
 			auto &child_type = child_types[i];
-			auto field = FromValue(r, struct_values[i], child_type);
+			auto field = from_value(r, struct_values[i], child_type);
 			if (field.has_error()) {
 				return field.error();
 			}
@@ -222,7 +222,7 @@ core::result_wrapper_t<py::object> PythonObject::FromStruct(std::pmr::memory_res
 	}
 }
 
-static bool KeyIsHashable(const complex_logical_type &type) {
+static bool key_is_hashable(const complex_logical_type &type) {
 	switch (type.type()) {
     case logical_type::BOOLEAN:
 	case logical_type::TINYINT:
@@ -252,7 +252,7 @@ static bool KeyIsHashable(const complex_logical_type &type) {
 	case logical_type::UNION: {
 		const auto& child_types = type.child_types();
 		for (idx_t i = 0; i < child_types.size(); i++) {
-			if (!KeyIsHashable(child_types[i])) {
+			if (!key_is_hashable(child_types[i])) {
 				return false;
 			}
 		}
@@ -263,13 +263,13 @@ static bool KeyIsHashable(const complex_logical_type &type) {
 		return false;
 	default:
 		// Unsupported key types are treated as non-hashable here; the genuine "unsupported type"
-		// error is surfaced when FromValue recurses into the key/value below.
+		// error is surfaced when from_value recurses into the key/value below.
 		return false;
 	}
 }
 
-core::result_wrapper_t<py::object> PythonObject::FromValue(std::pmr::memory_resource* r, const logical_value_t &val, const complex_logical_type &type) {
-	auto &import_cache = ConnectionEnvironment::ImportCache();
+core::result_wrapper_t<py::object> python_object_t::from_value(std::pmr::memory_resource* r, const logical_value_t &val, const complex_logical_type &type) {
+	auto &import_cache = connection_environment_t::import_cache();
 	if (val.is_null()) {
 		return py::object(py::none());
 	}
@@ -325,11 +325,11 @@ core::result_wrapper_t<py::object> PythonObject::FromValue(std::pmr::memory_reso
 	case logical_type::TIMESTAMP: {
 		auto timestamp = val.value<timestamp_t>();
 
-		InfinityType infinity = GetTimestampInfinityType(timestamp);
-		if (infinity == InfinityType::POSITIVE) {
+		infinity_type_t infinity = get_timestamp_infinity_type(timestamp);
+		if (infinity == infinity_type_t::POSITIVE) {
 			return py::reinterpret_borrow<py::object>(import_cache.datetime.datetime.max());
 		}
-		if (infinity == InfinityType::NEGATIVE) {
+		if (infinity == infinity_type_t::NEGATIVE) {
 			return py::reinterpret_borrow<py::object>(import_cache.datetime.datetime.min());
 		}
 		return py::object(py::cast(timestamp));
@@ -339,7 +339,7 @@ core::result_wrapper_t<py::object> PythonObject::FromValue(std::pmr::memory_reso
 
 		py::list list;
 		for (auto &list_elem : list_values) {
-			auto elem = FromValue(r, list_elem, type.child_type());
+			auto elem = from_value(r, list_elem, type.child_type());
 			if (elem.has_error()) {
 				return elem.error();
 			}
@@ -357,13 +357,13 @@ core::result_wrapper_t<py::object> PythonObject::FromValue(std::pmr::memory_reso
 		// otterbrix-python with Emscripten.
 		//
 		// without this cast, a static_assert fails in pybind11
-		// because the return type of ArrayType::GetSize is idx_t,
+		// because the return type of array_type::get_size is idx_t,
 		// which is typedef'd to uint64_t and ssize_t is 4 bytes with Emscripten
 		// and pybind11 requires that the input be castable to ssize_t
 		py::tuple arr(static_cast<py::ssize_t>(array_size));
 
 		for (idx_t elem_idx = 0; elem_idx < array_size; elem_idx++) {
-			auto elem = FromValue(r, array_values[elem_idx], child_type);
+			auto elem = from_value(r, array_values[elem_idx], child_type);
 			if (elem.has_error()) {
 				return elem.error();
 			}
@@ -379,14 +379,14 @@ core::result_wrapper_t<py::object> PythonObject::FromValue(std::pmr::memory_reso
 		auto &val_type = map_extension->value();
 
 		py::dict py_struct;
-		if (KeyIsHashable(key_type)) {
+		if (key_is_hashable(key_type)) {
 			for (auto &list_elem : list_values) {
 				auto &struct_children = list_elem.children();
-				auto key = PythonObject::FromValue(r, struct_children[0], key_type);
+				auto key = python_object_t::from_value(r, struct_children[0], key_type);
 				if (key.has_error()) {
 					return key.error();
 				}
-				auto value = PythonObject::FromValue(r, struct_children[1], val_type);
+				auto value = python_object_t::from_value(r, struct_children[1], val_type);
 				if (value.has_error()) {
 					return value.error();
 				}
@@ -397,11 +397,11 @@ core::result_wrapper_t<py::object> PythonObject::FromValue(std::pmr::memory_reso
 			py::list values;
 			for (auto &list_elem : list_values) {
 				auto &struct_children = list_elem.children();
-				auto key = PythonObject::FromValue(r, struct_children[0], key_type);
+				auto key = python_object_t::from_value(r, struct_children[0], key_type);
 				if (key.has_error()) {
 					return key.error();
 				}
-				auto value = PythonObject::FromValue(r, struct_children[1], val_type);
+				auto value = python_object_t::from_value(r, struct_children[1], val_type);
 				if (value.has_error()) {
 					return value.error();
 				}
@@ -414,7 +414,7 @@ core::result_wrapper_t<py::object> PythonObject::FromValue(std::pmr::memory_reso
 		return py::object(std::move(py_struct));
 	}
 	case logical_type::STRUCT: {
-		return FromStruct(r, val, type);
+		return from_struct(r, val, type);
 	}
 	case logical_type::UUID: {
 		return make_error(r, "OtterBrix doen\'t support uhugeint conversation to python object");

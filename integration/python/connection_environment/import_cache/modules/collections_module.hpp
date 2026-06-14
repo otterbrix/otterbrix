@@ -4,34 +4,34 @@
 
 namespace otterbrix {
 
-struct CollectionsAbcCacheItem : public PythonImportCacheItem {
+struct collections_abc_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "collections.abc";
+	static constexpr const char *name = "collections.abc";
 
 public:
-	CollectionsAbcCacheItem()
-	    : PythonImportCacheItem("collections.abc"), Iterable("Iterable", this), Mapping("Mapping", this) {
+	collections_abc_cache_item_t()
+	    : python_import_cache_item_t("collections.abc"), Iterable("Iterable", this), Mapping("Mapping", this) {
 	}
-	~CollectionsAbcCacheItem() override {
+	~collections_abc_cache_item_t() override {
 	}
 
-	PythonImportCacheItem Iterable;
-	PythonImportCacheItem Mapping;
+	python_import_cache_item_t Iterable;
+	python_import_cache_item_t Mapping;
 };
 
-struct CollectionsCacheItem : public PythonImportCacheItem {
+struct collections_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "collections";
+	static constexpr const char *name = "collections";
 
 public:
-	CollectionsCacheItem() : PythonImportCacheItem("collections"), abc() {
+	collections_cache_item_t() : python_import_cache_item_t("collections"), abc() {
 	}
-	~CollectionsCacheItem() override {
+	~collections_cache_item_t() override {
 	}
 
-	CollectionsAbcCacheItem abc;
+	collections_abc_cache_item_t abc;
 };
 
 } // namespace otterbrix

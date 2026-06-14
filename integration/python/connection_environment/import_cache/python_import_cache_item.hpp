@@ -6,35 +6,35 @@
 
 namespace otterbrix {
 
-struct PythonImportCache;
+struct python_import_cache_t;
 
-struct PythonImportCacheItem {
+struct python_import_cache_item_t {
 public:
-	PythonImportCacheItem(const std::string &name, optional_ptr<PythonImportCacheItem> parent)
-	    : name(name), is_module(false), load_succeeded(false), parent(parent), object(nullptr) {
+	python_import_cache_item_t(const std::string &name, optional_ptr<python_import_cache_item_t> parent)
+	    : name(name), is_module(false), load_succeeded_(false), parent(parent), object(nullptr) {
 	}
-	PythonImportCacheItem(const std::string &name)
-	    : name(name), is_module(true), load_succeeded(false), parent(nullptr), object(nullptr) {
+	python_import_cache_item_t(const std::string &name)
+	    : name(name), is_module(true), load_succeeded_(false), parent(nullptr), object(nullptr) {
 	}
 
-	virtual ~PythonImportCacheItem() {
+	virtual ~python_import_cache_item_t() {
 	}
 
 public:
-	bool LoadSucceeded() const;
-	bool IsLoaded() const;
+	bool load_succeeded() const;
+	bool is_loaded() const;
 	py::handle operator()(bool load = true);
-	py::handle Load(PythonImportCache &cache, py::handle source, bool load);
+	py::handle load(python_import_cache_t &cache, py::handle source, bool load);
 
 protected:
-	virtual bool IsRequired() const {
+	virtual bool is_required() const {
 		return true;
 	}
 
 private:
-	py::handle AddCache(PythonImportCache &cache, py::object object);
-	void LoadAttribute(PythonImportCache &cache, py::handle source);
-	void LoadModule(PythonImportCache &cache);
+	py::handle add_cache(python_import_cache_t &cache, py::object object);
+	void load_attribute(python_import_cache_t &cache, py::handle source);
+	void load_module(python_import_cache_t &cache);
 
 private:
 	//! The name of the item
@@ -42,9 +42,9 @@ private:
 	//! Whether the item is a module
 	bool is_module;
 	//! Whether or not we attempted to load the item
-	bool load_succeeded;
+	bool load_succeeded_;
 	//! The parent of this item (either a module or an attribute)
-	optional_ptr<PythonImportCacheItem> parent;
+	optional_ptr<python_import_cache_item_t> parent;
 	//! The stored item
 	py::handle object;
 };

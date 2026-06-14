@@ -2,22 +2,22 @@
 
 namespace otterbrix {
 
-enum class PandasColumnBackend { NUMPY };
+enum class pandas_column_backend_t { NUMPY };
 
-class PandasColumn {
+class pandas_column_t {
 public:
-	PandasColumn(PandasColumnBackend backend) : backend(backend) {
+	pandas_column_t(pandas_column_backend_t backend) : backend_(backend) {
 	}
-	virtual ~PandasColumn() {
+	virtual ~pandas_column_t() {
 	}
 
 public:
-	PandasColumnBackend Backend() const {
-		return backend;
+	pandas_column_backend_t backend() const {
+		return backend_;
 	}
 
 protected:
-	PandasColumnBackend backend;
+	pandas_column_backend_t backend_;
 };
 
 } // namespace otterbrix

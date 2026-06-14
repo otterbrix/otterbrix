@@ -4,18 +4,18 @@
 
 namespace otterbrix {
 
-struct UuidCacheItem : public PythonImportCacheItem {
+struct uuid_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "uuid";
+	static constexpr const char *name = "uuid";
 
 public:
-	UuidCacheItem() : PythonImportCacheItem("uuid"), UUID("UUID", this) {
+	uuid_cache_item_t() : python_import_cache_item_t("uuid"), UUID("UUID", this) {
 	}
-	~UuidCacheItem() override {
+	~uuid_cache_item_t() override {
 	}
 
-	PythonImportCacheItem UUID;
+	python_import_cache_item_t UUID;
 };
 
 } // namespace otterbrix

@@ -4,21 +4,21 @@
 
 namespace otterbrix {
 
-struct IpywidgetsCacheItem : public PythonImportCacheItem {
+struct ipywidgets_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "ipywidgets";
+	static constexpr const char *name = "ipywidgets";
 
 public:
-	IpywidgetsCacheItem() : PythonImportCacheItem("ipywidgets"), FloatProgress("FloatProgress", this) {
+	ipywidgets_cache_item_t() : python_import_cache_item_t("ipywidgets"), float_progress("FloatProgress", this) {
 	}
-	~IpywidgetsCacheItem() override {
+	~ipywidgets_cache_item_t() override {
 	}
 
-	PythonImportCacheItem FloatProgress;
+	python_import_cache_item_t float_progress;
 
 protected:
-	bool IsRequired() const override final {
+	bool is_required() const override final {
 		return false;
 	}
 };

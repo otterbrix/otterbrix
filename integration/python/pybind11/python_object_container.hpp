@@ -11,28 +11,28 @@ namespace otterbrix {
 
 //! Every Python Object Must be created through our container
 //! The Container ensures that the GIL is HOLD on Python Object Construction/Destruction/Modification
-class PythonObjectContainer {
+class python_object_container_t {
 public:
-	PythonObjectContainer() {
+	python_object_container_t() {
 	}
 
-	~PythonObjectContainer() {
+	~python_object_container_t() {
 		py::gil_scoped_acquire acquire;
 		py_obj.clear();
 	}
 
-	void Push(py::object &&obj) {
+	void push(py::object &&obj) {
 		py::gil_scoped_acquire gil;
-		PushInternal(std::move(obj));
+		push_internal(std::move(obj));
 	}
 
-	const py::object &LastAddedObject() {
+	const py::object &last_added_object() {
 		assert(!py_obj.empty());
 		return py_obj.back();
 	}
 
 private:
-	void PushInternal(py::object &&obj) {
+	void push_internal(py::object &&obj) {
 		py_obj.emplace_back(obj);
 	}
 

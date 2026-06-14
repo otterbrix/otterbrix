@@ -5,11 +5,11 @@
 
 namespace otterbrix {
 
-    class FrameworkObjectDetection {
+    class framework_object_detection_t {
     public:
-        static NumpyObjectType GetNumpyObjectType(const py::object &object);
-        static bool IsPandasDataframe(const py::object &object);
-        static bool IsPolarsDataframe(const py::object &object);
+        static numpy_object_type_t get_numpy_object_type(const py::object &object);
+        static bool is_pandas_dataframe(const py::object &object);
+        static bool is_polars_dataframe(const py::object &object);
     };
 
 } // namespace otterbrix

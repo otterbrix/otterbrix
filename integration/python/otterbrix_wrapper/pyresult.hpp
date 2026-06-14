@@ -4,7 +4,7 @@
 #include <pybind11/dataframe.hpp>
 #include <native/python_objects.hpp>
 
-#include <core/typedefs.hpp>
+#include <common/typedefs.hpp>
 
 #include <components/cursor/cursor.hpp>
 #include <components/table/column_definition.hpp>
@@ -14,27 +14,27 @@
 
 
 namespace otterbrix {
-    class PyConnection;
+    class py_connection_t;
 
-    class PyResult {
+    class py_result_t {
     public:
-        PyResult(PyConnection* env, components::cursor::cursor_t_ptr result,
+        py_result_t(py_connection_t* env, components::cursor::cursor_t_ptr result,
                 const std::vector<components::table::column_definition_t>& columns);
-        ~PyResult();
-        Optional<py::tuple> Fetchone();
+        ~py_result_t();
+        py_optional_t<py::tuple> fetchone();
 
-        py::list Fetchmany(idx_t size);
+        py::list fetchmany(idx_t size);
 
-        py::list Fetchall();
+        py::list fetchall();
         
-        PandasDataFrame FetchDF();
+        pandas_data_frame_t fetch_df();
 
-        void Close();
+        void close();
 
-        bool IsClosed() const;
+        bool is_closed() const;
 
     private:
-        PyConnection* env;
+        py_connection_t* env;
 
         components::cursor::cursor_t_ptr result;
         std::vector<components::table::column_definition_t> columns;

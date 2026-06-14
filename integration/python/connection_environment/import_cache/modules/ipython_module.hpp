@@ -4,35 +4,35 @@
 
 namespace otterbrix {
 
-struct IpythonDisplayCacheItem : public PythonImportCacheItem {
+struct ipython_display_cache_item_t : public python_import_cache_item_t {
 
 public:
-	IpythonDisplayCacheItem(optional_ptr<PythonImportCacheItem> parent)
-	    : PythonImportCacheItem("display", parent), display("display", this), HTML("HTML", this) {
+	ipython_display_cache_item_t(optional_ptr<python_import_cache_item_t> parent)
+	    : python_import_cache_item_t("display", parent), display("display", this), HTML("HTML", this) {
 	}
-	~IpythonDisplayCacheItem() override {
+	~ipython_display_cache_item_t() override {
 	}
 
-	PythonImportCacheItem display;
-	PythonImportCacheItem HTML;
+	python_import_cache_item_t display;
+	python_import_cache_item_t HTML;
 };
 
-struct IpythonCacheItem : public PythonImportCacheItem {
+struct ipython_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "IPython";
+	static constexpr const char *name = "IPython";
 
 public:
-	IpythonCacheItem() : PythonImportCacheItem("IPython"), get_ipython("get_ipython", this), display(this) {
+	ipython_cache_item_t() : python_import_cache_item_t("IPython"), get_ipython("get_ipython", this), display(this) {
 	}
-	~IpythonCacheItem() override {
+	~ipython_cache_item_t() override {
 	}
 
-	PythonImportCacheItem get_ipython;
-	IpythonDisplayCacheItem display;
+	python_import_cache_item_t get_ipython;
+	ipython_display_cache_item_t display;
 
 protected:
-	bool IsRequired() const override final {
+	bool is_required() const override final {
 		return false;
 	}
 };

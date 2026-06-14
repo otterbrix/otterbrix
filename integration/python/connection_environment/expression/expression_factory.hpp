@@ -24,7 +24,7 @@ namespace otterbrix {
     //! expression node) and must be distinguished at runtime, so a minimal enum-tagged struct is
     //! used instead of std::variant. key_t has no default constructor, so it is held in an
     //! std::optional; the other two members are default-constructible value types.
-    class Expression {
+    class expression_wrapper_t {
     public:
         enum class kind_t : uint8_t
         {
@@ -34,15 +34,15 @@ namespace otterbrix {
         };
 
         // Implicit converting constructors mirror the previous std::variant behavior so existing
-        // call sites (Expression(x), make_shared<PyExpression>(key_t{...}, conn)) keep working.
-        Expression(core::parameter_id_t param) // NOLINT: allow implicit creation
+        // call sites (expression_wrapper_t(x), make_shared<py_expression_t>(key_t{...}, conn)) keep working.
+        expression_wrapper_t(core::parameter_id_t param) // NOLINT: allow implicit creation
             : kind_(kind_t::parameter)
             , param_(param) {}
-        Expression(components::expressions::key_t key) // NOLINT: allow implicit creation
+        expression_wrapper_t(components::expressions::key_t key) // NOLINT: allow implicit creation
             : kind_(kind_t::key)
             , param_(0)
             , key_(std::move(key)) {}
-        Expression(components::expressions::expression_ptr expr) // NOLINT: allow implicit creation
+        expression_wrapper_t(components::expressions::expression_ptr expr) // NOLINT: allow implicit creation
             : kind_(kind_t::expression)
             , param_(0)
             , expr_(std::move(expr)) {}
@@ -65,53 +65,53 @@ namespace otterbrix {
     };
 
 
-    class ExpressionFactory {
+    class expression_factory_t {
     public:
-        ExpressionFactory(const boost::intrusive_ptr<otterbrix_t>& space);
-        virtual ~ExpressionFactory();
-        void SetNullSpace();
+        expression_factory_t(const boost::intrusive_ptr<otterbrix_t>& space);
+        virtual ~expression_factory_t();
+        void set_null_space();
 
         
-        Expression MakeConstant(components::types::logical_value_t&& value);
+        expression_wrapper_t make_constant(components::types::logical_value_t&& value);
 
-        Expression MakeCountExpression();
+        expression_wrapper_t make_count_expression();
 
-        Expression SortExpression(const std::string& arg);
+        expression_wrapper_t sort_expression(const std::string& arg);
 
-        core::result_wrapper_t<Expression>
-        SortExpression(const Expression& arg,
+        core::result_wrapper_t<expression_wrapper_t>
+        sort_expression(const expression_wrapper_t& arg,
                        components::expressions::sort_order order = components::expressions::sort_order::asc);
 
 
-        core::result_wrapper_t<Expression> AggregationUnaryExpression(const std::string& function_name,
-                const Expression& expr);
+        core::result_wrapper_t<expression_wrapper_t> aggregation_unary_expression(const std::string& function_name,
+                const expression_wrapper_t& expr);
 
-        Expression ScalarUnaryExpression(components::expressions::scalar_type type,
-                const Expression& expr);
+        expression_wrapper_t scalar_unary_expression(components::expressions::scalar_type type,
+                const expression_wrapper_t& expr);
 
-        core::result_wrapper_t<Expression> ScalarBinaryExpression(components::expressions::scalar_type type,
-                const Expression& left, const Expression& right);
+        core::result_wrapper_t<expression_wrapper_t> scalar_binary_expression(components::expressions::scalar_type type,
+                const expression_wrapper_t& left, const expression_wrapper_t& right);
 
 
-        core::result_wrapper_t<Expression> ComparisonExpression(components::expressions::compare_type type,
-            const Expression& left, const Expression& right);
+        core::result_wrapper_t<expression_wrapper_t> comparison_expression(components::expressions::compare_type type,
+            const expression_wrapper_t& left, const expression_wrapper_t& right);
 
-        core::result_wrapper_t<Expression> ExpressionWithAlias(const Expression& expr, const std::string& alias);
+        core::result_wrapper_t<expression_wrapper_t> expression_with_alias(const expression_wrapper_t& expr, const std::string& alias);
 
-        core::result_wrapper_t<Expression> ComparisonNotExpression(const Expression& expr);
+        core::result_wrapper_t<expression_wrapper_t> comparison_not_expression(const expression_wrapper_t& expr);
 
-        core::result_wrapper_t<Expression> ComparisonUnionExpression(components::expressions::compare_type type,
-            const Expression& left, const Expression& right);
-        Expression TrueExpression();
+        core::result_wrapper_t<expression_wrapper_t> comparison_union_expression(components::expressions::compare_type type,
+            const expression_wrapper_t& left, const expression_wrapper_t& right);
+        expression_wrapper_t true_expression();
     public:
         core::result_wrapper_t<components::expressions::compare_expression_ptr>
-        UnionExpressionToExpressionPtr(const Expression& expr);
-        core::result_wrapper_t<std::string> ConvertToString(const Expression& expr);
+        union_expression_to_expression_ptr(const expression_wrapper_t& expr);
+        core::result_wrapper_t<std::string> convert_to_string(const expression_wrapper_t& expr);
     
-        components::logical_plan::parameter_node_ptr GetParams(); 
+        components::logical_plan::parameter_node_ptr get_params(); 
 
     private:
-        core::parameter_id_t AddValue(components::types::logical_value_t&& value);
+        core::parameter_id_t add_value(components::types::logical_value_t&& value);
         std::unordered_map<core::parameter_id_t, components::types::logical_value_t> values; 
         uint64_t counter;
         boost::intrusive_ptr<otterbrix_t> space;

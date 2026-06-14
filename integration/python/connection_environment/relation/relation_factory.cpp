@@ -159,7 +159,7 @@ namespace otterbrix {
 
         // Pass-through schema (copy) for ops that don't change the column set:
         // filter (match), sort, and limit. Mirrors ColumnsVisitor's !group,
-        // no-select Aggregate branch (and Limit -> resource->GetColumns()).
+        // no-select Aggregate branch (and limit -> resource->get_columns()).
         std::pmr::vector<column_definition_t>
         passthrough_schema(std::pmr::memory_resource* resource,
                            const std::pmr::vector<column_definition_t>& initial) {
@@ -172,15 +172,15 @@ namespace otterbrix {
         }
     } // namespace
 
-    RelationFactory::RelationFactory(const boost::intrusive_ptr<otterbrix_t>& space) : space(space) {}
+    relation_factory_t::relation_factory_t(const boost::intrusive_ptr<otterbrix_t>& space) : space(space) {}
 
-    RelationFactory::~RelationFactory() = default;
+    relation_factory_t::~relation_factory_t() = default;
 
-    void RelationFactory::SetNullSpace() {
+    void relation_factory_t::set_null_space() {
         space = nullptr;
     }
 
-    node_ptr RelationFactory::make_aggregate_node(const node_ptr& from,
+    node_ptr relation_factory_t::make_aggregate_node(const node_ptr& from,
             node_group_ptr group, node_match_ptr match, node_sort_ptr sort,
             node_select_ptr select, node_limit_ptr limit) {
         static int indx = 0;
@@ -210,7 +210,7 @@ namespace otterbrix {
         return boost::static_pointer_cast<node_t>(aggregator);
     }
 
-    built_relation_t RelationFactory::FilterRelation(const built_relation_t& relation, const Expression& condition) {
+    built_relation_t relation_factory_t::filter_relation(const built_relation_t& relation, const expression_wrapper_t& condition) {
         auto* resource = space->dispatcher()->resource();
         node_match_ptr match_node;
         if (condition.is_expression()) {
@@ -226,7 +226,7 @@ namespace otterbrix {
         return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
     }
 
-    built_relation_t RelationFactory::SortRelation(const built_relation_t& relation, const std::vector<Expression>& exprs) {
+    built_relation_t relation_factory_t::sort_relation(const built_relation_t& relation, const std::vector<expression_wrapper_t>& exprs) {
         if (exprs.empty()) {
             throw std::runtime_error("Please provide at least one expression to sort on");
         }
@@ -251,7 +251,7 @@ namespace otterbrix {
         return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
     }
 
-    built_relation_t RelationFactory::GroupRelation(const built_relation_t& relation, const std::vector<Expression>& exprs) {
+    built_relation_t relation_factory_t::group_relation(const built_relation_t& relation, const std::vector<expression_wrapper_t>& exprs) {
         auto* resource = space->dispatcher()->resource();
         std::vector<expressions::expression_ptr> fields;
         fields.reserve(exprs.size());
@@ -283,7 +283,7 @@ namespace otterbrix {
         return {node, std::move(schema)};
     }
 
-    built_relation_t RelationFactory::SelectRelation(const built_relation_t& relation, const std::vector<Expression>& exprs) {
+    built_relation_t relation_factory_t::select_relation(const built_relation_t& relation, const std::vector<expression_wrapper_t>& exprs) {
         auto* resource = space->dispatcher()->resource();
         auto select = make_node_select(resource, core::dbname_t{}, core::relname_t{});
         for (const auto& expr : exprs) {
@@ -311,8 +311,8 @@ namespace otterbrix {
         return {node, std::move(schema)};
     }
 
-    built_relation_t RelationFactory::JoinRelation(const built_relation_t& relation, const built_relation_t& other,
-            const std::vector<Expression>& exprs, components::logical_plan::join_type type) {
+    built_relation_t relation_factory_t::join_relation(const built_relation_t& relation, const built_relation_t& other,
+            const std::vector<expression_wrapper_t>& exprs, components::logical_plan::join_type type) {
         auto* resource = space->dispatcher()->resource();
         std::pmr::vector<expressions::expression_ptr> conditions(resource);
         for (const auto& expr : exprs) {
@@ -338,7 +338,7 @@ namespace otterbrix {
             }
         }
 
-        // Join schema: left columns followed by right columns.
+        // join schema: left columns followed by right columns.
         std::pmr::vector<column_definition_t> schema(resource);
         schema.reserve(relation.columns.size() + other.columns.size());
         for (const auto& col : relation.columns) {
@@ -350,7 +350,7 @@ namespace otterbrix {
         return {boost::static_pointer_cast<node_t>(join_node), std::move(schema)};
     }
 
-    built_relation_t RelationFactory::LimitRelation(const built_relation_t& relation, int64_t count) {
+    built_relation_t relation_factory_t::limit_relation(const built_relation_t& relation, int64_t count) {
         auto limit_node = make_node_limit(space->dispatcher()->resource(),
                                           core::dbname_t{},
                                           core::relname_t{},
@@ -359,14 +359,10 @@ namespace otterbrix {
         return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
     }
 
-    built_relation_t RelationFactory::CreateFromSelect(components::logical_plan::node_ptr /*plan*/) {
-        return {nullptr, std::pmr::vector<column_definition_t>(space->dispatcher()->resource())};
-    }
-
     // should be protected because don\'t send external data
-    built_relation_t RelationFactory::CreateDFRelation(std::unique_ptr<components::tableref::TableRef> ref) {
+    built_relation_t relation_factory_t::create_df_relation(std::unique_ptr<components::tableref::table_ref_t> ref) {
         auto* resource = space->dispatcher()->resource();
-        auto tableData = Scan::FetchObjectData(resource, std::move(ref));
+        auto tableData = scan_t::fetch_object_data(resource, std::move(ref));
 
         // Data leaf: the column schema is the data table's own columns.
         std::pmr::vector<column_definition_t> schema(resource);

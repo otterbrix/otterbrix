@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/string_util/case_insensitive.hpp>
+#include <common/string_util/case_insensitive.hpp>
 #include <memory>
 
 #include <string>
@@ -23,46 +23,46 @@ inline const std::string& dependency_kind_name(dependency_kind_t kind) {
 	return names[static_cast<uint8_t>(kind)];
 }
 
-class DependencyItem {
+class dependency_item_t {
 public:
-	virtual ~DependencyItem() {};
+	virtual ~dependency_item_t() {};
 
 public:
 	template <class TARGET>
-	TARGET &Cast() {
+	TARGET &cast() {
 		return reinterpret_cast<TARGET &>(*this);
 	}
 	template <class TARGET>
-	const TARGET &Cast() const {
+	const TARGET &cast() const {
 		return reinterpret_cast<const TARGET &>(*this);
 	}
 };
 
-class ExternalDependency {
+class external_dependency_t {
 public:
-	explicit ExternalDependency() {
+	explicit external_dependency_t() {
 	}
-	~ExternalDependency() {
+	~external_dependency_t() {
 	}
 
 public:
-	//! R14: this registry is the sole owner of its DependencyItems (single-owner: each item lives
-	//! in exactly one ExternalDependency, which itself lives in exactly one move-only TableRef).
-	//! GetDependency therefore hands back a non-owning observer pointer; the scan's FunctionData
+	//! R14: this registry is the sole owner of its dependency_items (single-owner: each item lives
+	//! in exactly one external_dependency_t, which itself lives in exactly one move-only table_ref_t).
+	//! get_dependency therefore hands back a non-owning observer pointer; the scan's function_data_t
 	//! borrows it for a lifetime strictly nested inside this registry's.
 	//! R16: enum-keyed identity API (preferred).
-	void AddDependency(dependency_kind_t kind, std::unique_ptr<DependencyItem> item) {
+	void add_dependency(dependency_kind_t kind, std::unique_ptr<dependency_item_t> item) {
 		objects[dependency_kind_name(kind)] = std::move(item);
 	}
-	DependencyItem *GetDependency(dependency_kind_t kind) const {
-		return GetDependency(dependency_kind_name(kind));
+	dependency_item_t *get_dependency(dependency_kind_t kind) const {
+		return get_dependency(dependency_kind_name(kind));
 	}
 
 	//! Legacy string-keyed API, retained only for the out-of-zone arrow/pandas get-sites.
-	void AddDependency(const std::string &name, std::unique_ptr<DependencyItem> item) {
+	void add_dependency(const std::string &name, std::unique_ptr<dependency_item_t> item) {
 		objects[name] = std::move(item);
 	}
-	DependencyItem *GetDependency(const std::string &name) const {
+	dependency_item_t *get_dependency(const std::string &name) const {
 		auto it = objects.find(name);
 		if (it == objects.end()) {
 			return nullptr;
@@ -71,9 +71,9 @@ public:
 	}
 
 	//! R14-local: compile-time callback instead of a std::function. CALLBACK is invoked as
-	//! callback(const string&, DependencyItem*) for every dependency (observer pointer, no ownership).
+	//! callback(const string&, dependency_item_t*) for every dependency (observer pointer, no ownership).
 	template <class CALLBACK>
-	void ScanDependencies(CALLBACK &&callback) {
+	void scan_dependencies(CALLBACK &&callback) {
 		for (auto &kv : objects) {
 			callback(kv.first, kv.second.get());
 		}
@@ -81,7 +81,7 @@ public:
 
 private:
 	//! The objects encompassed by this dependency. This registry owns them outright.
-	case_insensitive_map_t<std::unique_ptr<DependencyItem>> objects;
+	case_insensitive_map_t<std::unique_ptr<dependency_item_t>> objects;
 };
 
 } // namespace otterbrix

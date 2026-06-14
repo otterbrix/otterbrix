@@ -5,9 +5,9 @@ using namespace components::types;
 
 namespace otterbrix {             
 
-void OtterBrixPyTyping::Initialize(py::module_ &parent) {
+void otterbrix_py_typing_t::initialize(py::module_ &parent) {
     auto m = parent.def_submodule("typing", "This module contains classes and methods related to typing");
-    OtterBrixPyType::Initialize(m);
+    otterbrix_py_type_t::initialize(m);
 }
         
 } // namespace otterbrix     

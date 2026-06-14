@@ -16,16 +16,16 @@ TEST_CASE("HELLO") {
         py::str db_str = db_name;
         py::dict config_dict;
 
-        auto conn = otterbrix::PyConnection::Connect(db_str, true, config_dict);
-        logical_value = TransformPythonValue(py::int_(-1));
+        auto conn = otterbrix::py_connection_t::connect(db_str, true, config_dict);
+        logical_value = transform_python_value(py::int_(-1));
 
-        auto exp = conn->MakeConstant(logical_value);
+        auto exp = conn->make_constant(logical_value);
         
         REQUIRE();
 
         //auto value = std::get<components::document::value_t>(exp);
-        conn->Close();
-        PyConnection::Cleanup();
+        conn->close();
+        py_connection_t::cleanup();
 
     }
     

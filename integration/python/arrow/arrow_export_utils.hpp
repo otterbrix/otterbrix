@@ -10,11 +10,11 @@
 
 namespace otterbrix {
 
-    void TransformOtterbrixToArrowChunk(ArrowSchema& arrow_schema, ArrowArray& data, py::list& batches);
+    void transform_otterbrix_to_arrow_chunk(ArrowSchema& arrow_schema, ArrowArray& data, py::list& batches);
 
     namespace pyarrow {
 
-        py::object ToArrowTable(const std::vector<components::types::complex_logical_type>& types,
+        py::object to_arrow_table(const std::vector<components::types::complex_logical_type>& types,
                                 const std::vector<std::string>& names,
                                 const py::list& batches);
 

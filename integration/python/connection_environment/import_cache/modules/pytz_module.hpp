@@ -4,18 +4,18 @@
 
 namespace otterbrix {
 
-struct PytzCacheItem : public PythonImportCacheItem {
+struct pytz_cache_item_t : public python_import_cache_item_t {
 
 public:
-	static constexpr const char *Name = "pytz";
+	static constexpr const char *name = "pytz";
 
 public:
-	PytzCacheItem() : PythonImportCacheItem("pytz"), timezone("timezone", this) {
+	pytz_cache_item_t() : python_import_cache_item_t("pytz"), timezone("timezone", this) {
 	}
-	~PytzCacheItem() override {
+	~pytz_cache_item_t() override {
 	}
 
-	PythonImportCacheItem timezone;
+	python_import_cache_item_t timezone;
 };
 
 } // namespace otterbrix

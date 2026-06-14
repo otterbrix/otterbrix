@@ -2,17 +2,17 @@
 
 #include <pybind11/pybind_wrapper.hpp>
 #include <components/types/logical_value.hpp>
-#include <core/typedefs.hpp>
+#include <common/typedefs.hpp>
 
 #include <absl/numeric/int128.h>
 #include <string>
 
 namespace otterbrix {
     namespace util {
-        std::string LogicalValueToString(const components::types::logical_value_t& value);
+        std::string logical_value_to_string(const components::types::logical_value_t& value);
 
         template<class T>
-        T ParseToNumeric(const std::string& numeric_string) {
+        T parse_to_numeric(const std::string& numeric_string) {
         	bool is_neg = false;
         	idx_t i = 0;
         	T res = 0;
@@ -33,6 +33,6 @@ namespace otterbrix {
         	return res;
         }
 
-        std::string ParseNumericToString(absl::int128 num);
+        std::string parse_numeric_to_string(absl::int128 num);
     } // namespace util
 } // namespace otterbrix

@@ -36,7 +36,6 @@ namespace services::index {
 
     struct create_index_result_t {
         uint32_t id{std::numeric_limits<uint32_t>::max()};
-        bool graph_loaded{false};
     };
 
     struct index_contract {
@@ -109,8 +108,6 @@ namespace services::index {
                                                           components::vector_search::metric_type metric,
                                                           uint64_t hnsw_m,
                                                           uint64_t hnsw_ef_construction,
-                                                          bool try_load_graph,
-                                                          uint64_t expected_rows,
                                                           core::date::timezone_offset_t session_tz);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);

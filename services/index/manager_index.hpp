@@ -206,8 +206,6 @@ namespace services::index {
                                                           components::vector_search::metric_type metric,
                                                           uint64_t hnsw_m,
                                                           uint64_t hnsw_ef_construction,
-                                                          bool try_load_graph,
-                                                          uint64_t expected_rows,
                                                           core::date::timezone_offset_t session_tz);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
@@ -363,10 +361,6 @@ namespace services::index {
         bool bootstrap_vector_index_sync(components::catalog::oid_t table_oid,
                                          const index_name_t& index_name,
                                          const components::index::keys_base_storage_t& keys);
-        bool try_load_vector_graph(components::catalog::oid_t table_oid,
-                                   const index_name_t& index_name,
-                                   components::index::vector_index_t* vidx,
-                                   uint64_t expected_rows);
         void remove_vector_graph_files(components::catalog::oid_t table_oid, const index_name_t& index_name);
 
         // Pending futures

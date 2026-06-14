@@ -25,8 +25,7 @@ namespace components::operators {
         std::string indkey,
         components::vector_search::metric_type metric,
         uint64_t hnsw_m,
-        uint64_t hnsw_ef_construction,
-        bool try_load_graph)
+        uint64_t hnsw_ef_construction)
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , index_name_(std::move(index_name))
         , index_type_(index_type)
@@ -36,8 +35,7 @@ namespace components::operators {
         , indkey_(std::move(indkey))
         , metric_(metric)
         , hnsw_m_(hnsw_m)
-        , hnsw_ef_construction_(hnsw_ef_construction)
-        , try_load_graph_(try_load_graph) {}
+        , hnsw_ef_construction_(hnsw_ef_construction) {}
 
     void operator_create_index_backfill_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
@@ -56,8 +54,7 @@ namespace components::operators {
                                            table_oid_);
         co_await std::move(rcf);
 
-        // Pre-query the row count: HNSW graph snapshot loading sizes the graph
-        // from expected_rows, and the backfill scan below reuses the value.
+        // Pre-query the row count for the backfill scan below.
         uint64_t total_rows = 0;
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_tr0, tr0f] = actor_zeta::send(ctx->disk_address,
@@ -77,8 +74,6 @@ namespace components::operators {
                                            metric_,
                                            hnsw_m_,
                                            hnsw_ef_construction_,
-                                           try_load_graph_,
-                                           total_rows,
                                            ctx->session_tz);
         const auto create_result = co_await std::move(ixf);
         const auto id_index = create_result.id;
@@ -120,9 +115,8 @@ namespace components::operators {
             build_start_registered = true;
         }
 
-        // backfill — scan table contents and feed them into the index. Skipped
-        // when the HNSW graph was restored wholesale from its on-disk snapshot.
-        if (!create_result.graph_loaded && ctx->disk_address != actor_zeta::address_t::empty_address()) {
+        // backfill — scan table contents and feed them into the index.
+        if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             if (total_rows > 0) {
                 auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_scan_segment,

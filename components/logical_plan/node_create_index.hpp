@@ -60,10 +60,6 @@ namespace components::logical_plan {
             hnsw_ef_construction_ = ef_construction;
         }
 
-        // Transient: try loading graph snapshot
-        bool try_load_graph() const noexcept { return try_load_graph_; }
-        void set_try_load_graph(bool value) noexcept { try_load_graph_ = value; }
-
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -78,7 +74,6 @@ namespace components::logical_plan {
         components::vector_search::metric_type metric_{components::vector_search::metric_type::l2};
         uint64_t hnsw_m_{16};
         uint64_t hnsw_ef_construction_{64};
-        bool try_load_graph_{false};
     };
 
     using node_create_index_ptr = boost::intrusive_ptr<node_create_index_t>;

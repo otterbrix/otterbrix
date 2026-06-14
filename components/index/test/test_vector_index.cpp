@@ -137,3 +137,45 @@ TEST_CASE("vector_index::key_value_methods_are_safe_noops") {
     idx.remove(v, tz);
     REQUIRE(idx.size() == 0);
 }
+
+TEST_CASE("vector_index::compaction_rebuilds_from_live_points") {
+    std::pmr::synchronized_pool_resource pool;
+    auto keys = make_keys(&pool, "embedding");
+    constexpr std::size_t dim = 16;
+    constexpr std::size_t n = 300; // > 128 min compaction size
+    auto ds = make_random_dataset(n, dim, 7);
+
+    vector_index_t idx(&pool, "vidx", keys, dim, metric_type::l2, params_with(n));
+    for (std::size_t i = 0; i < n; ++i) {
+        idx.add_vector(static_cast<int64_t>(i), ds.vectors[i].data());
+    }
+    REQUIRE(idx.size() == n);
+    REQUIRE(idx.live_count() == n);
+    REQUIRE(idx.deleted_count() == 0);
+    REQUIRE_FALSE(idx.needs_compaction(0.2));
+
+    // Tombstone 30% (> 0.2 threshold): rows [0, del).
+    const core::date::timezone_offset_t tz{};
+    components::types::logical_value_t dummy{&pool, int64_t{0}};
+    const std::size_t del = n * 3 / 10;
+    for (std::size_t i = 0; i < del; ++i) {
+        idx.mark_delete(dummy, static_cast<int64_t>(i), /*txn_id=*/0, tz);
+    }
+    REQUIRE(idx.deleted_count() == del);
+    REQUIRE(idx.size() == n); // slots unchanged, tombstones live inside the graph
+    REQUIRE(idx.needs_compaction(0.2));
+
+    // Rebuild keeps only live points.
+    idx.compact();
+    REQUIRE(idx.deleted_count() == 0);
+    REQUIRE(idx.live_count() == n - del);
+    REQUIRE(idx.size() == n - del); // slots reclaimed
+    REQUIRE_FALSE(idx.needs_compaction(0.2));
+
+    // Recall survives and tombstoned ids never come back.
+    auto results = idx.knn_search(ds.query.data(), dim, 10, metric_type::l2);
+    REQUIRE_FALSE(results.empty());
+    for (const auto& r : results) {
+        REQUIRE(r.row_index >= static_cast<int64_t>(del));
+    }
+}

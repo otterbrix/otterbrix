@@ -646,8 +646,6 @@ namespace services::index {
                                   components::vector_search::metric_type metric,
                                   uint64_t hnsw_m,
                                   uint64_t hnsw_ef_construction,
-                                  bool try_load_graph,
-                                  uint64_t expected_rows,
                                   core::date::timezone_offset_t session_tz) {
         trace(log_, "manager_index_t::create_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
@@ -799,19 +797,9 @@ namespace services::index {
             // Index metadata lives in pg_catalog.pg_index now (no metafile write).
         }
 
-        // Restore graph from snapshot
-        bool graph_loaded = false;
-        if (id_index != components::index::INDEX_ID_UNDEFINED && is_vector && try_load_graph && !path_db_.empty()) {
-            auto* idx = components::index::search_index(engine, keys);
-            if (idx && idx->type() == components::logical_plan::index_type::vector_hnsw) {
-                graph_loaded = try_load_vector_graph(table_oid,
-                                                     index_name,
-                                                     static_cast<components::index::vector_index_t*>(idx),
-                                                     expected_rows);
-            }
-        }
-
-        co_return create_index_result_t{id_index, graph_loaded};
+        // Restart-time graph snapshot loading happens in bootstrap_vector_index_sync,
+        // not here — a fresh CREATE INDEX always backfills from the table scan.
+        co_return create_index_result_t{id_index};
     }
 
     manager_index_t::unique_future<void>
@@ -1179,6 +1167,9 @@ namespace services::index {
             if (txn_id != 0) {
                 engine->commit_delete(0, commit_id);
             }
+            // Tombstones are now live: rebuild any HNSW graph whose deleted
+            // fraction crossed the threshold (reclaims memory, keeps recall).
+            compact_collection_if_needed(oid);
         }
 
         co_return first_error;
@@ -1569,50 +1560,6 @@ namespace services::index {
                 }
             }
         }
-    }
-
-    bool manager_index_t::try_load_vector_graph(components::catalog::oid_t table_oid,
-                                                const index_name_t& index_name,
-                                                components::index::vector_index_t* vidx,
-                                                uint64_t expected_rows) {
-        auto graph_path = vector_graph_path(table_oid, index_name);
-        auto meta_path = graph_path;
-        meta_path += ".meta";
-        if (!std::filesystem::exists(graph_path) || !std::filesystem::exists(meta_path)) {
-            return false;
-        }
-
-        graph_meta_t meta;
-        if (!read_graph_meta(meta_path, meta)) {
-            warn(log_, "manager_index_t: bad HNSW graph sidecar for '{}', rebuilding", index_name);
-            return false;
-        }
-        // Config must match
-        if (meta.dim == 0 || meta.metric != static_cast<uint8_t>(vidx->metric()) ||
-            meta.m != vidx->hnsw_params().M || meta.ef_construction != vidx->hnsw_params().ef_construction) {
-            warn(log_, "manager_index_t: HNSW graph snapshot for '{}' does not match, rebuilding", index_name);
-            return false;
-        }
-        // Staleness guard: vector count must match rows
-        if (meta.live_count != expected_rows) {
-            warn(log_,
-                 "manager_index_t: HNSW graph snapshot for '{}' is stale ({} vectors vs {} rows), rebuilding",
-                 index_name,
-                 meta.live_count,
-                 expected_rows);
-            return false;
-        }
-
-        if (!vidx->load_graph(graph_path.string(), static_cast<std::size_t>(meta.dim))) {
-            warn(log_, "manager_index_t: failed to load HNSW graph '{}', rebuilding", index_name);
-            return false;
-        }
-        trace(log_,
-              "manager_index_t: loaded HNSW graph '{}' on oid={} ({} vectors)",
-              index_name,
-              static_cast<unsigned>(table_oid),
-              vidx->live_count());
-        return true;
     }
 
     bool manager_index_t::bootstrap_vector_index_sync(components::catalog::oid_t table_oid,

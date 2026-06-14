@@ -35,8 +35,7 @@ namespace components::operators {
                                          components::vector_search::metric_type metric =
                                              components::vector_search::metric_type::l2,
                                          uint64_t hnsw_m = 16,
-                                         uint64_t hnsw_ef_construction = 64,
-                                         bool try_load_graph = false);
+                                         uint64_t hnsw_ef_construction = 64);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
@@ -51,7 +50,6 @@ namespace components::operators {
         components::vector_search::metric_type metric_;
         uint64_t hnsw_m_;
         uint64_t hnsw_ef_construction_;
-        bool try_load_graph_;
     };
 
 } // namespace components::operators

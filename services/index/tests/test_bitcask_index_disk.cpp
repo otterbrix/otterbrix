@@ -1203,7 +1203,7 @@ TEST_CASE("services::index::bitcask_index_disk::fresh_instance_with_empty_set_wo
 }
 
 TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage") {
-    using components::index::codec;
+    namespace codec = components::index::codec;
     using components::types::complex_logical_type;
     using components::types::logical_type;
     using services::index::disk_hash_table_t;

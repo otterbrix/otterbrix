@@ -100,7 +100,7 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(future.is_ready());
-            return std::move(future).take_ready();
+            return std::move(future).get();
         }
     };
 } // namespace

@@ -75,7 +75,7 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(future.is_ready());
-            return std::move(future).take_ready();
+            return std::move(future).get();
         }
 
         components::execution_context_t ctx() {
@@ -969,7 +969,12 @@ TEST_CASE("services::disk::ddl::mark_storage_dropped_many_records_n_gc_entries")
     auto make_disk_storage = [&](catalog::oid_t tbl) {
         std::vector<column_definition_t> cols;
         cols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_disk, session_id_t{}, tbl, db_oid, std::move(cols));
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  session_id_t{},
+                  tbl,
+                  db_oid,
+                  std::move(cols),
+                  configuration::disk_layout_policy::auto_select);
     };
 
     for (auto oid : targets)

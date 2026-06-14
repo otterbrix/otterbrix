@@ -79,7 +79,7 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(future.is_ready());
-            return std::move(future).take_ready();
+            return std::move(future).get();
         }
 
         // Bypass txn_manager — set snapshot_horizon to UINT64_MAX so

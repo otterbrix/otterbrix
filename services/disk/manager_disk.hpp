@@ -28,6 +28,7 @@
 #include <components/storage/storage.hpp>
 #include <components/storage/table_storage_adapter.hpp>
 #include <components/table/data_table.hpp>
+#include <components/table/row_group.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/in_memory_block_manager.hpp>
 #include <components/table/storage/metadata_manager.hpp>
@@ -72,10 +73,17 @@ namespace services::disk {
         /// Disk mode: create new table.otbx
         table_storage_t(std::pmr::memory_resource* resource,
                         std::vector<components::table::column_definition_t> columns,
-                        const std::filesystem::path& otbx_path);
+                        const std::filesystem::path& otbx_path,
+                        configuration::disk_layout_policy layout_policy =
+                            configuration::disk_layout_policy::auto_select,
+                        uint16_t pax_rows_per_page = configuration::default_pax_rows_per_page);
 
         /// Disk mode: load existing table.otbx
-        table_storage_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path);
+        table_storage_t(std::pmr::memory_resource* resource,
+                        const std::filesystem::path& otbx_path,
+                        configuration::disk_layout_policy layout_policy =
+                            configuration::disk_layout_policy::auto_select,
+                        uint16_t pax_rows_per_page = configuration::default_pax_rows_per_page);
 
         components::table::data_table_t& table() { return *table_; }
         storage_mode_t mode() const { return mode_; }
@@ -263,6 +271,42 @@ namespace services::disk {
                 return false;
             return agents_[idx]->has_storage_sync(table_oid);
         }
+        // Sync row-count probe used by base_spaces WAL replay to avoid duplicating already-
+        // checkpointed records. Returns 0 for unknown OIDs. Same single-threaded contract
+        // as has_storage: pre-scheduler-start bootstrap or inside the manager mailbox lock.
+        uint64_t total_rows_sync(components::catalog::oid_t table_oid) const noexcept {
+            if (agents_.empty())
+                return 0;
+            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+            if (idx >= agents_.size() || agents_[idx] == nullptr)
+                return 0;
+            const auto* entry = agents_[idx]->storage_entry_sync(table_oid);
+            if (entry == nullptr)
+                return 0;
+            return const_cast<collection_storage_entry_t*>(entry)->table_storage.table().calculate_size();
+        }
+        // Returns the persisted checkpoint_wal_id for `table_oid` (0 if never checkpointed or unknown).
+        wal::id_t checkpoint_wal_id_sync(components::catalog::oid_t table_oid) const noexcept {
+            if (agents_.empty())
+                return wal::id_t{0};
+            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+            if (idx >= agents_.size() || agents_[idx] == nullptr)
+                return wal::id_t{0};
+            const auto* entry = agents_[idx]->storage_entry_sync(table_oid);
+            if (entry == nullptr)
+                return wal::id_t{0};
+            return entry->table_storage.checkpoint_wal_id();
+        }
+        components::table::row_group_scan_path_counts_t user_table_scan_path_counts_sync() const noexcept;
+        void reset_user_table_scan_path_counts_sync() noexcept;
+#if defined(DEV_MODE)
+        components::table::storage::row_group_layout_kind
+        debug_first_row_group_layout_kind_sync(components::catalog::oid_t table_oid) const noexcept;
+        void debug_reset_first_row_group_scan_path_counts_sync(components::catalog::oid_t table_oid) noexcept;
+        components::table::row_group_scan_path_counts_t
+        debug_first_row_group_scan_path_counts_sync(components::catalog::oid_t table_oid) const noexcept;
+#endif
+
         // Read the .otbx.wal_id sidecar directly from disk without loading the storage.
         wal::id_t peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
                                                    components::catalog::oid_t database_oid) const noexcept;
@@ -573,7 +617,9 @@ namespace services::disk {
         unique_future<void> create_storage_disk(session_id_t session,
                                                 components::catalog::oid_t table_oid,
                                                 components::catalog::oid_t database_oid,
-                                                std::vector<components::table::column_definition_t> columns);
+                                                std::vector<components::table::column_definition_t> columns,
+                                                configuration::disk_layout_policy layout_policy =
+                                                    configuration::disk_layout_policy::auto_select);
         // Batched DROP: partition the oids per owning agent (pool_idx_for_oid) and
         // fan out one drop_storage_many_inner per agent in parallel — N per-oid
         // manager round-trips collapse to one (at most num_agents parallel sends).
@@ -597,18 +643,20 @@ namespace services::disk {
         // Batched + projected variant: returns a vector of chunks and applies
         // index-based column projection at the storage layer.
         // Empty `projected_cols` means "read all columns" (pass-through).
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        unique_future<std::unique_ptr<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_scan_batched(session_id_t session,
                              components::catalog::oid_t table_oid,
                              std::unique_ptr<components::table::table_filter_t> filter,
                              int64_t limit,
                              std::vector<size_t> projected_cols,
+                             bool row_ids_only,
                              components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
-                      uint64_t count);
+                      uint64_t count,
+                      components::table::transaction_data txn);
         unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
         unique_future<std::pair<uint64_t, uint64_t>>
@@ -690,7 +738,9 @@ namespace services::disk {
         void create_storage_disk_sync(components::catalog::oid_t table_oid,
                                       components::catalog::oid_t database_oid,
                                       std::vector<components::table::column_definition_t> columns,
-                                      const std::filesystem::path& otbx_path);
+                                      const std::filesystem::path& otbx_path,
+                                      configuration::disk_layout_policy layout_policy =
+                                          configuration::disk_layout_policy::auto_select);
         void load_storage_disk_sync(components::catalog::oid_t table_oid,
                                     components::catalog::oid_t database_oid,
                                     const std::filesystem::path& otbx_path);
@@ -727,6 +777,11 @@ namespace services::disk {
 
         // The per-agent dropped_storages_ slices are the SOLE owner of GC state;
         // writers here are pure routers. DO NOT reintroduce a manager-side mirror.
+        // NOTE: the manager holds NO storages_ map and NO get_storage — every
+        // per-oid storage access routes through agents_[pool_idx_for_oid(oid)].
+        // collection_storage_entry_t lives at namespace scope (above) so the agent
+        // slices can own it; the PAX layout_policy/pax_rows_per_page knobs thread
+        // through table_storage_t's disk constructors and create_storage_disk.
 
         // Storage access path: sync probes go through
         // `agents_[pool_idx_for_oid(oid)]->storage_entry_sync(oid)`; all other

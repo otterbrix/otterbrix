@@ -57,6 +57,56 @@ namespace services::disk {
         return it->second.get();
     }
 
+    components::table::row_group_scan_path_counts_t
+    agent_disk_t::user_table_scan_path_counts_sync() const noexcept {
+        components::table::row_group_scan_path_counts_t result;
+        for (const auto& [table_oid, entry] : storages_) {
+            if (table_oid < components::catalog::FIRST_USER_OID || !entry) {
+                continue;
+            }
+            auto collection = entry->table_storage.table().row_group();
+            if (!collection) {
+                continue;
+            }
+            for (int64_t row_group_index = 0;; row_group_index++) {
+                auto* row_group = collection->row_group(row_group_index);
+                if (!row_group) {
+                    break;
+                }
+                const auto counts = row_group->scan_path_counts_for_benchmark();
+                result.pax_generic_projected += counts.pax_generic_projected;
+                result.pax_generic_pruned_pages += counts.pax_generic_pruned_pages;
+                result.pax_generic_prefetched_blocks += counts.pax_generic_prefetched_blocks;
+                result.pax_generic_skipped_payload_pages += counts.pax_generic_skipped_payload_pages;
+                result.pax_fixed_projected += counts.pax_fixed_projected;
+                result.pax_fixed_pruned_pages += counts.pax_fixed_pruned_pages;
+                result.pax_fixed_prefetched_blocks += counts.pax_fixed_prefetched_blocks;
+                result.pax_fixed_skipped_payload_pages += counts.pax_fixed_skipped_payload_pages;
+                result.regular += counts.regular;
+            }
+        }
+        return result;
+    }
+
+    void agent_disk_t::reset_user_table_scan_path_counts_sync() noexcept {
+        for (const auto& [table_oid, entry] : storages_) {
+            if (table_oid < components::catalog::FIRST_USER_OID || !entry) {
+                continue;
+            }
+            auto collection = entry->table_storage.table().row_group();
+            if (!collection) {
+                continue;
+            }
+            for (int64_t row_group_index = 0;; row_group_index++) {
+                auto* row_group = collection->row_group(row_group_index);
+                if (!row_group) {
+                    break;
+                }
+                row_group->reset_scan_path_counts_for_benchmark();
+            }
+        }
+    }
+
     bool agent_disk_t::bootstrap_inner_sync(components::catalog::oid_t oid,
                                             std::unique_ptr<collection_storage_entry_t> entry) noexcept {
         if (entry == nullptr) {

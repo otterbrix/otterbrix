@@ -64,6 +64,7 @@ namespace services::disk::test_probe {
         catalog::oid_t namespace_oid{catalog::INVALID_OID};
         char relkind{'r'};
         std::string name;
+        std::string storage_format;
         std::vector<probe_column_info_t> columns;
     };
 
@@ -136,7 +137,7 @@ namespace services::disk::test_probe {
 
     // --- probe_table ---------------------------------------------------------
     //
-    // pg_class layout: oid(0), relname(1), relnamespace(2), relkind(3).
+    // pg_class layout: oid(0), relname(1), relnamespace(2), relkind(3), relstoragemode(4), relstorageformat(5).
     // pg_attribute layout: attoid(0), attrelid(1), attname(2), atttypid(3),
     //   attnum(4), attnotnull(5), atthasdefault(6), attisdropped(7), atttypspec(8),
     //   attdefspec(9), added_at_commit_id(10), dropped_at_commit_id(11).
@@ -179,6 +180,11 @@ namespace services::disk::test_probe {
                         const auto ks = kind_cell.template value<std::string_view>();
                         if (!ks.empty())
                             out.relkind = ks.front();
+                    }
+                    if (chunk.column_count() > 5) {
+                        auto sf_v = chunk.value(5, i);
+                        if (!sf_v.is_null())
+                            out.storage_format = std::string(sf_v.template value<std::string_view>());
                     }
                     stop = true;
                     break;

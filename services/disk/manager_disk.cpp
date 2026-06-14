@@ -5,6 +5,7 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/table/row_group.hpp>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -96,13 +97,26 @@ namespace services::disk {
         static_assert(behavior_covers_all_implements(),
                       "behavior() is out of sync with dispatch_traits: "
                       "add a case to behavior() AND an entry to kBehaviorHandledIds");
+
+        components::table::storage::row_group_layout_policy
+        to_storage_layout_policy(configuration::disk_layout_policy policy) {
+            switch (policy) {
+                case configuration::disk_layout_policy::columnar_only:
+                    return components::table::storage::row_group_layout_policy::COLUMNAR_ONLY;
+                case configuration::disk_layout_policy::pax_only:
+                    return components::table::storage::row_group_layout_policy::PAX_ONLY;
+                case configuration::disk_layout_policy::auto_select:
+                default:
+                    return components::table::storage::row_group_layout_policy::AUTO;
+            }
+        }
     } // namespace
 
     // ---- table_storage_t implementations ----
 
     table_storage_t::table_storage_t(std::pmr::memory_resource* resource)
         : mode_(storage_mode_t::IN_MEMORY)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+        , buffer_pool_(resource, uint64_t(1) << 33, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_)
         , block_manager_(std::make_unique<components::table::storage::in_memory_block_manager_t>(
               buffer_manager_,
@@ -115,7 +129,7 @@ namespace services::disk {
     table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
                                      std::vector<components::table::column_definition_t> columns)
         : mode_(storage_mode_t::IN_MEMORY)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+        , buffer_pool_(resource, uint64_t(1) << 33, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_)
         , block_manager_(std::make_unique<components::table::storage::in_memory_block_manager_t>(
               buffer_manager_,
@@ -124,25 +138,40 @@ namespace services::disk {
 
     table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
                                      std::vector<components::table::column_definition_t> columns,
-                                     const std::filesystem::path& otbx_path)
+                                     const std::filesystem::path& otbx_path,
+                                     configuration::disk_layout_policy layout_policy,
+                                     uint16_t pax_rows_per_page)
         : mode_(storage_mode_t::DISK)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+        , buffer_pool_(resource, uint64_t(1) << 33, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_) {
+        if (layout_policy == configuration::disk_layout_policy::pax_only) {
+            std::string error_message;
+            if (!components::table::detail::supports_explicit_pax_schema(columns, &error_message)) {
+                throw std::logic_error(error_message);
+            }
+        }
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
+        bm->set_layout_policy(to_storage_layout_policy(layout_policy));
+        bm->set_pax_rows_per_page(pax_rows_per_page);
         bm->create_new_database();
         block_manager_ = std::move(bm);
         table_ = std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns));
     }
 
-    table_storage_t::table_storage_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path)
+    table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
+                                     const std::filesystem::path& otbx_path,
+                                     configuration::disk_layout_policy layout_policy,
+                                     uint16_t pax_rows_per_page)
         : mode_(storage_mode_t::DISK)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+        , buffer_pool_(resource, uint64_t(1) << 33, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_) {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
+        bm->set_layout_policy(to_storage_layout_policy(layout_policy));
+        bm->set_pax_rows_per_page(pax_rows_per_page);
         bm->load_existing_database();
         block_manager_ = std::move(bm);
 

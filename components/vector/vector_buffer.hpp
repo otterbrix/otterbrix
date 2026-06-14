@@ -111,6 +111,7 @@ namespace components::vector {
     public:
         explicit string_vector_buffer_t(std::pmr::memory_resource* resource);
         void* insert(void* data, size_t size);
+        void* insert(const void* data, size_t size);
         template<typename T>
         void* insert(T&& str_like);
         void* empty_string(size_t size);

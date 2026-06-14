@@ -267,14 +267,15 @@ namespace components::vector::arrow {
         }
     }
 
-    void populate_arrow_table_schema(std::pmr::memory_resource* resource,
-                                     arrow_table_schema_t& arrow_table,
-                                     const ArrowSchema& arrow_schema) {
+    [[nodiscard]] core::error_t populate_arrow_table_schema(std::pmr::memory_resource* resource,
+                                                            arrow_table_schema_t& arrow_table,
+                                                            const ArrowSchema& arrow_schema) {
         std::vector<std::string> names;
         for (uint64_t col_idx = 0; col_idx < static_cast<uint64_t>(arrow_schema.n_children); col_idx++) {
             const auto& schema = *arrow_schema.children[col_idx];
             if (!schema.release) {
-                throw std::logic_error("arrow_scan: released schema passed");
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("arrow_scan: released schema passed", resource));
             }
             auto name = std::string(schema.name);
             if (name.empty()) {
@@ -287,24 +288,32 @@ namespace components::vector::arrow {
         for (uint64_t col_idx = 0; col_idx < static_cast<uint64_t>(arrow_schema.n_children); col_idx++) {
             auto& schema = *arrow_schema.children[col_idx];
             if (!schema.release) {
-                throw std::logic_error("arrow_scan: released schema passed");
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("arrow_scan: released schema passed", resource));
             }
-            auto arrow_type = arrow_logical_type(resource, schema);
-            arrow_table.add_column(col_idx, std::move(arrow_type), names[col_idx]);
+            auto arrow_type_res = arrow_logical_type(resource, schema);
+            if (arrow_type_res.has_error()) {
+                return arrow_type_res.error();
+            }
+            arrow_table.add_column(col_idx, std::move(arrow_type_res.value()), names[col_idx]);
         }
+        return core::error_t::no_error();
     }
 
-    arrow_table_schema_t schema_from_arrow(std::pmr::memory_resource* resource, ArrowSchema* schema) {
+    core::result_wrapper_t<arrow_table_schema_t> schema_from_arrow(std::pmr::memory_resource* resource,
+                                                                   ArrowSchema* schema) {
         std::vector<std::string> names;
         arrow_table_schema_t arrow_table(resource);
         std::vector<types::logical_type> return_types;
-        populate_arrow_table_schema(resource, arrow_table, *schema);
+        if (auto err = populate_arrow_table_schema(resource, arrow_table, *schema); err.contains_error()) {
+            return err;
+        }
         return arrow_table;
     }
 
-    data_chunk_t data_chunk_from_arrow(std::pmr::memory_resource* resource,
-                                       ArrowArray* arrow_array,
-                                       arrow_table_schema_t converted_schema) {
+    core::result_wrapper_t<data_chunk_t> data_chunk_from_arrow(std::pmr::memory_resource* resource,
+                                                               ArrowArray* arrow_array,
+                                                               arrow_table_schema_t converted_schema) {
         auto& types = converted_schema.get_types();
 
         data_chunk_t dchunk(resource, types, static_cast<uint64_t>(arrow_array->length));
@@ -322,28 +331,44 @@ namespace components::vector::arrow {
             arrow_array->release = nullptr;
             switch (array_physical_type) {
                 case arrow_array_physical_type::DICTIONARY_ENCODED:
-                    scaner::arrow_column_to_dictionary(dchunk.data[i],
-                                                       *array,
-                                                       0,
-                                                       *array_state,
-                                                       dchunk.size(),
-                                                       *arrow_type);
+                    if (auto err = scaner::arrow_column_to_dictionary(dchunk.data[i],
+                                                                      *array,
+                                                                      0,
+                                                                      *array_state,
+                                                                      dchunk.size(),
+                                                                      *arrow_type);
+                        err.contains_error()) {
+                        return err;
+                    }
                     break;
                 case arrow_array_physical_type::RUN_END_ENCODED:
-                    scaner::arrow_column_to_run_end_encoded(dchunk.data[i],
-                                                            *array,
-                                                            0,
-                                                            *array_state,
-                                                            dchunk.size(),
-                                                            *arrow_type);
+                    if (auto err = scaner::arrow_column_to_run_end_encoded(dchunk.data[i],
+                                                                           *array,
+                                                                           0,
+                                                                           *array_state,
+                                                                           dchunk.size(),
+                                                                           *arrow_type);
+                        err.contains_error()) {
+                        return err;
+                    }
                     break;
                 case arrow_array_physical_type::DEFAULT:
                     scaner::set_validity(dchunk.data[i], *array, 0, dchunk.size(), parent_array.offset, -1);
 
-                    scaner::arrow_column_to_vector(dchunk.data[i], *array, 0, *array_state, dchunk.size(), *arrow_type);
+                    if (auto err = scaner::arrow_column_to_vector(dchunk.data[i],
+                                                                  *array,
+                                                                  0,
+                                                                  *array_state,
+                                                                  dchunk.size(),
+                                                                  *arrow_type);
+                        err.contains_error()) {
+                        return err;
+                    }
                     break;
                 default:
-                    throw std::logic_error("Only default physical types are currently supported");
+                    return core::error_t(
+                        core::error_code_t::unimplemented_yet,
+                        std::pmr::string("Only default physical types are currently supported", resource));
             }
         }
         return dchunk;

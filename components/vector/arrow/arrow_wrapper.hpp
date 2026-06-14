@@ -2,6 +2,8 @@
 
 #include "arrow.hpp"
 
+#include <core/result_wrapper.hpp>
+
 #include <memory>
 
 namespace components::vector::arrow {
@@ -34,9 +36,10 @@ namespace components::vector::arrow {
         arrow_array_schema_wrapper_t() { arrow_array_stream.release = nullptr; }
         ~arrow_array_schema_wrapper_t();
 
-        void get_schema(arrow_schema_wrapper_t& schema);
+        [[nodiscard]] core::error_t get_schema(std::pmr::memory_resource* resource, arrow_schema_wrapper_t& schema);
 
-        std::shared_ptr<arrow_array_wrapper_t> get_next_chunk();
+        core::result_wrapper_t<std::shared_ptr<arrow_array_wrapper_t>>
+        get_next_chunk(std::pmr::memory_resource* resource);
 
         const char* get_error();
 

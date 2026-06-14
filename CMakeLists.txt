@@ -58,7 +58,7 @@ endif()
 # We do not use -Werror flag with sanitizers for the following reasons:
 # 1) Sanitizers force us to build absl locally, which does contains warnings
 # 2) Incomplete support of macOS makes development too cumbersome with -Werror enabled
-set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
+set(USE_Werror "$<NOT:$<OR:$<BOOL:${APPLE}>,$<BOOL:${ENABLE_ASAN}>,$<BOOL:${ENABLE_TSAN}>,$<BOOL:${ENABLE_UBSAN}>>>")
 
 if ((CMAKE_CXX_COMPILER_ID MATCHES "GNU") OR (CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
     add_compile_options(
@@ -126,14 +126,22 @@ find_package(fmt 11.1.3 REQUIRED)
 find_package(spdlog 1.15.1 REQUIRED)
 find_package(msgpack 4.1.1 REQUIRED)
 find_package(Catch2 2.13.7 REQUIRED)
+include(Catch)
+if(NOT COMMAND otterbrix_discover_tests)
+    function(otterbrix_discover_tests)
+        catch_discover_tests(${ARGV})
+    endfunction()
+endif()
 find_package(benchmark 1.6.1 REQUIRED)
 find_package(ZLIB 1.2.12 REQUIRED)
 find_package(BZip2 1.0.8 REQUIRED)
 find_package(actor-zeta REQUIRED)
 find_package(FastFloat REQUIRED)
 
-if (ENABLE_ASAN AND NOT APPLE)
-    # build abseil-cpp locally to avoid ABI issues (skip on macOS ARM64 due to SSE flags)
+if ((ENABLE_ASAN OR ENABLE_TSAN OR ENABLE_UBSAN) AND NOT APPLE)
+    # build abseil-cpp locally to avoid ABI issues (skip on macOS ARM64 due to SSE flags).
+    # All sanitizer builds need a source-built absl: the prebuilt conan package is uninstrumented
+    # (TSAN would miss/false-positive on its internals) and its headers do not resolve here.
     include(FetchContent)
     FetchContent_Declare(
             absl

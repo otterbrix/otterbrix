@@ -805,14 +805,13 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         }
     }
 
-    INFO("DELETE across chunk boundaries removes every matching row") {
-        auto session = otterbrix::session_id_t();
-        auto del = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count >= 1000;");
-        REQUIRE(del->is_success());
-        auto expected_removed = row_count > 1000 ? row_count - 1000 : 0u;
-        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == row_count - expected_removed);
-    }
+    INFO("DELETE across chunk boundaries removes every matching row");
+    auto session = otterbrix::session_id_t();
+    auto del = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count >= 1000;");
+    REQUIRE(del->is_success());
+    auto expected_removed = row_count > 1000 ? row_count - 1000 : 0u;
+    auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == row_count - expected_removed);
 }

@@ -40,7 +40,7 @@ namespace {
 
     // The manager actors self-drive on internal threads; futures become ready
     // asynchronously. Pump the (thread-safe) child scheduler with a bounded poll
-    // until the future is ready before extracting its value with take_ready().
+    // until the future is ready before extracting its value with std::move(fut).get().
     template<typename Fut>
     void poll_ready(core::non_thread_scheduler::scheduler_test_t* scheduler, Fut& fut) {
         for (int i = 0; i < 100000 && !fut.is_ready(); ++i) {
@@ -78,7 +78,7 @@ namespace {
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
             poll_ready(scheduler, future);
-            return std::move(future).take_ready();
+            return std::move(future).get();
         }
     };
 } // namespace
@@ -146,7 +146,7 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
                                                    services::wal::id_t{0},
                                                    std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
-        (void) std::move(cf).take_ready();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
@@ -174,7 +174,7 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
                                                    services::wal::id_t{0},
                                                    std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
-        (void) std::move(cf).take_ready();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
@@ -189,7 +189,7 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
                                                     std::string("durable_ns"),
                                                     std::uint64_t{0});
         poll_ready(fd2.scheduler, fut);
-        auto rr = std::move(fut).take_ready();
+        auto rr = std::move(fut).get();
         REQUIRE(rr.found);
         REQUIRE(rr.oid == ns_oid);
     }
@@ -216,7 +216,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
                                                    services::wal::id_t{0},
                                                    std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
-        (void) std::move(cf).take_ready();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
@@ -231,7 +231,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
                                                      std::string("ns"),
                                                      std::uint64_t{0});
         poll_ready(fd2.scheduler, nfut);
-        auto rns = std::move(nfut).take_ready();
+        auto rns = std::move(nfut).get();
         REQUIRE(rns.found);
 
         auto rt = test_probe::probe_table(fd2, ctx, rns.oid, std::string("tbl"));
@@ -266,7 +266,7 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
                                                     services::wal::id_t{0},
                                                     std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
-        (void) std::move(cf).take_ready();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
@@ -302,7 +302,7 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
                                                    services::wal::id_t{0},
                                                    std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
-        (void) std::move(cf).take_ready();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);
@@ -317,7 +317,7 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
                                                     std::string("post_restart"),
                                                     std::uint64_t{0});
         poll_ready(fd2.scheduler, fut);
-        auto rns = std::move(fut).take_ready();
+        auto rns = std::move(fut).get();
         REQUIRE(rns.found);
     }
     std::filesystem::remove_all(dir);
@@ -345,7 +345,7 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
                                                    services::wal::id_t{0},
                                                    std::numeric_limits<uint64_t>::max());
         poll_ready(fd.scheduler, cf);
-        (void) std::move(cf).take_ready();
+        (void) std::move(cf).get();
     }
     {
         fresh_disk fd2(dir);

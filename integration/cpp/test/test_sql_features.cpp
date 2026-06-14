@@ -3,6 +3,7 @@
 
 #include <catch2/catch.hpp>
 #include <chrono>
+#include <services/disk/tests/catalog_probe.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/date/timezones.hpp>
 #include <random>
@@ -11,6 +12,29 @@
 
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
+static constexpr int split_tail_id_start = 5000;
+static constexpr int split_tail_row_count = 2050;
+static constexpr int split_tail_id_end = split_tail_id_start + split_tail_row_count;
+
+#if defined(DEV_MODE)
+// Adapter so services::disk::test_probe::probe_table can drive the integration
+// `test_spaces` fixture. probe_read() reads `fx.resource` and calls `fx.invoke`;
+// base_otterbrix_t::resource is protected, so this exposes a public reference to
+// the dispatcher's memory_resource and forwards invoke to test_spaces::invoke.
+struct sql_features_probe_fixture_t final {
+    explicit sql_features_probe_fixture_t(test_spaces& spaces)
+        : space(spaces)
+        , resource(*spaces.dispatcher()->resource()) {}
+
+    template<typename Fn, typename... Args>
+    auto invoke(Fn fn, Args&&... args) {
+        return space.invoke(fn, std::forward<Args>(args)...);
+    }
+
+    test_spaces& space;
+    std::pmr::memory_resource& resource;
+};
+#endif
 
 TEST_CASE("integration::cpp::test_sql_features::is_null") {
     auto config = test_create_config("/tmp/test_sql_features/is_null");
@@ -120,6 +144,347 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
     }
 }
 
+TEST_CASE("integration::cpp::test_sql_features::pax_projected_delete_sparse_scan") {
+    auto config = test_create_config("/tmp/test_sql_features/pax_projected_delete_sparse_scan");
+    config.disk.on = true;
+    config.disk.layout_policy = configuration::disk_layout_policy::pax_only;
+    config.wal.on = false;
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE TABLE TestDatabase.WideDelete ("
+                                           "id bigint, c1 bigint, c2 bigint, c3 bigint, c4 bigint, "
+                                           "c5 bigint, c6 bigint, c7 bigint, c8 bigint"
+                                           ") WITH (storage = 'disk') USING PAX;");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream query;
+        query << "INSERT INTO TestDatabase.WideDelete "
+                 "(id, c1, c2, c3, c4, c5, c6, c7, c8) VALUES ";
+        for (int row = 0; row < 3000; row++) {
+            query << "(" << row;
+            for (int col = 1; col <= 8; col++) {
+                query << ", " << (row + col);
+            }
+            query << ")" << (row == 2999 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, query.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3000);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "DELETE FROM TestDatabase.WideDelete "
+                                           "WHERE id >= 400 AND id < 2600;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2200);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.WideDelete;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 800);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.WideDelete "
+                                           "WHERE id >= 400 AND id < 2600;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::pax_range_conjunction_prunes_pages") {
+    // A `WHERE id >= x AND id < y` range conjunction must be pushed into the PAX
+    // scan so per-page min/max zone maps can prune non-matching pages.
+    auto config = test_create_config("/tmp/test_sql_features/pax_range_conjunction_prunes_pages");
+    config.disk.on = true;
+    config.disk.layout_policy = configuration::disk_layout_policy::pax_only;
+    config.wal.on = false;
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE TABLE TestDatabase.RangeScan ("
+                                           "id bigint, payload bigint"
+                                           ") WITH (storage = 'disk') USING PAX;");
+        REQUIRE(cur->is_success());
+    }
+    {
+        // Monotonic id so a selective range maps to few pages.
+        auto session = otterbrix::session_id_t();
+        std::stringstream query;
+        query << "INSERT INTO TestDatabase.RangeScan (id, payload) VALUES ";
+        for (int row = 0; row < 3000; row++) {
+            query << "(" << row << ", " << (row * 2) << ")" << (row == 2999 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, query.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3000);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+    }
+
+#if defined(DEV_MODE)
+    components::catalog::oid_t table_oid = components::catalog::INVALID_OID;
+    {
+        auto session = otterbrix::session_id_t();
+        components::execution_context_t ctx{session, components::table::transaction_data{0, 0}, {}};
+        auto ns = space.disk_invoke(&services::disk::manager_disk_t::resolve_namespace,
+                                    ctx,
+                                    std::string("testdatabase"),
+                                    std::uint64_t{0});
+        REQUIRE(ns.found);
+        sql_features_probe_fixture_t probe_fx{space};
+        auto table = services::disk::test_probe::probe_table(probe_fx, ctx, ns.oid, std::string("rangescan"));
+        REQUIRE(table.found);
+        table_oid = table.oid;
+        space.debug_reset_first_row_group_scan_path_counts(table_oid);
+    }
+#endif
+
+    {
+        // Selective range near the start: keeps the first page, prunes the later ones.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT COUNT(id) AS cnt FROM TestDatabase.RangeScan "
+                                           "WHERE id >= 100 AND id < 200;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 100);
+    }
+
+#if defined(DEV_MODE)
+    {
+        const auto counts = space.debug_first_row_group_scan_path_counts(table_oid);
+        REQUIRE(counts.pax_fixed_projected > 0);
+        REQUIRE(counts.regular == 0);
+        REQUIRE(counts.pax_fixed_pruned_pages > 0);
+    }
+#endif
+}
+
+TEST_CASE("integration::cpp::test_sql_features::pax_projected_update_sparse_scan") {
+    auto config = test_create_config("/tmp/test_sql_features/pax_projected_update_sparse_scan");
+    config.disk.on = true;
+    config.disk.layout_policy = configuration::disk_layout_policy::pax_only;
+    config.wal.on = false;
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE TABLE TestDatabase.WideUpdate ("
+                                           "id bigint, c1 bigint, c2 bigint, c3 bigint, c4 bigint, "
+                                           "c5 bigint, c6 bigint, c7 bigint, c8 bigint"
+                                           ") WITH (storage = 'disk') USING PAX;");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream query;
+        query << "INSERT INTO TestDatabase.WideUpdate "
+                 "(id, c1, c2, c3, c4, c5, c6, c7, c8) VALUES ";
+        for (int row = 0; row < 3000; row++) {
+            query << "(" << row;
+            for (int col = 1; col <= 8; col++) {
+                query << ", " << (row + col);
+            }
+            query << ")" << (row == 2999 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, query.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3000);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+        REQUIRE(cur->is_success());
+    }
+
+#if defined(DEV_MODE)
+    components::catalog::oid_t table_oid = components::catalog::INVALID_OID;
+    {
+        auto session = otterbrix::session_id_t();
+        components::execution_context_t ctx{session, components::table::transaction_data{0, 0}, {}};
+        auto ns = space.disk_invoke(&services::disk::manager_disk_t::resolve_namespace,
+                                    ctx,
+                                    std::string("testdatabase"),
+                                    std::uint64_t{0});
+        REQUIRE(ns.found);
+        sql_features_probe_fixture_t probe_fx{space};
+        auto table = services::disk::test_probe::probe_table(probe_fx, ctx, ns.oid, std::string("wideupdate"));
+        REQUIRE(table.found);
+        table_oid = table.oid;
+    }
+#endif
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "UPDATE TestDatabase.WideUpdate "
+                                           "SET c8 = c8 + 100000 "
+                                           "WHERE id >= 400 AND id < 2600;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2200);
+    }
+    {
+        // The MVCC UPDATE appended the new row versions in-memory; checkpoint to
+        // re-materialise them into the PAX disk layout so the verifying projected
+        // SELECT below actually exercises the pax_fixed_projected scan path (an
+        // in-memory segment is scanned via neither pax_fixed nor regular).
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+    }
+
+    {
+        // The scan-path counter lives on the row_group object. A mutating
+        // statement (the UPDATE above) replaces row_group(0) via the MVCC
+        // delete-old + append-new path, so any count accumulated by the UPDATE's
+        // own scan is stranded on the now-discarded object and is unobservable
+        // through debug_first_row_group_scan_path_counts (which always re-fetches
+        // the *current* row_group(0)). Reset+assert around a NON-mutating
+        // projected read instead: the verifying SELECT below scans the same
+        // {id, c8} subset under the identical id-range conjunction, takes the
+        // pax_fixed_projected path, and does not replace the row group — so the
+        // counter survives from reset to read.
+#if defined(DEV_MODE)
+        space.debug_reset_first_row_group_scan_path_counts(table_oid);
+#endif
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT COUNT(id) AS cnt FROM TestDatabase.WideUpdate "
+                                           "WHERE id >= 400 AND id < 2600 AND c8 >= 100000;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 2200);
+#if defined(DEV_MODE)
+        const auto counts = space.debug_first_row_group_scan_path_counts(table_oid);
+        REQUIRE(counts.pax_fixed_projected > 0);
+        REQUIRE(counts.regular == 0);
+#endif
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::columnar_compact_after_delete_insert_checkpoint") {
+    auto config = test_create_config("/tmp/test_sql_features/columnar_compact_after_delete_insert_checkpoint");
+    config.disk.on = true;
+    config.disk.layout_policy = configuration::disk_layout_policy::columnar_only;
+    config.wal.on = false;
+    test_clear_directory(config);
+    test_spaces space(config);
+    space.disable_shutdown_checkpoint_for_tests();
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(dispatcher
+                    ->execute_sql(session,
+                                  "CREATE TABLE TestDatabase.CompactRows ("
+                                  "id bigint, group_id bigint, amount bigint, filler bigint"
+                                  ") WITH (storage = 'disk');")
+                    ->is_success());
+        REQUIRE(dispatcher
+                    ->execute_sql(session,
+                                  "CREATE TABLE TestDatabase.CompactSeed ("
+                                  "id bigint, group_id bigint, amount bigint, filler bigint"
+                                  ") WITH (storage = 'disk');")
+                    ->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream query;
+        query << "INSERT INTO TestDatabase.CompactRows (id, group_id, amount, filler) VALUES ";
+        for (int row = 0; row < 2500; row++) {
+            query << "(" << row << ", " << (row % 17) << ", " << (row * 3) << ", " << (row + 100) << ")"
+                  << (row == 2499 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, query.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2500);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream query;
+        query << "INSERT INTO TestDatabase.CompactSeed (id, group_id, amount, filler) VALUES ";
+        for (int row = 0; row < 700; row++) {
+            const auto id = 10000 + row;
+            query << "(" << id << ", " << (id % 17) << ", " << (id * 3) << ", " << (id + 100) << ")"
+                  << (row == 699 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, query.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 700);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "DELETE FROM TestDatabase.CompactRows "
+                                           "WHERE id >= 900 AND id < 1600;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 700);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "INSERT INTO TestDatabase.CompactRows (id, group_id, amount, filler) "
+                                           "SELECT id, group_id, amount, filler FROM TestDatabase.CompactSeed "
+                                           "WHERE id >= 10000 AND id < 10700;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 700);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.CompactRows "
+                                           "WHERE id >= 10000 AND id < 10700;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 700);
+    }
+}
+
 TEST_CASE("integration::cpp::test_sql_features::in_list") {
     auto config = test_create_config("/tmp/test_sql_features/in_list");
     test_clear_directory(config);
@@ -193,6 +558,109 @@ TEST_CASE("integration::cpp::test_sql_features::in_list") {
                                            "WHERE count IN (42);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
+    }
+}
+
+// Uncorrelated subqueries: the subquery is run once and its result substituted
+// into the main plan. Fixture: count 0..99.
+TEST_CASE("integration::cpp::test_sql_features::uncorrelated_subquery") {
+    auto config = test_create_config("/tmp/test_sql_features/uncorrelated_subquery");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("initialization") {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            test_create_collection(dispatcher, session, database_name, collection_name);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int num = 0; num < 100; ++num) {
+                query << "('Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+    }
+
+    INFO("IN-subquery (q18 shape)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE count IN "
+                                           "(SELECT count FROM TestDatabase.TestCollection WHERE count < 5);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+
+    INFO("IN-subquery combined with AND") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE count IN "
+                                           "(SELECT count FROM TestDatabase.TestCollection WHERE count < 50) "
+                                           "AND count > 45;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4); // 46, 47, 48, 49
+    }
+
+    INFO("IN-subquery with empty result is always false") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE count IN "
+                                           "(SELECT count FROM TestDatabase.TestCollection WHERE count > 1000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("scalar subquery in HAVING (q11 shape), avg threshold") {
+        // avg is 49.5; sum(count)=count per group, so 50..99 pass -> 50 groups.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count, sum(count) FROM TestDatabase.TestCollection "
+                                           "GROUP BY count "
+                                           "HAVING sum(count) > (SELECT avg(count) FROM TestDatabase.TestCollection);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 50);
+    }
+
+    INFO("scalar subquery in HAVING, min threshold (value matters)") {
+        // min is 0, so 1..99 pass -> 99 groups (different from the avg case).
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count, sum(count) FROM TestDatabase.TestCollection "
+                                           "GROUP BY count "
+                                           "HAVING sum(count) > (SELECT min(count) FROM TestDatabase.TestCollection);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 99);
+    }
+
+    INFO("HAVING aggregate not in SELECT list") {
+        // sum(count) is only in HAVING, not the projection; 51..99 pass -> 49 groups.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count FROM TestDatabase.TestCollection "
+                                           "GROUP BY count HAVING sum(count) > 50;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 49);
+    }
+
+    INFO("IN-subquery whose body groups + HAVINGs an unprojected aggregate (q18 shape)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE count IN "
+                                           "(SELECT count FROM TestDatabase.TestCollection "
+                                           " GROUP BY count HAVING sum(count) > 50);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 49); // counts 51..99
     }
 }
 
@@ -482,6 +950,52 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 10);
         }
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::nullable_string_insert_with_null_first") {
+    auto config = test_create_config("/tmp/test_sql_features/nullable_string_insert_with_null_first");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, note string);");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "INSERT INTO TestDatabase.TestCollection (id, note) VALUES "
+                                           "(1, NULL), "
+                                           "(2, 'note_2'), "
+                                           "(3, NULL);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.TestCollection "
+                                           "WHERE note IS NULL;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.TestCollection "
+                                           "WHERE note = 'note_2';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
     }
 }
 
@@ -871,6 +1385,19 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3);
+    }
+
+    INFO("counter pattern with compound CASE predicate") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT SUM(CASE WHEN score >= 70 OR name = 'Eve' THEN 1 ELSE 0 END) AS wide, "
+                                           "       SUM(CASE WHEN score >= 70 AND name <> 'Bob' THEN 1 ELSE 0 END) AS narrow "
+                                           "FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 4);
+        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 2);
     }
 
     INFO("multiple branches") {

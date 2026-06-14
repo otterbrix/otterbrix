@@ -4,6 +4,7 @@
 #include <actor-zeta/detail/memory.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
+#include <components/table/row_group.hpp>
 #include <core/executor.hpp>
 
 #include <core/config.hpp>
@@ -47,6 +48,11 @@ namespace otterbrix {
 
         log_t& get_log();
         otterbrix::wrapper_dispatcher_t* dispatcher();
+        components::table::row_group_scan_path_counts_t user_table_scan_path_counts() const noexcept;
+        void reset_user_table_scan_path_counts() noexcept;
+#if defined(DEV_MODE)
+        void disable_shutdown_checkpoint_for_tests() noexcept { checkpoint_on_shutdown_ = false; }
+#endif
         ~base_otterbrix_t();
 
     protected:
@@ -78,6 +84,7 @@ namespace otterbrix {
         services::index::manager_index_ptr manager_index_;
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
         actor_zeta::scheduler_ptr scheduler_disk_;
+        bool checkpoint_on_shutdown_{true};
 
         // Catalog-driven index bootstrap. Called once during construction, after
         // WAL replay and before scheduler.start, while single-threaded. Scans

@@ -1582,6 +1582,622 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
     }
 }
 
+TEST_CASE("integration::cpp::test_persistence::disk_pax_fixed_full_cycle") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_pax_fixed_full_cycle");
+    test_clear_directory(config);
+
+    INFO("phase 1: create pure fixed-width DISK table, insert 100 rows, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (id, value) VALUES ";
+            for (int i = 0; i < 100; ++i) {
+                query << "(" << i << ", " << (i * 10) << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart, apply DML on PAX_FIXED-backed rows, checkpoint again") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50 AND value = 500;", 1);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id >= 90;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "UPDATE TestDatabase.TestCollection SET value = 9999 WHERE id = 50;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (id, value) VALUES "
+                                               "(100, 1000), (101, 1010), (102, 1020);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 93);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50 AND value = 9999;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 95;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 102 AND value = 1020;", 1);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 3: second restart keeps final pure PAX_FIXED table state") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 93);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50 AND value = 9999;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 500;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 95;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 100 AND value = 1000;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 101 AND value = 1010;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 102 AND value = 1020;", 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_pax_fixed_wal_tail_recovery") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_pax_fixed_wal_tail_recovery");
+    test_clear_directory(config);
+
+    INFO("phase 1: create pure fixed-width DISK table, insert rows, checkpoint into PAX_FIXED") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (id, value) VALUES ";
+            for (int i = 0; i < 100; ++i) {
+                query << "(" << i << ", " << (i * 10) << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart, apply DML on PAX_FIXED-backed rows, leave changes only in WAL") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50 AND value = 500;", 1);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id >= 90;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "UPDATE TestDatabase.TestCollection SET value = 9999 WHERE id = 50;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (id, value) VALUES "
+                                               "(100, 1000), (101, 1010), (102, 1020);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 93);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50 AND value = 9999;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 500;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 95;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 102 AND value = 1020;", 1);
+    }
+
+    INFO("phase 3: restart replays WAL tail over PAX_FIXED checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 93);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 50 AND value = 9999;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 500;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 95;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 100 AND value = 1000;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 101 AND value = 1010;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 102 AND value = 1020;", 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_pax_extended_fixed_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_pax_extended_fixed_restart");
+    test_clear_directory(config);
+
+    INFO("phase 1: create extended fixed-width DISK table, insert rows, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection ("
+                "id bigint, "
+                "flag boolean, "
+                "score double "
+                ") WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection "
+                "(id, flag, score) VALUES "
+                "(1, true, 1.5), "
+                "(2, false, 2.5), "
+                "(3, NULL, NULL), "
+                "(4, true, 4.5);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 4);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 4);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart and verify extended fixed-width values survived") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 4);
+
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+
+        auto& chunk = cur->chunk_data();
+        chunk.flatten();
+        REQUIRE(chunk.data.size() == 3);
+
+        auto* ids = chunk.data[0].data<int64_t>();
+        auto* flags = chunk.data[1].data<bool>();
+        auto* scores = chunk.data[2].data<double>();
+
+        REQUIRE(ids[0] == 1);
+        REQUIRE_FALSE(chunk.data[1].is_null(0));
+        REQUIRE(flags[0]);
+        REQUIRE(scores[0] == Approx(1.5));
+
+        REQUIRE(ids[1] == 2);
+        REQUIRE_FALSE(chunk.data[1].is_null(1));
+        REQUIRE_FALSE(flags[1]);
+        REQUIRE(scores[1] == Approx(2.5));
+
+        REQUIRE(ids[2] == 3);
+        REQUIRE(chunk.data[1].is_null(2));
+        REQUIRE(chunk.data[2].is_null(2));
+
+        REQUIRE(ids[3] == 4);
+        REQUIRE_FALSE(chunk.data[1].is_null(3));
+        REQUIRE(flags[3]);
+        REQUIRE(scores[3] == Approx(4.5));
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_pax_fixed_projected_queries_restart") {
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_persistence/disk_pax_fixed_projected_queries_restart");
+    test_clear_directory(config);
+
+    INFO("phase 1: create fixed-width DISK table, insert rows, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection ("
+                "id bigint, "
+                "flag boolean, "
+                "score double, "
+                "amount bigint"
+                ") WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection "
+                "(id, flag, score, amount) VALUES "
+                "(1, true, 1.5, 10), "
+                "(2, false, 2.5, 20), "
+                "(3, true, 3.5, 30), "
+                "(4, false, NULL, 40), "
+                "(5, true, 5.5, 50);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart and verify projected fixed-width queries") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "SELECT id, score FROM TestDatabase.TestCollection WHERE flag = true ORDER BY id;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+
+            auto& chunk = cur->chunk_data();
+            chunk.flatten();
+            auto* ids = chunk.data[0].data<int64_t>();
+            auto* scores = chunk.data[1].data<double>();
+            REQUIRE(ids[0] == 1);
+            REQUIRE(scores[0] == Approx(1.5));
+            REQUIRE(ids[1] == 3);
+            REQUIRE(scores[1] == Approx(3.5));
+            REQUIRE(ids[2] == 5);
+            REQUIRE(scores[2] == Approx(5.5));
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "SELECT id FROM TestDatabase.TestCollection "
+                                        "WHERE score >= 3.5 ORDER BY id;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+
+            auto& chunk = cur->chunk_data();
+            chunk.flatten();
+            auto* ids = chunk.data[0].data<int64_t>();
+            REQUIRE(ids[0] == 3);
+            REQUIRE(ids[1] == 5);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "SELECT amount FROM TestDatabase.TestCollection "
+                                        "WHERE flag = false ORDER BY amount;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+
+            auto& chunk = cur->chunk_data();
+            chunk.flatten();
+            auto* amounts = chunk.data[0].data<int64_t>();
+            REQUIRE(amounts[0] == 20);
+            REQUIRE(amounts[1] == 40);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT id FROM TestDatabase.TestCollection "
+                                               "WHERE score IS NULL;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+
+            auto& chunk = cur->chunk_data();
+            chunk.flatten();
+            auto* ids = chunk.data[0].data<int64_t>();
+            REQUIRE(ids[0] == 4);
+        }
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_pax_generic_string_wal_tail_recovery") {
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_persistence/disk_pax_generic_string_wal_tail_recovery");
+    test_clear_directory(config);
+
+    INFO("phase 1: create string-heavy DISK table, insert rows, checkpoint into PAX_GENERIC") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection ("
+                "id bigint, "
+                "name string, "
+                "city string, "
+                "note string"
+                ") WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection "
+                "(id, name, city, note) VALUES "
+                "(1, 'alice', 'moscow', 'alpha'), "
+                "(2, 'bob', 'berlin', NULL), "
+                "(3, 'carol', 'moscow', 'gamma'), "
+                "(4, 'dave', 'paris', NULL), "
+                "(5, 'erin', 'berlin', 'epsilon'), "
+                "(6, 'frank', 'rome', 'zeta');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 6);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 6);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart, apply string DML on PAX_GENERIC-backed rows, leave changes only in WAL") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 6);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 2 AND note IS NULL;", 1);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id = 4;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "UPDATE TestDatabase.TestCollection SET city = 'lisbon', note = 'beta' WHERE id = 2;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection "
+                "(id, name, city, note) VALUES "
+                "(7, 'grace', 'berlin', 'theta'), "
+                "(8, 'heidi', 'moscow', NULL);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 7);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 2 AND city = 'lisbon' AND note = 'beta';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 4;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 7 AND name = 'grace';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 8 AND note IS NULL;", 1);
+    }
+
+    INFO("phase 3: restart replays WAL tail over PAX_GENERIC checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 7);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 2 AND city = 'lisbon' AND note = 'beta';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 4;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 5 AND note = 'epsilon';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 7 AND city = 'berlin';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 8 AND note IS NULL;", 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_persistence::disk_pax_generic_string_queries_restart") {
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_persistence/disk_pax_generic_string_queries_restart");
+    test_clear_directory(config);
+
+    INFO("phase 1: create string-heavy DISK table, insert rows, checkpoint") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TestCollection ("
+                "name string, "
+                "city string, "
+                "note string"
+                ") WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection "
+                "(name, city, note) VALUES "
+                "('alice', 'moscow', 'alpha'), "
+                "('bob', 'berlin', NULL), "
+                "('carol', 'moscow', 'gamma'), "
+                "('dave', 'paris', NULL), "
+                "('erin', 'berlin', 'epsilon');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 5);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart and verify projected string queries") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "SELECT name FROM TestDatabase.TestCollection WHERE city = 'moscow' ORDER BY name;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+
+            auto& chunk = cur->chunk_data();
+            chunk.flatten();
+            auto* names = chunk.data[0].data<std::string_view>();
+            REQUIRE(std::string(names[0]) == "alice");
+            REQUIRE(std::string(names[1]) == "carol");
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT note FROM TestDatabase.TestCollection "
+                                               "WHERE city = 'berlin' ORDER BY note;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+
+            auto& chunk = cur->chunk_data();
+            chunk.flatten();
+            const bool first_is_null = chunk.data[0].is_null(0);
+            const bool second_is_null = chunk.data[0].is_null(1);
+            REQUIRE(first_is_null != second_is_null);
+
+            const auto* notes = chunk.data[0].data<std::string_view>();
+            const auto non_null_index = first_is_null ? 1 : 0;
+            REQUIRE(std::string(notes[non_null_index]) == "epsilon");
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT city FROM TestDatabase.TestCollection "
+                                               "WHERE note IS NULL ORDER BY city;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+
+            auto& chunk = cur->chunk_data();
+            chunk.flatten();
+            auto* cities = chunk.data[0].data<std::string_view>();
+            REQUIRE(std::string(cities[0]) == "berlin");
+            REQUIRE(std::string(cities[1]) == "paris");
+        }
+    }
+}
+
 TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_restart") {
     auto config =
         test_create_config("/tmp/otterbrix/integration/test_persistence/disk_index_mixed_ops_checkpoint_restart");

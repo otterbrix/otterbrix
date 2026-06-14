@@ -114,8 +114,9 @@ namespace otterbrix {
         trace(log_, "spaces::manager_index finish");
 
         trace(log_, "spaces::manager_dispatcher start");
-        manager_dispatcher_ =
-            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource, scheduler_dispatcher_.get(), log_);
+        manager_dispatcher_ = actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource,
+                                                                                            scheduler_dispatcher_.get(),
+                                                                                            log_);
         trace(log_, "spaces::manager_dispatcher finish");
 
         wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource,
@@ -239,7 +240,13 @@ namespace otterbrix {
                             }
                             break;
                         case services::wal::wal_record_type::PHYSICAL_DELETE: {
-                            disk_ptr->direct_delete_sync(table_oid, r->physical_row_ids, r->physical_row_count);
+                            if (r->transaction_id != 0) {
+                                disk_ptr->direct_delete_sync(table_oid,
+                                                             r->physical_row_ids,
+                                                             r->physical_row_count);
+                            } else {
+                                disk_ptr->direct_delete_sync(table_oid, r->physical_row_ids, r->physical_row_count);
+                            }
                             break;
                         }
                         case services::wal::wal_record_type::PHYSICAL_UPDATE:
@@ -409,10 +416,23 @@ namespace otterbrix {
 
     wrapper_dispatcher_t* base_otterbrix_t::dispatcher() { return wrapper_dispatcher_.get(); }
 
+    components::table::row_group_scan_path_counts_t base_otterbrix_t::user_table_scan_path_counts() const noexcept {
+        if (!manager_disk_) {
+            return {};
+        }
+        return manager_disk_->user_table_scan_path_counts_sync();
+    }
+
+    void base_otterbrix_t::reset_user_table_scan_path_counts() noexcept {
+        if (manager_disk_) {
+            manager_disk_->reset_user_table_scan_path_counts_sync();
+        }
+    }
+
     base_otterbrix_t::~base_otterbrix_t() {
         trace(log_, "delete spaces");
         // Checkpoint all disk tables before shutdown
-        if (wrapper_dispatcher_) {
+        if (checkpoint_on_shutdown_ && wrapper_dispatcher_) {
             try {
                 auto session = components::session::session_id_t();
                 auto checkpoint_node = components::logical_plan::make_node_checkpoint(&resource);

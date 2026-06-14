@@ -98,7 +98,7 @@ namespace otterbrix {
                 event_loop_cv_.wait_for(lock, std::chrono::microseconds(100));
             }
         }
-        return std::move(future).take_ready();
+        return std::move(future).get();
     }
 
 } // namespace otterbrix

@@ -1,12 +1,50 @@
 #include "data_table.hpp"
 
+#include <algorithm>
 #include <components/table/storage/partial_block_manager.hpp>
+#include <components/types/type_spec.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <cstdlib>
+#include <thread>
 #include <unordered_set>
 
 #include "row_group.hpp"
+
+namespace {
+
+    constexpr uint32_t ROW_GROUP_LAYOUTS_MAGIC = 0x31584150U; // "PAX1"
+    constexpr uint32_t COLUMN_TYPES_METADATA_MAGIC = 0x31484353U; // "SCH1"
+    constexpr uint32_t TABLE_LAYOUT_POLICY_MAGIC = 0x3159504CU; // "LPY1"
+    constexpr uint32_t TABLE_COLUMN_TYPES_METADATA_FLAG = 1U << 31;
+    constexpr uint32_t TABLE_LAYOUT_METADATA_FLAG = 1U << 31;
+    constexpr uint32_t TABLE_LAYOUT_POLICY_METADATA_FLAG = 1U << 30;
+
+    bool requires_column_type_metadata(const components::types::complex_logical_type& type) {
+        if (type.extension() &&
+            type.extension()->type() != components::types::logical_type_extension::extension_type::GENERIC) {
+            return true;
+        }
+
+        switch (type.type()) {
+            case components::types::logical_type::ARRAY:
+            case components::types::logical_type::STRUCT:
+            case components::types::logical_type::UNION:
+            case components::types::logical_type::VARIANT:
+            case components::types::logical_type::LIST:
+            case components::types::logical_type::MAP:
+            case components::types::logical_type::DECIMAL:
+            case components::types::logical_type::ENUM:
+            case components::types::logical_type::USER:
+            case components::types::logical_type::FUNCTION:
+            case components::types::logical_type::UNKNOWN:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+}
 
 namespace components::table {
 
@@ -77,7 +115,12 @@ namespace components::table {
     }
 
     [[nodiscard]] std::pmr::vector<types::complex_logical_type> data_table_t::copy_types() const {
-        std::pmr::vector<types::complex_logical_type> types(resource_);
+        return copy_types(resource_);
+    }
+
+    [[nodiscard]] std::pmr::vector<types::complex_logical_type>
+    data_table_t::copy_types(std::pmr::memory_resource* resource) const {
+        std::pmr::vector<types::complex_logical_type> types(resource);
         types.reserve(column_definitions_.size());
         for (auto& it : column_definitions_) {
             types.push_back(it.type());
@@ -130,6 +173,8 @@ namespace components::table {
         row_groups_->cleanup_versions(lowest_active_start_time);
     }
 
+    bool data_table_t::has_persisted_pax_layout() const { return row_groups_->has_persisted_pax_layout(); }
+
     bool data_table_t::compact(uint64_t compact_watermark) {
         auto total = row_groups_->total_rows();
         if (total == 0) {
@@ -155,6 +200,9 @@ namespace components::table {
         if (row_groups_->has_version_above(compact_watermark)) {
             return false;
         }
+        if (row_groups_->committed_row_count() == total) {
+            return true;
+        }
 
         auto types = row_groups_->types();
         auto new_collection = std::make_shared<collection_t>(
@@ -176,15 +224,15 @@ namespace components::table {
             table_scan_state state(resource_);
             initialize_scan_with_offset(state, column_ids, 0, static_cast<int64_t>(total));
 
-            auto scan_types = copy_types();
-            vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
             while (true) {
+                auto scan_types = copy_types();
+                vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
                 state.table_state.scan(chunk);
                 if (chunk.size() == 0) {
                     break;
                 }
+                chunk.flatten();
                 new_collection->append(chunk, append_state);
-                chunk.reset();
             }
 
             new_collection->finalize_append(append_state, transaction_data{0, 0});
@@ -206,6 +254,47 @@ namespace components::table {
         state.table_state.scan_batched(types, projected_cols, batches, resource);
     }
 
+    bool data_table_t::scan_row_group_batched(uint64_t row_group_idx,
+                                              const std::vector<storage_index_t>& column_ids,
+                                              const table_filter_t* filter,
+                                              const std::pmr::vector<types::complex_logical_type>& types,
+                                              const std::vector<size_t>* projected_cols,
+                                              std::pmr::vector<vector::data_chunk_t>& batches,
+                                              transaction_data txn,
+                                              std::pmr::memory_resource* resource) {
+        auto* rg = row_groups_->row_group_tree()->segment_at(static_cast<int64_t>(row_group_idx));
+        if (!rg) {
+            return false;
+        }
+
+        table_scan_state state(resource);
+        state.initialize(column_ids, filter);
+        state.table_state.txn = txn;
+        state.local_state.txn = txn;
+
+        const int64_t max_row = rg->start + static_cast<int64_t>(rg->count);
+        row_groups_->initialize_scan_with_offset(state.table_state, column_ids, rg->start, max_row);
+        state.table_state.scan_batched(types, projected_cols, batches, resource);
+        return true;
+    }
+
+    uint64_t data_table_t::max_threads() const {
+        const auto total_row_groups = row_groups_->row_group_tree()->segment_count();
+        const auto hardware_threads = std::thread::hardware_concurrency();
+        const uint64_t concurrency = hardware_threads == 0 ? 1 : static_cast<uint64_t>(hardware_threads);
+        return std::max<uint64_t>(1, std::min<uint64_t>(total_row_groups, concurrency));
+    }
+
+    bool data_table_t::supports_threaded_scan() const {
+        for (auto* row_group = row_groups_->row_group_tree()->root_segment(); row_group;
+             row_group = row_groups_->row_group_tree()->next_segment(row_group)) {
+            if (!row_group->supports_threaded_scan()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     bool data_table_t::create_index_scan(table_scan_state& state, vector::data_chunk_t& result, table_scan_type type) {
         return state.table_state.scan_committed(result, type);
     }
@@ -220,6 +309,15 @@ namespace components::table {
                              uint64_t fetch_count,
                              column_fetch_state& state) {
         row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state);
+    }
+
+    void data_table_t::fetch(vector::data_chunk_t& result,
+                             const std::vector<storage_index_t>& column_ids,
+                             const vector::vector_t& row_identifiers,
+                             uint64_t fetch_count,
+                             transaction_data txn,
+                             column_fetch_state& state) {
+        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, txn, state);
     }
 
     std::unique_ptr<constraint_state> data_table_t::initialize_constraint_state(
@@ -314,10 +412,11 @@ namespace components::table {
                 } else {
                     start_in_chunk = static_cast<uint64_t>(row_start - current_row);
                 }
-                vector::indexing_vector_t indexing(resource_, start_in_chunk, chunk_count);
-                chunk.slice(indexing, chunk_count);
+                auto sliced = chunk.partial_copy(resource_, start_in_chunk, chunk_count);
+                function(sliced);
+            } else {
+                function(chunk);
             }
-            function(chunk);
             chunk.reset();
             current_row = end_row;
         }
@@ -483,22 +582,80 @@ namespace components::table {
         storage::partial_block_manager_t partial_block_manager(row_groups_->block_manager());
 
         auto row_group_pointers = row_groups_->checkpoint(partial_block_manager);
+        bool has_column_type_metadata = false;
+        for (const auto& column_def : column_definitions_) {
+            if (requires_column_type_metadata(column_def.type())) {
+                has_column_type_metadata = true;
+                break;
+            }
+        }
+        bool has_layout_metadata = false;
+        for (const auto& pointer : row_group_pointers) {
+            if (pointer.layout_kind != storage::row_group_layout_kind::COLUMNAR) {
+                has_layout_metadata = true;
+                break;
+            }
+        }
+        const bool has_layout_policy_metadata = row_groups_->block_manager().layout_policy() != storage::row_group_layout_policy::AUTO;
 
         // write table metadata
         writer.write_string(name_);
 
         // write column definitions
-        writer.write<uint32_t>(static_cast<uint32_t>(column_definitions_.size()));
+        auto column_count = static_cast<uint32_t>(column_definitions_.size());
+        if (has_column_type_metadata) {
+            column_count |= TABLE_COLUMN_TYPES_METADATA_FLAG;
+        }
+        writer.write<uint32_t>(column_count);
         for (const auto& col : column_definitions_) {
             writer.write_string(col.name());
             writer.write<uint8_t>(static_cast<uint8_t>(col.type().type()));
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
         }
 
+        if (has_column_type_metadata) {
+            writer.write<uint32_t>(COLUMN_TYPES_METADATA_MAGIC);
+            writer.write<uint32_t>(static_cast<uint32_t>(column_definitions_.size()));
+            for (const auto& col : column_definitions_) {
+                writer.write_string(components::types::encode_type_spec(col.type()));
+            }
+        }
+
         // write row group count and pointers
-        writer.write<uint32_t>(static_cast<uint32_t>(row_group_pointers.size()));
+        auto row_group_count = static_cast<uint32_t>(row_group_pointers.size());
+        if (has_layout_metadata) {
+            row_group_count |= TABLE_LAYOUT_METADATA_FLAG;
+        }
+        if (has_layout_policy_metadata) {
+            row_group_count |= TABLE_LAYOUT_POLICY_METADATA_FLAG;
+        }
+        writer.write<uint32_t>(row_group_count);
         for (const auto& rgp : row_group_pointers) {
             rgp.serialize(writer);
+        }
+
+        if (has_layout_metadata) {
+            writer.write<uint32_t>(ROW_GROUP_LAYOUTS_MAGIC);
+            writer.write<uint32_t>(static_cast<uint32_t>(row_group_pointers.size()));
+            for (const auto& rgp : row_group_pointers) {
+                writer.write<uint8_t>(static_cast<uint8_t>(rgp.layout_kind));
+                if (rgp.layout_kind == storage::row_group_layout_kind::PAX_FIXED) {
+                    if (!rgp.pax_fixed_layout.has_value()) {
+                        throw std::logic_error("missing pax_fixed layout metadata for PAX row group");
+                    }
+                    rgp.pax_fixed_layout->serialize(writer);
+                } else if (rgp.layout_kind == storage::row_group_layout_kind::PAX_GENERIC) {
+                    if (!rgp.pax_generic_layout.has_value()) {
+                        throw std::logic_error("missing pax_generic layout metadata for PAX row group");
+                    }
+                    rgp.pax_generic_layout->serialize(writer);
+                }
+            }
+        }
+
+        if (has_layout_policy_metadata) {
+            writer.write<uint32_t>(TABLE_LAYOUT_POLICY_MAGIC);
+            writer.write<uint8_t>(static_cast<uint8_t>(row_groups_->block_manager().layout_policy()));
         }
 
         writer.flush();
@@ -509,7 +666,9 @@ namespace components::table {
                                                                storage::metadata_reader_t& reader) {
         auto name = reader.read_string();
 
-        auto col_count = reader.read<uint32_t>();
+        auto col_count_value = reader.read<uint32_t>();
+        bool has_column_type_metadata = (col_count_value & TABLE_COLUMN_TYPES_METADATA_FLAG) != 0;
+        auto col_count = col_count_value & ~TABLE_COLUMN_TYPES_METADATA_FLAG;
         std::vector<column_definition_t> columns;
         columns.reserve(col_count);
         for (uint32_t i = 0; i < col_count; i++) {
@@ -521,14 +680,75 @@ namespace components::table {
             columns.emplace_back(col_name, std::move(col_type), not_null);
         }
 
+        if (has_column_type_metadata) {
+            auto magic = reader.read<uint32_t>();
+            if (magic != COLUMN_TYPES_METADATA_MAGIC) {
+                throw std::logic_error("unknown table column types metadata extension section");
+            }
+            auto type_count = reader.read<uint32_t>();
+            if (type_count != columns.size()) {
+                throw std::logic_error("table column types metadata count mismatch");
+            }
+            for (uint32_t i = 0; i < type_count; i++) {
+                auto type_spec = reader.read_string();
+                if (type_spec.empty()) {
+                    continue;
+                }
+                auto full_type = components::types::decode_type_spec(resource, type_spec);
+                full_type.set_alias(columns[i].name());
+                columns[i].type() = std::move(full_type);
+            }
+        }
+
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));
 
-        uint64_t total_loaded_rows = 0;
-        auto rg_count = reader.read<uint32_t>();
+        auto row_group_count = reader.read<uint32_t>();
+        bool has_layout_metadata = (row_group_count & TABLE_LAYOUT_METADATA_FLAG) != 0;
+        bool has_layout_policy_metadata = (row_group_count & TABLE_LAYOUT_POLICY_METADATA_FLAG) != 0;
+        auto rg_count = row_group_count & ~(TABLE_LAYOUT_METADATA_FLAG | TABLE_LAYOUT_POLICY_METADATA_FLAG);
+        std::vector<storage::row_group_pointer_t> row_group_pointers;
+        row_group_pointers.reserve(rg_count);
         for (uint32_t i = 0; i < rg_count; i++) {
-            auto pointer = storage::row_group_pointer_t::deserialize(reader);
+            row_group_pointers.push_back(storage::row_group_pointer_t::deserialize(reader));
+        }
 
-            // create a new row group and populate from disk pointer
+        if (has_layout_metadata) {
+            auto magic = reader.read<uint32_t>();
+            if (magic != ROW_GROUP_LAYOUTS_MAGIC) {
+                throw std::logic_error("unknown table metadata extension section");
+            }
+            auto layout_count = reader.read<uint32_t>();
+            if (layout_count != row_group_pointers.size()) {
+                throw std::logic_error("row group layout metadata count mismatch");
+            }
+            for (uint32_t i = 0; i < layout_count; i++) {
+                auto layout_kind = static_cast<storage::row_group_layout_kind>(reader.read<uint8_t>());
+                row_group_pointers[i].layout_kind = layout_kind;
+                if (layout_kind == storage::row_group_layout_kind::PAX_FIXED) {
+                    row_group_pointers[i].pax_fixed_layout = storage::pax_fixed_row_group_layout_t::deserialize(reader);
+                    row_group_pointers[i].pax_generic_layout.reset();
+                } else if (layout_kind == storage::row_group_layout_kind::PAX_GENERIC) {
+                    row_group_pointers[i].pax_generic_layout =
+                        storage::pax_generic_row_group_layout_t::deserialize(reader);
+                    row_group_pointers[i].pax_fixed_layout.reset();
+                } else {
+                    row_group_pointers[i].pax_fixed_layout.reset();
+                    row_group_pointers[i].pax_generic_layout.reset();
+                }
+            }
+        }
+
+        if (has_layout_policy_metadata) {
+            auto magic = reader.read<uint32_t>();
+            if (magic != TABLE_LAYOUT_POLICY_MAGIC) {
+                throw std::logic_error("unknown table layout policy metadata extension section");
+            }
+            auto layout_policy = static_cast<storage::row_group_layout_policy>(reader.read<uint8_t>());
+            block_manager.set_layout_policy(layout_policy);
+        }
+
+        uint64_t total_loaded_rows = 0;
+        for (const auto& pointer : row_group_pointers) {
             auto* rg = table->row_groups_->append_row_group(static_cast<int64_t>(pointer.row_start));
             if (rg) {
                 rg->create_from_pointer(pointer);

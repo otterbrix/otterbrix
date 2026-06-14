@@ -99,6 +99,18 @@ namespace components::table {
         return scan_count(state, result, count);
     }
 
+    void array_column_data_t::scan_committed_range(uint64_t row_group_start,
+                                                   uint64_t offset_in_row_group,
+                                                   uint64_t count,
+                                                   vector::vector_t& result) {
+        column_scan_state state;
+        state.initialize(type_);
+        const auto row_index = static_cast<int64_t>(row_group_start + offset_in_row_group);
+        initialize_scan_with_offset(state, row_index);
+        const auto vector_index = static_cast<uint64_t>(row_index) / vector::DEFAULT_VECTOR_CAPACITY;
+        scan_committed(vector_index, state, result, true, count);
+    }
+
     uint64_t array_column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         auto scan_count = validity.scan_count(state.child_states[0], result, count);
         auto& child_vec = result.entry();
@@ -169,22 +181,21 @@ namespace components::table {
 
         int64_t* remaining_sub_column_ids = sub_column_ids.data();
         uint64_t remaining_column_index = column_index;
+        uint64_t child_offset = 0;
         while (remaining_count > 0) {
-            if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
-                child_column->update(remaining_column_index,
-                                     update_vector.entry(),
-                                     remaining_sub_column_ids,
-                                     vector::DEFAULT_VECTOR_CAPACITY);
-                remaining_sub_column_ids += vector::DEFAULT_VECTOR_CAPACITY;
-                remaining_count -= vector::DEFAULT_VECTOR_CAPACITY;
-                remaining_column_index++;
-            } else {
-                child_column->update(remaining_column_index,
-                                     update_vector.entry(),
-                                     remaining_sub_column_ids,
-                                     remaining_count);
+            const uint64_t chunk = std::min<uint64_t>(remaining_count, vector::DEFAULT_VECTOR_CAPACITY);
+            // Slice the child data to the current chunk so each chunk reads from the
+            // right offset rather than restarting at index 0.
+            vector::vector_t child_slice(resource_, type_.child_type(), chunk);
+            child_slice.slice(update_vector.entry(), child_offset, child_offset + chunk);
+            child_column->update(remaining_column_index, child_slice, remaining_sub_column_ids, chunk);
+            remaining_sub_column_ids += chunk;
+            child_offset += chunk;
+            remaining_count -= chunk;
+            if (chunk < vector::DEFAULT_VECTOR_CAPACITY) {
                 break;
             }
+            remaining_column_index++;
         }
     }
 
@@ -205,29 +216,20 @@ namespace components::table {
         }
 
         int64_t* remaining_sub_column_ids = sub_column_ids.data();
+        uint64_t child_offset = 0;
         while (remaining_count > 0) {
-            if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
-                child_column->update_column(column_path,
-                                            update_vector.entry(),
-                                            remaining_sub_column_ids,
-                                            vector::DEFAULT_VECTOR_CAPACITY,
-                                            depth);
-                remaining_sub_column_ids += vector::DEFAULT_VECTOR_CAPACITY;
-                remaining_count -= vector::DEFAULT_VECTOR_CAPACITY;
-            } else {
-                child_column->update_column(column_path,
-                                            update_vector.entry(),
-                                            remaining_sub_column_ids,
-                                            remaining_count,
-                                            depth);
+            const uint64_t chunk = std::min<uint64_t>(remaining_count, vector::DEFAULT_VECTOR_CAPACITY);
+            // Per-chunk slicing, as in update().
+            vector::vector_t child_slice(resource_, type_.child_type(), chunk);
+            child_slice.slice(update_vector.entry(), child_offset, child_offset + chunk);
+            child_column->update_column(column_path, child_slice, remaining_sub_column_ids, chunk, depth);
+            remaining_sub_column_ids += chunk;
+            child_offset += chunk;
+            remaining_count -= chunk;
+            if (chunk < vector::DEFAULT_VECTOR_CAPACITY) {
                 break;
             }
         }
-        child_column->update_column(column_path,
-                                    update_vector.entry(),
-                                    sub_column_ids.data(),
-                                    update_count * arr_size,
-                                    depth);
     }
 
     void array_column_data_t::fetch_row(column_fetch_state& state,

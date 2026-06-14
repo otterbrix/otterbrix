@@ -11,6 +11,7 @@
 #include <cstring>
 #include <shared_mutex>
 #include <stdexcept>
+#include <type_traits>
 
 #include "storage/buffer_handle.hpp"
 
@@ -178,6 +179,7 @@ namespace components::table {
         explicit update_segment_t(column_data_t& column);
 
         bool has_updates() const;
+        bool has_uncommitted_updates() const;
         bool has_uncommitted_updates(uint64_t vector_index);
         bool has_updates(uint64_t vector_index);
         bool has_updates(int64_t start_row_idx, int64_t end_row_idx);
@@ -185,6 +187,10 @@ namespace components::table {
         void fetch_updates(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result);
         void fetch_committed(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result);
         void fetch_committed_range(int64_t start_row, uint64_t count, vector::vector_t& result);
+        void fetch_committed_range(int64_t start_row,
+                                   uint64_t count,
+                                   uint64_t result_offset,
+                                   vector::vector_t& result);
         void update(uint64_t column_index,
                     vector::vector_t& update,
                     int64_t* ids,
@@ -281,7 +287,6 @@ namespace components::table {
                                                uint64_t count,
                                                const vector::indexing_vector_t& indexing,
                                                T (*extractor)(const V* data, uint64_t index));
-
         template<typename T>
         static void templated_fetch_committed_range(update_info_t& info,
                                                     uint64_t start,
@@ -304,7 +309,7 @@ namespace components::table {
         uint64_t type_size_;
         core::string_heap_t heap_;
         column_data_t* column_data_;
-        std::shared_mutex m_;
+        mutable std::shared_mutex m_;
     };
 
     struct update_select_element_t {
@@ -312,11 +317,25 @@ namespace components::table {
         static T operation(update_segment_t*, T element) {
             return element;
         }
+
+        template<typename T>
+        static T persisted_operation(update_segment_t* segment, T element) {
+            if constexpr (std::is_same_v<T, std::string_view>) {
+                return {static_cast<char*>(segment->heap().insert(element.data(), element.size())), element.size()};
+            } else {
+                return element;
+            }
+        }
     };
 
-    template<>
-    inline std::string_view update_select_element_t::operation(update_segment_t* segment, std::string_view element) {
-        return {static_cast<char*>(segment->heap().insert(element)), element.size()};
+    inline std::string_view copy_update_string_to_result(vector::vector_t& result, std::string_view value) {
+        auto auxiliary = result.auxiliary();
+        if (!auxiliary || auxiliary->type() != vector::vector_buffer_type::STRING) {
+            result.set_auxiliary(std::make_shared<vector::string_vector_buffer_t>(result.resource()));
+            auxiliary = result.auxiliary();
+        }
+        auto* string_buffer = static_cast<vector::string_vector_buffer_t*>(auxiliary.get());
+        return {static_cast<char*>(string_buffer->insert(value.data(), value.size())), value.size()};
     }
 
     template<typename... Args>
@@ -617,8 +636,9 @@ namespace components::table {
             case types::physical_type::FLOAT:
                 return templated_check_row<float>(std::forward<Args>(args)...);
             case types::physical_type::DOUBLE:
-                // case types::physical_type::INTERVAL:
-                // return templated_check_row<interval_t>(std::forward<Args>(args)...);
+                return templated_check_row<double>(std::forward<Args>(args)...);
+            // case types::physical_type::INTERVAL:
+            // return templated_check_row<interval_t>(std::forward<Args>(args)...);
             case types::physical_type::STRING:
                 return templated_check_row<std::string_view>(std::forward<Args>(args)...);
             default:
@@ -690,8 +710,8 @@ namespace components::table {
         auto tuple_data = update_info.data<T>();
 
         for (uint64_t i = 0; i < update_info.N; i++) {
-            auto idx = indexing.get_index(i) + base_info.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
-            tuple_data[i] = update_select_element_t::operation<T>(update_info.segment, update_data[idx]);
+            auto idx = indexing.get_index(i);
+            tuple_data[i] = update_select_element_t::persisted_operation<T>(update_info.segment, update_data[idx]);
         }
 
         auto base_array_data = base_data.data<T>();
@@ -703,7 +723,8 @@ namespace components::table {
             if (!base_validity.row_is_valid(base_idx)) {
                 continue;
             }
-            base_tuple_data[i] = update_select_element_t::operation<T>(base_info.segment, base_array_data[base_idx]);
+            base_tuple_data[i] =
+                update_select_element_t::persisted_operation<T>(base_info.segment, base_array_data[base_idx]);
         }
     }
 
@@ -821,7 +842,8 @@ namespace components::table {
                 result_values[result_offset] = base_info_data[base_info_offset];
             } else {
                 result_values[result_offset] =
-                    update_select_element_t::operation<T>(base_info.segment, extractor(base_table_data, update_id));
+                    update_select_element_t::persisted_operation<T>(base_info.segment,
+                                                                    extractor(base_table_data, update_id));
             }
             result_ids[result_offset++] = static_cast<uint32_t>(update_id);
         }
@@ -836,7 +858,9 @@ namespace components::table {
 
         result_offset = 0;
         auto pick_new = [&](uint64_t id, uint64_t aidx, uint64_t) {
-            result_values[result_offset] = extractor(update_vector_data, aidx);
+            result_values[result_offset] =
+                update_select_element_t::persisted_operation<T>(base_info.segment,
+                                                                extractor(update_vector_data, aidx));
             result_ids[result_offset] = static_cast<uint32_t>(id);
             result_offset++;
         };
@@ -846,9 +870,10 @@ namespace components::table {
             result_offset++;
         };
         auto merge = [&](uint64_t id, uint64_t aidx, uint64_t, uint64_t count) { pick_new(id, aidx, count); };
+        const auto update_count = count;
         uint64_t aidx = 0, bidx = 0;
         uint64_t counter = 0;
-        while (aidx < count && bidx < base_info.N) {
+        while (aidx < update_count && bidx < base_info.N) {
             auto a_index = indexing.get_index(aidx);
             auto a_id = static_cast<uint64_t>(ids[a_index]) - base_id;
             auto b_id = base_info.tuples()[bidx];
@@ -867,14 +892,14 @@ namespace components::table {
                 counter++;
             }
         }
-        for (; aidx < count; aidx++) {
+        for (; aidx < update_count; aidx++) {
             auto a_index = indexing.get_index(aidx);
-            pick_new(static_cast<uint64_t>(ids[a_index]) - base_id, a_index, count);
-            count++;
+            pick_new(static_cast<uint64_t>(ids[a_index]) - base_id, a_index, counter);
+            counter++;
         }
         for (; bidx < base_info.N; bidx++) {
-            pick_old(base_info.tuples()[bidx], bidx, count);
-            count++;
+            pick_old(base_info.tuples()[bidx], bidx, counter);
+            counter++;
         }
 
         base_info.N = static_cast<uint32_t>(result_offset);
@@ -920,6 +945,81 @@ namespace components::table {
             }
         });
         return result;
+    }
+
+    template<>
+    inline void update_segment_t::templated_fetch_committed<std::string_view>(update_info_t& info,
+                                                                              uint64_t result_offset,
+                                                                              vector::vector_t& result) {
+        auto result_data = result.data<std::string_view>();
+        auto tuples = info.tuples();
+        auto info_data = info.data<std::string_view>();
+        if (info.N == vector::DEFAULT_VECTOR_CAPACITY) {
+            for (uint64_t i = 0; i < info.N; i++) {
+                result_data[result_offset + i] = copy_update_string_to_result(result, info_data[i]);
+            }
+            return;
+        }
+        for (uint64_t i = 0; i < info.N; i++) {
+            result_data[result_offset + tuples[i]] = copy_update_string_to_result(result, info_data[i]);
+        }
+    }
+
+    template<>
+    inline void update_segment_t::update_merge_fetch<std::string_view>(update_info_t& info,
+                                                                       uint64_t result_offset,
+                                                                       vector::vector_t& result) {
+        auto result_data = result.data<std::string_view>();
+        update_info_t::update_for_transaction(info, [&](update_info_t* current) {
+            auto tuples = current->tuples();
+            auto info_data = current->data<std::string_view>();
+            if (current->N == vector::DEFAULT_VECTOR_CAPACITY) {
+                for (uint64_t i = 0; i < current->N; i++) {
+                    result_data[result_offset + i] = copy_update_string_to_result(result, info_data[i]);
+                }
+                return;
+            }
+            for (uint64_t i = 0; i < current->N; i++) {
+                result_data[result_offset + tuples[i]] = copy_update_string_to_result(result, info_data[i]);
+            }
+        });
+    }
+
+    template<>
+    inline void update_segment_t::templated_fetch_committed_range<std::string_view>(update_info_t& info,
+                                                                                   uint64_t start,
+                                                                                   uint64_t end,
+                                                                                   uint64_t result_offset,
+                                                                                   vector::vector_t& result) {
+        auto result_data = result.data<std::string_view>();
+        auto tuples = info.tuples();
+        auto info_data = info.data<std::string_view>();
+        for (uint64_t i = 0; i < info.N; i++) {
+            auto tuple_idx = tuples[i];
+            if (tuple_idx < start) {
+                continue;
+            } else if (tuple_idx >= end) {
+                break;
+            }
+            auto result_idx = result_offset + tuple_idx - start;
+            result_data[result_idx] = copy_update_string_to_result(result, info_data[i]);
+        }
+    }
+
+    template<>
+    inline void update_segment_t::templated_fetch_row<std::string_view>(update_info_t& info,
+                                                                        uint64_t row_index,
+                                                                        vector::vector_t& result,
+                                                                        uint64_t result_index) {
+        auto result_data = result.data<std::string_view>();
+        update_info_t::update_for_transaction(info, [&](update_info_t* current) {
+            auto info_data = current->data<std::string_view>();
+            auto tuples = current->tuples();
+            auto it = std::lower_bound(tuples, tuples + current->N, row_index);
+            if (it != tuples + current->N && *it == row_index) {
+                result_data[result_index] = copy_update_string_to_result(result, info_data[it - tuples]);
+            }
+        });
     }
 
 } // namespace components::table

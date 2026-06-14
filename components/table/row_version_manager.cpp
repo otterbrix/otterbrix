@@ -1,7 +1,12 @@
 #include "row_version_manager.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <stdexcept>
+#include <type_traits>
 
 #include "collection.hpp"
 
@@ -38,6 +43,37 @@ namespace components::table {
 
     static bool use_version(const transaction_data& transaction, uint64_t id) {
         return transaction_version_operator::use_inserted_version(transaction, id);
+    }
+
+    static bool is_committed_version(uint64_t id) {
+        return id < TRANSACTION_ID_START;
+    }
+
+    static bool is_committed_or_not_deleted(uint64_t id) {
+        return id == NOT_DELETED_ID || is_committed_version(id);
+    }
+
+    static constexpr uint32_t COMMITTED_DELETE_SNAPSHOT_MAGIC = 0x50445844; // "DXDP"
+    static constexpr uint16_t COMMITTED_DELETE_SNAPSHOT_VERSION = 1;
+
+    template<class T>
+    void append_snapshot_value(std::vector<std::byte>& out, T value) {
+        static_assert(std::is_trivially_copyable_v<T>);
+        const auto offset = out.size();
+        out.resize(offset + sizeof(T));
+        std::memcpy(out.data() + offset, &value, sizeof(T));
+    }
+
+    template<class T>
+    T read_snapshot_value(const std::byte*& ptr, const std::byte* end) {
+        static_assert(std::is_trivially_copyable_v<T>);
+        if (ptr + sizeof(T) > end) {
+            throw std::logic_error("corrupt committed delete snapshot");
+        }
+        T value;
+        std::memcpy(&value, ptr, sizeof(T));
+        ptr += sizeof(T);
+        return value;
     }
 
     bool chunk_info::cleanup(uint64_t /* lowest_transaction */, std::unique_ptr<chunk_info>& /* result */) const {
@@ -346,17 +382,278 @@ namespace components::table {
     uint64_t row_version_manager_t::committed_deleted_count(uint64_t count) {
         std::lock_guard l(version_lock_);
         uint64_t deleted_count = 0;
-        for (uint64_t r = 0, i = 0; r < count; r += vector::DEFAULT_VECTOR_CAPACITY, i++) {
-            if (i >= vector_info_.size() || !vector_info_[i]) {
+        if (count == 0) {
+            return deleted_count;
+        }
+        const auto row_group_start = static_cast<uint64_t>(start_);
+        const auto row_group_end = row_group_start + count;
+        const auto start_vector_idx = row_group_start / vector::DEFAULT_VECTOR_CAPACITY;
+        const auto end_vector_idx = (row_group_end - 1) / vector::DEFAULT_VECTOR_CAPACITY;
+        for (uint64_t vector_idx = start_vector_idx; vector_idx <= end_vector_idx; vector_idx++) {
+            if (vector_idx >= vector_info_.size() || !vector_info_[vector_idx]) {
                 continue;
             }
-            uint64_t max_count = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, count - r);
+            const auto vector_end = (vector_idx + 1) * vector::DEFAULT_VECTOR_CAPACITY;
+            const auto max_count = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY,
+                                                      row_group_end > vector_end
+                                                          ? vector::DEFAULT_VECTOR_CAPACITY
+                                                          : row_group_end - vector_idx * vector::DEFAULT_VECTOR_CAPACITY);
             if (max_count == 0) {
                 break;
             }
-            deleted_count += vector_info_[i]->committed_deleted_count(max_count);
+            deleted_count += vector_info_[vector_idx]->committed_deleted_count(max_count);
         }
         return deleted_count;
+    }
+
+    bool row_version_manager_t::supports_threaded_scan() const {
+	        std::lock_guard lock(version_lock_);
+	        for (const auto& info : vector_info_) {
+            if (!info) {
+                continue;
+            }
+            switch (info->type) {
+                case chunk_info_type::CONSTANT_INFO: {
+                    const auto& constant = info->cast<chunk_constant_info>();
+                    if (!is_committed_version(constant.insert_id) ||
+                        !is_committed_or_not_deleted(constant.delete_id)) {
+                        return false;
+                    }
+                    break;
+                }
+                case chunk_info_type::VECTOR_INFO: {
+                    const auto& vector = info->cast<chunk_vector_info>();
+                    if (vector.same_inserted_id) {
+                        if (!is_committed_version(vector.insert_id)) {
+                            return false;
+                        }
+                    } else {
+                        for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; ++i) {
+                            if (!is_committed_version(vector.inserted[i])) {
+                                return false;
+                            }
+                        }
+                    }
+                    if (vector.any_deleted) {
+                        for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; ++i) {
+                            if (!is_committed_or_not_deleted(vector.deleted[i])) {
+                                return false;
+                            }
+                        }
+                    }
+                    break;
+                }
+                default:
+                    return false;
+            }
+        }
+	        return true;
+	    }
+
+	    bool row_version_manager_t::has_version_entries() const {
+	        std::lock_guard lock(version_lock_);
+	        return std::any_of(vector_info_.begin(), vector_info_.end(), [](const auto& info) { return info != nullptr; });
+	    }
+
+	    bool row_version_manager_t::has_visibility_changes() const {
+	        std::lock_guard lock(version_lock_);
+	        for (const auto& info : vector_info_) {
+	            if (!info) {
+	                continue;
+	            }
+	            switch (info->type) {
+	                case chunk_info_type::CONSTANT_INFO: {
+	                    const auto& constant = info->cast<chunk_constant_info>();
+	                    if (!is_committed_version(constant.insert_id) || constant.delete_id != NOT_DELETED_ID) {
+	                        return true;
+	                    }
+	                    break;
+	                }
+	                case chunk_info_type::VECTOR_INFO: {
+	                    const auto& vector = info->cast<chunk_vector_info>();
+	                    if (vector.any_deleted) {
+	                        return true;
+	                    }
+	                    if (vector.same_inserted_id) {
+	                        if (!is_committed_version(vector.insert_id)) {
+	                            return true;
+	                        }
+	                    } else {
+	                        for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; ++i) {
+	                            if (!is_committed_version(vector.inserted[i])) {
+	                                return true;
+	                            }
+	                        }
+	                    }
+	                    break;
+	                }
+	                default:
+	                    return true;
+	            }
+	        }
+	        return false;
+	    }
+
+	    std::vector<std::byte> row_version_manager_t::serialize_committed_deletes(uint64_t row_count) const {
+        std::lock_guard lock(version_lock_);
+        std::vector<std::byte> payload;
+        if (row_count == 0) {
+            return payload;
+        }
+
+        append_snapshot_value<uint32_t>(payload, COMMITTED_DELETE_SNAPSHOT_MAGIC);
+        append_snapshot_value<uint16_t>(payload, COMMITTED_DELETE_SNAPSHOT_VERSION);
+        append_snapshot_value<uint64_t>(payload, static_cast<uint64_t>(start_));
+        append_snapshot_value<uint64_t>(payload, row_count);
+        const auto entry_count_offset = payload.size();
+        append_snapshot_value<uint64_t>(payload, uint64_t(0));
+
+        uint64_t entry_count = 0;
+        const auto row_group_start = static_cast<uint64_t>(start_);
+        const auto row_group_end = row_group_start + row_count;
+        const auto start_vector_idx = row_group_start / vector::DEFAULT_VECTOR_CAPACITY;
+        const auto end_vector_idx = (row_group_end - 1) / vector::DEFAULT_VECTOR_CAPACITY;
+
+        for (uint64_t vector_idx = start_vector_idx; vector_idx <= end_vector_idx; vector_idx++) {
+            if (vector_idx >= vector_info_.size() || !vector_info_[vector_idx]) {
+                continue;
+            }
+
+            const auto vector_start = vector_idx * vector::DEFAULT_VECTOR_CAPACITY;
+            const auto row_begin = std::max<uint64_t>(row_group_start, vector_start) - vector_start;
+            const auto row_end = std::min<uint64_t>(row_group_end,
+                                                    vector_start + vector::DEFAULT_VECTOR_CAPACITY) -
+                                 vector_start;
+            const auto& info = *vector_info_[vector_idx];
+            switch (info.type) {
+                case chunk_info_type::CONSTANT_INFO: {
+                    const auto& constant = info.cast<chunk_constant_info>();
+                    if (!is_committed_version(constant.insert_id) ||
+                        !is_committed_or_not_deleted(constant.delete_id)) {
+                        return {};
+                    }
+                    if (constant.delete_id == NOT_DELETED_ID) {
+                        break;
+                    }
+                    for (uint64_t row = row_begin; row < row_end; row++) {
+                        append_snapshot_value<uint64_t>(payload, vector_idx);
+                        append_snapshot_value<uint16_t>(payload, static_cast<uint16_t>(row));
+                        append_snapshot_value<uint64_t>(payload, constant.delete_id);
+                        entry_count++;
+                    }
+                    break;
+                }
+                case chunk_info_type::VECTOR_INFO: {
+                    const auto& vector_info = info.cast<chunk_vector_info>();
+                    if (vector_info.same_inserted_id) {
+                        if (!is_committed_version(vector_info.insert_id)) {
+                            return {};
+                        }
+                    } else {
+                        for (uint64_t row = row_begin; row < row_end; row++) {
+                            if (!is_committed_version(vector_info.inserted[row])) {
+                                return {};
+                            }
+                        }
+                    }
+                    if (!vector_info.any_deleted) {
+                        break;
+                    }
+                    for (uint64_t row = row_begin; row < row_end; row++) {
+                        const auto delete_id = vector_info.deleted[row];
+                        if (delete_id == NOT_DELETED_ID) {
+                            continue;
+                        }
+                        if (!is_committed_version(delete_id)) {
+                            return {};
+                        }
+                        append_snapshot_value<uint64_t>(payload, vector_idx);
+                        append_snapshot_value<uint16_t>(payload, static_cast<uint16_t>(row));
+                        append_snapshot_value<uint64_t>(payload, delete_id);
+                        entry_count++;
+                    }
+                    break;
+                }
+                default:
+                    return {};
+            }
+        }
+
+        if (entry_count == 0) {
+            return {};
+        }
+        std::memcpy(payload.data() + entry_count_offset, &entry_count, sizeof(entry_count));
+        return payload;
+    }
+
+    void row_version_manager_t::deserialize_committed_deletes(const std::byte* data, uint64_t size) {
+        if (!data || size == 0) {
+            return;
+        }
+
+        const auto* ptr = data;
+        const auto* end = data + size;
+        const auto magic = read_snapshot_value<uint32_t>(ptr, end);
+        const auto version = read_snapshot_value<uint16_t>(ptr, end);
+        if (magic != COMMITTED_DELETE_SNAPSHOT_MAGIC || version != COMMITTED_DELETE_SNAPSHOT_VERSION) {
+            throw std::logic_error("unsupported committed delete snapshot");
+        }
+        const auto snapshot_start = read_snapshot_value<uint64_t>(ptr, end);
+        const auto row_count = read_snapshot_value<uint64_t>(ptr, end);
+        const auto entry_count = read_snapshot_value<uint64_t>(ptr, end);
+        if (snapshot_start != static_cast<uint64_t>(start_)) {
+            throw std::logic_error("committed delete snapshot row group start mismatch");
+        }
+        const auto snapshot_end = snapshot_start + row_count;
+        if (snapshot_end < snapshot_start) {
+            throw std::logic_error("committed delete snapshot row count overflow");
+        }
+
+        std::lock_guard lock(version_lock_);
+        for (uint64_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
+            const auto vector_idx = read_snapshot_value<uint64_t>(ptr, end);
+            const auto row_idx = read_snapshot_value<uint16_t>(ptr, end);
+            const auto delete_id = read_snapshot_value<uint64_t>(ptr, end);
+            if (row_idx >= vector::DEFAULT_VECTOR_CAPACITY || !is_committed_version(delete_id)) {
+                throw std::logic_error("invalid committed delete snapshot entry");
+            }
+            if (vector_idx > std::numeric_limits<uint64_t>::max() / vector::DEFAULT_VECTOR_CAPACITY) {
+                throw std::logic_error("committed delete snapshot row index overflow");
+            }
+            const auto absolute_row = vector_idx * vector::DEFAULT_VECTOR_CAPACITY + row_idx;
+            if (absolute_row < snapshot_start || absolute_row >= snapshot_end) {
+                throw std::logic_error("committed delete snapshot entry outside row group");
+            }
+
+            auto& info = vector_info(vector_idx);
+            const uint64_t restored_delete_id = 0;
+            if (info.deleted[row_idx] != NOT_DELETED_ID && info.deleted[row_idx] != restored_delete_id) {
+                throw std::logic_error("conflicting committed delete snapshot entry");
+            }
+            info.any_deleted = true;
+            info.deleted[row_idx] = restored_delete_id;
+        }
+        if (ptr != end) {
+            throw std::logic_error("committed delete snapshot has trailing bytes");
+        }
+        has_changes_ = false;
+    }
+
+    void row_version_manager_t::mark_committed_deleted(uint64_t absolute_row, uint64_t commit_id) {
+        if (!is_committed_version(commit_id)) {
+            throw std::logic_error("committed delete marker must use a committed id");
+        }
+
+        std::lock_guard lock(version_lock_);
+        const auto vector_idx = absolute_row / vector::DEFAULT_VECTOR_CAPACITY;
+        const auto row_idx = absolute_row % vector::DEFAULT_VECTOR_CAPACITY;
+        auto& info = vector_info(vector_idx);
+        if (info.deleted[row_idx] != NOT_DELETED_ID && info.deleted[row_idx] != commit_id) {
+            return;
+        }
+        info.any_deleted = true;
+        info.deleted[row_idx] = commit_id;
+        has_changes_ = true;
     }
 
     bool row_version_manager_t::has_version_above(uint64_t watermark, uint64_t count) {

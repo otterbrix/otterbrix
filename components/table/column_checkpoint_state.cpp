@@ -185,6 +185,26 @@ namespace components::table {
         auto handle = block_manager.buffer_manager.pin(segment.block);
         auto* data = handle.ptr();
 
+        if (segment.compression() != compression::compression_type::UNCOMPRESSED) {
+            auto segment_size = segment.segment_size();
+            auto allocation = partial_block_manager_.get_block_allocation(segment_size);
+            if (data && segment_size > 0) {
+                partial_block_manager_.write_to_block(allocation.block_id,
+                                                      allocation.offset_in_block,
+                                                      data + segment.block_offset(),
+                                                      segment_size);
+            }
+
+            storage::data_pointer_t dp;
+            dp.row_start = row_start;
+            dp.tuple_count = tuple_count;
+            dp.block_pointer = storage::block_pointer_t(allocation.block_id, allocation.offset_in_block);
+            dp.compression = segment.compression();
+            dp.segment_size = segment_size;
+            data_pointers_.push_back(dp);
+            return;
+        }
+
         auto phys = segment.type.to_physical_type();
         bool is_fixed_size = (phys != types::physical_type::STRING && phys != types::physical_type::BIT &&
                               phys != types::physical_type::INVALID);
@@ -265,7 +285,10 @@ namespace components::table {
         auto allocation = partial_block_manager_.get_block_allocation(segment_size);
 
         if (data && segment_size > 0) {
-            partial_block_manager_.write_to_block(allocation.block_id, allocation.offset_in_block, data, segment_size);
+            partial_block_manager_.write_to_block(allocation.block_id,
+                                                  allocation.offset_in_block,
+                                                  data + segment.block_offset(),
+                                                  segment_size);
         }
 
         storage::data_pointer_t dp;

@@ -7,6 +7,7 @@
 #include "update_segment.hpp"
 
 namespace components::table {
+    class row_group_t;
 
     struct persistent_column_data_t;
 
@@ -29,6 +30,7 @@ namespace components::table {
         friend class column_segment_t;
         friend class column_data_checkpointer_t;
         friend class column_checkpoint_state_t;
+        friend class row_group_t;
 
     public:
         column_data_t(std::pmr::memory_resource* resource,
@@ -51,6 +53,7 @@ namespace components::table {
         const types::complex_logical_type& root_type() const;
         const types::complex_logical_type& type() const { return type_; }
         bool has_updates() const;
+        bool has_uncommitted_updates() const;
         virtual scan_vector_type
         get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result);
         virtual void initialize_scan(column_scan_state& state);
@@ -70,6 +73,10 @@ namespace components::table {
                                           uint64_t offset_in_row_group,
                                           uint64_t count,
                                           vector::vector_t& result);
+        virtual void fetch_committed_updates_range(uint64_t offset_in_row_group,
+                                                   uint64_t count,
+                                                   vector::vector_t& result,
+                                                   uint64_t result_offset = 0);
         virtual uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count);
 
         virtual void select(uint64_t vector_index,
@@ -144,7 +151,10 @@ namespace components::table {
         void initialize_column_validity(const persistent_column_data_t& persistent_data);
 
     protected:
-        void apend_transient_segment(std::unique_lock<std::mutex>& l, int64_t start_row);
+        // requested_size: exact byte size for the new segment; 0 defaults to a whole block
+        // (or DEFAULT_VECTOR_CAPACITY*type_size for the MAX_ROW_ID marker). Pass the real
+        // payload size (e.g. validity) to avoid reserving a full block per page.
+        void apend_transient_segment(std::unique_lock<std::mutex>& l, int64_t start_row, uint64_t requested_size = 0);
 
         uint64_t
         scan_vector(column_scan_state& state, vector::vector_t& result, uint64_t remaining, scan_vector_type scan_type);

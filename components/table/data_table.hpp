@@ -20,6 +20,7 @@ namespace components::table {
                      const std::vector<storage_index_t>& bound_columns);
 
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> copy_types() const;
+        [[nodiscard]] std::pmr::vector<types::complex_logical_type> copy_types(std::pmr::memory_resource* resource) const;
         const std::vector<column_definition_t>& columns() const;
         void adopt_schema(const std::pmr::vector<types::complex_logical_type>& types);
         void overlay_not_null(const std::string& col_name);
@@ -29,6 +30,7 @@ namespace components::table {
                              const table_filter_t* filter = nullptr);
 
         uint64_t max_threads() const;
+        bool supports_threaded_scan() const;
 
         void scan(vector::data_chunk_t& result, table_scan_state& state);
         // Emits ≤DEFAULT_VECTOR_CAPACITY chunks straight from the scan, no concat-then-split.
@@ -37,11 +39,25 @@ namespace components::table {
                           std::pmr::vector<vector::data_chunk_t>& batches,
                           table_scan_state& state,
                           std::pmr::memory_resource* resource);
+        bool scan_row_group_batched(uint64_t row_group_idx,
+                                    const std::vector<storage_index_t>& column_ids,
+                                    const table_filter_t* filter,
+                                    const std::pmr::vector<types::complex_logical_type>& types,
+                                    const std::vector<size_t>* projected_cols,
+                                    std::pmr::vector<vector::data_chunk_t>& batches,
+                                    transaction_data txn,
+                                    std::pmr::memory_resource* resource);
 
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_ids,
                    uint64_t fetch_count,
+                   column_fetch_state& state);
+        void fetch(vector::data_chunk_t& result,
+                   const std::vector<storage_index_t>& column_ids,
+                   const vector::vector_t& row_ids,
+                   uint64_t fetch_count,
+                   transaction_data txn,
                    column_fetch_state& state);
 
         std::unique_ptr<table_delete_state>
@@ -93,6 +109,7 @@ namespace components::table {
 
         uint64_t calculate_size();
         void cleanup_versions(uint64_t lowest_active_start_time);
+        bool has_persisted_pax_layout() const;
         // Rebuild row_groups_ keeping only rows visible to the txn-less
         // "see all committed" scan, dropping all version history. Runs ONLY when
         // every version stamp is at/below `compact_watermark` — the

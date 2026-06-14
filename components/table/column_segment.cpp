@@ -75,8 +75,8 @@ namespace components::table {
         }
 
         void read_string_marker(std::byte* target, uint32_t& block_id, int32_t& offset) {
-            memcpy(&block_id, target, sizeof(uint64_t));
-            target += sizeof(uint64_t);
+            memcpy(&block_id, target, sizeof(uint32_t));
+            target += sizeof(uint32_t);
             memcpy(&offset, target, sizeof(int32_t));
         }
 
@@ -109,12 +109,45 @@ namespace components::table {
             return std::string_view(reinterpret_cast<char*>(ptr + sizeof(uint32_t)), str_length);
         }
 
-        std::string_view fetch_string(string_dictionary_container_t dict,
+        storage::buffer_handle_t& get_or_pin_overflow_scan_handle(column_segment_t& segment,
+                                                                  column_scan_state& state,
+                                                                  uint32_t block_id) {
+            auto entry = state.overflow_states.find(block_id);
+            if (entry != state.overflow_states.end()) {
+                return *entry->second;
+            }
+
+            auto& string_state = segment.segment_state()->cast<uncompressed_string_segment_state>();
+            auto block = string_state.handle(segment.block_manager(), block_id);
+            auto handle = segment.block_manager().buffer_manager.pin(block);
+            handle.set_ownership(block);
+            auto stored = std::make_unique<storage::buffer_handle_t>(std::move(handle));
+            auto* result = stored.get();
+            state.overflow_states.emplace(block_id, std::move(stored));
+            return *result;
+        }
+
+        std::string_view fetch_string(column_segment_t& segment,
+                                      string_dictionary_container_t dict,
                                       std::byte* base_ptr,
                                       string_location_t location,
-                                      uint32_t string_length) {
-            if (location.offset == 0) {
+                                      uint32_t string_length,
+                                      column_scan_state* scan_state,
+                                      column_fetch_state* fetch_state) {
+            if (location.block_id == INVALID_BLOCK && location.offset == 0) {
                 return std::string_view(nullptr, 0);
+            }
+            if (location.block_id != INVALID_BLOCK) {
+                if (fetch_state) {
+                    auto& string_state = segment.segment_state()->cast<uncompressed_string_segment_state>();
+                    auto block = string_state.handle(segment.block_manager(), location.block_id);
+                    auto& overflow_handle = fetch_state->get_or_insert_handle(block);
+                    return read_string_with_length(overflow_handle.ptr(), location.offset);
+                }
+                if (scan_state) {
+                    auto& overflow_handle = get_or_pin_overflow_scan_handle(segment, *scan_state, location.block_id);
+                    return read_string_with_length(overflow_handle.ptr(), location.offset);
+                }
             }
             return std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
         }
@@ -122,11 +155,13 @@ namespace components::table {
                                                 string_dictionary_container_t dict,
                                                 std::byte* base_ptr,
                                                 int32_t dict_offset,
-                                                uint32_t string_length) {
+                                                uint32_t string_length,
+                                                column_scan_state* scan_state = nullptr,
+                                                column_fetch_state* fetch_state = nullptr) {
             auto block_size = segment.block_manager().block_size();
             assert(dict_offset <= static_cast<int32_t>(block_size));
             string_location_t location = fetch_string_location(dict, base_ptr, dict_offset, block_size);
-            return fetch_string(dict, base_ptr, location, string_length);
+            return fetch_string(segment, dict, base_ptr, location, string_length, scan_state, fetch_state);
         }
 
         void write_string_memory(column_segment_t& segment,
@@ -193,6 +228,14 @@ namespace components::table {
             memcpy(result.data() + result_idx * sizeof(T), data_ptr, sizeof(T));
         }
 
+        // Read one validity bit (1 = valid) from the packed mask. Uses a memcpy load so an
+        // unaligned mask_ptr is safe.
+        inline bool validity_bit(std::byte* mask_ptr, uint64_t index) {
+            const uint64_t entry =
+                load<uint64_t>(mask_ptr + (index / vector::validity_mask_t::BITS_PER_VALUE) * sizeof(uint64_t));
+            return (entry & (uint64_t(1) << (index % vector::validity_mask_t::BITS_PER_VALUE))) != 0;
+        }
+
         void validity_fetch_row(column_segment_t& segment,
                                 column_fetch_state&,
                                 int64_t row_id,
@@ -202,10 +245,8 @@ namespace components::table {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
             auto dataptr = handle.ptr() + segment.block_offset();
-            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
-            auto& result_mask = result.validity();
-            if (!mask.row_is_valid(static_cast<uint64_t>(row_id))) {
-                result_mask.set_invalid(result_idx);
+            if (!validity_bit(dataptr, static_cast<uint64_t>(row_id))) {
+                result.validity().set_invalid(result_idx);
             }
         }
 
@@ -218,16 +259,21 @@ namespace components::table {
 
             auto baseptr = handle.ptr() + segment.block_offset();
             auto dict = dictionary(segment, handle);
-            auto base_data = reinterpret_cast<int32_t*>(baseptr + DICTIONARY_HEADER_SIZE);
+            // Offset array follows the header. block_offset() may not be int32-aligned, so read
+            // each offset with a memcpy load rather than a typed dereference.
+            auto* offsets = baseptr + DICTIONARY_HEADER_SIZE;
             auto result_data = result.data<std::string_view>();
-            auto dict_offset = base_data[row_id];
+
+            auto dict_offset = load<int32_t>(offsets + static_cast<uint64_t>(row_id) * sizeof(int32_t));
             uint32_t string_length;
             if (row_id == 0) {
                 string_length = static_cast<uint32_t>(std::abs(dict_offset));
             } else {
-                string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(base_data[row_id - 1]));
+                auto prev_offset = load<int32_t>(offsets + static_cast<uint64_t>(row_id - 1) * sizeof(int32_t));
+                string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(prev_offset));
             }
-            result_data[result_idx] = fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length);
+            result_data[result_idx] =
+                fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length, nullptr, &state);
         }
 
         template<typename T>
@@ -236,7 +282,9 @@ namespace components::table {
             auto handle = buffer_manager.pin(segment.block);
 
             auto data_ptr = handle.ptr() + segment.block_offset() + static_cast<uint64_t>(row_id) * sizeof(T);
-            return table_filter_dispatch(filter, *reinterpret_cast<T*>(data_ptr));
+            T value;
+            std::memcpy(&value, data_ptr, sizeof(T));
+            return table_filter_dispatch(filter, value);
         }
 
         bool validity_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
@@ -244,9 +292,8 @@ namespace components::table {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto handle = buffer_manager.pin(segment.block);
             auto dataptr = handle.ptr() + segment.block_offset();
-            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
 
-            return table_filter_dispatch(filter, mask.row_is_valid(static_cast<uint64_t>(row_id)));
+            return table_filter_dispatch(filter, validity_bit(dataptr, static_cast<uint64_t>(row_id)));
         }
 
         bool string_check_row(column_segment_t& segment,
@@ -257,18 +304,21 @@ namespace components::table {
 
             auto baseptr = handle.ptr() + segment.block_offset();
             auto dict = dictionary(segment, handle);
-            auto base_data = reinterpret_cast<int32_t*>(baseptr + DICTIONARY_HEADER_SIZE);
+            // Read dict offsets with memcpy loads; block_offset() may be unaligned (see string_fetch_row).
+            auto* offsets = baseptr + DICTIONARY_HEADER_SIZE;
 
-            auto dict_offset = base_data[row_id];
+            auto dict_offset = load<int32_t>(offsets + static_cast<uint64_t>(row_id) * sizeof(int32_t));
             uint32_t string_length;
             if (row_id == 0) {
                 string_length = static_cast<uint32_t>(std::abs(dict_offset));
             } else {
-                string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(base_data[row_id - 1]));
+                auto prev_offset = load<int32_t>(offsets + static_cast<uint64_t>(row_id - 1) * sizeof(int32_t));
+                string_length = static_cast<uint32_t>(std::abs(dict_offset) - std::abs(prev_offset));
             }
 
-            return table_filter_dispatch(filter,
-                                         fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length));
+            return table_filter_dispatch(
+                filter,
+                fetch_string_from_dict(segment, dict, baseptr, dict_offset, string_length, nullptr, &state));
         }
 
         struct standard_fixed_size_t {
@@ -279,23 +329,23 @@ namespace components::table {
                                uint64_t offset,
                                uint64_t count) {
                 auto sdata = uvf.get_data<T>();
-                auto tdata = reinterpret_cast<T*>(target);
                 if (!uvf.validity.all_valid()) {
                     for (uint64_t i = 0; i < count; i++) {
                         auto source_idx = uvf.referenced_indexing->get_index(offset + i);
                         auto target_idx = target_offset + i;
                         bool is_null = !uvf.validity.row_is_valid(source_idx);
                         if (!is_null) {
-                            tdata[target_idx] = sdata[source_idx];
+                            std::memcpy(target + target_idx * sizeof(T), &sdata[source_idx], sizeof(T));
                         } else {
-                            tdata[target_idx] = T(0);
+                            T zero{};
+                            std::memcpy(target + target_idx * sizeof(T), &zero, sizeof(T));
                         }
                     }
                 } else {
                     for (uint64_t i = 0; i < count; i++) {
                         auto source_idx = uvf.referenced_indexing->get_index(offset + i);
                         auto target_idx = target_offset + i;
-                        tdata[target_idx] = sdata[source_idx];
+                        std::memcpy(target + target_idx * sizeof(T), &sdata[source_idx], sizeof(T));
                     }
                 }
             }
@@ -309,11 +359,10 @@ namespace components::table {
                                uint64_t offset,
                                uint64_t count) {
                 auto sdata = uvf.get_data<uint64_t>();
-                auto tdata = reinterpret_cast<uint64_t*>(target);
                 for (uint64_t i = 0; i < count; i++) {
                     auto source_idx = uvf.referenced_indexing->get_index(offset + i);
                     auto target_idx = target_offset + i;
-                    tdata[target_idx] = sdata[source_idx];
+                    std::memcpy(target + target_idx * sizeof(uint64_t), &sdata[source_idx], sizeof(uint64_t));
                 }
             }
         };
@@ -342,8 +391,11 @@ namespace components::table {
                                  uint64_t vcount) {
             assert(segment.block_offset() == 0);
 
+            // Rows the mask buffer can hold (one bit per row). Multiply before dividing: a segment
+            // smaller than STANDARD_MASK_SIZE would truncate to 0, underflowing max_tuples - count
+            // and overrunning the buffer instead of rolling to a fresh segment.
             auto max_tuples =
-                segment.segment_size() / vector::validity_mask_t::STANDARD_MASK_SIZE * vector::DEFAULT_VECTOR_CAPACITY;
+                segment.segment_size() * vector::DEFAULT_VECTOR_CAPACITY / vector::validity_mask_t::STANDARD_MASK_SIZE;
             uint64_t append_count = std::min(vcount, max_tuples - segment.count);
             if (data.validity.all_valid()) {
                 segment.count += append_count;
@@ -367,9 +419,11 @@ namespace components::table {
         }
 
         void write_string_marker(std::byte* target, uint64_t block_id, int64_t offset) {
-            memcpy(target, &block_id, sizeof(uint64_t));
-            target += sizeof(uint64_t);
-            memcpy(target, &offset, sizeof(int64_t));
+            auto marker_block_id = static_cast<uint32_t>(block_id);
+            auto marker_offset = static_cast<int32_t>(offset);
+            memcpy(target, &marker_block_id, sizeof(uint32_t));
+            target += sizeof(uint32_t);
+            memcpy(target, &marker_offset, sizeof(int32_t));
         }
 
         uint64_t
@@ -460,14 +514,11 @@ namespace components::table {
         }
 
         template<typename T>
-        void fixed_size_scan(column_segment_t& segment, column_scan_state& state, uint64_t, vector::vector_t& result) {
-            auto start = segment.relative_index(state.row_index);
-
-            auto data = state.scan_state->ptr() + segment.block_offset();
-            auto source_data = data + static_cast<uint64_t>(start) * sizeof(T);
-
-            result.set_vector_type(vector::vector_type::FLAT);
-            result.set_data(source_data);
+        void fixed_size_scan(column_segment_t& segment,
+                             column_scan_state& state,
+                             uint64_t scan_count,
+                             vector::vector_t& result) {
+            fixed_size_scan_partial<T>(segment, state, scan_count, result, 0);
         }
 
         // --- CONSTANT compression scan helpers (generic, size-based) ---
@@ -735,10 +786,9 @@ namespace components::table {
                                    uint64_t result_offset) {
             auto start = segment.relative_index(state.row_index);
 
-            static_assert(sizeof(uint64_t) == sizeof(uint64_t), "uint64_t should be 64-bit");
             auto& result_mask = result.validity();
+            // Read mask words with memcpy loads; a misaligned typed load would be UB.
             auto buffer_ptr = state.scan_state->ptr() + segment.block_offset();
-            auto input_data = reinterpret_cast<uint64_t*>(buffer_ptr);
 
             auto result_data = result_mask.data();
 
@@ -751,7 +801,7 @@ namespace components::table {
             while (pos < scan_count) {
                 uint64_t current_result_idx = result_entry;
                 uint64_t offset;
-                uint64_t input_mask = input_data[input_entry];
+                uint64_t input_mask = load<uint64_t>(buffer_ptr + input_entry * sizeof(uint64_t));
 
                 if (result_idx < input_idx) {
                     auto shift_amount = input_idx - result_idx;
@@ -806,14 +856,14 @@ namespace components::table {
             auto start = segment.relative_index(state.row_index);
             if (static_cast<uint64_t>(start) % vector::validity_mask_t::BITS_PER_VALUE == 0) {
                 auto& result_mask = result.validity();
+                // memcpy loads, see validity_scan_partial.
                 auto buffer_ptr = state.scan_state->ptr() + segment.block_offset();
-                auto input_data = reinterpret_cast<uint64_t*>(buffer_ptr);
                 auto result_data = result_mask.data();
                 uint64_t start_offset = static_cast<uint64_t>(start) / vector::validity_mask_t::BITS_PER_VALUE;
                 uint64_t entry_scan_count = (scan_count + vector::validity_mask_t::BITS_PER_VALUE - 1) /
                                             vector::validity_mask_t::BITS_PER_VALUE;
                 for (uint64_t i = 0; i < entry_scan_count; i++) {
-                    auto input_entry = input_data[start_offset + i];
+                    auto input_entry = load<uint64_t>(buffer_ptr + (start_offset + i) * sizeof(uint64_t));
                     if (!result_data && input_entry == vector::validity_data_t::MAX_ENTRY) {
                         continue;
                     }
@@ -837,20 +887,27 @@ namespace components::table {
 
             auto baseptr = state.scan_state->ptr() + segment.block_offset();
             auto dict = dictionary(segment, *state.scan_state);
-            auto base_data = reinterpret_cast<int32_t*>(baseptr + DICTIONARY_HEADER_SIZE);
+            auto base_data = baseptr + DICTIONARY_HEADER_SIZE;
             auto result_data = result.data<std::string_view>();
+            const auto load_string_offset = [base_data](uint64_t index) {
+                return load<int32_t>(base_data + index * sizeof(int32_t));
+            };
 
-            int32_t previous_offset = start > 0 ? base_data[start - 1] : 0;
+            auto start_idx = static_cast<uint64_t>(start);
+            int32_t previous_offset = start > 0 ? load_string_offset(start_idx - 1) : 0;
 
             for (uint64_t i = 0; i < scan_count; i++) {
-                auto string_length = static_cast<uint32_t>(std::abs(base_data[static_cast<uint64_t>(start) + i]) -
+                auto current_offset = load_string_offset(start_idx + i);
+                auto string_length = static_cast<uint32_t>(std::abs(current_offset) -
                                                            std::abs(previous_offset));
                 result_data[result_offset + i] = fetch_string_from_dict(segment,
                                                                         dict,
                                                                         baseptr,
-                                                                        base_data[static_cast<uint64_t>(start) + i],
-                                                                        string_length);
-                previous_offset = base_data[static_cast<uint64_t>(start) + i];
+                                                                        current_offset,
+                                                                        string_length,
+                                                                        &state,
+                                                                        nullptr);
+                previous_offset = current_offset;
             }
         }
     } // namespace impl
@@ -871,7 +928,16 @@ namespace components::table {
         , offset_(offset)
         , segment_size_(segment_size)
         , segment_statistics_(std::pmr::get_default_resource()) {
-        assert(!block || segment_size_ <= block_manager().block_size());
+        // Reject a segment whose offset/size fall outside its block (e.g. rebuilt from a corrupt
+        // on-disk data_pointer). Throws rather than asserting so it holds in release builds.
+        if (this->block) {
+            const uint64_t block_size = block_manager().block_size();
+            if (offset_ > block_size || segment_size_ > block_size || offset_ + segment_size_ > block_size) {
+                throw std::logic_error("column_segment: data pointer out of block bounds (offset " +
+                                       std::to_string(offset_) + " + size " + std::to_string(segment_size_) +
+                                       " > block_size " + std::to_string(block_size) + ")");
+            }
+        }
 
         if (type.type() == types::logical_type::VALIDITY) {
             auto& buffer_manager = this->block->block_manager.buffer_manager;
@@ -905,7 +971,8 @@ namespace components::table {
         , offset_(other.offset_)
         , segment_size_(other.segment_size_)
         , segment_state_(std::move(other.segment_state_))
-        , segment_statistics_(std::move(other.segment_statistics_)) {
+        , segment_statistics_(std::move(other.segment_statistics_))
+        , persisted_(other.persisted_) {
         assert(!block || segment_size_ <= block_manager().block_size());
     }
 
@@ -918,7 +985,8 @@ namespace components::table {
         , offset_(other.offset_)
         , segment_size_(other.segment_size_)
         , segment_state_(std::move(other.segment_state_))
-        , segment_statistics_(std::move(other.segment_statistics_)) {
+        , segment_statistics_(std::move(other.segment_statistics_))
+        , persisted_(other.persisted_) {
         assert(!block || segment_size_ <= block_manager().block_size());
     }
 
@@ -1548,7 +1616,7 @@ namespace components::table {
                 impl::fixed_size_scan<int32_t>(*this, state, scan_count, result);
                 break;
             case types::physical_type::INT64:
-                impl::fixed_size_scan<ino64_t>(*this, state, scan_count, result);
+                impl::fixed_size_scan<int64_t>(*this, state, scan_count, result);
                 break;
             case types::physical_type::UINT8:
                 impl::fixed_size_scan<uint8_t>(*this, state, scan_count, result);
@@ -1562,11 +1630,11 @@ namespace components::table {
             case types::physical_type::UINT64:
                 impl::fixed_size_scan<uint64_t>(*this, state, scan_count, result);
                 break;
-                // case types::physical_type::INT128:
-                // impl::fixed_size_scan<int128_t>(*this, state, scan_count, result);
+            case types::physical_type::INT128:
+                impl::fixed_size_scan<types::int128_t>(*this, state, scan_count, result);
                 break;
-                // case types::physical_type::UINT128:
-                // impl::fixed_size_scan<uin128_t>(*this, state, scan_count, result);
+            case types::physical_type::UINT128:
+                impl::fixed_size_scan<types::uint128_t>(*this, state, scan_count, result);
                 break;
             case types::physical_type::FLOAT:
                 impl::fixed_size_scan<float>(*this, state, scan_count, result);
@@ -1619,7 +1687,7 @@ namespace components::table {
                 impl::fixed_size_scan_partial<int32_t>(*this, state, scan_count, result, result_offset);
                 break;
             case types::physical_type::INT64:
-                impl::fixed_size_scan_partial<ino64_t>(*this, state, scan_count, result, result_offset);
+                impl::fixed_size_scan_partial<int64_t>(*this, state, scan_count, result, result_offset);
                 break;
             case types::physical_type::UINT8:
                 impl::fixed_size_scan_partial<uint8_t>(*this, state, scan_count, result, result_offset);
@@ -1633,11 +1701,11 @@ namespace components::table {
             case types::physical_type::UINT64:
                 impl::fixed_size_scan_partial<uint64_t>(*this, state, scan_count, result, result_offset);
                 break;
-                // case types::physical_type::INT128:
-                // impl::fixed_size_scan_partial<int128_t>(*this, state, scan_count, result, result_offset);
+            case types::physical_type::INT128:
+                impl::fixed_size_scan_partial<types::int128_t>(*this, state, scan_count, result, result_offset);
                 break;
-                // case types::physical_type::UINT128:
-                // impl::fixed_size_scan_partial<uin128_t>(*this, state, scan_count, result, result_offset);
+            case types::physical_type::UINT128:
+                impl::fixed_size_scan_partial<types::uint128_t>(*this, state, scan_count, result, result_offset);
                 break;
             case types::physical_type::FLOAT:
                 impl::fixed_size_scan_partial<float>(*this, state, scan_count, result, result_offset);

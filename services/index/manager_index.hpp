@@ -244,6 +244,8 @@ namespace services::index {
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
+        unique_future<void> persist_vector_indexes(session_id_t session);
+
         // Compact gate (see index_contract): returns the subset of the input
         // oids with NO engine in engines_ (safe to compact), input order
         // preserved; an engine means its positional row refs would break on compact.
@@ -295,6 +297,7 @@ namespace services::index {
                                                        &manager_index_t::knn_search,
                                                        &manager_index_t::set_ef_search,
                                                        &manager_index_t::flush_all_indexes,
+                                                       &manager_index_t::persist_vector_indexes,
                                                        &manager_index_t::tables_without_indexes,
                                                        &manager_index_t::get_indexed_keys,
                                                        &manager_index_t::get_indexed_descriptions,
@@ -354,6 +357,13 @@ namespace services::index {
         std::filesystem::path vector_graph_path(components::catalog::oid_t table_oid,
                                                 const index_name_t& index_name) const;
         void save_vector_indexes();
+        void write_vector_index_meta_sidecar(components::catalog::oid_t table_oid,
+                                             const index_name_t& index_name,
+                                             uint8_t metric,
+                                             uint64_t m,
+                                             uint64_t ef_construction,
+                                             uint64_t dim,
+                                             uint64_t live_count);
         // Restart: rebuild a vector index from its .hnsw.meta sidecar + graph
         // snapshot (the oid-based pg_index does not persist hnsw params). Returns
         // true if a vector index was reconstructed (graph may still be empty on a

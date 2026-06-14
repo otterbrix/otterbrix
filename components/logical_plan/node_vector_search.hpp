@@ -4,6 +4,7 @@
 #include "node.hpp"
 
 #include <components/expressions/compare_expression.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 #include <vector_search/distance_metrics.hpp>
@@ -19,8 +20,9 @@ namespace components::logical_plan {
                              std::vector<double> query_vector,
                              std::size_t k,
                              vector_search::metric_type metric,
-                             vector_search::filter_strategy strategy = vector_search::filter_strategy::post_filter,
-                             bool descending = false);
+                             vector_search::filter_strategy strategy = vector_search::filter_strategy::pre_filter,
+                             bool descending = false,
+                             std::optional<core::parameter_id_t> k_param = std::nullopt);
 
         // Role-named accessors. The vector_search node carries the source table
         // identity through the parser-window so the executor's catalog-resolve
@@ -32,6 +34,7 @@ namespace components::logical_plan {
         const std::string& column_name() const noexcept { return column_name_; }
         const std::vector<double>& query_vector() const noexcept { return query_vector_; }
         std::size_t k() const noexcept { return k_; }
+        const std::optional<core::parameter_id_t>& k_param() const noexcept { return k_param_; }
         vector_search::metric_type metric() const noexcept { return metric_; }
         vector_search::filter_strategy strategy() const noexcept { return strategy_; }
         // DESC: exact K-farthest scan, no index.
@@ -49,6 +52,7 @@ namespace components::logical_plan {
         vector_search::metric_type metric_;
         vector_search::filter_strategy strategy_;
         bool descending_;
+        std::optional<core::parameter_id_t> k_param_;
     };
 
     using node_vector_search_ptr = boost::intrusive_ptr<node_vector_search_t>;
@@ -63,6 +67,7 @@ namespace components::logical_plan {
                             vector_search::metric_type metric,
                             const expressions::compare_expression_ptr& filter = nullptr,
                             vector_search::filter_strategy strategy = vector_search::filter_strategy::pre_filter,
-                            bool descending = false);
+                            bool descending = false,
+                            std::optional<core::parameter_id_t> k_param = std::nullopt);
 
 } // namespace components::logical_plan

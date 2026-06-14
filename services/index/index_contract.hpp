@@ -145,6 +145,8 @@ namespace services::index {
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
+        unique_future<void> persist_vector_indexes(session_id_t session);
+
         // Compact gate: returns the subset of the input oids that are safe to
         // compact — those with NO index engine, plus those whose engine holds
         // ZERO indexes (an engine is created empty for every table, so engine
@@ -229,6 +231,7 @@ namespace services::index {
                                                             &index_contract::knn_search,
                                                             &index_contract::set_ef_search,
                                                             &index_contract::flush_all_indexes,
+                                                            &index_contract::persist_vector_indexes,
                                                             &index_contract::tables_without_indexes,
                                                             &index_contract::get_indexed_keys,
                                                             &index_contract::get_indexed_descriptions,

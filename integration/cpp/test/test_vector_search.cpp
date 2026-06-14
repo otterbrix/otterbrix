@@ -216,6 +216,92 @@ TEST_CASE("integration::cpp::vector_search::k_greater_than_n") {
     }
 }
 
+TEST_CASE("integration::cpp::vector_search::projection") {
+    auto config = test_create_config("/tmp/test_vector_search/projection");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE " + std::string(database_name) + ";");
+    }
+    {
+        create_vectors_table(dispatcher, 2);
+        (void) collection_name;
+    }
+    std::vector<std::vector<double>> vectors = {{0.0, 0.0}, {1.0, 0.0}, {0.0, 1.0}, {5.0, 5.0}, {0.1, 0.1}};
+    for (std::size_t i = 0; i < vectors.size(); ++i) {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, make_insert_sql(static_cast<int>(i), vectors[i]))->is_success());
+    }
+
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "SELECT id FROM TestDatabase.Vectors ORDER BY embedding <-> '[0.0, 0.0]' LIMIT 3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().column_index("id") != static_cast<size_t>(-1));
+        REQUIRE(cur->chunk_data().column_index("embedding") == static_cast<size_t>(-1));
+        REQUIRE(cur->chunk_data().column_index("vector_distance") == static_cast<size_t>(-1));
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "SELECT * FROM TestDatabase.Vectors ORDER BY embedding <-> '[0.0, 0.0]' LIMIT 3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->chunk_data().column_index("id") != static_cast<size_t>(-1));
+        REQUIRE(cur->chunk_data().column_index("embedding") != static_cast<size_t>(-1));
+        REQUIRE(cur->chunk_data().column_index("vector_distance") == static_cast<size_t>(-1));
+    }
+}
+
+TEST_CASE("integration::cpp::vector_search::parameterized_limit") {
+    auto config = test_create_config("/tmp/test_vector_search/param_limit");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE " + std::string(database_name) + ";");
+    }
+    {
+        create_vectors_table(dispatcher, 2);
+        (void) collection_name;
+    }
+    std::vector<std::vector<double>> vectors = {{0.0, 0.0}, {1.0, 0.0}, {0.0, 1.0}, {5.0, 5.0}, {0.1, 0.1}};
+    for (std::size_t i = 0; i < vectors.size(); ++i) {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, make_insert_sql(static_cast<int>(i), vectors[i]))->is_success());
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql_with_params(
+            session,
+            "SELECT * FROM TestDatabase.Vectors ORDER BY embedding <-> '[0.0, 0.0]' LIMIT $1;",
+            {{1, components::types::logical_value_t(dispatcher->resource(), static_cast<int64_t>(3))}});
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql_with_params(
+            session,
+            "SELECT * FROM TestDatabase.Vectors ORDER BY embedding <-> '[0.0, 0.0]' LIMIT $1;",
+            {{1, components::types::logical_value_t(dispatcher->resource(), static_cast<int64_t>(2))}});
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}
+
 TEST_CASE("integration::cpp::vector_search::empty_collection") {
     auto config = test_create_config("/tmp/test_vector_search/empty");
     test_clear_directory(config);
@@ -815,6 +901,49 @@ TEST_CASE("integration::cpp::vector_search::create_index_opclass_errors") {
 }
 
 // Graph snapshot: save on shutdown, load on restart, rebuild on corruption, drop on DROP INDEX.
+TEST_CASE("integration::cpp::vector_search::hnsw_sidecar_on_create_index") {
+    auto config = test_create_config("/tmp/test_vector_search/sidecar_on_create");
+    config.disk.on = true;
+    config.wal.on = true;
+    test_clear_directory(config);
+
+    auto find_snapshot = [&](const std::string& fname) -> std::filesystem::path {
+        std::error_code ec;
+        for (auto it = std::filesystem::recursive_directory_iterator(config.disk.path, ec);
+             !ec && it != std::filesystem::recursive_directory_iterator();
+             it.increment(ec)) {
+            if (it->is_regular_file(ec) && it->path().filename() == fname) {
+                return it->path();
+            }
+        }
+        return {};
+    };
+    const auto meta_exists = [&] { return !find_snapshot("idx_emb.hnsw.meta").empty(); };
+    const auto graph_exists = [&] { return !find_snapshot("idx_emb.hnsw").empty(); };
+
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    { auto s = otterbrix::session_id_t(); dispatcher->execute_sql(s, "CREATE DATABASE " + std::string(database_name) + ";"); }
+    { create_vectors_table(dispatcher, 2); }
+
+    std::vector<std::vector<double>> vectors = {{0.0, 0.0}, {1.0, 0.0}, {0.0, 1.0}};
+    for (std::size_t i = 0; i < vectors.size(); ++i) {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, make_insert_sql(static_cast<int>(i), vectors[i]))->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(s,
+                                  "CREATE INDEX idx_emb ON TestDatabase.Vectors USING hnsw (embedding vector_l2_ops);")
+                    ->is_success());
+    }
+    REQUIRE(meta_exists());
+    REQUIRE(graph_exists());
+    REQUIRE(knn_ids(dispatcher, "SELECT * FROM TestDatabase.Vectors ORDER BY embedding <-> '[0.0, 0.0]' LIMIT 2;") ==
+            std::vector<int64_t>({0, 2}));
+}
+
 TEST_CASE("integration::cpp::vector_search::hnsw_graph_snapshot") {
     auto config = test_create_config("/tmp/test_vector_search/graph_snapshot");
     config.disk.on = true;
@@ -1020,10 +1149,9 @@ TEST_CASE("integration::cpp::vector_search::vacuum_rebuilds_index") {
     REQUIRE(ids == std::vector<int64_t>({5, 6, 7, 8, 9}));
 }
 
-// vector_distance must match between the index and exact paths.
-TEST_CASE("integration::cpp::vector_search::distance_value_consistency") {
+TEST_CASE("integration::cpp::vector_search::ranking_consistency") {
     for (const std::string opclass : {"vector_l2_ops", "vector_cosine_ops", "vector_ip_ops"}) {
-        auto config = test_create_config("/tmp/test_vector_search/dist_consistency_" + opclass);
+        auto config = test_create_config("/tmp/test_vector_search/rank_consistency_" + opclass);
         test_clear_directory(config);
         config.disk.on = false;
         config.wal.on = false;
@@ -1042,26 +1170,23 @@ TEST_CASE("integration::cpp::vector_search::distance_value_consistency") {
         const std::string q = "SELECT * FROM TestDatabase.Vectors ORDER BY embedding " + op +
                               " '[1.0, 0.1]' LIMIT 4;";
 
-        auto distances_by_id = [&](components::cursor::cursor_t_ptr cur) {
-            std::map<int64_t, double> out;
+        auto ordered_ids = [&](components::cursor::cursor_t_ptr cur) {
+            std::vector<int64_t> ids;
             auto id_col = cur->chunk_data().column_index("id");
-            auto dist_col = cur->chunk_data().column_index("vector_distance");
             REQUIRE(id_col != static_cast<size_t>(-1));
-            REQUIRE(dist_col != static_cast<size_t>(-1));
             for (std::size_t r = 0; r < cur->size(); ++r) {
-                out[cur->value(static_cast<uint64_t>(id_col), static_cast<uint64_t>(r)).value<int64_t>()] =
-                    cur->value(static_cast<uint64_t>(dist_col), static_cast<uint64_t>(r)).value<double>();
+                ids.push_back(cur->value(static_cast<uint64_t>(id_col), static_cast<uint64_t>(r)).value<int64_t>());
             }
-            return out;
+            return ids;
         };
 
         // Exact path (no index yet).
-        std::map<int64_t, double> exact;
+        std::vector<int64_t> exact;
         {
             auto s = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(s, q);
             REQUIRE(cur->is_success());
-            exact = distances_by_id(cur);
+            exact = ordered_ids(cur);
             REQUIRE(exact.size() == 4);
         }
         // Index path.
@@ -1077,13 +1202,8 @@ TEST_CASE("integration::cpp::vector_search::distance_value_consistency") {
             auto s = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(s, q);
             REQUIRE(cur->is_success());
-            auto indexed = distances_by_id(cur);
-            REQUIRE(indexed.size() == 4);
-            for (const auto& [id, dist] : exact) {
-                INFO(opclass << " id=" << id);
-                REQUIRE(indexed.count(id) == 1);
-                REQUIRE(indexed[id] == Approx(dist).margin(1e-4));
-            }
+            INFO(opclass);
+            REQUIRE(ordered_ids(cur) == exact);
         }
     }
 }

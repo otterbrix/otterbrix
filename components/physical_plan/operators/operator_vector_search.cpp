@@ -97,14 +97,12 @@ namespace components::operators {
                                          table_oid_);
         auto types = co_await std::move(tf);
 
-        // Build full output schema: storage columns + vector_distance
         auto build_schema = [&](uint64_t col_count, auto col_type_at) {
             std::pmr::vector<types::complex_logical_type> out_types(resource_);
-            out_types.reserve(col_count + 1);
+            out_types.reserve(col_count);
             for (uint64_t col = 0; col < col_count; ++col) {
                 out_types.push_back(col_type_at(col));
             }
-            out_types.push_back(types::complex_logical_type(types::logical_type::DOUBLE, "vector_distance"));
             return out_types;
         };
 
@@ -166,7 +164,7 @@ namespace components::operators {
                                                  static_cast<uint64_t>(count));
                 auto data = co_await std::move(ff);
 
-                if (data && data->size() > 0) {
+                if (data && static_cast<std::size_t>(data->size()) == count) {
                     auto out_types = build_schema(data->column_count(),
                                                   [&](uint64_t col) { return data->data[col].type(); });
                     auto result_chunk = std::make_unique<vector::data_chunk_t>(
@@ -175,18 +173,19 @@ namespace components::operators {
                         for (uint64_t col = 0; col < data->column_count(); ++col) {
                             result_chunk->data[col].set_value(i, data->value(col, i));
                         }
-                        result_chunk->data[data->column_count()].set_value(
-                            i, types::logical_value_t{resource_, knn.hits[i].distance});
                     }
                     result_chunk->set_cardinality(static_cast<uint64_t>(data->size()));
                     output_ = make_operator_data(resource_, std::move(*result_chunk));
-                } else {
-                    auto out_types = build_schema(static_cast<uint64_t>(types.size()),
-                                                  [&](uint64_t col) { return types[col]; });
-                    output_ = make_operator_data(resource_, std::move(out_types));
+                    mark_executed();
+                    co_return;
                 }
-                mark_executed();
-                co_return;
+                if (log_.is_valid()) {
+                    trace(log(),
+                          "operator_vector_search_t: HNSW fetch returned {} of {} hits — "
+                          "falling back to exact scan",
+                          data ? data->size() : 0,
+                          count);
+                }
             }
             // No vector index on this column — fall through to the exact scan.
         }
@@ -360,9 +359,6 @@ namespace components::operators {
             for (uint64_t col = 0; col < data->column_count(); ++col) {
                 result_chunk->data[col].set_value(i, data->value(col, source_row));
             }
-            // Set distance score
-            result_chunk->data[data->column_count()].set_value(i,
-                                                               types::logical_value_t{resource_, results[i].distance});
         }
         result_chunk->set_cardinality(static_cast<uint64_t>(results.size()));
 

@@ -1724,6 +1724,11 @@ namespace services::collection::executor {
                         if (ci_result.contains_error()) {
                             exec_result.cursor = make_cursor(resource(), ci_result);
                             co_await undo_create_index(this, create_index_table_oid, create_index_name);
+                        } else {
+                            auto [_pv, pvf] = actor_zeta::send(index_address_,
+                                                               &services::index::manager_index_t::persist_vector_indexes,
+                                                               session);
+                            co_await std::move(pvf);
                         }
                     }
                 }

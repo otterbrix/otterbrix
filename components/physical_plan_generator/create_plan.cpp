@@ -82,7 +82,7 @@ namespace services::planner {
             case node_type::join_t:
                 return impl::create_plan_join(context, function_registry, node, std::move(limit), params);
             case node_type::vector_search_t:
-                return impl::create_plan_vector_search(context, node);
+                return impl::create_plan_vector_search(context, node, params);
             case node_type::hash_join_t:
                 return impl::create_plan_hash_join(context, function_registry, node, std::move(limit), params);
             case node_type::check_constraint_t:

@@ -12,7 +12,8 @@ namespace components::logical_plan {
                                                std::size_t k,
                                                vector_search::metric_type metric,
                                                vector_search::filter_strategy strategy,
-                                               bool descending)
+                                               bool descending,
+                                               std::optional<core::parameter_id_t> k_param)
         : node_t(resource, node_type::vector_search_t)
         , dbname_(std::move(dbname))
         , relname_(std::move(relname))
@@ -21,7 +22,8 @@ namespace components::logical_plan {
         , k_(k)
         , metric_(metric)
         , strategy_(strategy)
-        , descending_(descending) {}
+        , descending_(descending)
+        , k_param_(k_param) {}
 
     hash_t node_vector_search_t::hash_impl() const { return 0; }
 
@@ -42,7 +44,8 @@ namespace components::logical_plan {
                                                    vector_search::metric_type metric,
                                                    const expressions::compare_expression_ptr& filter,
                                                    vector_search::filter_strategy strategy,
-                                                   bool descending) {
+                                                   bool descending,
+                                                   std::optional<core::parameter_id_t> k_param) {
         node_vector_search_ptr node = new node_vector_search_t{resource,
                                                                std::move(dbname),
                                                                std::move(relname),
@@ -51,7 +54,8 @@ namespace components::logical_plan {
                                                                k,
                                                                metric,
                                                                strategy,
-                                                               descending};
+                                                               descending,
+                                                               k_param};
         if (filter) {
             node->append_expression(filter);
         }

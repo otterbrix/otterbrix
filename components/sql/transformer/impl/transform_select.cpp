@@ -849,6 +849,22 @@ namespace components::sql::transform {
             }
         }
 
+        const bool vector_query = [&]() -> bool {
+            if (!(node.sortClause && node.sortClause->lst.size() == 1)) {
+                return false;
+            }
+            auto* sb = pg_ptr_cast<SortBy>(node.sortClause->lst.front().data);
+            if (nodeTag(sb->node) != T_A_Expr) {
+                return false;
+            }
+            auto* ae = pg_ptr_cast<A_Expr>(sb->node);
+            const char* op = (ae->kind == AEXPR_OP && ae->name && !ae->name->lst.empty())
+                                 ? strVal(ae->name->lst.front().data)
+                                 : nullptr;
+            std::string_view o = op ? op : "";
+            return o == "<->" || o == "<=>" || o == "<#>";
+        }();
+
         // where
         expression_ptr where_expr;
         if (node.whereClause) {
@@ -861,7 +877,7 @@ namespace components::sql::transform {
             } else {
                 where_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, plan);
             }
-            if (where_expr) {
+            if (where_expr && !vector_query) {
                 agg->append_child(logical_plan::make_node_match(resource_,
                                                                 core::dbname_t{agg->dbname()},
                                                                 core::relname_t{agg->relname()},
@@ -1062,14 +1078,21 @@ namespace components::sql::transform {
 
                     // LIMIT → K
                     size_t k = 10;
+                    std::optional<core::parameter_id_t> k_param;
                     if (node.limitCount) {
-                        auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
-                        if (nodeTag(value) == T_Integer) {
-                            int lim = intVal(value);
-                            if (lim < 0) {
-                                throw parser_exception_t("vector search: LIMIT must be non-negative", "");
+                        if (nodeTag(node.limitCount) == T_ParamRef) {
+                            k_param = add_param_value(node.limitCount, plan->parameters.get());
+                        } else if (nodeTag(node.limitCount) == T_A_Const) {
+                            auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
+                            if (nodeTag(value) == T_Integer) {
+                                int lim = intVal(value);
+                                if (lim < 0) {
+                                    throw parser_exception_t("vector search: LIMIT must be non-negative", "");
+                                }
+                                k = static_cast<size_t>(lim);
                             }
-                            k = static_cast<size_t>(lim);
+                        } else {
+                            throw parser_exception_t("vector search: unsupported LIMIT expression", "");
                         }
                     }
 
@@ -1084,23 +1107,25 @@ namespace components::sql::transform {
                         }
                     }
 
-                    return logical_plan::make_node_vector_search(resource_,
-                                                                 agg->dbname(),
-                                                                 agg->relname(),
-                                                                 column_name,
-                                                                 std::move(query_vector),
-                                                                 k,
-                                                                 m_type,
-                                                                 filter,
-                                                                 // WHERE + ORDER BY dist LIMIT is filter-first SQL.
-                                                                 vector_search::filter_strategy::pre_filter,
-                                                                 descending);
+                    agg->append_child(logical_plan::make_node_vector_search(
+                        resource_,
+                        agg->dbname(),
+                        agg->relname(),
+                        column_name,
+                        std::move(query_vector),
+                        k,
+                        m_type,
+                        filter,
+                        // WHERE + ORDER BY dist LIMIT is filter-first SQL.
+                        vector_search::filter_strategy::pre_filter,
+                        descending,
+                        k_param));
                 }
             }
         }
 
         // order by
-        if (node.sortClause && !node.sortClause->lst.empty()) {
+        if (node.sortClause && !node.sortClause->lst.empty() && !vector_query) {
             std::vector<expression_ptr> sort_exprs;
             sort_exprs.reserve(node.sortClause->lst.size());
             for (auto sort_it : node.sortClause->lst) {
@@ -1158,7 +1183,7 @@ namespace components::sql::transform {
         }
 
         // limit / offset
-        if (node.limitCount || node.limitOffset) {
+        if ((node.limitCount || node.limitOffset) && !vector_query) {
             int64_t limit_val = logical_plan::limit_t::unlimit().limit();
             int64_t offset_val = 0;
             std::optional<core::parameter_id_t> limit_param;

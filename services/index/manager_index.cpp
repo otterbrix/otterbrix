@@ -292,6 +292,10 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::flush_all_indexes, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::persist_vector_indexes>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::persist_vector_indexes, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::tables_without_indexes>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::tables_without_indexes, msg);
                 break;
@@ -795,6 +799,15 @@ namespace services::index {
                 }
             }
             // Index metadata lives in pg_catalog.pg_index now (no metafile write).
+            if (is_vector && !path_db_.empty()) {
+                write_vector_index_meta_sidecar(table_oid,
+                                                index_name,
+                                                static_cast<uint8_t>(metric),
+                                                hnsw_m,
+                                                hnsw_ef_construction,
+                                                0,
+                                                0);
+            }
         }
 
         // Restart-time graph snapshot loading happens in bootstrap_vector_index_sync,
@@ -1490,12 +1503,39 @@ namespace services::index {
             uint64_t live_count{0};
         };
 
+        template<typename T>
+        void put_le(std::ostream& os, T value) {
+            auto u = static_cast<std::uint64_t>(value);
+            for (std::size_t i = 0; i < sizeof(T); ++i) {
+                os.put(static_cast<char>((u >> (8 * i)) & 0xFFu));
+            }
+        }
+        template<typename T>
+        bool get_le(std::istream& is, T& value) {
+            std::uint64_t acc = 0;
+            for (std::size_t i = 0; i < sizeof(T); ++i) {
+                int c = is.get();
+                if (c == EOF) {
+                    return false;
+                }
+                acc |= static_cast<std::uint64_t>(static_cast<unsigned char>(c)) << (8 * i);
+            }
+            value = static_cast<T>(acc);
+            return true;
+        }
+
         bool write_graph_meta(const std::filesystem::path& path, const graph_meta_t& meta) {
             std::ofstream out(path, std::ios::binary | std::ios::trunc);
             if (!out) {
                 return false;
             }
-            out.write(reinterpret_cast<const char*>(&meta), sizeof(meta));
+            put_le(out, meta.magic);
+            put_le(out, meta.version);
+            put_le(out, meta.dim);
+            put_le(out, meta.metric);
+            put_le(out, meta.m);
+            put_le(out, meta.ef_construction);
+            put_le(out, meta.live_count);
             return static_cast<bool>(out);
         }
 
@@ -1504,15 +1544,56 @@ namespace services::index {
             if (!in) {
                 return false;
             }
-            in.read(reinterpret_cast<char*>(&meta), sizeof(meta));
-            return in.gcount() == sizeof(meta) && meta.magic == graph_meta_t{}.magic &&
-                   meta.version == graph_meta_t{}.version;
+            if (!get_le(in, meta.magic) || !get_le(in, meta.version) || !get_le(in, meta.dim) ||
+                !get_le(in, meta.metric) || !get_le(in, meta.m) || !get_le(in, meta.ef_construction) ||
+                !get_le(in, meta.live_count)) {
+                return false;
+            }
+            return meta.magic == graph_meta_t{}.magic && meta.version == graph_meta_t{}.version;
+        }
+
+        bool write_vector_meta_file(const std::filesystem::path& graph_path, const graph_meta_t& meta) {
+            std::error_code ec;
+            std::filesystem::create_directories(graph_path.parent_path(), ec);
+            auto meta_path = graph_path;
+            meta_path += ".meta";
+            const auto tmp_meta = meta_path.string() + ".tmp";
+            if (!write_graph_meta(tmp_meta, meta)) {
+                return false;
+            }
+            std::filesystem::rename(tmp_meta, meta_path);
+            return true;
         }
     } // namespace
 
     std::filesystem::path manager_index_t::vector_graph_path(components::catalog::oid_t table_oid,
                                                              const index_name_t& index_name) const {
         return path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / (index_name + ".hnsw");
+    }
+
+    void manager_index_t::write_vector_index_meta_sidecar(components::catalog::oid_t table_oid,
+                                                          const index_name_t& index_name,
+                                                          uint8_t metric,
+                                                          uint64_t m,
+                                                          uint64_t ef_construction,
+                                                          uint64_t dim,
+                                                          uint64_t live_count) {
+        if (path_db_.empty()) {
+            return;
+        }
+        graph_meta_t meta;
+        meta.dim = dim;
+        meta.metric = metric;
+        meta.m = m;
+        meta.ef_construction = ef_construction;
+        meta.live_count = live_count;
+        const auto graph_path = vector_graph_path(table_oid, index_name);
+        if (!write_vector_meta_file(graph_path, meta)) {
+            warn(log_,
+                 "manager_index_t: failed to write HNSW sidecar for '{}' on oid={}",
+                 index_name,
+                 static_cast<unsigned>(table_oid));
+        }
     }
 
     void manager_index_t::save_vector_indexes() {
@@ -1541,15 +1622,11 @@ namespace services::index {
                     meta.m = vidx->hnsw_params().M;
                     meta.ef_construction = vidx->hnsw_params().ef_construction;
                     meta.live_count = vidx->live_count();
-                    auto meta_path = graph_path;
-                    meta_path += ".meta";
-                    auto tmp_meta = meta_path.string() + ".tmp";
-                    if (!write_graph_meta(tmp_meta, meta)) {
+                    if (!write_vector_meta_file(graph_path, meta)) {
                         throw std::runtime_error("failed to write graph sidecar");
                     }
 
                     std::filesystem::rename(tmp_graph, graph_path);
-                    std::filesystem::rename(tmp_meta, meta_path);
                     trace(log_,
                           "manager_index_t: saved HNSW graph '{}' on oid={} ({} vectors)",
                           index_name,
@@ -1568,14 +1645,14 @@ namespace services::index {
         if (path_db_.empty()) {
             return false;
         }
-        auto graph_path = vector_graph_path(table_oid, index_name);
+        const auto graph_path = vector_graph_path(table_oid, index_name);
         auto meta_path = graph_path;
         meta_path += ".meta";
-        if (!std::filesystem::exists(graph_path) || !std::filesystem::exists(meta_path)) {
-            return false; // not a vector index (or never snapshotted)
+        if (!std::filesystem::exists(meta_path)) {
+            return false; // not a vector index (or never registered)
         }
         graph_meta_t meta;
-        if (!read_graph_meta(meta_path, meta) || meta.dim == 0) {
+        if (!read_graph_meta(meta_path, meta)) {
             return false;
         }
         auto it = engines_.find(table_oid);
@@ -1602,18 +1679,23 @@ namespace services::index {
             return false;
         }
         auto* vidx = static_cast<components::index::vector_index_t*>(idx);
-        // A reconstructed vector index — even if the graph file is corrupt we
-        // keep it (caller repopulates from the table scan in that case).
-        if (vidx->load_graph(graph_path.string(), static_cast<std::size_t>(meta.dim))) {
-            trace(log_,
-                  "manager_index_t::bootstrap_vector_index_sync: loaded HNSW graph '{}' on oid={} ({} vectors)",
-                  index_name,
-                  static_cast<unsigned>(table_oid),
-                  vidx->live_count());
+        if (meta.dim > 0 && std::filesystem::exists(graph_path)) {
+            if (vidx->load_graph(graph_path.string(), static_cast<std::size_t>(meta.dim))) {
+                trace(log_,
+                      "manager_index_t::bootstrap_vector_index_sync: loaded HNSW graph '{}' on oid={} ({} vectors)",
+                      index_name,
+                      static_cast<unsigned>(table_oid),
+                      vidx->live_count());
+            } else {
+                warn(log_,
+                     "manager_index_t::bootstrap_vector_index_sync: graph '{}' load failed, will rebuild from scan",
+                     index_name);
+            }
         } else {
-            warn(log_,
-                 "manager_index_t::bootstrap_vector_index_sync: graph '{}' load failed, will rebuild from scan",
-                 index_name);
+            trace(log_,
+                  "manager_index_t::bootstrap_vector_index_sync: sidecar-only vector index '{}' on oid={}",
+                  index_name,
+                  static_cast<unsigned>(table_oid));
         }
         return true;
     }
@@ -1695,6 +1777,11 @@ namespace services::index {
             co_await std::move(f);
         }
         // Snapshot HNSW graphs on checkpoint / shutdown.
+        save_vector_indexes();
+        co_return;
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::persist_vector_indexes(session_id_t /*session*/) {
         save_vector_indexes();
         co_return;
     }
@@ -1884,8 +1971,6 @@ namespace services::index {
                   static_cast<unsigned>(table_oid),
                   wal_record_id);
         }
-        // Snapshot HNSW graphs at checkpoint
-        save_vector_indexes();
         co_return;
     }
 

@@ -152,12 +152,13 @@ namespace components::operators {
         // oid_generator and stamps the resulting vector on the back-pointed node
         // so the DDL planner can read it via oids().
         allocate_oids,
-        batch
+        batch,
+        vector_search
     };
 
     inline bool is_scan(operator_type t) {
         return t == operator_type::full_scan || t == operator_type::transfer_scan || t == operator_type::index_scan ||
-               t == operator_type::primary_key_scan;
+               t == operator_type::primary_key_scan || t == operator_type::vector_search;
     }
 
     enum class operator_state

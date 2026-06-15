@@ -26,7 +26,8 @@ RUN rm /bin/sh && ln -s /bin/bash /bin/sh
 
 WORKDIR /app/build
 COPY ./conanfile.py ./conanfile.py
-RUN conan install conanfile.py --build missing -s build_type=Release -s compiler.cppstd=gnu20
+COPY ./conan /app/conan
+RUN conan export /app/conan/hnswlib && conan install conanfile.py --build missing -s build_type=Release -s compiler.cppstd=gnu20
 
 WORKDIR /app
 COPY ./integration ./integration

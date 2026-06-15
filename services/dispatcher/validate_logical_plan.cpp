@@ -56,6 +56,7 @@
 #include <components/logical_plan/node_recursive_cte.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <components/logical_plan/node_vector_search.hpp>
 #include <components/table/column_definition.hpp>
 #include <list>
 #include <optional>
@@ -2589,6 +2590,39 @@ namespace services::dispatcher {
             case node_type::drop_index_t:
                 // nothing to check here
                 break;
+            case node_type::vector_search_t: {
+                auto* vs_node = reinterpret_cast<node_vector_search_t*>(node);
+                // table_oid is stamped later (in enrich, after validate), so
+                // resolve by name here — same as the aggregate_t arm above.
+                const auto* tbl_idx =
+                    impl::tbl_md_for(idx, std::string_view(vs_node->dbname().t), std::string_view(vs_node->relname().t));
+                if (!tbl_idx) {
+                    if (impl::ns_oid_for_dbname(idx, std::string_view(vs_node->dbname().t)) ==
+                        components::catalog::INVALID_OID) {
+                        return core::error_t(core::error_code_t::database_not_exists,
+                                             std::pmr::string{"", resource});
+                    }
+                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
+                }
+                bool column_found = false;
+                for (const auto& column : tbl_idx->columns) {
+                    result.emplace_back(type_from_t{tbl_idx->name, column.type});
+                    if (column.attname == vs_node->column_name()) {
+                        column_found = true;
+                    }
+                }
+                // Dynamic-schema (relkind='g') tables resolve columns at runtime.
+                if (tbl_idx->relkind == 'g' && tbl_idx->columns.empty()) {
+                    column_found = true;
+                }
+                if (!column_found) {
+                    return core::error_t(core::error_code_t::field_not_exists,
+                                         std::pmr::string{"vector_search: column '" + vs_node->column_name() +
+                                                              "' was not found in collection",
+                                                          resource});
+                }
+                break;
+            }
             case node_type::create_matview_t:
             case node_type::refresh_matview_t:
                 // Schema derivation happens in enrich's stamp_oids_from_resolves;

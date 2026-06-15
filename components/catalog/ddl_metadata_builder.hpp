@@ -89,7 +89,8 @@ namespace components::catalog {
                                                            oid_t namespace_oid,
                                                            oid_t table_oid,
                                                            oid_t index_oid,
-                                                           const std::vector<oid_t>& column_attoids);
+                                                           const std::vector<oid_t>& column_attoids,
+                                                           const std::string& indam = "btree");
 
     // Writes pg_type + pg_depend (type→ns 'n').
     // type_spec may be empty for built-in types.
@@ -149,7 +150,8 @@ namespace components::catalog {
                                             oid_t index_oid,
                                             oid_t indrelid,
                                             const std::string& indkey,
-                                            bool indisvalid);
+                                            bool indisvalid,
+                                            const std::string& indam = "btree");
 
     // pg_computed_column row builder for tests / primitive-write callers.
     // Schema: [relid, attoid, attname, atttypid, atttypspec, attversion,

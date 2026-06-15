@@ -12,7 +12,9 @@ RUN    pip3 install --upgrade pip && \
 WORKDIR /app
 
 COPY ./conanfile.py ./conanfile.py
-RUN conan install . --build missing  \
+COPY ./conan ./conan
+RUN conan export ./conan/hnswlib && \
+    conan install . --build missing  \
     --build fmt \
     --build spdlog  \
     -s build_type=Release \

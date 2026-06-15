@@ -1,4 +1,6 @@
 #include <catch2/catch.hpp>
+#include <set>
+#include <string>
 #include <components/compute/function.hpp>
 
 using namespace components::compute;
@@ -14,9 +16,13 @@ TEST_CASE("components::compute::registry::basic") {
         REQUIRE(reg == reg2);
     }
 
-    SECTION("all function names present") { REQUIRE(registered_functions.size() >= 5); }
+    SECTION("all function names present") { REQUIRE(registered_functions.size() >= 9); }
 
-    SECTION("aggregate functions exist") {
+    SECTION("builtin functions exist") {
+        const std::set<std::string> binary_distance_funcs = {"l2_distance",
+                                                             "cosine_distance",
+                                                             "inner_product",
+                                                             "negative_inner_product"};
         for (const auto& [name, uid] : registered_functions) {
             auto* fn = reg->get_function(uid);
             REQUIRE(fn != nullptr);
@@ -24,6 +30,8 @@ TEST_CASE("components::compute::registry::basic") {
             if (name == "count") {
                 REQUIRE(fn->fn_arity().num_args == 0);
                 REQUIRE(fn->fn_arity().varargs == true);
+            } else if (binary_distance_funcs.count(name) != 0) {
+                REQUIRE(fn->fn_arity().num_args == 2);
             } else if (name == "substring") {
                 // SUBSTRING(s, start[, len]) — 2 or 3 args
                 REQUIRE(fn->fn_arity().num_args == 2);

@@ -195,6 +195,7 @@ namespace components::catalog {
             c.emplace_back("indisvalid",
                            bool_col(),
                            true); // false until backfill completes; planner ignores invalid indexes
+            c.emplace_back("indam", str_col(), true); // access method: btree, hash, hnsw
             return c;
         }
 

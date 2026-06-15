@@ -10,9 +10,11 @@
 #include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
 #include <components/index/single_field_index.hpp>
+#include <components/index/vector_index.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
 #include <core/executor.hpp>
+#include <fstream>
 #include <msgpack.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/wal/record.hpp>
@@ -270,6 +272,14 @@ namespace services::index {
                 co_await actor_zeta::dispatch(this, &manager_index_t::repopulate_table, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::knn_search>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::knn_search, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::set_ef_search>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::set_ef_search, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::search>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::search, msg);
                 break;
@@ -280,6 +290,10 @@ namespace services::index {
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::flush_all_indexes>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::flush_all_indexes, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::persist_vector_indexes>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::persist_vector_indexes, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::tables_without_indexes>: {
@@ -438,6 +452,21 @@ namespace services::index {
             return;
         }
 
+        // pg_index.indam identifies vector (hnsw) indexes; sidecar still carries
+        // metric/dim/graph snapshot for recovery.
+        if (bootstrap_vector_index_sync(table_oid, index_name, keys)) {
+            // Keep the (single-typed) disk agent base_spaces spawned alive so
+            // its address stays valid; vector indexes route no disk ops to it.
+            if (disk_agent_owned) {
+                disk_agents_owned_.emplace_back(std::move(disk_agent_owned));
+            }
+            trace(log_,
+                  "manager_index_t::bootstrap_index_sync: reconstructed vector index {} on oid={}",
+                  index_name,
+                  static_cast<unsigned>(table_oid));
+            return;
+        }
+
         uint32_t id_index = components::index::INDEX_ID_UNDEFINED;
         switch (type) {
             case components::logical_plan::index_type::single: {
@@ -479,6 +508,17 @@ namespace services::index {
                                                                                                         keys);
                     }
                 }
+                break;
+            }
+            case components::logical_plan::index_type::vector_hnsw: {
+                components::vector_search::hnsw_params_t params;
+                id_index = components::index::make_index<components::index::vector_index_t>(
+                    engine,
+                    index_name,
+                    keys,
+                    std::size_t{0},
+                    components::vector_search::metric_type::l2,
+                    params);
                 break;
             }
             default:
@@ -594,6 +634,16 @@ namespace services::index {
                                                                                 components::catalog::oid_t table_oid) {
         trace(log_, "manager_index_t::unregister_collection: oid={}", static_cast<unsigned>(table_oid));
 
+        // Drop HNSW graph snapshots for any vector index on this table.
+        if (auto it = engines_.find(table_oid); it != engines_.end()) {
+            for (const auto& index_name : it->second->indexes()) {
+                auto* idx = it->second->matching(index_name);
+                if (idx && idx->type() == components::logical_plan::index_type::vector_hnsw) {
+                    remove_vector_graph_files(table_oid, index_name);
+                }
+            }
+        }
+
         engines_.erase(table_oid);
         disk_agents_per_oid_.erase(table_oid);
         co_return;
@@ -601,23 +651,27 @@ namespace services::index {
 
     // --- DDL: index management ---
 
-    manager_index_t::unique_future<uint32_t> manager_index_t::create_index(session_id_t /*session*/,
-                                                                           components::catalog::oid_t table_oid,
-                                                                           index_name_t index_name,
-                                                                           components::index::keys_base_storage_t keys,
-                                                                           components::logical_plan::index_type type,
-                                                                           core::date::timezone_offset_t session_tz) {
+    manager_index_t::unique_future<create_index_result_t>
+    manager_index_t::create_index(session_id_t /*session*/,
+                                  components::catalog::oid_t table_oid,
+                                  index_name_t index_name,
+                                  components::index::keys_base_storage_t keys,
+                                  components::logical_plan::index_type type,
+                                  components::vector_search::metric_type metric,
+                                  uint64_t hnsw_m,
+                                  uint64_t hnsw_ef_construction,
+                                  core::date::timezone_offset_t session_tz) {
         trace(log_, "manager_index_t::create_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
 
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
-            co_return components::index::INDEX_ID_UNDEFINED;
+            co_return create_index_result_t{};
         }
 
         auto& engine = it->second;
 
         if (engine->has_index(index_name)) {
-            co_return components::index::INDEX_ID_UNDEFINED;
+            co_return create_index_result_t{};
         }
 
         uint32_t id_index = components::index::INDEX_ID_UNDEFINED;
@@ -658,10 +712,21 @@ namespace services::index {
                 }
                 break;
             }
+            case components::logical_plan::index_type::vector_hnsw: {
+                // dim = 0 - built lazily
+                components::vector_search::hnsw_params_t params;
+                params.M = static_cast<std::size_t>(hnsw_m);
+                params.ef_construction = static_cast<std::size_t>(hnsw_ef_construction);
+                id_index = components::index::make_index<components::index::vector_index_t>(
+                    engine, index_name, keys, std::size_t{0}, metric, params);
+                break;
+            }
             default:
                 trace(log_, "manager_index_t::create_index: unsupported index type");
-                co_return components::index::INDEX_ID_UNDEFINED;
+                co_return create_index_result_t{};
         }
+
+        const bool is_vector = (type == components::logical_plan::index_type::vector_hnsw);
 
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
             // Load index data from btree (persistent storage). Path layout
@@ -705,7 +770,7 @@ namespace services::index {
             }
 
             // Create disk agent for persistent storage
-            if (!path_db_.empty()) {
+            if (!path_db_.empty() && !is_vector) {
                 try {
                     // Runtime DDL path: a fresh index dir with no txn-log to
                     // gate, so the recover-gate set is EMPTY (correct value, not
@@ -743,9 +808,21 @@ namespace services::index {
                     trace(log_, "manager_index_t::create_index: disk agent creation failed: {}", e.what());
                 }
             }
+            // Index metadata lives in pg_catalog.pg_index now (no metafile write).
+            if (is_vector && !path_db_.empty()) {
+                write_vector_index_meta_sidecar(table_oid,
+                                                index_name,
+                                                static_cast<uint8_t>(metric),
+                                                hnsw_m,
+                                                hnsw_ef_construction,
+                                                0,
+                                                0);
+            }
         }
 
-        co_return id_index;
+        // Restart-time graph snapshot loading happens in bootstrap_vector_index_sync,
+        // not here — a fresh CREATE INDEX always backfills from the table scan.
+        co_return create_index_result_t{id_index};
     }
 
     manager_index_t::unique_future<void>
@@ -788,7 +865,14 @@ namespace services::index {
                 }
             }
 
+            const bool was_vector = index->type() == components::logical_plan::index_type::vector_hnsw;
             components::index::drop_index(engine, index);
+
+            // Index metadata lives in pg_catalog.pg_index now (no metafile);
+            // still drop the on-disk HNSW graph snapshot for vector indexes.
+            if (was_vector) {
+                remove_vector_graph_files(table_oid, index_name);
+            }
         }
 
         co_return;
@@ -808,18 +892,48 @@ namespace services::index {
         }
         auto& engine = it->second;
         // Clear in-memory storage_ for every index on this oid: entries loaded
-        // by bootstrap_index_sync's rehydration carry pre-compact row_ids.
+        // by bootstrap_index_sync's rehydration carry pre-compact row_ids. A
+        // vector index whose graph snapshot was already loaded (size > 0) is
+        // left intact and suspended so the scan-based reinserts below skip it.
+        std::vector<components::index::vector_index_t*> suspended;
+        std::vector<components::index::disk_hash_single_field_index_t*> suspended_disk_hash;
         for (auto& idx_name : engine->indexes()) {
             auto* idx = components::index::search_index(engine, idx_name);
-            if (idx) {
-                idx->clean_memory_to_new_elements(0);
+            if (!idx) {
+                continue;
             }
+            if (idx->type() == components::logical_plan::index_type::vector_hnsw) {
+                auto* vidx = static_cast<components::index::vector_index_t*>(idx);
+                if (vidx->size() > 0) {
+                    vidx->set_suspend_inserts(true);
+                    suspended.push_back(vidx);
+                    continue;
+                }
+            }
+            // A disk-backed hash index serves queries straight from its persisted
+            // bitcask, which bootstrap_index_sync already loaded — that store is
+            // authoritative. Re-inserting the table scan would land every key in
+            // both the bitcask and pending_inserts_, so find() returns each row
+            // twice. Leave the on-disk store intact and suspend the scan inserts.
+            if (idx->type() == components::logical_plan::index_type::hashed && idx->is_disk()) {
+                auto* dhidx = static_cast<components::index::disk_hash_single_field_index_t*>(idx);
+                dhidx->set_suspend_inserts(true);
+                suspended_disk_hash.push_back(dhidx);
+                continue;
+            }
+            idx->clean_memory_to_new_elements(0);
         }
         // Re-insert each row with its current physical row_id (post-checkpoint
         // scan chunks are 0-based contiguous).
         const core::date::timezone_offset_t bootstrap_tz{};
         for (uint64_t i = 0; i < row_count; ++i) {
             engine->insert_row(*chunk, i, static_cast<int64_t>(i), /*txn_id=*/0, bootstrap_tz);
+        }
+        for (auto* vidx : suspended) {
+            vidx->set_suspend_inserts(false);
+        }
+        for (auto* dhidx : suspended_disk_hash) {
+            dhidx->set_suspend_inserts(false);
         }
         trace(log_,
               "manager_index_t::bootstrap_repopulate_sync: oid={} rows={}",
@@ -1091,6 +1205,9 @@ namespace services::index {
             if (txn_id != 0) {
                 engine->commit_delete(0, commit_id);
             }
+            // Tombstones are now live: rebuild any HNSW graph whose deleted
+            // fraction crossed the threshold (reclaims memory, keeps recall).
+            compact_collection_if_needed(oid);
         }
 
         co_return first_error;
@@ -1314,6 +1431,87 @@ namespace services::index {
         co_return index->search(compare, value, start_time, txn_id, session_tz);
     }
 
+    manager_index_t::unique_future<knn_search_result_t>
+    manager_index_t::knn_search(session_id_t session,
+                                components::catalog::oid_t table_oid,
+                                components::index::keys_base_storage_t keys,
+                                std::vector<double> query,
+                                uint64_t k,
+                                components::vector_search::metric_type metric) {
+        knn_search_result_t result;
+
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end())
+            co_return result;
+
+        auto* index = components::index::search_index(it->second, keys);
+        if (!index || index->type() != components::logical_plan::index_type::vector_hnsw)
+            co_return result;
+
+        // Metric mismatch - fall back to brute force
+        auto* vidx = static_cast<components::index::vector_index_t*>(index);
+        if (vidx->metric() != metric)
+            co_return result;
+
+        // Dimension guard
+        if (vidx->dim() != 0 && vidx->dim() != query.size()) {
+            result.dim_mismatch = true;
+            result.expected_dim = static_cast<uint64_t>(vidx->dim());
+            co_return result;
+        }
+
+        result.index_used = true;
+
+        vidx->set_ef_search(static_cast<std::size_t>([&]() {
+            auto it = session_ef_search_.find(session.data());
+            return it != session_ef_search_.end() ? it->second : std::uint64_t{0};
+        }()));
+
+        std::vector<float> q(query.begin(), query.end());
+        result.hits = index->knn_search(q.data(), q.size(), static_cast<std::size_t>(k), metric);
+        co_return result;
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::set_ef_search(session_id_t session, uint64_t ef) {
+        if (ef == 0) {
+            session_ef_search_.erase(session.data());
+        } else {
+            session_ef_search_[session.data()] = ef;
+        }
+        co_return;
+    }
+
+    void manager_index_t::compact_collection_if_needed(components::catalog::oid_t table_oid) {
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end())
+            return;
+
+        auto& engine = it->second;
+        bool compacted_any = false;
+        for (const auto& index_name : engine->indexes()) {
+            auto* idx = engine->matching(index_name);
+            if (!idx || idx->type() != components::logical_plan::index_type::vector_hnsw) {
+                continue;
+            }
+            auto* vidx = static_cast<components::index::vector_index_t*>(idx);
+            if (vidx->needs_compaction(vector_compaction_threshold_)) {
+                auto before = vidx->size();
+                vidx->compact();
+                compacted_any = true;
+                trace(log_,
+                      "manager_index_t: rebuilt HNSW '{}' on oid={} ({} slots -> {} live)",
+                      index_name,
+                      static_cast<unsigned>(table_oid),
+                      before,
+                      vidx->live_count());
+            }
+        }
+        // Refresh on-disk snapshot
+        if (compacted_any) {
+            save_vector_indexes();
+        }
+    }
+
     manager_index_t::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>
     manager_index_t::get_indexed_keys(session_id_t /*session*/, components::catalog::oid_t table_oid) {
         auto it = engines_.find(table_oid);
@@ -1321,6 +1519,230 @@ namespace services::index {
             co_return std::pmr::vector<components::index::keys_base_storage_t>(resource_);
         }
         co_return it->second->all_indexed_keys();
+    }
+
+    // --- HNSW graph snapshots (keyed by table oid) ---
+
+    namespace {
+        // Sidecar metadata for the graph binary
+        struct graph_meta_t {
+            uint64_t magic{0x584E5348u}; // "HSNX"
+            uint32_t version{1};
+            uint64_t dim{0};
+            uint8_t metric{0};
+            uint64_t m{0};
+            uint64_t ef_construction{0};
+            uint64_t live_count{0};
+        };
+
+        template<typename T>
+        void put_le(std::ostream& os, T value) {
+            auto u = static_cast<std::uint64_t>(value);
+            for (std::size_t i = 0; i < sizeof(T); ++i) {
+                os.put(static_cast<char>((u >> (8 * i)) & 0xFFu));
+            }
+        }
+        template<typename T>
+        bool get_le(std::istream& is, T& value) {
+            std::uint64_t acc = 0;
+            for (std::size_t i = 0; i < sizeof(T); ++i) {
+                int c = is.get();
+                if (c == EOF) {
+                    return false;
+                }
+                acc |= static_cast<std::uint64_t>(static_cast<unsigned char>(c)) << (8 * i);
+            }
+            value = static_cast<T>(acc);
+            return true;
+        }
+
+        bool write_graph_meta(const std::filesystem::path& path, const graph_meta_t& meta) {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            if (!out) {
+                return false;
+            }
+            put_le(out, meta.magic);
+            put_le(out, meta.version);
+            put_le(out, meta.dim);
+            put_le(out, meta.metric);
+            put_le(out, meta.m);
+            put_le(out, meta.ef_construction);
+            put_le(out, meta.live_count);
+            return static_cast<bool>(out);
+        }
+
+        bool read_graph_meta(const std::filesystem::path& path, graph_meta_t& meta) {
+            std::ifstream in(path, std::ios::binary);
+            if (!in) {
+                return false;
+            }
+            if (!get_le(in, meta.magic) || !get_le(in, meta.version) || !get_le(in, meta.dim) ||
+                !get_le(in, meta.metric) || !get_le(in, meta.m) || !get_le(in, meta.ef_construction) ||
+                !get_le(in, meta.live_count)) {
+                return false;
+            }
+            return meta.magic == graph_meta_t{}.magic && meta.version == graph_meta_t{}.version;
+        }
+
+        bool write_vector_meta_file(const std::filesystem::path& graph_path, const graph_meta_t& meta) {
+            std::error_code ec;
+            std::filesystem::create_directories(graph_path.parent_path(), ec);
+            auto meta_path = graph_path;
+            meta_path += ".meta";
+            const auto tmp_meta = meta_path.string() + ".tmp";
+            if (!write_graph_meta(tmp_meta, meta)) {
+                return false;
+            }
+            std::filesystem::rename(tmp_meta, meta_path);
+            return true;
+        }
+    } // namespace
+
+    std::filesystem::path manager_index_t::vector_graph_path(components::catalog::oid_t table_oid,
+                                                             const index_name_t& index_name) const {
+        return path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / (index_name + ".hnsw");
+    }
+
+    void manager_index_t::write_vector_index_meta_sidecar(components::catalog::oid_t table_oid,
+                                                          const index_name_t& index_name,
+                                                          uint8_t metric,
+                                                          uint64_t m,
+                                                          uint64_t ef_construction,
+                                                          uint64_t dim,
+                                                          uint64_t live_count) {
+        if (path_db_.empty()) {
+            return;
+        }
+        graph_meta_t meta;
+        meta.dim = dim;
+        meta.metric = metric;
+        meta.m = m;
+        meta.ef_construction = ef_construction;
+        meta.live_count = live_count;
+        const auto graph_path = vector_graph_path(table_oid, index_name);
+        if (!write_vector_meta_file(graph_path, meta)) {
+            warn(log_,
+                 "manager_index_t: failed to write HNSW sidecar for '{}' on oid={}",
+                 index_name,
+                 static_cast<unsigned>(table_oid));
+        }
+    }
+
+    void manager_index_t::save_vector_indexes() {
+        if (path_db_.empty()) {
+            return;
+        }
+        for (auto& [table_oid, engine] : engines_) {
+            for (const auto& index_name : engine->indexes()) {
+                auto* idx = engine->matching(index_name);
+                if (!idx || idx->type() != components::logical_plan::index_type::vector_hnsw) {
+                    continue;
+                }
+                auto* vidx = static_cast<components::index::vector_index_t*>(idx);
+                if (vidx->dim() == 0) {
+                    continue;
+                }
+                auto graph_path = vector_graph_path(table_oid, index_name);
+                try {
+                    std::filesystem::create_directories(graph_path.parent_path());
+                    auto tmp_graph = graph_path.string() + ".tmp";
+                    vidx->save_graph(tmp_graph);
+
+                    graph_meta_t meta;
+                    meta.dim = vidx->dim();
+                    meta.metric = static_cast<uint8_t>(vidx->metric());
+                    meta.m = vidx->hnsw_params().M;
+                    meta.ef_construction = vidx->hnsw_params().ef_construction;
+                    meta.live_count = vidx->live_count();
+                    if (!write_vector_meta_file(graph_path, meta)) {
+                        throw std::runtime_error("failed to write graph sidecar");
+                    }
+
+                    std::filesystem::rename(tmp_graph, graph_path);
+                    trace(log_,
+                          "manager_index_t: saved HNSW graph '{}' on oid={} ({} vectors)",
+                          index_name,
+                          static_cast<unsigned>(table_oid),
+                          meta.live_count);
+                } catch (const std::exception& e) {
+                    warn(log_, "manager_index_t: failed to save HNSW graph '{}': {}", index_name, e.what());
+                }
+            }
+        }
+    }
+
+    bool manager_index_t::bootstrap_vector_index_sync(components::catalog::oid_t table_oid,
+                                                      const index_name_t& index_name,
+                                                      const components::index::keys_base_storage_t& keys) {
+        if (path_db_.empty()) {
+            return false;
+        }
+        const auto graph_path = vector_graph_path(table_oid, index_name);
+        auto meta_path = graph_path;
+        meta_path += ".meta";
+        if (!std::filesystem::exists(meta_path)) {
+            return false; // not a vector index (or never registered)
+        }
+        graph_meta_t meta;
+        if (!read_graph_meta(meta_path, meta)) {
+            return false;
+        }
+        auto it = engines_.find(table_oid);
+        if (it == engines_.end()) {
+            return false;
+        }
+        auto& engine = it->second;
+
+        components::vector_search::hnsw_params_t params;
+        params.M = static_cast<std::size_t>(meta.m);
+        params.ef_construction = static_cast<std::size_t>(meta.ef_construction);
+        auto id_index = components::index::make_index<components::index::vector_index_t>(
+            engine,
+            index_name,
+            keys,
+            std::size_t{0},
+            static_cast<components::vector_search::metric_type>(meta.metric),
+            params);
+        if (id_index == components::index::INDEX_ID_UNDEFINED) {
+            return false;
+        }
+        auto* idx = components::index::search_index(engine, keys);
+        if (!idx || idx->type() != components::logical_plan::index_type::vector_hnsw) {
+            return false;
+        }
+        auto* vidx = static_cast<components::index::vector_index_t*>(idx);
+        if (meta.dim > 0 && std::filesystem::exists(graph_path)) {
+            if (vidx->load_graph(graph_path.string(), static_cast<std::size_t>(meta.dim))) {
+                trace(log_,
+                      "manager_index_t::bootstrap_vector_index_sync: loaded HNSW graph '{}' on oid={} ({} vectors)",
+                      index_name,
+                      static_cast<unsigned>(table_oid),
+                      vidx->live_count());
+            } else {
+                warn(log_,
+                     "manager_index_t::bootstrap_vector_index_sync: graph '{}' load failed, will rebuild from scan",
+                     index_name);
+            }
+        } else {
+            trace(log_,
+                  "manager_index_t::bootstrap_vector_index_sync: sidecar-only vector index '{}' on oid={}",
+                  index_name,
+                  static_cast<unsigned>(table_oid));
+        }
+        return true;
+    }
+
+    void manager_index_t::remove_vector_graph_files(components::catalog::oid_t table_oid,
+                                                    const index_name_t& index_name) {
+        if (path_db_.empty()) {
+            return;
+        }
+        std::error_code ec;
+        auto graph_path = vector_graph_path(table_oid, index_name);
+        std::filesystem::remove(graph_path, ec);
+        auto meta_path = graph_path;
+        meta_path += ".meta";
+        std::filesystem::remove(meta_path, ec);
     }
 
     manager_index_t::unique_future<std::pmr::vector<components::index::index_description_t>>
@@ -1386,6 +1808,13 @@ namespace services::index {
         for (auto& f : futures) {
             co_await std::move(f);
         }
+        // Snapshot HNSW graphs on checkpoint / shutdown.
+        save_vector_indexes();
+        co_return;
+    }
+
+    manager_index_t::unique_future<void> manager_index_t::persist_vector_indexes(session_id_t /*session*/) {
+        save_vector_indexes();
         co_return;
     }
 

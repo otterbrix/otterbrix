@@ -71,7 +71,10 @@ namespace services::planner::impl {
                                                                                                  ci->keys(),
                                                                                                  ci->table_oid(),
                                                                                                  ci->index_oid(),
-                                                                                                 ci->indkey()));
+                                                                                                 ci->indkey(),
+                                                                                                 ci->metric(),
+                                                                                                 ci->hnsw_m(),
+                                                                                                 ci->hnsw_ef_construction()));
             backfill_op->set_children(metadata_op, nullptr);
             return backfill_op;
         }

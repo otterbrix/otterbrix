@@ -8,6 +8,7 @@ set(${PROJECT_NAME}_SOURCES
         test_create_index.cpp
         test_index_mvcc.cpp
         test_logical_value_binary_codec.cpp
+        test_vector_index.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

@@ -4,7 +4,9 @@
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <vector_search/distance_metrics.hpp>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -29,7 +31,11 @@ namespace components::operators {
                                          std::pmr::vector<components::expressions::key_t> keys,
                                          components::catalog::oid_t table_oid,
                                          components::catalog::oid_t index_oid,
-                                         std::string indkey);
+                                         std::string indkey,
+                                         components::vector_search::metric_type metric =
+                                             components::vector_search::metric_type::l2,
+                                         uint64_t hnsw_m = 16,
+                                         uint64_t hnsw_ef_construction = 64);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
@@ -41,6 +47,9 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         components::catalog::oid_t index_oid_;
         std::string indkey_;
+        components::vector_search::metric_type metric_;
+        uint64_t hnsw_m_;
+        uint64_t hnsw_ef_construction_;
     };
 
 } // namespace components::operators

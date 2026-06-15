@@ -58,6 +58,7 @@ set(SOURCE_${PROJECT_NAME}
         node_limit.cpp
         node_match.cpp
         node_select.cpp
+        node_set_ef_search.cpp
         node_sort.cpp
         node_union.cpp
         node_recursive_cte.cpp
@@ -65,6 +66,7 @@ set(SOURCE_${PROJECT_NAME}
         node_update.cpp
         node_set_timezone.cpp
         node_vacuum.cpp
+        node_vector_search.cpp
         param_storage.cpp
 )
 

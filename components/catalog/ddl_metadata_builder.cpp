@@ -466,7 +466,8 @@ namespace components::catalog {
                                                            oid_t namespace_oid,
                                                            oid_t table_oid,
                                                            oid_t index_oid,
-                                                           const std::vector<oid_t>& column_attoids) {
+                                                           const std::vector<oid_t>& column_attoids,
+                                                           const std::string& indam) {
         std::vector<catalog_write_t> result;
 
         // pg_class row (relkind='i')
@@ -494,6 +495,7 @@ namespace components::catalog {
                     set_oid(c, 1, 0, table_oid);
                     set_str(c, 2, 0, indkey, r);
                     set_bool(c, 3, 0, false); // indisvalid
+                    set_str(c, 4, 0, indam, r);
                 });
             result.push_back(make_write(pg_index_full, std::move(chunk)));
         }
@@ -753,7 +755,8 @@ namespace components::catalog {
                                             oid_t index_oid,
                                             oid_t indrelid,
                                             const std::string& indkey,
-                                            bool indisvalid) {
+                                            bool indisvalid,
+                                            const std::string& indam) {
         const auto* def = find_system_table("pg_index");
         if (!def) {
             std::pmr::vector<types::complex_logical_type> empty_types(resource);
@@ -764,6 +767,7 @@ namespace components::catalog {
             set_oid(c, 1, 0, indrelid);
             set_str(c, 2, 0, indkey, r);
             set_bool(c, 3, 0, indisvalid);
+            set_str(c, 4, 0, indam, r);
         });
     }
 

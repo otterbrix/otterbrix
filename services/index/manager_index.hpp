@@ -26,6 +26,10 @@
 #include <thread>
 #include <unordered_map>
 
+namespace components::index {
+    class vector_index_t;
+}
+
 namespace services::index {
 
     // INDEXES_METADATA_FILENAME retired. Index metadata lives in
@@ -192,13 +196,17 @@ namespace services::index {
                                              uint64_t row_count,
                                              core::date::timezone_offset_t session_tz);
 
-        // DDL: index management
-        unique_future<uint32_t> create_index(session_id_t session,
-                                             components::catalog::oid_t table_oid,
-                                             index_name_t index_name,
-                                             components::index::keys_base_storage_t keys,
-                                             components::logical_plan::index_type type,
-                                             core::date::timezone_offset_t session_tz);
+        // DDL: index management. Carries HNSW/vector params alongside the
+        // oid-based plumbing; non-vector index types ignore the vector fields.
+        unique_future<create_index_result_t> create_index(session_id_t session,
+                                                          components::catalog::oid_t table_oid,
+                                                          index_name_t index_name,
+                                                          components::index::keys_base_storage_t keys,
+                                                          components::logical_plan::index_type type,
+                                                          components::vector_search::metric_type metric,
+                                                          uint64_t hnsw_m,
+                                                          uint64_t hnsw_ef_construction,
+                                                          core::date::timezone_offset_t session_tz);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
 
@@ -223,7 +231,20 @@ namespace services::index {
                                    uint64_t txn_id,
                                    core::date::timezone_offset_t session_tz);
 
+        // Approximate kNN via HNSW index
+        unique_future<knn_search_result_t> knn_search(session_id_t session,
+                                                      components::catalog::oid_t table_oid,
+                                                      components::index::keys_base_storage_t keys,
+                                                      std::vector<double> query,
+                                                      uint64_t k,
+                                                      components::vector_search::metric_type metric);
+
+        // SET hnsw.ef_search (0 = index default).
+        unique_future<void> set_ef_search(session_id_t session, uint64_t ef);
+
         unique_future<void> flush_all_indexes(session_id_t session);
+
+        unique_future<void> persist_vector_indexes(session_id_t session);
 
         // Compact gate (see index_contract): returns the subset of the input
         // oids with NO engine in engines_ (safe to compact), input order
@@ -273,7 +294,10 @@ namespace services::index {
                                                        &manager_index_t::drop_index,
                                                        &manager_index_t::search,
                                                        &manager_index_t::search_with_preferred_type,
+                                                       &manager_index_t::knn_search,
+                                                       &manager_index_t::set_ef_search,
                                                        &manager_index_t::flush_all_indexes,
+                                                       &manager_index_t::persist_vector_indexes,
                                                        &manager_index_t::tables_without_indexes,
                                                        &manager_index_t::get_indexed_keys,
                                                        &manager_index_t::get_indexed_descriptions,
@@ -291,6 +315,8 @@ namespace services::index {
         uint64_t bitcask_flush_threshold_{1000};
         uint64_t bitcask_segment_record_limit_{100};
         uint64_t btree_flush_threshold_{1000};
+        double vector_compaction_threshold_{0.2};
+        std::pmr::unordered_map<std::uint64_t, std::uint64_t> session_ef_search_;
 
         // Per-collection in-memory index engines (keyed by table oid). Sole
         // owner — no engine state is shared with other actors. Populated by
@@ -325,6 +351,27 @@ namespace services::index {
 
         // Find disk agent by address and schedule it if needed
         void schedule_agent(const actor_zeta::address_t& addr, bool needs_sched);
+        void compact_collection_if_needed(components::catalog::oid_t table_oid);
+
+        // --- HNSW graph snapshots (keyed by table oid) ---
+        std::filesystem::path vector_graph_path(components::catalog::oid_t table_oid,
+                                                const index_name_t& index_name) const;
+        void save_vector_indexes();
+        void write_vector_index_meta_sidecar(components::catalog::oid_t table_oid,
+                                             const index_name_t& index_name,
+                                             uint8_t metric,
+                                             uint64_t m,
+                                             uint64_t ef_construction,
+                                             uint64_t dim,
+                                             uint64_t live_count);
+        // Restart: rebuild a vector index from its .hnsw.meta sidecar + graph
+        // snapshot (the oid-based pg_index does not persist hnsw params). Returns
+        // true if a vector index was reconstructed (graph may still be empty on a
+        // corrupt snapshot — caller then repopulates from the table scan).
+        bool bootstrap_vector_index_sync(components::catalog::oid_t table_oid,
+                                         const index_name_t& index_name,
+                                         const components::index::keys_base_storage_t& keys);
+        void remove_vector_graph_files(components::catalog::oid_t table_oid, const index_name_t& index_name);
 
         // Pending futures
         std::pmr::vector<unique_future<void>> pending_void_;

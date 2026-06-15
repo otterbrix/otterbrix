@@ -51,6 +51,7 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_vector_search.hpp>
 #include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_update.hpp>
@@ -871,6 +872,12 @@ namespace services::dispatcher {
                     auto* d = static_cast<node_match_t*>(root.get());
                     db = d->dbname();
                     rel = d->relname();
+                    break;
+                }
+                case node_type::vector_search_t: {
+                    auto* d = static_cast<components::logical_plan::node_vector_search_t*>(root.get());
+                    db = d->dbname().t;
+                    rel = d->relname().t;
                     break;
                 }
                 case node_type::group_t: {

@@ -653,6 +653,7 @@ namespace components::compute {
                                             "Return data size",
                                             "Results in a single number of the same type as input"));
         register_string_functions(r);
+        register_vector_distance_functions(r);
     }
 
 } // namespace components::compute

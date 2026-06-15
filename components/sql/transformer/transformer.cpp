@@ -110,6 +110,18 @@ namespace components::sql::transform {
             case T_VacuumStmt:
                 log_node = transform_vacuum(pg_cast<VacuumStmt>(node));
                 break;
+            case T_VariableSetStmt: {
+                auto& set_stmt = pg_cast<VariableSetStmt>(node);
+                std::string_view var_name = set_stmt.name ? set_stmt.name : "";
+                if (var_name == "timezone") {
+                    log_node = transform_set_timezone(set_stmt);
+                } else {
+                    // transform_set handles hnsw.ef_search and reports an
+                    // "unrecognized configuration parameter" error otherwise.
+                    log_node = transform_set(set_stmt);
+                }
+                break;
+            }
             case T_CreateSeqStmt:
                 log_node = transform_create_sequence(pg_cast<CreateSeqStmt>(node));
                 break;
@@ -145,18 +157,6 @@ namespace components::sql::transform {
             case T_TransactionStmt:
                 log_node = transform_transaction(pg_cast<TransactionStmt>(node));
                 break;
-            case T_VariableSetStmt: {
-                auto& set_stmt = pg_cast<VariableSetStmt>(node);
-                std::string_view var_name = set_stmt.name ? set_stmt.name : "";
-                if (var_name == "timezone") {
-                    log_node = transform_set_timezone(set_stmt);
-                } else {
-                    error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"SET " + std::string(var_name) + " is not supported", resource_});
-                }
-                break;
-            }
             case T_ExtensionNode: {
                 // route to the owning extension's transform stage by extension_id
                 auto& ext_node = pg_cast<ExtensionNode>(node);

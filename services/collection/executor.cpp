@@ -25,7 +25,9 @@
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_sequence.hpp>
+#include <components/logical_plan/node_set_ef_search.hpp>
 #include <components/logical_plan/node_set_timezone.hpp>
+#include <components/logical_plan/node_vector_search.hpp>
 #include <components/logical_plan/param_storage.hpp>
 // The executor only sees the base operator_t: each operator's DML I/O
 // intercept lives in its own await_async_and_resume, not here. The commit
@@ -303,6 +305,24 @@ namespace services::collection::executor {
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
         }
 
+        // SET hnsw.ef_search: a session-scoped index-manager setting with no
+        // catalog write and no txn. Handle it directly and return — it never
+        // enters the optimize / resolve / operator pipeline.
+        {
+            auto* ef_root = services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
+            if (ef_root && ef_root->type() == node_type::set_ef_search_t) {
+                if (index_address_ != actor_zeta::address_t::empty_address()) {
+                    auto* n = static_cast<components::logical_plan::node_set_ef_search_t*>(ef_root);
+                    auto [_se, sef] = actor_zeta::send(index_address_,
+                                                       &services::index::manager_index_t::set_ef_search,
+                                                       session,
+                                                       static_cast<uint64_t>(n->ef_search()));
+                    co_await std::move(sef);
+                }
+                co_return execute_result_t{make_cursor(resource(), core::error_t::no_error())};
+            }
+        }
+
         // One round-trip gives the executor everything session-scoped: the
         // (idempotently begun) txn snapshot shared by resolve and the operator
         // pipeline, the session timezone, the explicit-txn flag, and the
@@ -412,6 +432,12 @@ namespace services::collection::executor {
                     }
                     case node_type::match_t: {
                         auto* d = static_cast<const node_match_t*>(n);
+                        add_dbrel(static_cast<const std::string&>(d->dbname()),
+                                  static_cast<const std::string&>(d->relname()));
+                        break;
+                    }
+                    case node_type::vector_search_t: {
+                        auto* d = static_cast<const components::logical_plan::node_vector_search_t*>(n);
                         add_dbrel(static_cast<const std::string&>(d->dbname()),
                                   static_cast<const std::string&>(d->relname()));
                         break;
@@ -1699,6 +1725,11 @@ namespace services::collection::executor {
                         if (ci_result.contains_error()) {
                             exec_result.cursor = make_cursor(resource(), ci_result);
                             co_await undo_create_index(this, create_index_table_oid, create_index_name);
+                        } else {
+                            auto [_pv, pvf] = actor_zeta::send(index_address_,
+                                                               &services::index::manager_index_t::persist_vector_indexes,
+                                                               session);
+                            co_await std::move(pvf);
                         }
                     }
                 }
@@ -1929,6 +1960,13 @@ namespace services::collection::executor {
                 trace(log_, "executor: after await completed");
                 // Re-execute: completed scan allows parent to proceed, may find next waiting scan
                 plan->on_execute(&pipeline_context);
+            }
+            // An operator may raise an error during async execution (e.g. a vector
+            // query with a wrong dimension, or a missing column) — surface it instead
+            // of silently returning the empty output it left behind.
+            if (plan->has_error()) {
+                cursor = make_cursor(resource(), plan->get_error());
+                break;
             }
             if (cursor && cursor->is_error())
                 break;

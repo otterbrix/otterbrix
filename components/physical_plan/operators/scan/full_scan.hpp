@@ -5,6 +5,7 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_state.hpp>
 #include <core/result_wrapper.hpp>
+#include <core/date/date_types.hpp>
 #include <components/expressions/compare_expression.hpp>
 
 namespace components::operators {
@@ -13,7 +14,8 @@ namespace components::operators {
     transform_predicate(std::pmr::memory_resource* resource,
                         const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,
-                        const logical_plan::storage_parameters* parameters);
+                        const logical_plan::storage_parameters* parameters,
+                        core::date::timezone_offset_t session_tz);
 
     class full_scan final : public read_only_operator_t {
     public:

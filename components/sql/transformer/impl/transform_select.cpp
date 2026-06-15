@@ -14,9 +14,13 @@
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/logical_plan/node_union.hpp>
+#include <components/logical_plan/node_vector_search.hpp>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+
+#include <algorithm>
+#include <cctype>
 
 using namespace components::expressions;
 
@@ -845,23 +849,39 @@ namespace components::sql::transform {
             }
         }
 
-        // where
-        if (node.whereClause) {
-            expression_ptr expr;
-            if (nodeTag(node.whereClause) == T_FuncCall) {
-                expr = transform_a_expr_func(pg_ptr_cast<FuncCall>(node.whereClause), names, plan->parameters.get());
-            } else if (nodeTag(node.whereClause) == T_NullTest) {
-                expr = transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, plan->parameters.get());
-            } else if (nodeTag(node.whereClause) == T_SubLink) {
-                expr = transform_sublink_expr(pg_ptr_cast<SubLink>(node.whereClause), names, plan);
-            } else {
-                expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, plan);
+        const bool vector_query = [&]() -> bool {
+            if (!(node.sortClause && node.sortClause->lst.size() == 1)) {
+                return false;
             }
-            if (expr) {
+            auto* sb = pg_ptr_cast<SortBy>(node.sortClause->lst.front().data);
+            if (nodeTag(sb->node) != T_A_Expr) {
+                return false;
+            }
+            auto* ae = pg_ptr_cast<A_Expr>(sb->node);
+            const char* op = (ae->kind == AEXPR_OP && ae->name && !ae->name->lst.empty())
+                                 ? strVal(ae->name->lst.front().data)
+                                 : nullptr;
+            std::string_view o = op ? op : "";
+            return o == "<->" || o == "<=>" || o == "<#>";
+        }();
+
+        // where
+        expression_ptr where_expr;
+        if (node.whereClause) {
+            if (nodeTag(node.whereClause) == T_FuncCall) {
+                where_expr = transform_a_expr_func(pg_ptr_cast<FuncCall>(node.whereClause), names, plan->parameters.get());
+            } else if (nodeTag(node.whereClause) == T_NullTest) {
+                where_expr = transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, plan->parameters.get());
+            } else if (nodeTag(node.whereClause) == T_SubLink) {
+                where_expr = transform_sublink_expr(pg_ptr_cast<SubLink>(node.whereClause), names, plan);
+            } else {
+                where_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, plan);
+            }
+            if (where_expr && !vector_query) {
                 agg->append_child(logical_plan::make_node_match(resource_,
                                                                 core::dbname_t{agg->dbname()},
                                                                 core::relname_t{agg->relname()},
-                                                                expr));
+                                                                where_expr));
             }
         }
 
@@ -947,8 +967,163 @@ namespace components::sql::transform {
             agg->set_distinct(true);
         }
 
+        // Vector search: ORDER BY col <-> '[...]' LIMIT k
+        if (node.sortClause && node.sortClause->lst.size() == 1) {
+            auto sortby = pg_ptr_cast<SortBy>(node.sortClause->lst.front().data);
+            if (nodeTag(sortby->node) == T_A_Expr) {
+                auto a_expr = pg_ptr_cast<A_Expr>(sortby->node);
+                const char* op_cstr = (a_expr->kind == AEXPR_OP && a_expr->name && !a_expr->name->lst.empty())
+                                          ? strVal(a_expr->name->lst.front().data)
+                                          : nullptr;
+                auto op = std::string_view{op_cstr ? op_cstr : ""};
+                bool is_distance_op = op == "<->" || op == "<=>" || op == "<#>";
+                if (is_distance_op) {
+                    // Incompatible with DISTINCT/GROUP BY/HAVING
+                    if (node.distinctClause && !node.distinctClause->lst.empty()) {
+                        throw parser_exception_t("vector search: DISTINCT is not supported", "");
+                    }
+                    if (node.groupClause && !node.groupClause->lst.empty()) {
+                        throw parser_exception_t("vector search: GROUP BY is not supported", "");
+                    }
+                    if (node.havingClause) {
+                        throw parser_exception_t("vector search: HAVING is not supported", "");
+                    }
+
+                    vector_search::metric_type m_type = vector_search::metric_type::l2;
+                    if (op == "<=>") {
+                        m_type = vector_search::metric_type::cosine;
+                    } else if (op == "<#>") {
+                        m_type = vector_search::metric_type::inner_product;
+                    }
+
+                    bool descending = sortby->sortby_dir == SORTBY_DESC;
+
+                    // Left operand: the vector column.
+                    if (!a_expr->lexpr || nodeTag(a_expr->lexpr) != T_ColumnRef) {
+                        throw parser_exception_t(
+                            "vector search: left operand of " + std::string{op} + " must be a column", "");
+                    }
+                    std::string column_name =
+                        strVal(pg_ptr_cast<ColumnRef>(a_expr->lexpr)->fields->lst.back().data);
+
+                    // Right operand: the query vector.
+                    if (!a_expr->rexpr) {
+                        throw parser_exception_t(
+                            "vector search: right operand of " + std::string{op} + " is missing", "");
+                    }
+                    auto rexpr_res = get_value(resource_, pg_ptr_cast<Node>(a_expr->rexpr));
+                    if (rexpr_res.has_error()) {
+                        throw parser_exception_t("vector search: failed to evaluate query vector", "");
+                    }
+                    auto& rexpr_val = rexpr_res.value();
+                    std::vector<double> query_vector;
+                    // .type() returns a complex_logical_type; a sized ARRAY (e.g.
+                    // DOUBLE[2]) carries an array extension and so never compares
+                    // equal to the bare logical_type::ARRAY enum. Extract the bare
+                    // type tag with .type().type() so ARRAY[...] query vectors work.
+                    if (rexpr_val.type().type() == types::logical_type::ARRAY) {
+                        if (auto* mem_arr = rexpr_val.value<std::vector<types::logical_value_t>*>()) {
+                            for (auto& elem : *mem_arr) {
+                                auto et = elem.type();
+                                if (et == types::logical_type::FLOAT || et == types::logical_type::DOUBLE) {
+                                    query_vector.push_back(elem.value<double>());
+                                } else if (et == types::logical_type::INTEGER) {
+                                    query_vector.push_back(static_cast<double>(elem.value<int32_t>()));
+                                } else if (et == types::logical_type::BIGINT) {
+                                    query_vector.push_back(static_cast<double>(elem.value<int64_t>()));
+                                } else if (et == types::logical_type::SMALLINT) {
+                                    query_vector.push_back(static_cast<double>(elem.value<int16_t>()));
+                                } else if (et == types::logical_type::TINYINT) {
+                                    query_vector.push_back(static_cast<double>(elem.value<int8_t>()));
+                                } else {
+                                    throw parser_exception_t(
+                                        "vector search: unsupported element type in query vector", "");
+                                }
+                            }
+                        }
+                    } else if (rexpr_val.type() == types::logical_type::STRING_LITERAL) {
+                        std::string_view s = rexpr_val.value<std::string_view>();
+                        std::string current_num;
+                        auto flush = [&]() {
+                            if (current_num.empty()) {
+                                return;
+                            }
+                            try {
+                                query_vector.push_back(std::stod(current_num));
+                            } catch (const std::exception&) {
+                                throw parser_exception_t(
+                                    "vector search: failed to parse number '" + current_num +
+                                        "' in query vector",
+                                    "");
+                            }
+                            current_num.clear();
+                        };
+                        for (char c : s) {
+                            if (std::isdigit(static_cast<unsigned char>(c)) || c == '.' || c == '-' ||
+                                c == '+' || c == 'e' || c == 'E') {
+                                current_num += c;
+                            } else if (c == ',' || c == ']') {
+                                flush();
+                            }
+                        }
+                        flush();
+                    } else {
+                        throw parser_exception_t(
+                            "vector search: query vector must be a '[...]' literal or an ARRAY", "");
+                    }
+
+                    if (query_vector.empty()) {
+                        throw parser_exception_t("vector search: query vector is empty", "");
+                    }
+
+                    // LIMIT → K
+                    size_t k = 10;
+                    std::optional<core::parameter_id_t> k_param;
+                    if (node.limitCount) {
+                        if (nodeTag(node.limitCount) == T_ParamRef) {
+                            k_param = add_param_value(node.limitCount, plan->parameters.get());
+                        } else if (nodeTag(node.limitCount) == T_A_Const) {
+                            auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
+                            if (nodeTag(value) == T_Integer) {
+                                int lim = intVal(value);
+                                if (lim < 0) {
+                                    throw parser_exception_t("vector search: LIMIT must be non-negative", "");
+                                }
+                                k = static_cast<size_t>(lim);
+                            }
+                        } else {
+                            throw parser_exception_t("vector search: unsupported LIMIT expression", "");
+                        }
+                    }
+
+                    components::expressions::compare_expression_ptr filter;
+                    if (where_expr) {
+                        filter = boost::dynamic_pointer_cast<components::expressions::compare_expression_t>(
+                            where_expr);
+                        if (!filter) {
+                            throw parser_exception_t(
+                                "vector search: only simple comparison predicates are supported in WHERE",
+                                "");
+                        }
+                    }
+
+                    agg->append_child(logical_plan::make_node_vector_search(
+                        resource_,
+                        agg->dbname(),
+                        agg->relname(),
+                        column_name,
+                        std::move(query_vector),
+                        k,
+                        m_type,
+                        filter,
+                        descending,
+                        k_param));
+                }
+            }
+        }
+
         // order by
-        if (node.sortClause && !node.sortClause->lst.empty()) {
+        if (node.sortClause && !node.sortClause->lst.empty() && !vector_query) {
             std::vector<expression_ptr> sort_exprs;
             sort_exprs.reserve(node.sortClause->lst.size());
             for (auto sort_it : node.sortClause->lst) {
@@ -1006,7 +1181,7 @@ namespace components::sql::transform {
         }
 
         // limit / offset
-        if (node.limitCount || node.limitOffset) {
+        if ((node.limitCount || node.limitOffset) && !vector_query) {
             int64_t limit_val = logical_plan::limit_t::unlimit().limit();
             int64_t offset_val = 0;
             std::optional<core::parameter_id_t> limit_param;

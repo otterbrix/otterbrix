@@ -15,6 +15,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_sort.cpp
         impl/create_plan_update.cpp
         impl/create_plan_join.cpp
+        impl/create_plan_vector_search.cpp
         impl/create_plan_hash_join.cpp
         impl/create_plan_union.cpp
         impl/create_plan_cte_scan.cpp

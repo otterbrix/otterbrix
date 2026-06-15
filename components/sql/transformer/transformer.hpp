@@ -52,6 +52,7 @@ namespace components::sql::transform {
         logical_plan::node_ptr transform_drop_database(DropdbStmt& node);
         logical_plan::node_ptr transform_checkpoint(CheckPointStmt& node);
         logical_plan::node_ptr transform_vacuum(VacuumStmt& node);
+        logical_plan::node_ptr transform_set(VariableSetStmt& node);
         logical_plan::node_ptr transform_create_table(CreateStmt& node);
         logical_plan::node_ptr transform_drop(DropStmt& node);
         logical_plan::node_ptr transform_select(SelectStmt& node, logical_plan::execution_plan_t* plan);
@@ -128,6 +129,11 @@ namespace components::sql::transform {
 
         expressions::expression_ptr
         transform_a_expr_func(FuncCall* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
+
+        // Rewrites distance operator into function call
+        expressions::expression_ptr transform_distance_expr(A_Expr* node,
+                                                            const name_collection_t& names,
+                                                            logical_plan::parameter_node_t* params);
 
         // HAVING clause: resolve aggregate references to aliases from group node
         expressions::expression_ptr transform_having_expr(Node* node,

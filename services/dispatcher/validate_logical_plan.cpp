@@ -1880,7 +1880,7 @@ namespace services::dispatcher {
                                     post_agg_indices.push_back(i); // defer to Pass 2
                                 } else {
                                     auto entry = compute_type_entry(scalar_expr, incoming_schema);
-                                    if (compute_type_error.type != core::error_code_t::none) {
+                                    if (compute_type_error.contains_error()) {
                                         return compute_type_error;
                                     }
                                     result.emplace_back(entry);
@@ -2094,7 +2094,7 @@ namespace services::dispatcher {
                             scalar_expr->key().set_path({SIZE_MAX}); // Mark for planner
 
                             auto entry = compute_type_entry(scalar_expr, post_agg_schema);
-                            if (compute_type_error.type != core::error_code_t::none) {
+                            if (compute_type_error.contains_error()) {
                                 return compute_type_error;
                             }
                             result.emplace_back(entry);

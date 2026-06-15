@@ -724,7 +724,7 @@ namespace services::dispatcher { namespace {
     // core::error_t through the recursion (no-error state on success). idx is
     // the executor-built plan-tree resolve index; never null here (enrich_plan
     // is the only caller and it requires a non-null idx).
-    actor_zeta::unique_future<core::error_t>
+    [[nodiscard]] actor_zeta::unique_future<core::error_t>
     enrich_node(std::pmr::memory_resource* resource,
                 components::logical_plan::node_ptr root,
                 components::execution_context_t ctx,

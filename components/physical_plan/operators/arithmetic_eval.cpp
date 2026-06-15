@@ -58,13 +58,11 @@ namespace components::operators {
                     auto* scalar_expr = static_cast<const expressions::scalar_expression_t*>(expr_ptr.get());
 
                     if (scalar_expr->type() == expressions::scalar_type::case_expr) {
-                        core::error_t case_error = core::error_t::no_error();
-                        auto computed =
-                            evaluate_case_expr(resource, scalar_expr->params(), chunk, params, session_tz, case_error);
-                        if (case_error.contains_error()) {
-                            return std::move(case_error);
+                        auto computed = evaluate_case_expr(resource, scalar_expr->params(), chunk, params, session_tz);
+                        if (computed.has_error()) {
+                            return computed.convert_error<resolved_operand>();
                         }
-                        temp_vecs.emplace_back(std::move(computed));
+                        temp_vecs.emplace_back(std::move(computed.value()));
                         result.vec = &temp_vecs.back();
                         return result;
                     }
@@ -163,13 +161,13 @@ namespace components::operators {
             }
         }
 
-        types::logical_value_t resolve_row_value(std::pmr::memory_resource* resource,
-                                                 const expressions::param_storage& param,
-                                                 const vector::data_chunk_t& chunk,
-                                                 const logical_plan::storage_parameters& params,
-                                                 size_t row_idx,
-                                                 core::date::timezone_offset_t session_tz,
-                                                 core::error_t& error) {
+        core::result_wrapper_t<types::logical_value_t>
+        resolve_row_value(std::pmr::memory_resource* resource,
+                          const expressions::param_storage& param,
+                          const vector::data_chunk_t& chunk,
+                          const logical_plan::storage_parameters& params,
+                          size_t row_idx,
+                          core::date::timezone_offset_t session_tz) {
             // L1: per-row CASE arithmetic still boxes operands into logical_value_t and uses
             // logical_value_t::sum/subtract/mult/divide/modulus below. No typed scalar arithmetic
             // path exists for a single logical_value_t pair, so left as-is.
@@ -181,9 +179,8 @@ namespace components::operators {
                 if (vec) {
                     return vec->value(row_idx);
                 }
-                error = core::error_t(core::error_code_t::arithmetics_failure,
-                                      std::pmr::string{"CASE: column not found: " + key.as_string(), resource});
-                return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                return core::error_t(core::error_code_t::field_not_exists,
+                                     std::pmr::string{"CASE: column not found: " + key.as_string(), resource});
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
                 return params.parameters.at(id);
@@ -200,95 +197,75 @@ namespace components::operators {
                             auto& cond_param = ops[w * 2];
                             if (std::holds_alternative<expressions::expression_ptr>(cond_param)) {
                                 auto& cond_expr = std::get<expressions::expression_ptr>(cond_param);
-                                bool matched = evaluate_row_condition(resource,
-                                                                      cond_expr,
-                                                                      chunk,
-                                                                      params,
-                                                                      row_idx,
-                                                                      session_tz,
-                                                                      error);
-                                if (error.contains_error()) {
-                                    return types::logical_value_t(
-                                        resource,
-                                        types::complex_logical_type{types::logical_type::NA});
+                                auto matched =
+                                    evaluate_row_condition(resource, cond_expr, chunk, params, row_idx, session_tz);
+                                if (matched.has_error()) {
+                                    return matched.convert_error<types::logical_value_t>();
                                 }
-                                if (matched) {
-                                    return resolve_row_value(resource,
-                                                             ops[w * 2 + 1],
-                                                             chunk,
-                                                             params,
-                                                             row_idx,
-                                                             session_tz,
-                                                             error);
+                                if (matched.value()) {
+                                    return resolve_row_value(resource, ops[w * 2 + 1], chunk, params, row_idx, session_tz);
                                 }
                             }
                         }
                         if (has_default) {
-                            return resolve_row_value(resource, ops.back(), chunk, params, row_idx, session_tz, error);
+                            return resolve_row_value(resource, ops.back(), chunk, params, row_idx, session_tz);
                         }
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
                     // Unary minus sub-expression
                     if (scalar->type() == expressions::scalar_type::unary_minus) {
                         if (scalar->params().empty()) {
-                            error = core::error_t(core::error_code_t::arithmetics_failure,
-                                                  std::pmr::string{"CASE: unary minus requires 1 operand", resource});
-                            return types::logical_value_t(resource,
-                                                          types::complex_logical_type{types::logical_type::NA});
+                            return core::error_t(core::error_code_t::arithmetics_failure,
+                                                 std::pmr::string{"CASE: unary minus requires 1 operand", resource});
                         }
                         auto inner =
-                            resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz, error);
-                        if (error.contains_error()) {
-                            return types::logical_value_t(resource,
-                                                          types::complex_logical_type{types::logical_type::NA});
+                            resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz);
+                        if (inner.has_error()) {
+                            return inner;
                         }
-                        return types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)), inner);
+                        return types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
+                                                                inner.value());
                     }
                     // Arithmetic sub-expression
                     if (scalar->params().size() < 2) {
-                        error = core::error_t(
+                        return core::error_t(
                             core::error_code_t::arithmetics_failure,
                             std::pmr::string{"CASE: arithmetic sub-expression requires 2 operands", resource});
-                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
-                    auto l =
-                        resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz, error);
-                    if (error.contains_error()) {
-                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                    auto l = resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz);
+                    if (l.has_error()) {
+                        return l;
                     }
-                    auto r =
-                        resolve_row_value(resource, scalar->params()[1], chunk, params, row_idx, session_tz, error);
-                    if (error.contains_error()) {
-                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                    auto r = resolve_row_value(resource, scalar->params()[1], chunk, params, row_idx, session_tz);
+                    if (r.has_error()) {
+                        return r;
                     }
                     switch (scalar->type()) {
                         case expressions::scalar_type::add:
-                            return types::logical_value_t::sum(l, r);
+                            return types::logical_value_t::sum(l.value(), r.value());
                         case expressions::scalar_type::subtract:
-                            return types::logical_value_t::subtract(l, r);
+                            return types::logical_value_t::subtract(l.value(), r.value());
                         case expressions::scalar_type::multiply:
-                            return types::logical_value_t::mult(l, r);
+                            return types::logical_value_t::mult(l.value(), r.value());
                         case expressions::scalar_type::divide:
-                            return types::logical_value_t::divide(l, r);
+                            return types::logical_value_t::divide(l.value(), r.value());
                         case expressions::scalar_type::mod:
-                            return types::logical_value_t::modulus(l, r);
+                            return types::logical_value_t::modulus(l.value(), r.value());
                         default:
                             break;
                     }
                 }
-                error = core::error_t(core::error_code_t::arithmetics_failure,
-                                      std::pmr::string{"CASE: unsupported sub-expression", resource});
-                return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                return core::error_t(core::error_code_t::arithmetics_failure,
+                                     std::pmr::string{"CASE: unsupported sub-expression", resource});
             }
         }
 
-        bool evaluate_row_condition(std::pmr::memory_resource* resource,
-                                    const expressions::expression_ptr& condition,
-                                    const vector::data_chunk_t& chunk,
-                                    const logical_plan::storage_parameters& params,
-                                    size_t row_idx,
-                                    core::date::timezone_offset_t session_tz,
-                                    core::error_t& error) {
+        core::result_wrapper_t<bool> evaluate_row_condition(std::pmr::memory_resource* resource,
+                                                            const expressions::expression_ptr& condition,
+                                                            const vector::data_chunk_t& chunk,
+                                                            const logical_plan::storage_parameters& params,
+                                                            size_t row_idx,
+                                                            core::date::timezone_offset_t session_tz) {
             if (condition->group() != expressions::expression_group::compare)
                 return false;
             auto* cmp = static_cast<const expressions::compare_expression_t*>(condition.get());
@@ -296,24 +273,25 @@ namespace components::operators {
             if (cmp->is_union()) {
                 bool is_and = (cmp->type() == expressions::compare_type::union_and);
                 for (auto& child : cmp->children()) {
-                    bool child_result =
-                        evaluate_row_condition(resource, child, chunk, params, row_idx, session_tz, error);
-                    if (error.contains_error())
+                    auto child_result = evaluate_row_condition(resource, child, chunk, params, row_idx, session_tz);
+                    if (child_result.has_error())
+                        return child_result;
+                    if (is_and && !child_result.value())
                         return false;
-                    if (is_and && !child_result)
-                        return false;
-                    if (!is_and && child_result)
+                    if (!is_and && child_result.value())
                         return true;
                 }
                 return is_and;
             }
 
-            auto left_val = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz, error);
-            if (error.contains_error())
-                return false;
-            auto right_val = resolve_row_value(resource, cmp->right(), chunk, params, row_idx, session_tz, error);
-            if (error.contains_error())
-                return false;
+            auto left_rw = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz);
+            if (left_rw.has_error())
+                return left_rw.convert_error<bool>();
+            auto right_rw = resolve_row_value(resource, cmp->right(), chunk, params, row_idx, session_tz);
+            if (right_rw.has_error())
+                return right_rw.convert_error<bool>();
+            auto left_val = std::move(left_rw.value());
+            auto right_val = std::move(right_rw.value());
             if (left_val.type() != right_val.type()) {
                 auto cast_right = right_val.cast_as(left_val.type(), session_tz);
                 if (!cast_right.is_null()) {
@@ -344,12 +322,12 @@ namespace components::operators {
             }
         }
 
-        vector::vector_t evaluate_case_expr(std::pmr::memory_resource* resource,
-                                            const std::pmr::vector<expressions::param_storage>& operands,
-                                            vector::data_chunk_t& chunk,
-                                            const logical_plan::storage_parameters& params,
-                                            core::date::timezone_offset_t session_tz,
-                                            core::error_t& error) {
+        core::result_wrapper_t<vector::vector_t>
+        evaluate_case_expr(std::pmr::memory_resource* resource,
+                           const std::pmr::vector<expressions::param_storage>& operands,
+                           vector::data_chunk_t& chunk,
+                           const logical_plan::storage_parameters& params,
+                           core::date::timezone_offset_t session_tz) {
             uint64_t count = chunk.size();
             bool has_default = (operands.size() % 2 == 1);
             size_t num_whens = operands.size() / 2;
@@ -358,11 +336,11 @@ namespace components::operators {
             types::complex_logical_type result_type(types::logical_type::NA);
             if (count > 0) {
                 // Try first THEN result
-                auto val = resolve_row_value(resource, operands[1], chunk, params, 0, session_tz, error);
-                if (error.contains_error()) {
-                    return vector::vector_t(resource, result_type, count);
+                auto val = resolve_row_value(resource, operands[1], chunk, params, 0, session_tz);
+                if (val.has_error()) {
+                    return val.convert_error<vector::vector_t>();
                 }
-                result_type = val.type();
+                result_type = val.value().type();
             }
 
             vector::vector_t output(resource, result_type, count);
@@ -383,28 +361,28 @@ namespace components::operators {
                     auto& cond_param = operands[w * 2];
                     if (std::holds_alternative<expressions::expression_ptr>(cond_param)) {
                         auto& cond_expr = std::get<expressions::expression_ptr>(cond_param);
-                        bool cond = evaluate_row_condition(resource, cond_expr, chunk, params, i, session_tz, error);
-                        if (error.contains_error()) {
-                            return output;
+                        auto cond = evaluate_row_condition(resource, cond_expr, chunk, params, i, session_tz);
+                        if (cond.has_error()) {
+                            return cond.convert_error<vector::vector_t>();
                         }
-                        if (cond) {
+                        if (cond.value()) {
                             auto resolved =
-                                resolve_row_value(resource, operands[w * 2 + 1], chunk, params, i, session_tz, error);
-                            if (error.contains_error()) {
-                                return output;
+                                resolve_row_value(resource, operands[w * 2 + 1], chunk, params, i, session_tz);
+                            if (resolved.has_error()) {
+                                return resolved.convert_error<vector::vector_t>();
                             }
-                            output.set_value(i, coerce_to_result(std::move(resolved)));
+                            output.set_value(i, coerce_to_result(std::move(resolved.value())));
                             matched = true;
                             break;
                         }
                     }
                 }
                 if (!matched && has_default) {
-                    auto resolved = resolve_row_value(resource, operands.back(), chunk, params, i, session_tz, error);
-                    if (error.contains_error()) {
-                        return output;
+                    auto resolved = resolve_row_value(resource, operands.back(), chunk, params, i, session_tz);
+                    if (resolved.has_error()) {
+                        return resolved.convert_error<vector::vector_t>();
                     }
-                    output.set_value(i, coerce_to_result(std::move(resolved)));
+                    output.set_value(i, coerce_to_result(std::move(resolved.value())));
                 } else if (!matched) {
                     output.set_null(i, true);
                 }
@@ -423,12 +401,7 @@ namespace components::operators {
                         const logical_plan::storage_parameters& params,
                         core::date::timezone_offset_t session_tz) {
         if (op == expressions::scalar_type::case_expr) {
-            core::error_t case_error = core::error_t::no_error();
-            auto computed = detail::evaluate_case_expr(resource, operands, chunk, params, session_tz, case_error);
-            if (case_error.contains_error()) {
-                return std::move(case_error);
-            }
-            return computed;
+            return detail::evaluate_case_expr(resource, operands, chunk, params, session_tz);
         }
 
         if (op == expressions::scalar_type::unary_minus) {

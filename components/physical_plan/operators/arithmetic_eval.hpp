@@ -29,33 +29,33 @@ namespace components::operators {
                         core::date::timezone_offset_t session_tz);
 
         // Resolve a param_storage to logical_value_t for a specific row.
-        // On failure, sets `error` (caller must check error.contains_error()); never throws.
-        [[nodiscard]] types::logical_value_t resolve_row_value(std::pmr::memory_resource* resource,
-                                                               const expressions::param_storage& param,
-                                                               const vector::data_chunk_t& chunk,
-                                                               const logical_plan::storage_parameters& params,
-                                                               size_t row_idx,
-                                                               core::date::timezone_offset_t session_tz,
-                                                               core::error_t& error);
+        // On failure returns the error via result_wrapper_t (never throws).
+        [[nodiscard]] core::result_wrapper_t<types::logical_value_t>
+        resolve_row_value(std::pmr::memory_resource* resource,
+                          const expressions::param_storage& param,
+                          const vector::data_chunk_t& chunk,
+                          const logical_plan::storage_parameters& params,
+                          size_t row_idx,
+                          core::date::timezone_offset_t session_tz);
 
         // Evaluate a compare_expression for a specific row.
-        // On failure, sets `error` (caller must check error.contains_error()); never throws.
-        [[nodiscard]] bool evaluate_row_condition(std::pmr::memory_resource* resource,
-                                                  const expressions::expression_ptr& condition,
-                                                  const vector::data_chunk_t& chunk,
-                                                  const logical_plan::storage_parameters& params,
-                                                  size_t row_idx,
-                                                  core::date::timezone_offset_t session_tz,
-                                                  core::error_t& error);
+        // On failure returns the error via result_wrapper_t (never throws).
+        [[nodiscard]] core::result_wrapper_t<bool>
+        evaluate_row_condition(std::pmr::memory_resource* resource,
+                               const expressions::expression_ptr& condition,
+                               const vector::data_chunk_t& chunk,
+                               const logical_plan::storage_parameters& params,
+                               size_t row_idx,
+                               core::date::timezone_offset_t session_tz);
 
         // Evaluate a CASE expression per-row on a data_chunk.
-        // On failure, sets `error` (caller must check error.contains_error()); never throws.
-        [[nodiscard]] vector::vector_t evaluate_case_expr(std::pmr::memory_resource* resource,
-                                                          const std::pmr::vector<expressions::param_storage>& operands,
-                                                          vector::data_chunk_t& chunk,
-                                                          const logical_plan::storage_parameters& params,
-                                                          core::date::timezone_offset_t session_tz,
-                                                          core::error_t& error);
+        // On failure returns the error via result_wrapper_t (never throws).
+        [[nodiscard]] core::result_wrapper_t<vector::vector_t>
+        evaluate_case_expr(std::pmr::memory_resource* resource,
+                           const std::pmr::vector<expressions::param_storage>& operands,
+                           vector::data_chunk_t& chunk,
+                           const logical_plan::storage_parameters& params,
+                           core::date::timezone_offset_t session_tz);
 
     } // namespace detail
 

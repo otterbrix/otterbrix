@@ -7,20 +7,26 @@ namespace components::operators {
     namespace detail {
 
         // TODO: consider removing arithmetic_op enum in favor of using scalar_type directly
-        vector::arithmetic_op scalar_to_arithmetic_op(expressions::scalar_type t) {
+        // Returns false if t is not an arithmetic scalar_type.
+        bool scalar_to_arithmetic_op(expressions::scalar_type t, vector::arithmetic_op& out) {
             switch (t) {
                 case expressions::scalar_type::add:
-                    return vector::arithmetic_op::add;
+                    out = vector::arithmetic_op::add;
+                    return true;
                 case expressions::scalar_type::subtract:
-                    return vector::arithmetic_op::subtract;
+                    out = vector::arithmetic_op::subtract;
+                    return true;
                 case expressions::scalar_type::multiply:
-                    return vector::arithmetic_op::multiply;
+                    out = vector::arithmetic_op::multiply;
+                    return true;
                 case expressions::scalar_type::divide:
-                    return vector::arithmetic_op::divide;
+                    out = vector::arithmetic_op::divide;
+                    return true;
                 case expressions::scalar_type::mod:
-                    return vector::arithmetic_op::mod;
+                    out = vector::arithmetic_op::mod;
+                    return true;
                 default:
-                    throw std::logic_error("Not an arithmetic scalar_type");
+                    return false;
             }
         }
 
@@ -52,7 +58,12 @@ namespace components::operators {
                     auto* scalar_expr = static_cast<const expressions::scalar_expression_t*>(expr_ptr.get());
 
                     if (scalar_expr->type() == expressions::scalar_type::case_expr) {
-                        auto computed = evaluate_case_expr(resource, scalar_expr->params(), chunk, params, session_tz);
+                        core::error_t case_error = core::error_t::no_error();
+                        auto computed =
+                            evaluate_case_expr(resource, scalar_expr->params(), chunk, params, session_tz, case_error);
+                        if (case_error.contains_error()) {
+                            return std::move(case_error);
+                        }
                         temp_vecs.emplace_back(std::move(computed));
                         result.vec = &temp_vecs.back();
                         return result;
@@ -61,7 +72,8 @@ namespace components::operators {
                     if (scalar_expr->type() == expressions::scalar_type::unary_minus) {
                         auto& operands = scalar_expr->params();
                         if (operands.empty()) {
-                            throw std::logic_error("Unary minus requires 1 operand");
+                            return core::error_t(core::error_code_t::arithmetics_failure,
+                                                 std::pmr::string{"Unary minus requires 1 operand", resource});
                         }
                         std::deque<vector::vector_t> sub_temps;
                         auto inner_op = resolve_operand(operands[0], chunk, params, resource, sub_temps, session_tz);
@@ -89,10 +101,16 @@ namespace components::operators {
                         return result;
                     }
 
-                    auto op = scalar_to_arithmetic_op(scalar_expr->type());
+                    vector::arithmetic_op op;
+                    if (!scalar_to_arithmetic_op(scalar_expr->type(), op)) {
+                        return core::error_t(core::error_code_t::arithmetics_failure,
+                                             std::pmr::string{"Not an arithmetic scalar_type", resource});
+                    }
                     auto& operands = scalar_expr->params();
                     if (operands.size() < 2) {
-                        throw std::logic_error("Arithmetic expression requires at least 2 operands");
+                        return core::error_t(core::error_code_t::arithmetics_failure,
+                                             std::pmr::string{"Arithmetic expression requires at least 2 operands",
+                                                              resource});
                     }
 
                     std::deque<vector::vector_t> sub_temps;
@@ -140,7 +158,8 @@ namespace components::operators {
                     result.vec = &temp_vecs.back();
                     return result;
                 }
-                throw std::logic_error("Unsupported expression type in arithmetic operand");
+                return core::error_t(core::error_code_t::arithmetics_failure,
+                                     std::pmr::string{"Unsupported expression type in arithmetic operand", resource});
             }
         }
 
@@ -149,7 +168,12 @@ namespace components::operators {
                                                  const vector::data_chunk_t& chunk,
                                                  const logical_plan::storage_parameters& params,
                                                  size_t row_idx,
-                                                 core::date::timezone_offset_t session_tz) {
+                                                 core::date::timezone_offset_t session_tz,
+                                                 core::error_t& error) {
+            // L1: per-row CASE arithmetic still boxes operands into logical_value_t and uses
+            // logical_value_t::sum/subtract/mult/divide/modulus below. No typed scalar arithmetic
+            // path exists for a single logical_value_t pair, so left as-is.
+            // TODO(L1): provide a typed per-row scalar arithmetic helper to avoid logical_value_t round-trips.
             if (std::holds_alternative<expressions::key_t>(param)) {
                 auto& key = std::get<expressions::key_t>(param);
                 assert(!key.path().empty() && "key path must be resolved before execution");
@@ -157,7 +181,9 @@ namespace components::operators {
                 if (vec) {
                     return vec->value(row_idx);
                 }
-                throw std::logic_error("CASE: column not found: " + key.as_string());
+                error = core::error_t(core::error_code_t::arithmetics_failure,
+                                      std::pmr::string{"CASE: column not found: " + key.as_string(), resource});
+                return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
                 return params.parameters.at(id);
@@ -174,36 +200,67 @@ namespace components::operators {
                             auto& cond_param = ops[w * 2];
                             if (std::holds_alternative<expressions::expression_ptr>(cond_param)) {
                                 auto& cond_expr = std::get<expressions::expression_ptr>(cond_param);
-                                if (evaluate_row_condition(resource, cond_expr, chunk, params, row_idx, session_tz)) {
+                                bool matched = evaluate_row_condition(resource,
+                                                                      cond_expr,
+                                                                      chunk,
+                                                                      params,
+                                                                      row_idx,
+                                                                      session_tz,
+                                                                      error);
+                                if (error.contains_error()) {
+                                    return types::logical_value_t(
+                                        resource,
+                                        types::complex_logical_type{types::logical_type::NA});
+                                }
+                                if (matched) {
                                     return resolve_row_value(resource,
                                                              ops[w * 2 + 1],
                                                              chunk,
                                                              params,
                                                              row_idx,
-                                                             session_tz);
+                                                             session_tz,
+                                                             error);
                                 }
                             }
                         }
                         if (has_default) {
-                            return resolve_row_value(resource, ops.back(), chunk, params, row_idx, session_tz);
+                            return resolve_row_value(resource, ops.back(), chunk, params, row_idx, session_tz, error);
                         }
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
                     // Unary minus sub-expression
                     if (scalar->type() == expressions::scalar_type::unary_minus) {
                         if (scalar->params().empty()) {
-                            throw std::logic_error("CASE: unary minus requires 1 operand");
+                            error = core::error_t(core::error_code_t::arithmetics_failure,
+                                                  std::pmr::string{"CASE: unary minus requires 1 operand", resource});
+                            return types::logical_value_t(resource,
+                                                          types::complex_logical_type{types::logical_type::NA});
                         }
                         auto inner =
-                            resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz);
+                            resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz, error);
+                        if (error.contains_error()) {
+                            return types::logical_value_t(resource,
+                                                          types::complex_logical_type{types::logical_type::NA});
+                        }
                         return types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)), inner);
                     }
                     // Arithmetic sub-expression
                     if (scalar->params().size() < 2) {
-                        throw std::logic_error("CASE: arithmetic sub-expression requires 2 operands");
+                        error = core::error_t(
+                            core::error_code_t::arithmetics_failure,
+                            std::pmr::string{"CASE: arithmetic sub-expression requires 2 operands", resource});
+                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
-                    auto l = resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz);
-                    auto r = resolve_row_value(resource, scalar->params()[1], chunk, params, row_idx, session_tz);
+                    auto l =
+                        resolve_row_value(resource, scalar->params()[0], chunk, params, row_idx, session_tz, error);
+                    if (error.contains_error()) {
+                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                    }
+                    auto r =
+                        resolve_row_value(resource, scalar->params()[1], chunk, params, row_idx, session_tz, error);
+                    if (error.contains_error()) {
+                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                    }
                     switch (scalar->type()) {
                         case expressions::scalar_type::add:
                             return types::logical_value_t::sum(l, r);
@@ -219,7 +276,9 @@ namespace components::operators {
                             break;
                     }
                 }
-                throw std::logic_error("CASE: unsupported sub-expression");
+                error = core::error_t(core::error_code_t::arithmetics_failure,
+                                      std::pmr::string{"CASE: unsupported sub-expression", resource});
+                return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
             }
         }
 
@@ -228,7 +287,8 @@ namespace components::operators {
                                     const vector::data_chunk_t& chunk,
                                     const logical_plan::storage_parameters& params,
                                     size_t row_idx,
-                                    core::date::timezone_offset_t session_tz) {
+                                    core::date::timezone_offset_t session_tz,
+                                    core::error_t& error) {
             if (condition->group() != expressions::expression_group::compare)
                 return false;
             auto* cmp = static_cast<const expressions::compare_expression_t*>(condition.get());
@@ -236,7 +296,10 @@ namespace components::operators {
             if (cmp->is_union()) {
                 bool is_and = (cmp->type() == expressions::compare_type::union_and);
                 for (auto& child : cmp->children()) {
-                    bool child_result = evaluate_row_condition(resource, child, chunk, params, row_idx, session_tz);
+                    bool child_result =
+                        evaluate_row_condition(resource, child, chunk, params, row_idx, session_tz, error);
+                    if (error.contains_error())
+                        return false;
                     if (is_and && !child_result)
                         return false;
                     if (!is_and && child_result)
@@ -245,8 +308,12 @@ namespace components::operators {
                 return is_and;
             }
 
-            auto left_val = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz);
-            auto right_val = resolve_row_value(resource, cmp->right(), chunk, params, row_idx, session_tz);
+            auto left_val = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz, error);
+            if (error.contains_error())
+                return false;
+            auto right_val = resolve_row_value(resource, cmp->right(), chunk, params, row_idx, session_tz, error);
+            if (error.contains_error())
+                return false;
             if (left_val.type() != right_val.type()) {
                 auto cast_right = right_val.cast_as(left_val.type(), session_tz);
                 if (!cast_right.is_null()) {
@@ -281,7 +348,8 @@ namespace components::operators {
                                             const std::pmr::vector<expressions::param_storage>& operands,
                                             vector::data_chunk_t& chunk,
                                             const logical_plan::storage_parameters& params,
-                                            core::date::timezone_offset_t session_tz) {
+                                            core::date::timezone_offset_t session_tz,
+                                            core::error_t& error) {
             uint64_t count = chunk.size();
             bool has_default = (operands.size() % 2 == 1);
             size_t num_whens = operands.size() / 2;
@@ -290,7 +358,10 @@ namespace components::operators {
             types::complex_logical_type result_type(types::logical_type::NA);
             if (count > 0) {
                 // Try first THEN result
-                auto val = resolve_row_value(resource, operands[1], chunk, params, 0, session_tz);
+                auto val = resolve_row_value(resource, operands[1], chunk, params, 0, session_tz, error);
+                if (error.contains_error()) {
+                    return vector::vector_t(resource, result_type, count);
+                }
                 result_type = val.type();
             }
 
@@ -312,19 +383,28 @@ namespace components::operators {
                     auto& cond_param = operands[w * 2];
                     if (std::holds_alternative<expressions::expression_ptr>(cond_param)) {
                         auto& cond_expr = std::get<expressions::expression_ptr>(cond_param);
-                        if (evaluate_row_condition(resource, cond_expr, chunk, params, i, session_tz)) {
-                            auto val = coerce_to_result(
-                                resolve_row_value(resource, operands[w * 2 + 1], chunk, params, i, session_tz));
-                            output.set_value(i, val);
+                        bool cond = evaluate_row_condition(resource, cond_expr, chunk, params, i, session_tz, error);
+                        if (error.contains_error()) {
+                            return output;
+                        }
+                        if (cond) {
+                            auto resolved =
+                                resolve_row_value(resource, operands[w * 2 + 1], chunk, params, i, session_tz, error);
+                            if (error.contains_error()) {
+                                return output;
+                            }
+                            output.set_value(i, coerce_to_result(std::move(resolved)));
                             matched = true;
                             break;
                         }
                     }
                 }
                 if (!matched && has_default) {
-                    auto val =
-                        coerce_to_result(resolve_row_value(resource, operands.back(), chunk, params, i, session_tz));
-                    output.set_value(i, val);
+                    auto resolved = resolve_row_value(resource, operands.back(), chunk, params, i, session_tz, error);
+                    if (error.contains_error()) {
+                        return output;
+                    }
+                    output.set_value(i, coerce_to_result(std::move(resolved)));
                 } else if (!matched) {
                     output.set_null(i, true);
                 }
@@ -343,7 +423,12 @@ namespace components::operators {
                         const logical_plan::storage_parameters& params,
                         core::date::timezone_offset_t session_tz) {
         if (op == expressions::scalar_type::case_expr) {
-            return detail::evaluate_case_expr(resource, operands, chunk, params, session_tz);
+            core::error_t case_error = core::error_t::no_error();
+            auto computed = detail::evaluate_case_expr(resource, operands, chunk, params, session_tz, case_error);
+            if (case_error.contains_error()) {
+                return std::move(case_error);
+            }
+            return computed;
         }
 
         if (op == expressions::scalar_type::unary_minus) {
@@ -386,7 +471,11 @@ namespace components::operators {
         }
 
         uint64_t count = chunk.size();
-        auto arith_op = detail::scalar_to_arithmetic_op(op);
+        vector::arithmetic_op arith_op;
+        if (!detail::scalar_to_arithmetic_op(op, arith_op)) {
+            return core::error_t(core::error_code_t::arithmetics_failure,
+                                 std::pmr::string{"Not an arithmetic scalar_type", resource});
+        }
 
         if (left_op.value().vec && right_op.value().vec) {
             return vector::compute_binary_arithmetic(resource,

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/types/types.hpp>
 
+#include <memory_resource>
 #include <string>
 
 namespace components::logical_plan {
@@ -30,6 +32,8 @@ namespace components::operators {
 
         std::string name_;
         components::logical_plan::node_catalog_resolve_database_t* target_node_{nullptr};
+        // Static output chunk schema, built once in the constructor (TASK C10).
+        std::pmr::vector<components::types::complex_logical_type> output_schema_;
     };
 
 } // namespace components::operators

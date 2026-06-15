@@ -498,7 +498,13 @@ namespace services::dispatcher {
                     }
                 } else {
                     auto id = std::get<core::parameter_id_t>(field);
-                    function_input_types.emplace_back(parameters.parameters.at(id).type());
+                    auto param_it = parameters.parameters.find(id);
+                    if (param_it == parameters.parameters.end()) {
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"unbound parameter referenced in function arguments",
+                                                              resource});
+                    }
+                    function_input_types.emplace_back(param_it->second.type());
                 }
             }
             auto fn_lk = lookup_function(expr->name(), function_input_types);
@@ -1405,11 +1411,9 @@ namespace services::dispatcher {
                     const auto& visible_alias = node->result_alias().empty() ? agg_relname_s : node->result_alias();
                     // there will be a scan
                     const auto* tbl = impl::tbl_md_for(idx, agg_dbname_s, agg_relname_s);
-                    if (tbl && tbl->relkind != 'g') {
-                        for (const auto& column : tbl->columns) {
-                            table_schema.emplace_back(type_from_t{visible_alias, column.type});
-                        }
-                    } else if (tbl && tbl->relkind == 'g') {
+                    if (tbl) {
+                        // Both relkinds ('g' and non-'g') build the schema identically
+                        // here: same alias source (visible_alias) and same column loop.
                         for (const auto& column : tbl->columns) {
                             table_schema.emplace_back(type_from_t{visible_alias, column.type});
                         }
@@ -1757,6 +1761,10 @@ namespace services::dispatcher {
                                t == scalar_type::unary_minus;
                     };
 
+                    // resolve_type/compute_type_entry have no return-channel for
+                    // errors (they return plain types); a missing parameter is
+                    // surfaced through this flag, checked after each call site.
+                    core::error_t compute_type_error = core::error_t::no_error();
                     auto compute_type_entry = [&](scalar_expression_t* scalar_expr,
                                                   const named_schema& schema) -> type_from_t {
                         auto resolve_type = [&](param_storage& param, auto& self) -> complex_logical_type {
@@ -1765,7 +1773,15 @@ namespace services::dispatcher {
                                 assert(!key.path().empty());
                                 return schema[key.path()[0]].type;
                             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
-                                return parameters.parameters.at(std::get<core::parameter_id_t>(param)).type();
+                                auto ct_it = parameters.parameters.find(std::get<core::parameter_id_t>(param));
+                                if (ct_it == parameters.parameters.end()) {
+                                    compute_type_error =
+                                        core::error_t(core::error_code_t::invalid_parameter,
+                                                      std::pmr::string{"unbound parameter in scalar expression",
+                                                                       resource});
+                                    return complex_logical_type(logical_type::INVALID);
+                                }
+                                return ct_it->second.type();
                             } else {
                                 auto& sub = std::get<expression_ptr>(param);
                                 if (sub->group() == expression_group::scalar) {
@@ -1864,6 +1880,9 @@ namespace services::dispatcher {
                                     post_agg_indices.push_back(i); // defer to Pass 2
                                 } else {
                                     auto entry = compute_type_entry(scalar_expr, incoming_schema);
+                                    if (compute_type_error.type != core::error_code_t::none) {
+                                        return compute_type_error;
+                                    }
                                     result.emplace_back(entry);
                                     key_schema.emplace_back(entry);
                                 }
@@ -1893,7 +1912,14 @@ namespace services::dispatcher {
                                     }
                                 } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                                     auto id = std::get<core::parameter_id_t>(param);
-                                    function_input_types.emplace_back(parameters.parameters.at(id).type());
+                                    auto agg_param_it = parameters.parameters.find(id);
+                                    if (agg_param_it == parameters.parameters.end()) {
+                                        return core::error_t(
+                                            core::error_code_t::invalid_parameter,
+                                            std::pmr::string{"unbound parameter referenced in aggregate arguments",
+                                                             resource});
+                                    }
+                                    function_input_types.emplace_back(agg_param_it->second.type());
                                 } else {
                                     auto& sub_expr = std::get<expression_ptr>(param);
                                     if (sub_expr->group() == expression_group::scalar) {
@@ -1925,8 +1951,16 @@ namespace services::dispatcher {
                                                     assert(false);
                                                     return complex_logical_type(logical_type::INVALID);
                                                 } else if (std::holds_alternative<core::parameter_id_t>(p)) {
-                                                    return params.parameters.at(std::get<core::parameter_id_t>(p))
-                                                        .type();
+                                                    auto p_it =
+                                                        params.parameters.find(std::get<core::parameter_id_t>(p));
+                                                    if (p_it == params.parameters.end()) {
+                                                        resolve_error = core::error_t(
+                                                            core::error_code_t::invalid_parameter,
+                                                            std::pmr::string{"unbound parameter in arithmetic operand",
+                                                                             resource});
+                                                        return complex_logical_type(logical_type::INVALID);
+                                                    }
+                                                    return p_it->second.type();
                                                 } else {
                                                     auto& inner = std::get<expression_ptr>(p);
                                                     if (inner->group() == expression_group::scalar) {
@@ -2060,6 +2094,9 @@ namespace services::dispatcher {
                             scalar_expr->key().set_path({SIZE_MAX}); // Mark for planner
 
                             auto entry = compute_type_entry(scalar_expr, post_agg_schema);
+                            if (compute_type_error.type != core::error_code_t::none) {
+                                return compute_type_error;
+                            }
                             result.emplace_back(entry);
                         }
                     }
@@ -2438,6 +2475,8 @@ namespace services::dispatcher {
                             const auto& storage = set_expr->key().storage();
                             // Top-level field is the column name; nested paths (a.b.c) still
                             // require the head 'a' to be a registered column.
+                            // storage.at(0) is safe: key_t::is_null() == storage().empty(),
+                            // and the is_null() check above already skipped empty-key SETs.
                             const std::string column_name(storage.at(0).data(), storage.at(0).size());
                             if (live_columns.find(column_name) == live_columns.end()) {
                                 return core::error_t{

@@ -17,4 +17,13 @@ namespace components::planner {
                          catalog::oid_batch_t oid_batch) -> logical_plan::node_ptr;
     };
 
+    // OID demand for a DDL node: the exact number of OIDs the DDL create_plan
+    // path (walk_ddl → rewrite_create_*) consumes from the oid_batch. The single
+    // source of truth for the per-kind counts, so callers (the executor) need
+    // not duplicate the formulas. Returns 0 for DROP/ALTER (no pre-allocation),
+    // for CREATE MATERIALIZED VIEW with no inferred columns (planner bails), and
+    // for DML / non-DDL nodes. `node` must be the effective DDL node (the result
+    // of catalog_resolve::effective_root_node after resolve-wrap).
+    std::size_t compute_oid_demand(const logical_plan::node_t* node);
+
 } // namespace components::planner

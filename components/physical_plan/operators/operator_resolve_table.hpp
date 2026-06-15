@@ -2,7 +2,9 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/types/types.hpp>
 
+#include <memory_resource>
 #include <string>
 
 namespace components::logical_plan {
@@ -82,6 +84,8 @@ namespace components::operators {
         char relkind_{0};
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::logical_plan::node_catalog_resolve_table_t* target_node_{nullptr};
+        // Static output chunk schema, built once in the constructor (TASK C10).
+        std::pmr::vector<components::types::complex_logical_type> output_schema_;
     };
 
 } // namespace components::operators

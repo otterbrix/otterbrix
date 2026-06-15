@@ -23,7 +23,6 @@ namespace components::operators {
                                                        std::size_t k,
                                                        vector_search::metric_type metric,
                                                        const expressions::compare_expression_ptr& filter,
-                                                       vector_search::filter_strategy strategy,
                                                        bool descending,
                                                        std::vector<size_t> projected_cols,
                                                        std::size_t vector_col_chunk)
@@ -34,49 +33,11 @@ namespace components::operators {
         , k_(k)
         , metric_(metric)
         , filter_(filter)
-        , strategy_(strategy)
         , descending_(descending)
         , projected_cols_(std::move(projected_cols))
         , vector_col_chunk_(vector_col_chunk) {}
 
     namespace {
-        bool evaluate_filter_on_row(const table::table_filter_t& filter,
-                                    const vector::data_chunk_t& data,
-                                    uint64_t row) {
-            using namespace expressions;
-            switch (filter.filter_type) {
-                case compare_type::is_null: {
-                    const auto& f = filter.cast<table::is_null_filter_t>();
-                    if (f.table_indices.empty()) return false;
-                    return data.value(f.table_indices[0], row).is_null();
-                }
-                case compare_type::is_not_null: {
-                    const auto& f = filter.cast<table::is_null_filter_t>();
-                    if (f.table_indices.empty()) return false;
-                    return !data.value(f.table_indices[0], row).is_null();
-                }
-                case compare_type::union_or: {
-                    const auto& f = filter.cast<table::conjunction_or_filter_t>();
-                    for (const auto& child : f.child_filters) {
-                        if (evaluate_filter_on_row(*child, data, row)) return true;
-                    }
-                    return false;
-                }
-                case compare_type::union_and: {
-                    const auto& f = filter.cast<table::conjunction_and_filter_t>();
-                    for (const auto& child : f.child_filters) {
-                        if (!evaluate_filter_on_row(*child, data, row)) return false;
-                    }
-                    return true;
-                }
-                default: {
-                    const auto& f = filter.cast<table::constant_filter_t>();
-                    if (f.table_indices.empty()) return false;
-                    return f.compare(data.value(f.table_indices[0], row));
-                }
-            }
-        }
-
         std::vector<size_t> build_scan_columns(const std::vector<size_t>& projected_cols,
                                                std::size_t vector_col_chunk,
                                                std::size_t full_col_count) {
@@ -210,12 +171,20 @@ namespace components::operators {
                 auto data = co_await std::move(ff);
 
                 if (data && static_cast<std::size_t>(data->size()) == count) {
-                    auto out_types = build_schema(data->column_count(),
-                                                  [&](uint64_t col) { return data->data[col].type(); });
+                    // Project the fetched rows down to the columns the query needs
+                    // (plus the vector column), mirroring the exact-scan path: the
+                    // pruned columns become unprojected placeholders so both paths
+                    // emit an identical output schema. (storage_fetch itself reads
+                    // all columns, but only K rows, so the unprojected data never
+                    // propagates downstream.)
+                    const auto out_cols = build_scan_columns(projected_cols_,
+                                                             vector_col_chunk_,
+                                                             static_cast<std::size_t>(data->column_count()));
+                    auto full_types = data->types();
                     auto result_chunk = std::make_unique<vector::data_chunk_t>(
-                        resource_, out_types, static_cast<uint64_t>(data->size()));
-                    for (std::size_t i = 0; i < data->size(); ++i) {
-                        for (uint64_t col = 0; col < data->column_count(); ++col) {
+                        resource_, full_types, out_cols, static_cast<uint64_t>(data->size()));
+                    for (size_t col : out_cols) {
+                        for (std::size_t i = 0; i < data->size(); ++i) {
                             result_chunk->data[col].set_value(i, data->value(col, i));
                         }
                     }
@@ -236,11 +205,8 @@ namespace components::operators {
             // No vector index on this column — fall through to the exact scan.
         }
 
-        // Build filter from expression, if present.
-        // For pre_filter strategy it's pushed to storage_scan; for post_filter we keep it
-        // and evaluate row-by-row after kNN.
+        // Build the WHERE predicate and push it into the scan (filter-first kNN).
         std::unique_ptr<components::table::table_filter_t> scan_filter;
-        std::unique_ptr<components::table::table_filter_t> post_filter;
         if (filter_) {
             auto built_res = transform_predicate(resource_, filter_, types, &ctx->parameters, ctx->session_tz);
             if (built_res.has_error()) {
@@ -251,12 +217,7 @@ namespace components::operators {
                 mark_executed();
                 co_return;
             }
-            auto built = std::move(built_res.value());
-            if (strategy_ == vector_search::filter_strategy::pre_filter) {
-                scan_filter = std::move(built);
-            } else {
-                post_filter = std::move(built);
-            }
+            scan_filter = std::move(built_res.value());
         }
 
         // Step 2: Scan to get target data for kNN (projected when column_pruning applies).
@@ -375,20 +336,8 @@ namespace components::operators {
             heap.push(row, dist);
         }
 
-        // Step 5: Build output with Top-K rows + distance score column
+        // Step 5: Build output with the Top-K rows.
         auto results = heap.drain_sorted();
-
-        // post_filter strategy: apply WHERE predicate to Top-K AFTER kNN
-        if (post_filter) {
-            std::vector<vector_search::scored_entry_t> kept;
-            kept.reserve(results.size());
-            for (const auto& entry : results) {
-                if (evaluate_filter_on_row(*post_filter, *data, static_cast<uint64_t>(entry.row_id))) {
-                    kept.push_back(entry);
-                }
-            }
-            results = std::move(kept);
-        }
 
         auto out_types =
             build_schema(data->column_count(), [&](uint64_t col) { return data->data[col].type(); });

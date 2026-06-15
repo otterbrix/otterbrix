@@ -20,7 +20,6 @@ namespace components::logical_plan {
                              std::vector<double> query_vector,
                              std::size_t k,
                              vector_search::metric_type metric,
-                             vector_search::filter_strategy strategy = vector_search::filter_strategy::pre_filter,
                              bool descending = false,
                              std::optional<core::parameter_id_t> k_param = std::nullopt);
 
@@ -36,7 +35,6 @@ namespace components::logical_plan {
         std::size_t k() const noexcept { return k_; }
         const std::optional<core::parameter_id_t>& k_param() const noexcept { return k_param_; }
         vector_search::metric_type metric() const noexcept { return metric_; }
-        vector_search::filter_strategy strategy() const noexcept { return strategy_; }
         // DESC: exact K-farthest scan, no index.
         bool descending() const noexcept { return descending_; }
 
@@ -50,7 +48,6 @@ namespace components::logical_plan {
         std::vector<double> query_vector_;
         std::size_t k_;
         vector_search::metric_type metric_;
-        vector_search::filter_strategy strategy_;
         bool descending_;
         std::optional<core::parameter_id_t> k_param_;
     };
@@ -66,7 +63,6 @@ namespace components::logical_plan {
                             std::size_t k,
                             vector_search::metric_type metric,
                             const expressions::compare_expression_ptr& filter = nullptr,
-                            vector_search::filter_strategy strategy = vector_search::filter_strategy::pre_filter,
                             bool descending = false,
                             std::optional<core::parameter_id_t> k_param = std::nullopt);
 

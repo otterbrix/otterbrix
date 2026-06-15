@@ -1,6 +1,6 @@
 #include <catch2/catch.hpp>
 #include <vector_search/distance_metrics.hpp>
-#include <vector_search/knn_search.hpp>
+#include "exact_knn_reference.hpp"
 #include <vector_search/top_k_heap.hpp>
 
 #include <algorithm>
@@ -107,7 +107,7 @@ TEST_CASE("vector_search::top_k_heap::empty_heap_worst_distance") {
 }
 
 // ============================================================================
-// knn_exact_search tests
+// exact_knn reference (top_k_heap + compute_distance) tests
 // ============================================================================
 
 TEST_CASE("vector_search::knn_search::basic_l2") {
@@ -122,7 +122,7 @@ TEST_CASE("vector_search::knn_search::basic_l2") {
 
     std::vector<double> query = {0.0, 0.0};
 
-    auto results = knn_exact_search(data, query, 3, metric_type::l2);
+    auto results = test::exact_knn(data, query, 3, metric_type::l2);
     REQUIRE(results.size() == 3);
 
     // nearest: row 0 (d=0), row 4 (d=0.5), row 1 or 2 (d=1.0)
@@ -142,7 +142,7 @@ TEST_CASE("vector_search::knn_search::basic_cosine") {
 
     std::vector<double> query = {1.0, 0.0}; // points right
 
-    auto results = knn_exact_search(data, query, 2, metric_type::cosine);
+    auto results = test::exact_knn(data, query, 2, metric_type::cosine);
     REQUIRE(results.size() == 2);
 
     // nearest by cosine: row 0 (distance=0), row 1 (distance ≈ 0.293)
@@ -158,7 +158,7 @@ TEST_CASE("vector_search::knn_search::k_larger_than_n") {
     };
     std::vector<double> query = {0.0, 0.0};
 
-    auto results = knn_exact_search(data, query, 10, metric_type::l2);
+    auto results = test::exact_knn(data, query, 10, metric_type::l2);
     REQUIRE(results.size() == 2);
 }
 
@@ -166,7 +166,7 @@ TEST_CASE("vector_search::knn_search::empty_data") {
     std::vector<std::vector<double>> data;
     std::vector<double> query = {1.0, 2.0};
 
-    auto results = knn_exact_search(data, query, 5, metric_type::l2);
+    auto results = test::exact_knn(data, query, 5, metric_type::l2);
     REQUIRE(results.empty());
 }
 
@@ -174,7 +174,7 @@ TEST_CASE("vector_search::knn_search::k_equals_0") {
     std::vector<std::vector<double>> data = {{1.0, 2.0}};
     std::vector<double> query = {0.0, 0.0};
 
-    auto results = knn_exact_search(data, query, 0, metric_type::l2);
+    auto results = test::exact_knn(data, query, 0, metric_type::l2);
     REQUIRE(results.empty());
 }
 
@@ -193,7 +193,7 @@ TEST_CASE("vector_search::knn_search::raw_pointer_interface") {
     };
     std::vector<double> query = {1.0, 0.0, 0.0};
 
-    auto results = knn_exact_search(flat.data(), 3, 3, query.data(), 2, metric_type::cosine);
+    auto results = test::exact_knn(flat.data(), 3, 3, query.data(), 2, metric_type::cosine);
     REQUIRE(results.size() == 2);
     REQUIRE(results[0].row_id == 0); // identical to query
     REQUIRE(results[0].distance == Approx(0.0).margin(1e-10));
@@ -207,7 +207,7 @@ TEST_CASE("vector_search::knn_search::mismatched_dimensions_skipped") {
     };
     std::vector<double> query = {1.0, 2.0, 3.0};
 
-    auto results = knn_exact_search(data, query, 3, metric_type::l2);
+    auto results = test::exact_knn(data, query, 3, metric_type::l2);
     REQUIRE(results.size() == 2); // only 2 valid vectors
 }
 
@@ -230,7 +230,7 @@ TEST_CASE("vector_search::knn_search::large_dataset") {
         v = dist(rng);
     }
 
-    auto results = knn_exact_search(flat.data(), n, dim, query.data(), k, metric_type::l2);
+    auto results = test::exact_knn(flat.data(), n, dim, query.data(), k, metric_type::l2);
     REQUIRE(results.size() == k);
 
     // Verify ordering: distances should be non-decreasing

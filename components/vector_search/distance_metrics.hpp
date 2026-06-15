@@ -15,13 +15,6 @@ namespace components::vector_search {
         inner_product
     };
 
-    // pre: filter pushed into scan; post: filter applied to Top-K.
-    enum class filter_strategy : uint8_t
-    {
-        pre_filter,
-        post_filter
-    };
-
     inline std::string metric_to_string(metric_type m) {
         switch (m) {
             case metric_type::cosine:

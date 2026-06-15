@@ -86,14 +86,6 @@ namespace components::index {
         }
     } // namespace
 
-    void vector_index_t::add_vector(int64_t row_index, const float* vec) {
-        if (backend_) backend_->add(static_cast<std::size_t>(row_index), vec);
-    }
-
-    void vector_index_t::add_vector(int64_t row_index, const double* vec) {
-        if (backend_) backend_->add(static_cast<std::size_t>(row_index), vec);
-    }
-
     std::vector<knn_score_t> vector_index_t::knn_search(const float* query,
                                                         std::size_t dim,
                                                         std::size_t k,

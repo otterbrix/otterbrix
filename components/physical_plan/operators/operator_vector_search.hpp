@@ -22,7 +22,6 @@ namespace components::operators {
                                  std::size_t k,
                                  vector_search::metric_type metric,
                                  const expressions::compare_expression_ptr& filter,
-                                 vector_search::filter_strategy strategy,
                                  bool descending = false,
                                  std::vector<size_t> projected_cols = {},
                                  std::size_t vector_col_chunk = static_cast<std::size_t>(-1));
@@ -40,7 +39,6 @@ namespace components::operators {
         std::size_t k_;
         vector_search::metric_type metric_;
         expressions::compare_expression_ptr filter_;
-        vector_search::filter_strategy strategy_;
         bool descending_;  // DESC: exact K-farthest scan
         std::vector<size_t> projected_cols_;
         std::size_t vector_col_chunk_;

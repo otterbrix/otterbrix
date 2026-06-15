@@ -1,7 +1,7 @@
 // Recall@k tests for exact kNN.
 //
 // Exact kNN is, by definition, the ground truth — so recall@k must equal 1.0
-// across all (N, D, K) configurations. We compute Top-K via knn_exact_search and
+// across all (N, D, K) configurations. We compute Top-K via the exact_knn reference and
 // independently via a naive brute-force linear scan, then verify the intersection
 // of row IDs equals K.
 //
@@ -10,7 +10,7 @@
 
 #include <catch2/catch.hpp>
 #include <vector_search/distance_metrics.hpp>
-#include <vector_search/knn_search.hpp>
+#include "exact_knn_reference.hpp"
 
 #include <algorithm>
 #include <random>
@@ -59,7 +59,7 @@ namespace {
     }
 
     double measure_recall(const dataset_t& ds, std::size_t k, metric_type metric) {
-        auto under_test = knn_exact_search(ds.vectors, ds.query, k, metric);
+        auto under_test = test::exact_knn(ds.vectors, ds.query, k, metric);
         auto ground_truth = brute_force_topk(ds, k, metric);
         std::size_t hits = 0;
         for (const auto& entry : under_test) {
@@ -116,7 +116,7 @@ TEST_CASE("vector_search::recall::exact_must_be_1.0::inner_product") {
 
 TEST_CASE("vector_search::recall::k_larger_than_n_returns_all") {
     auto ds = make_random_dataset(5, 16, 1);
-    auto results = knn_exact_search(ds.vectors, ds.query, /*k=*/100, metric_type::l2);
+    auto results = test::exact_knn(ds.vectors, ds.query, /*k=*/100, metric_type::l2);
     REQUIRE(results.size() == 5);
     // distances must be non-decreasing
     for (std::size_t i = 1; i < results.size(); ++i) {

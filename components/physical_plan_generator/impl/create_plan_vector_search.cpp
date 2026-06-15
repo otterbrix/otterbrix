@@ -79,7 +79,6 @@ namespace services::planner::impl {
                                                                     k,
                                                                     vs_node->metric(),
                                                                     filter,
-                                                                    vs_node->strategy(),
                                                                     vs_node->descending(),
                                                                     projected_cols,
                                                                     vector_col_chunk));
@@ -93,7 +92,6 @@ namespace services::planner::impl {
                                                                     k,
                                                                     vs_node->metric(),
                                                                     filter,
-                                                                    vs_node->strategy(),
                                                                     vs_node->descending(),
                                                                     projected_cols,
                                                                     vector_col_chunk));

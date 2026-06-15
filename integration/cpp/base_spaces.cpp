@@ -476,28 +476,37 @@ namespace otterbrix {
                 }
             }
 
-            // the WAL committed-txn set, used by the bitcask agent's
-            // txn-log recover gate. Materialised here as a pmr::set on this
-            // instance's resource (the resource the agent and its index store).
-            // A copy of the committed ids per agent — legal value transfer during
-            // the single-threaded bootstrap window.
-            std::pmr::set<std::uint64_t> committed_for_agent(committed_txn_ids.begin(),
-                                                             committed_txn_ids.end(),
-                                                             &resource);
+            // Vector (HNSW) indexes route no disk ops and persist via their own
+            // .hnsw graph snapshot, so they need no disk agent — mirror the
+            // runtime create_index path, which also skips the agent for vectors
+            // (spawning one here just litters an unused B+tree dir on disk).
+            const bool is_vector = (row.type == components::logical_plan::index_type::vector_hnsw);
+            services::index::index_agent_disk_ptr agent{nullptr, actor_zeta::pmr::deleter_t{&resource}};
+            actor_zeta::address_t agent_addr = actor_zeta::address_t::empty_address();
+            if (!is_vector) {
+                // the WAL committed-txn set, used by the bitcask agent's
+                // txn-log recover gate. Materialised here as a pmr::set on this
+                // instance's resource (the resource the agent and its index store).
+                // A copy of the committed ids per agent — legal value transfer during
+                // the single-threaded bootstrap window.
+                std::pmr::set<std::uint64_t> committed_for_agent(committed_txn_ids.begin(),
+                                                                 committed_txn_ids.end(),
+                                                                 &resource);
 
-            auto agent = actor_zeta::spawn<services::index::index_agent_disk_t>(
-                &resource,
-                disk_config.path,
-                row.table_oid,
-                index_name,
-                row.type,
-                disk_config.bitcask_flush_threshold,
-                disk_config.bitcask_segment_record_limit,
-                disk_config.btree_flush_threshold,
-                log_,
-                std::move(committed_for_agent),
-                shared_hash_storage);
-            auto agent_addr = agent->address();
+                agent = actor_zeta::spawn<services::index::index_agent_disk_t>(
+                    &resource,
+                    disk_config.path,
+                    row.table_oid,
+                    index_name,
+                    row.type,
+                    disk_config.bitcask_flush_threshold,
+                    disk_config.bitcask_segment_record_limit,
+                    disk_config.btree_flush_threshold,
+                    log_,
+                    std::move(committed_for_agent),
+                    shared_hash_storage);
+                agent_addr = agent->address();
+            }
 
             manager_index_->bootstrap_index_sync(row.table_oid,
                                                   std::move(row.name),

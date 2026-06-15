@@ -27,9 +27,6 @@ namespace components::index {
 
         ~vector_index_t() override;
 
-        void add_vector(int64_t row_index, const float* vec);
-        void add_vector(int64_t row_index, const double* vec);
-
         std::vector<knn_score_t> knn_search(const float* query,
                                             std::size_t dim,
                                             std::size_t k,

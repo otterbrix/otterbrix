@@ -11,7 +11,6 @@ namespace components::logical_plan {
                                                std::vector<double> query_vector,
                                                std::size_t k,
                                                vector_search::metric_type metric,
-                                               vector_search::filter_strategy strategy,
                                                bool descending,
                                                std::optional<core::parameter_id_t> k_param)
         : node_t(resource, node_type::vector_search_t)
@@ -21,7 +20,6 @@ namespace components::logical_plan {
         , query_vector_(std::move(query_vector))
         , k_(k)
         , metric_(metric)
-        , strategy_(strategy)
         , descending_(descending)
         , k_param_(k_param) {}
 
@@ -43,7 +41,6 @@ namespace components::logical_plan {
                                                    std::size_t k,
                                                    vector_search::metric_type metric,
                                                    const expressions::compare_expression_ptr& filter,
-                                                   vector_search::filter_strategy strategy,
                                                    bool descending,
                                                    std::optional<core::parameter_id_t> k_param) {
         node_vector_search_ptr node = new node_vector_search_t{resource,
@@ -53,7 +50,6 @@ namespace components::logical_plan {
                                                                std::move(query_vector),
                                                                k,
                                                                metric,
-                                                               strategy,
                                                                descending,
                                                                k_param};
         if (filter) {

@@ -1116,8 +1116,6 @@ namespace components::sql::transform {
                         k,
                         m_type,
                         filter,
-                        // WHERE + ORDER BY dist LIMIT is filter-first SQL.
-                        vector_search::filter_strategy::pre_filter,
                         descending,
                         k_param));
                 }

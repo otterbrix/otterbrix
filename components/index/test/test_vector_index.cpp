@@ -69,6 +69,23 @@ namespace {
         return p;
     }
 
+    // Commit a vector through the production insert path: the engine hands the
+    // index an ARRAY logical_value with txn_id==0 (committed-for-everyone), which
+    // vector_index_t extracts and adds to the graph.
+    void add_committed_vector(vector_index_t& idx,
+                              std::pmr::memory_resource* res,
+                              int64_t row_index,
+                              const std::vector<float>& vec) {
+        std::vector<components::types::logical_value_t> elems;
+        elems.reserve(vec.size());
+        for (float x : vec) {
+            elems.emplace_back(res, x);
+        }
+        auto arr = components::types::logical_value_t::create_array(
+            res, components::types::complex_logical_type(components::types::logical_type::FLOAT), elems);
+        idx.insert(arr, row_index, /*txn_id=*/0, core::date::timezone_offset_t{});
+    }
+
 } // namespace
 
 TEST_CASE("vector_index::reports_vector_hnsw_type") {
@@ -89,7 +106,7 @@ TEST_CASE("vector_index::knn_search_recall_l2") {
 
     vector_index_t idx(&pool, "vidx", keys, dim, metric_type::l2, params_with(500));
     for (std::size_t i = 0; i < ds.vectors.size(); ++i) {
-        idx.add_vector(static_cast<int64_t>(i), ds.vectors[i].data());
+        add_committed_vector(idx, &pool, static_cast<int64_t>(i), ds.vectors[i]);
     }
     REQUIRE(idx.size() == 500);
 
@@ -151,7 +168,7 @@ TEST_CASE("vector_index::compaction_rebuilds_from_live_points") {
 
     vector_index_t idx(&pool, "vidx", keys, dim, metric_type::l2, params_with(n));
     for (std::size_t i = 0; i < n; ++i) {
-        idx.add_vector(static_cast<int64_t>(i), ds.vectors[i].data());
+        add_committed_vector(idx, &pool, static_cast<int64_t>(i), ds.vectors[i]);
     }
     REQUIRE(idx.size() == n);
     REQUIRE(idx.live_count() == n);

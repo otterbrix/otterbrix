@@ -452,9 +452,8 @@ namespace services::index {
             return;
         }
 
-        // The oid-based pg_index does not persist the hnsw access method or its
-        // params, so a vector index is reported here as `single`. Detect it by
-        // its .hnsw.meta sidecar and rebuild from the snapshot instead.
+        // pg_index.indam identifies vector (hnsw) indexes; sidecar still carries
+        // metric/dim/graph snapshot for recovery.
         if (bootstrap_vector_index_sync(table_oid, index_name, keys)) {
             // Keep the (single-typed) disk agent base_spaces spawned alive so
             // its address stays valid; vector indexes route no disk ops to it.
@@ -509,6 +508,17 @@ namespace services::index {
                                                                                                         keys);
                     }
                 }
+                break;
+            }
+            case components::logical_plan::index_type::vector_hnsw: {
+                components::vector_search::hnsw_params_t params;
+                id_index = components::index::make_index<components::index::vector_index_t>(
+                    engine,
+                    index_name,
+                    keys,
+                    std::size_t{0},
+                    components::vector_search::metric_type::l2,
+                    params);
                 break;
             }
             default:
@@ -1407,7 +1417,7 @@ namespace services::index {
     }
 
     manager_index_t::unique_future<knn_search_result_t>
-    manager_index_t::knn_search(session_id_t /*session*/,
+    manager_index_t::knn_search(session_id_t session,
                                 components::catalog::oid_t table_oid,
                                 components::index::keys_base_storage_t keys,
                                 std::vector<double> query,
@@ -1437,15 +1447,22 @@ namespace services::index {
 
         result.index_used = true;
 
-        vidx->set_ef_search(static_cast<std::size_t>(current_ef_search_));
+        vidx->set_ef_search(static_cast<std::size_t>([&]() {
+            auto it = session_ef_search_.find(session.data());
+            return it != session_ef_search_.end() ? it->second : std::uint64_t{0};
+        }()));
 
         std::vector<float> q(query.begin(), query.end());
         result.hits = index->knn_search(q.data(), q.size(), static_cast<std::size_t>(k), metric);
         co_return result;
     }
 
-    manager_index_t::unique_future<void> manager_index_t::set_ef_search(uint64_t ef) {
-        current_ef_search_ = ef;
+    manager_index_t::unique_future<void> manager_index_t::set_ef_search(session_id_t session, uint64_t ef) {
+        if (ef == 0) {
+            session_ef_search_.erase(session.data());
+        } else {
+            session_ef_search_[session.data()] = ef;
+        }
         co_return;
     }
 

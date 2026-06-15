@@ -1,7 +1,9 @@
 #include "operator_vector_search.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 
 #include <components/physical_plan/operators/scan/full_scan.hpp>
 #include <components/index/index_engine.hpp>
@@ -22,7 +24,9 @@ namespace components::operators {
                                                        vector_search::metric_type metric,
                                                        const expressions::compare_expression_ptr& filter,
                                                        vector_search::filter_strategy strategy,
-                                                       bool descending)
+                                                       bool descending,
+                                                       std::vector<size_t> projected_cols,
+                                                       std::size_t vector_col_chunk)
         : read_only_operator_t(resource, log, operator_type::vector_search)
         , table_oid_(table_oid)
         , column_name_(std::move(column_name))
@@ -31,11 +35,11 @@ namespace components::operators {
         , metric_(metric)
         , filter_(filter)
         , strategy_(strategy)
-        , descending_(descending) {}
+        , descending_(descending)
+        , projected_cols_(std::move(projected_cols))
+        , vector_col_chunk_(vector_col_chunk) {}
 
     namespace {
-        /// Evaluate a table_filter_t against a single row of a data chunk.
-        /// Supports constant comparisons, IS [NOT] NULL, AND/OR conjunctions.
         bool evaluate_filter_on_row(const table::table_filter_t& filter,
                                     const vector::data_chunk_t& data,
                                     uint64_t row) {
@@ -71,6 +75,53 @@ namespace components::operators {
                     return f.compare(data.value(f.table_indices[0], row));
                 }
             }
+        }
+
+        std::vector<size_t> build_scan_columns(const std::vector<size_t>& projected_cols,
+                                               std::size_t vector_col_chunk,
+                                               std::size_t full_col_count) {
+            if (projected_cols.empty()) {
+                std::vector<size_t> all(full_col_count);
+                for (std::size_t i = 0; i < full_col_count; ++i) {
+                    all[i] = i;
+                }
+                return all;
+            }
+            std::vector<size_t> cols = projected_cols;
+            if (vector_col_chunk != static_cast<std::size_t>(-1) &&
+                std::find(cols.begin(), cols.end(), vector_col_chunk) == cols.end()) {
+                cols.push_back(vector_col_chunk);
+            }
+            std::sort(cols.begin(), cols.end());
+            cols.erase(std::unique(cols.begin(), cols.end()), cols.end());
+            return cols;
+        }
+
+        std::unique_ptr<vector::data_chunk_t>
+        merge_scan_batches(std::pmr::memory_resource* resource,
+                           std::pmr::vector<vector::data_chunk_t> batches) {
+            if (batches.empty()) {
+                return nullptr;
+            }
+            uint64_t total = 0;
+            for (const auto& batch : batches) {
+                total += batch.size();
+            }
+            if (total == 0) {
+                return std::make_unique<vector::data_chunk_t>(resource, batches.front().types(), 0);
+            }
+            auto merged = std::make_unique<vector::data_chunk_t>(resource, batches.front().types(), total);
+            uint64_t offset = 0;
+            for (auto& batch : batches) {
+                for (uint64_t row = 0; row < batch.size(); ++row) {
+                    for (uint64_t col = 0; col < batch.column_count(); ++col) {
+                        merged->data[col].set_value(offset + row, batch.value(col, row));
+                    }
+                }
+                offset += batch.size();
+            }
+            merged->set_cardinality(total);
+            return merged;
         }
     } // namespace
 
@@ -140,13 +191,7 @@ namespace components::operators {
                 if (log_.is_valid()) {
                     trace(log(), "operator_vector_search_t: using HNSW index, {} hit(s)", knn.hits.size());
                 }
-                if (knn.hits.empty()) {
-                    auto out_types = build_schema(static_cast<uint64_t>(types.size()),
-                                                  [&](uint64_t col) { return types[col]; });
-                    output_ = make_operator_data(resource_, std::move(out_types));
-                    mark_executed();
-                    co_return;
-                }
+                if (!knn.hits.empty()) {
                 // Fetch the hit rows (storage_fetch preserves row_ids order).
                 std::size_t count = knn.hits.size();
                 std::vector<int64_t> ids(count);
@@ -186,6 +231,7 @@ namespace components::operators {
                           data ? data->size() : 0,
                           count);
                 }
+                }
             }
             // No vector index on this column — fall through to the exact scan.
         }
@@ -213,15 +259,19 @@ namespace components::operators {
             }
         }
 
-        // Step 2: Scan to get target data for kNN
+        // Step 2: Scan to get target data for kNN (projected when column_pruning applies).
+        const auto scan_cols =
+            build_scan_columns(projected_cols_, vector_col_chunk_, static_cast<std::size_t>(types.size()));
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_scan,
+                                         &services::disk::manager_disk_t::storage_scan_batched,
                                          ctx->session,
                                          table_oid_,
                                          std::move(scan_filter),
-                                         -1, // no limit
+                                         -1,
+                                         scan_cols,
                                          ctx->txn);
-        auto data = co_await std::move(sf);
+        auto batches = co_await std::move(sf);
+        auto data = merge_scan_batches(resource_, std::move(batches));
 
         if (!data || data->size() == 0) {
             auto out_types = build_schema(static_cast<uint64_t>(types.size()),

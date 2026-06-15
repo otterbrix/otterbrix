@@ -64,10 +64,10 @@ namespace components::catalog {
     //                       not yet validated through pg_constraint). Carries FK semantics
     //                       directly: `confrelid`/`conkey`/`confkey`/`confmatchtype`/
     //                       `confdeltype`/`confupdtype`.
-    //   pg_index          — no `indisprimary`/`indisunique`/`indtype` (UNIQUE is recorded via
-    //                       pg_constraint contype='u', and index type isn't read by the
-    //                       planner). Carries `indisvalid` so the planner can hide a
-    //                       not-yet-backfilled index.
+    //   pg_index          — no `indisprimary`/`indisunique` (UNIQUE is recorded via
+    //                       pg_constraint contype='u'). Carries `indisvalid` so the planner
+    //                       can hide a not-yet-backfilled index, and `indam` (btree/hash/hnsw)
+    //                       for bootstrap of vector indexes without relying on sidecar alone.
     //
     // Additional system tables beyond the initial 10 (see catalog_oids.hpp):
     //   pg_sequence (oid=34): sequence start/increment/min/max/cycle/last_value — seqrelid FK

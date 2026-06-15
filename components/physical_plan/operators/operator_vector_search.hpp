@@ -23,7 +23,9 @@ namespace components::operators {
                                  vector_search::metric_type metric,
                                  const expressions::compare_expression_ptr& filter,
                                  vector_search::filter_strategy strategy,
-                                 bool descending = false);
+                                 bool descending = false,
+                                 std::vector<size_t> projected_cols = {},
+                                 std::size_t vector_col_chunk = static_cast<std::size_t>(-1));
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
@@ -40,6 +42,8 @@ namespace components::operators {
         expressions::compare_expression_ptr filter_;
         vector_search::filter_strategy strategy_;
         bool descending_;  // DESC: exact K-farthest scan
+        std::vector<size_t> projected_cols_;
+        std::size_t vector_col_chunk_;
     };
 
 } // namespace components::operators

@@ -140,8 +140,8 @@ namespace services::index {
                                                       uint64_t k,
                                                       components::vector_search::metric_type metric);
 
-        // SET hnsw.ef_search (0 = index default).
-        unique_future<void> set_ef_search(uint64_t ef);
+        // SET hnsw.ef_search (0 = index default). Per-session override.
+        unique_future<void> set_ef_search(session_id_t session, uint64_t ef);
 
         unique_future<void> flush_all_indexes(session_id_t session);
 

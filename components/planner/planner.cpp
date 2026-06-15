@@ -462,8 +462,19 @@ namespace components::planner {
                 return seq;
             }
 
-            auto writes =
-                catalog::build_create_index_writes(r, ci->name(), ns_oid, table_oid, index_oid, ci->column_attoids());
+            const std::string indam = [&]() {
+                using logical_plan::index_type;
+                switch (ci->type()) {
+                    case index_type::hashed:
+                        return "hash";
+                    case index_type::vector_hnsw:
+                        return "hnsw";
+                    default:
+                        return "btree";
+                }
+            }();
+            auto writes = catalog::build_create_index_writes(
+                r, ci->name(), ns_oid, table_oid, index_oid, ci->column_attoids(), indam);
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {

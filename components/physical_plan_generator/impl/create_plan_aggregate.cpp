@@ -2,6 +2,7 @@
 #include "create_plan_match.hpp"
 #include "create_plan_select.hpp"
 #include "create_plan_sort.hpp"
+#include "create_plan_vector_search.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -72,6 +73,9 @@ namespace services::planner::impl {
                     break;
                 case node_type::select_t:
                     select_op = create_plan_select(context, child, params);
+                    break;
+                case node_type::vector_search_t:
+                    child_op = create_plan_vector_search(context, child, params, projected_cols);
                     break;
                 default:
                     child_op = create_plan(context, function_registry, child, limit, params);

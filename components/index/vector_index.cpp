@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 
 namespace components::index {
 
@@ -165,7 +166,10 @@ namespace components::index {
     void vector_index_t::insert_impl(value_t key, index_value_t value, core::date::timezone_offset_t) {
         add_from_value(key, value.row_index);
     }
-    void vector_index_t::remove_impl(value_t, core::date::timezone_offset_t) {}
+    void vector_index_t::remove_impl(value_t, core::date::timezone_offset_t) {
+        throw std::logic_error(
+            "vector_index_t::remove is not supported; use transactional mark_delete with row_id");
+    }
 
     index_t::range vector_index_t::find_impl(const value_t&, core::date::timezone_offset_t) const {
         return {iterator(new empty_iterator_impl_t()), iterator(new empty_iterator_impl_t())};

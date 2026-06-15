@@ -315,6 +315,7 @@ namespace services::collection::executor {
                     auto* n = static_cast<components::logical_plan::node_set_ef_search_t*>(ef_root);
                     auto [_se, sef] = actor_zeta::send(index_address_,
                                                        &services::index::manager_index_t::set_ef_search,
+                                                       session,
                                                        static_cast<uint64_t>(n->ef_search()));
                     co_await std::move(sef);
                 }

@@ -14,6 +14,20 @@
 
 namespace components::operators {
 
+    namespace {
+        std::string index_type_to_indam(components::logical_plan::index_type type) {
+            using components::logical_plan::index_type;
+            switch (type) {
+                case index_type::hashed:
+                    return "hash";
+                case index_type::vector_hnsw:
+                    return "hnsw";
+                default:
+                    return "btree";
+            }
+        }
+    } // namespace
+
     operator_create_index_backfill_t::operator_create_index_backfill_t(
         std::pmr::memory_resource* resource,
         log_t log,
@@ -378,7 +392,8 @@ namespace components::operators {
                                                                      index_oid_,
                                                                      table_oid_,
                                                                      indkey_,
-                                                                     /*indisvalid=*/true);
+                                                                     /*indisvalid=*/true,
+                                                                     index_type_to_indam(index_type_));
             auto [_w, wf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::append_pg_catalog_row,
                                              exec_ctx,

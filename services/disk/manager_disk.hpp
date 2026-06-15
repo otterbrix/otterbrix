@@ -206,9 +206,8 @@ namespace services::disk {
     //   ready_since ← indisvalid sentinel: 1 if valid, 0 if backfill uncommitted
     //                 (base_spaces skips ready_since==0 as an unfinished build).
     //   name        ← pg_class.relname for indexrelid (no pg_index column).
-    //   type        — pg_index has no indtype column; defaults to index_type::single,
-    //                 which base_spaces uses to pick the on-disk extension
-    //                 (.bitcask vs .btree) when reconstructing the agent.
+    //   type        — pg_index.indam when present (btree/hash/hnsw); defaults to
+    //                 index_type::single for legacy four-column pg_index rows.
     struct pg_index_row_t {
         components::catalog::oid_t oid;
         components::catalog::oid_t table_oid;

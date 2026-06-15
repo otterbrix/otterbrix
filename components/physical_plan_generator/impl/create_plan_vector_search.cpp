@@ -5,6 +5,8 @@
 #include <components/physical_plan/operators/operator_vector_search.hpp>
 #include <components/types/logical_value.hpp>
 
+#include <stdexcept>
+
 namespace services::planner::impl {
 
     namespace {
@@ -15,7 +17,7 @@ namespace services::planner::impl {
             }
             auto it = params->parameters.find(*vs_node->k_param());
             if (it == params->parameters.end()) {
-                return vs_node->k();
+                throw std::logic_error("vector_search: LIMIT parameter is not bound");
             }
             const auto& v = it->second;
             int64_t lim = -1;
@@ -33,16 +35,20 @@ namespace services::planner::impl {
                     lim = v.value<int8_t>();
                     break;
                 default:
-                    break;
+                    throw std::logic_error("vector_search: LIMIT parameter has unsupported type");
             }
-            return lim >= 0 ? static_cast<std::size_t>(lim) : vs_node->k();
+            if (lim < 0) {
+                throw std::logic_error("vector_search: LIMIT parameter must be non-negative");
+            }
+            return static_cast<std::size_t>(lim);
         }
     } // namespace
 
     components::operators::operator_ptr
     create_plan_vector_search(const context_storage_t& context,
                               const components::logical_plan::node_ptr& node,
-                              const components::logical_plan::storage_parameters* params) {
+                              const components::logical_plan::storage_parameters* params,
+                              const std::vector<size_t>& projected_cols) {
         auto vs_node = static_cast<const components::logical_plan::node_vector_search_t*>(node.get());
 
         components::expressions::compare_expression_ptr filter;
@@ -52,6 +58,16 @@ namespace services::planner::impl {
         }
 
         const std::size_t k = resolve_k(vs_node, params);
+
+        std::size_t vector_col_chunk = static_cast<std::size_t>(-1);
+        if (const auto* md = context.table_metadata_for(node->table_oid())) {
+            for (const auto& col : md->columns) {
+                if (col.attname == vs_node->column_name() && col.chunk_position >= 0) {
+                    vector_col_chunk = static_cast<std::size_t>(col.chunk_position);
+                    break;
+                }
+            }
+        }
 
         if (context.has_table_oid(node->table_oid())) {
             return boost::intrusive_ptr(
@@ -64,7 +80,9 @@ namespace services::planner::impl {
                                                                     vs_node->metric(),
                                                                     filter,
                                                                     vs_node->strategy(),
-                                                                    vs_node->descending()));
+                                                                    vs_node->descending(),
+                                                                    projected_cols,
+                                                                    vector_col_chunk));
         } else {
             return boost::intrusive_ptr(
                 new components::operators::operator_vector_search_t(nullptr,
@@ -76,7 +94,9 @@ namespace services::planner::impl {
                                                                     vs_node->metric(),
                                                                     filter,
                                                                     vs_node->strategy(),
-                                                                    vs_node->descending()));
+                                                                    vs_node->descending(),
+                                                                    projected_cols,
+                                                                    vector_col_chunk));
         }
     }
 

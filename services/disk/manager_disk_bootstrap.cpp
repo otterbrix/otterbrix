@@ -11,6 +11,17 @@ namespace services::disk {
     namespace {
         namespace wk = components::catalog::well_known_oid;
 
+        components::logical_plan::index_type indam_to_index_type(std::string_view indam) {
+            using components::logical_plan::index_type;
+            if (indam == "hnsw") {
+                return index_type::vector_hnsw;
+            }
+            if (indam == "hash") {
+                return index_type::hashed;
+            }
+            return index_type::single;
+        }
+
         // ----------------------------------------------------------------------
         // Builtin seed rows for pg_catalog bootstrap.
         // Previously a standalone catalog builtin-seed unit; inlined here
@@ -528,11 +539,14 @@ namespace services::disk {
             col_indices.emplace_back(static_cast<int64_t>(1)); // indrelid
             col_indices.emplace_back(static_cast<int64_t>(2)); // indkey
             col_indices.emplace_back(static_cast<int64_t>(3)); // indisvalid
+            if (idx_table.column_count() >= 5) {
+                col_indices.emplace_back(static_cast<int64_t>(4)); // indam
+            }
             components::table::table_scan_state scan_state(&scan_resource);
             idx_table.initialize_scan(scan_state, col_indices);
             std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
-            for (std::size_t idx : {0u, 1u, 2u, 3u}) {
-                types.push_back(idx_table.columns()[idx].type());
+            for (std::size_t idx = 0; idx < col_indices.size(); ++idx) {
+                types.push_back(idx_table.columns()[static_cast<std::size_t>(col_indices[idx].primary_index())].type());
             }
             while (true) {
                 components::vector::data_chunk_t chunk(&scan_resource,
@@ -551,6 +565,12 @@ namespace services::disk {
                     pg_index_row_t row{resource_};
                     row.oid = static_cast<catalog::oid_t>(idxrelid_v.value<std::uint32_t>());
                     row.table_oid = static_cast<catalog::oid_t>(indrelid_v.value<std::uint32_t>());
+                    if (col_indices.size() >= 5) {
+                        auto indam_v = chunk.value(4, i);
+                        if (!indam_v.is_null()) {
+                            row.type = indam_to_index_type(indam_v.value<std::string_view>());
+                        }
+                    }
                     // indisvalid → ready_since sentinel (1 = alive, 0 = skip; see pg_index_row_t).
                     const bool valid = !indisvalid_v.is_null() && indisvalid_v.value<bool>();
                     row.ready_since = valid ? std::uint64_t{1} : std::uint64_t{0};

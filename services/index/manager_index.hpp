@@ -240,7 +240,7 @@ namespace services::index {
                                                       components::vector_search::metric_type metric);
 
         // SET hnsw.ef_search (0 = index default).
-        unique_future<void> set_ef_search(uint64_t ef);
+        unique_future<void> set_ef_search(session_id_t session, uint64_t ef);
 
         unique_future<void> flush_all_indexes(session_id_t session);
 
@@ -316,7 +316,7 @@ namespace services::index {
         uint64_t bitcask_segment_record_limit_{100};
         uint64_t btree_flush_threshold_{1000};
         double vector_compaction_threshold_{0.2};
-        uint64_t current_ef_search_{0}; // SET hnsw.ef_search; 0 = index default
+        std::pmr::unordered_map<std::uint64_t, std::uint64_t> session_ef_search_;
 
         // Per-collection in-memory index engines (keyed by table oid). Sole
         // owner — no engine state is shared with other actors. Populated by

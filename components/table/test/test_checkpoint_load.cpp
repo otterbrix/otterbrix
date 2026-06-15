@@ -1169,7 +1169,7 @@ TEST_CASE("checkpoint_load: explicit columnar-only root support matrix excludes 
     REQUIRE_FALSE(components::table::detail::is_explicit_pax_columnar_only_root_type(make_pax_union_type()));
     REQUIRE(to_physical_type(logical_type::BLOB) == physical_type::INVALID);
     REQUIRE(to_physical_type(logical_type::INTERVAL) == physical_type::STRUCT);
-    REQUIRE(to_physical_type(logical_type::MAP) == physical_type::INVALID);
+    REQUIRE(to_physical_type(logical_type::MAP) == physical_type::LIST);
 
     const auto variant_type = complex_logical_type::create_variant(std::pmr::get_default_resource(), "payload");
     REQUIRE(variant_type.child_types().size() == 4);

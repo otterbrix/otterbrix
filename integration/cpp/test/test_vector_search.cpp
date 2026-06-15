@@ -1207,3 +1207,116 @@ TEST_CASE("integration::cpp::vector_search::ranking_consistency") {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Additional edge cases (groups 2 & 3)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integration::cpp::vector_search::limit_zero_returns_empty") {
+    auto config = test_create_config("/tmp/test_vector_search/limit_zero");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    d->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE " + std::string(database_name) + ";");
+    create_vectors_table(d, 2);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(d->execute_sql(otterbrix::session_id_t(), make_insert_sql(i, {double(i), 0.0}))->is_success());
+    }
+    auto cur = d->execute_sql(otterbrix::session_id_t(),
+                              "SELECT id FROM TestDatabase.Vectors ORDER BY embedding <-> '[0.0, 0.0]' LIMIT 0;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 0);
+}
+
+TEST_CASE("integration::cpp::vector_search::index_restart_preserves_embedding_values") {
+    // After an HNSW index is persisted and reloaded, the kNN ORDER comes from the
+    // graph snapshot — but the embedding column VALUES come from table storage.
+    // Guards that both survive together (the array-persistence regression would
+    // have zeroed the stored vectors while the graph still ranked correctly).
+    auto config = test_create_config("/tmp/test_vector_search/idx_restart_values");
+    config.disk.on = true;
+    config.wal.on = true;
+    test_clear_directory(config);
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        d->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE " + std::string(database_name) + ";");
+        create_vectors_table(d, 2);
+        REQUIRE(d->execute_sql(otterbrix::session_id_t(), make_insert_sql(1, {1.0, 2.0}))->is_success());
+        REQUIRE(d->execute_sql(otterbrix::session_id_t(), make_insert_sql(2, {7.0, 8.0}))->is_success());
+        REQUIRE(d->execute_sql(otterbrix::session_id_t(),
+                               "CREATE INDEX idx_emb ON TestDatabase.Vectors USING hnsw (embedding vector_l2_ops);")
+                    ->is_success());
+    }
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto cur = d->execute_sql(otterbrix::session_id_t(),
+                                  "SELECT id, embedding FROM TestDatabase.Vectors WHERE id == 2;");
+        REQUIRE(cur->size() == 1);
+        auto ec = cur->chunk_data().column_index("embedding");
+        REQUIRE(ec != static_cast<size_t>(-1));
+        auto e = cur->value(static_cast<uint64_t>(ec), 0);
+        REQUIRE(e.children()[0].value<double>() == Approx(7.0));
+        REQUIRE(e.children()[1].value<double>() == Approx(8.0));
+        // kNN still ranks correctly through the reloaded index.
+        REQUIRE(knn_ids(d, "SELECT id FROM TestDatabase.Vectors ORDER BY embedding <-> '[1.0, 2.0]' LIMIT 1;") ==
+                std::vector<int64_t>({1}));
+    }
+}
+
+TEST_CASE("integration::cpp::vector_search::insert_rollback_excluded_from_knn") {
+    // MVCC: a vector inserted inside a transaction that ROLLBACKs must not appear
+    // in subsequent kNN results (exact path).
+    auto config = test_create_config("/tmp/test_vector_search/rollback");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    d->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE " + std::string(database_name) + ";");
+    create_vectors_table(d, 2);
+    REQUIRE(d->execute_sql(otterbrix::session_id_t(), make_insert_sql(1, {5.0, 5.0}))->is_success());
+
+    {
+        auto session = otterbrix::session_id_t(); // shared session for the txn
+        REQUIRE(d->execute_sql(session, "BEGIN;")->is_success());
+        REQUIRE(d->execute_sql(session, make_insert_sql(2, {0.0, 0.0}))->is_success());
+        REQUIRE(d->execute_sql(session, "ROLLBACK;")->is_success());
+    }
+
+    // id=2 ([0,0], the would-be nearest) was rolled back → only id=1 remains.
+    auto ids = knn_ids(d, "SELECT id FROM TestDatabase.Vectors ORDER BY embedding <-> '[0.0, 0.0]' LIMIT 5;");
+    REQUIRE(ids == std::vector<int64_t>({1}));
+}
+
+TEST_CASE("integration::cpp::vector_search::index_restart_no_duplicate_hits") {
+    // Clean restart (data inserted exactly once): the persisted graph + WAL replay
+    // must NOT double-count rows. kNN over distinct ids returns distinct ids.
+    auto config = test_create_config("/tmp/test_vector_search/idx_restart_nodup");
+    config.disk.on = true;
+    config.wal.on = true;
+    test_clear_directory(config);
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        d->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE " + std::string(database_name) + ";");
+        create_vectors_table(d, 2);
+        REQUIRE(d->execute_sql(otterbrix::session_id_t(), make_insert_sql(1, {0.0, 0.0}))->is_success());
+        REQUIRE(d->execute_sql(otterbrix::session_id_t(), make_insert_sql(3, {0.1, 0.1}))->is_success());
+        REQUIRE(d->execute_sql(otterbrix::session_id_t(), make_insert_sql(5, {0.2, 0.0}))->is_success());
+        REQUIRE(d->execute_sql(otterbrix::session_id_t(),
+                               "CREATE INDEX idx_emb ON TestDatabase.Vectors USING hnsw (embedding vector_l2_ops);")
+                    ->is_success());
+    }
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        // exactly 3 rows survive — no row duplication from snapshot + WAL replay.
+        REQUIRE(d->execute_sql(otterbrix::session_id_t(), "SELECT id FROM TestDatabase.Vectors;")->size() == 3);
+        auto ids = knn_ids(d, "SELECT id FROM TestDatabase.Vectors ORDER BY embedding <-> '[0.0, 0.0]' LIMIT 3;");
+        REQUIRE(ids == std::vector<int64_t>({1, 3, 5})); // distinct, correct order
+    }
+}

@@ -62,6 +62,19 @@ namespace components::vector {
             return physical_type == types::physical_type::STRING;
         }
 
+        // A fixed-size ARRAY[N] of a fixed-width inner type stores its elements
+        // contiguously in the child vector (entry()): num_rows * N inner values.
+        // Returns 0 for non-array types or a non-fixed inner type (unsupported).
+        size_t array_payload_size(const types::complex_logical_type& column_type, uint32_t num_rows) {
+            if (column_type.to_physical_type() != types::physical_type::ARRAY) {
+                return 0;
+            }
+            const auto* extension =
+                static_cast<const types::array_logical_type_extension*>(column_type.extension());
+            const size_t inner_size = fixed_type_size(extension->internal_type().to_physical_type());
+            return inner_size * extension->size() * static_cast<size_t>(num_rows);
+        }
+
         // Compute the size of the type header for a single column.
         // Format: [logical_type:1][alias_length:2][alias:N][extension_type:1][extension_data:0-5]
         uint32_t compute_type_header_size(const types::complex_logical_type& column_type) {
@@ -257,6 +270,8 @@ namespace components::vector {
                     string_data_size += static_cast<uint32_t>(views[row_index].size());
                 }
                 column_data_sizes[column_index] = offsets_size + string_data_size;
+            } else if (physical_type == types::physical_type::ARRAY) {
+                column_data_sizes[column_index] = static_cast<uint32_t>(array_payload_size(column.type(), num_rows));
             } else {
                 size_t element_size = fixed_type_size(physical_type);
                 column_data_sizes[column_index] = static_cast<uint32_t>(element_size * num_rows);
@@ -320,6 +335,10 @@ namespace components::vector {
                     std::memcpy(output, views[row_index].data(), views[row_index].size());
                     output += views[row_index].size();
                 }
+            } else if (physical_type == types::physical_type::ARRAY) {
+                // Elements live contiguously in the child vector (num_rows * N inner values).
+                std::memcpy(output, column.entry().data(), column_data_sizes[column_index]);
+                output += column_data_sizes[column_index];
             } else {
                 std::memcpy(output, column.data(), column_data_sizes[column_index]);
                 output += column_data_sizes[column_index];
@@ -432,6 +451,11 @@ namespace components::vector {
                 }
 
                 column.set_auxiliary(std::move(string_buffer));
+            } else if (physical_type == types::physical_type::ARRAY) {
+                // Restore the contiguous element block into the child vector.
+                if (data_size > 0) {
+                    std::memcpy(column.entry().data(), pointer, data_size);
+                }
             } else {
                 std::memcpy(column.data(), pointer, data_size);
             }

@@ -81,3 +81,13 @@ def test_numpy_2d_ndarray_rows_become_columns(conn):
     rel = conn.from_df(np.array([[1, 2, 3], [4, 5, 6]]))
     assert rel.columns == ["column0", "column1"]
     assert rel.fetchall() == [(1, 4), (2, 5), (3, 6)]
+
+
+def test_pandas_index_is_ignored(conn):
+    # A non-default index must NOT become a column: the old numpy/pandas scanner ingested
+    # only df.columns, but the Arrow C-stream export would otherwise turn a named index into
+    # a column. The prepare shim drops it via reset_index(drop=True). (PR #520 review.)
+    df = pd.DataFrame({"x": [10, 20, 30]}, index=["alice", "bob", "carol"])
+    rel = conn.from_df(df)
+    assert rel.columns == ["x"]
+    assert rel.fetchall() == [(10,), (20,), (30,)]

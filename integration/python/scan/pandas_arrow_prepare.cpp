@@ -79,6 +79,15 @@ namespace otterbrix {
     py::object prepare_dataframe_for_arrow(const py::object &df_in) {
         py::object df = df_in.attr("copy")(py::arg("deep") = false);
 
+        // 0. Drop the pandas index so it is never exported as a column. The Arrow
+        //    C-stream / from_pandas export turns a non-default (named / Multi) index
+        //    into a column by default (preserve_index=None), but the old numpy/pandas
+        //    scanner only ingested df.columns. reset_index(drop=true) replaces it with a
+        //    RangeIndex, which Arrow keeps as metadata rather than a column — restoring
+        //    the ignore-index behavior. Applied to the shallow copy, so the caller's
+        //    DataFrame is untouched.
+        df = df.attr("reset_index")(py::arg("drop") = true);
+
         // 1. De-duplicate column names (mirrors the former pandas_replace_copied_names).
         std::vector<std::string> columns;
         for (auto col : df.attr("columns")) {

@@ -81,7 +81,10 @@ namespace services::planner::impl {
                 return false;
             }
             auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
-            if (comp_expr->type() == compare_type::regex) {
+            // regex can't lower to a constant_filter; do_not_fold() marks comparisons whose
+            // RHS comes from a subquery (EXISTS/IN/ANY/ALL, see transform_sublink_expr) — those
+            // are not (column op constant) leaves and must not be pushed into the scan filter.
+            if (comp_expr->type() == compare_type::regex || comp_expr->do_not_fold()) {
                 return false;
             }
             for (const auto& child : comp_expr->children()) {

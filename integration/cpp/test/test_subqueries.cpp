@@ -284,6 +284,69 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 }
 
 // ---------------------------------------------------------------------------
+// Regression: subquery-derived comparisons (IN/EXISTS/ANY/ALL set
+// make_unfoldable()) must NOT be pushed into the disk scan filter. With
+// disk.on the WHERE lowers through create_plan_match::is_pure_compare, whose
+// do_not_fold() guard keeps these off the constant_filter push path. The
+// in-memory where_clause case above does not exercise that disk push path.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integration::cpp::test_subqueries::where_clause_disk_pushdown") {
+    auto config = test_create_config("/tmp/test_subqueries/where_clause_disk_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") { setup_subquery_db(dispatcher); }
+
+    INFO("IN subquery on a disk table is not mis-pushed into the scan filter") {
+        // High-budget depts (budget > 60000): Engineering(1), Sales(4), Finance(5)
+        // Employees in them: Alice, Bob, Grace, Henry, Iris, Jack -> 6
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE dept_id IN ("
+                                           "  SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 6);
+    }
+
+    INFO("NOT IN subquery on a disk table") {
+        // Low-budget depts: Marketing(2), HR(3) -> Charlie, Diana, Eve, Frank -> 4
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE dept_id NOT IN ("
+                                           "  SELECT id FROM TestDatabase.Departments WHERE budget > 60000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+    }
+
+    INFO("EXISTS subquery on a disk table — rows found") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT name FROM TestDatabase.Departments "
+                                           "WHERE EXISTS (SELECT 1 FROM TestDatabase.Employees WHERE salary > 85000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+
+    INFO("EXISTS subquery on a disk table — no rows found") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "SELECT name FROM TestDatabase.Departments "
+                                    "WHERE EXISTS (SELECT 1 FROM TestDatabase.Employees WHERE salary > 999999);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Subqueries in SELECT list and in FROM (derived tables)
 // ---------------------------------------------------------------------------
 

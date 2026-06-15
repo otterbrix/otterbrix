@@ -23,7 +23,9 @@ namespace services::planner::impl {
                 const auto* sort_expr = static_cast<components::expressions::sort_expression_t*>(expr.get());
                 const auto& path = sort_expr->key().path();
                 if (path.empty()) {
-                    throw std::logic_error("Sort key has unresolved path: " + sort_expr->key().as_string());
+                    // Defensive guard (validation resolves the path so this never fires): return
+                    // nullptr -> executor surfaces the error (rule 9: no throw on the operator-build path).
+                    return nullptr;
                 }
                 sort->add(path, components::operators::operator_sort_t::order(sort_expr->order()));
             } else if (expr->group() == components::expressions::expression_group::scalar) {

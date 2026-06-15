@@ -1,5 +1,7 @@
 #include "operator_resolve_function.hpp"
 
+#include "catalog_write_helpers.hpp"
+
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
 #include <components/types/logical_value.hpp>
@@ -20,35 +22,19 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
-        // File-local typed setters — direct typed-buffer writes that skip the
-        // logical_value_t variant construct/dispatch/destroy cycle. Layout of
-        // the destination chunk is known statically here (pg_proc schema).
-        inline void set_uint32(vector::data_chunk_t& c, size_t col, size_t row, std::uint32_t v) {
-            auto& vec = c.data[col];
-            vec.template data<std::uint32_t>()[row] = v;
-            vec.validity().set(row, true);
-        }
-        inline void set_int32(vector::data_chunk_t& c, size_t col, size_t row, std::int32_t v) {
-            auto& vec = c.data[col];
-            vec.template data<std::int32_t>()[row] = v;
-            vec.validity().set(row, true);
-        }
-        inline void set_int64(vector::data_chunk_t& c, size_t col, size_t row, std::int64_t v) {
-            auto& vec = c.data[col];
-            vec.template data<std::int64_t>()[row] = v;
-            vec.validity().set(row, true);
-        }
-        inline void
-        set_str(vector::data_chunk_t& c, size_t col, size_t row, std::string_view v, std::pmr::memory_resource* r) {
-            auto& vec = c.data[col];
-            if (!vec.auxiliary()) {
-                vec.set_auxiliary(std::make_shared<vector::string_vector_buffer_t>(r));
-            }
-            auto* sb = static_cast<vector::string_vector_buffer_t*>(vec.auxiliary().get());
-            auto* ptr = sb->insert(v);
-            reinterpret_cast<std::string_view*>(vec.template data<std::byte>())[row] =
-                std::string_view(static_cast<const char*>(ptr), v.size());
-            vec.validity().set(row, true);
+        // pg_proc output schema (column order):
+        //   [0] oid uint32, [1] proname string, [2] pronamespace uint32,
+        //   [3] pronargs int32, [4] prouid int64, [5] proargmatchers string,
+        //   [6] prorettype string. Built once into the cached member (TASK C10).
+        void build_output_schema(std::pmr::vector<types::complex_logical_type>& out_types) {
+            out_types.reserve(7);
+            out_types.emplace_back(types::logical_type::UINTEGER);       // oid
+            out_types.emplace_back(types::logical_type::STRING_LITERAL); // proname
+            out_types.emplace_back(types::logical_type::UINTEGER);       // pronamespace
+            out_types.emplace_back(types::logical_type::INTEGER);        // pronargs
+            out_types.emplace_back(types::logical_type::BIGINT);         // prouid
+            out_types.emplace_back(types::logical_type::STRING_LITERAL); // proargmatchers
+            out_types.emplace_back(types::logical_type::STRING_LITERAL); // prorettype
         }
     } // namespace
 
@@ -58,7 +44,10 @@ namespace components::operators {
                                                              std::string name)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_function)
         , namespace_oid_(namespace_oid)
-        , name_(std::move(name)) {}
+        , name_(std::move(name))
+        , output_schema_(resource) {
+        build_output_schema(output_schema_);
+    }
 
     void operator_resolve_function_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
         // Pg_proc read is async; defer to await_async_and_resume.
@@ -68,28 +57,13 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_resolve_function_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgProc = catalog::well_known_oid::pg_proc_table;
 
-        // Output schema mirrors pg_proc column order:
-        //   [0] oid             UINTEGER
-        //   [1] proname         STRING
-        //   [2] pronamespace    UINTEGER
-        //   [3] pronargs        INTEGER
-        //   [4] prouid          BIGINT
-        //   [5] proargmatchers  STRING
-        //   [6] prorettype      STRING
-        std::pmr::vector<types::complex_logical_type> out_types(resource_);
-        out_types.reserve(7);
-        out_types.emplace_back(types::logical_type::UINTEGER);       // oid
-        out_types.emplace_back(types::logical_type::STRING_LITERAL); // proname
-        out_types.emplace_back(types::logical_type::UINTEGER);       // pronamespace
-        out_types.emplace_back(types::logical_type::INTEGER);        // pronargs
-        out_types.emplace_back(types::logical_type::BIGINT);         // prouid
-        out_types.emplace_back(types::logical_type::STRING_LITERAL); // proargmatchers
-        out_types.emplace_back(types::logical_type::STRING_LITERAL); // prorettype
+        // Output schema mirrors pg_proc column order; cached on the operator
+        // (output_schema_), built once in the constructor (TASK C10).
 
         // Empty-input guard: no actor wired or empty name → emit an empty
         // chunk that still carries the schema so consumers can inspect columns.
         if (ctx->disk_address == actor_zeta::address_t::empty_address() || name_.empty()) {
-            output_ = make_operator_data(resource_, out_types, 0);
+            output_ = make_operator_data(resource_, output_schema_, 0);
             output_->data_chunk().set_cardinality(0);
             mark_executed();
             co_return;
@@ -127,7 +101,7 @@ namespace components::operators {
             total_rows += batch.size();
         }
         const auto cap = std::max<std::size_t>(total_rows, 1);
-        output_ = make_operator_data(resource_, out_types, cap);
+        output_ = make_operator_data(resource_, output_schema_, cap);
         auto& chunk = output_->data_chunk();
         chunk.set_cardinality(total_rows);
 

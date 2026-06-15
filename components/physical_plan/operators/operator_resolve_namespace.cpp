@@ -1,5 +1,7 @@
 #include "operator_resolve_namespace.hpp"
 
+#include "catalog_write_helpers.hpp"
+
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
 #include <components/logical_plan/node_catalog_resolve_namespace.hpp>
@@ -18,18 +20,6 @@ namespace components::operators {
 
     namespace catalog = components::catalog;
 
-    namespace {
-        // File-local typed setter — mirrors the ddl_metadata_builder.cpp helpers.
-        // Writes directly into the column's typed buffer at (col, row), avoiding
-        // a logical_value_t variant round-trip when both sides are known to be
-        // uint32_t at compile time.
-        inline void set_uint32(vector::data_chunk_t& c, size_t col, size_t row, std::uint32_t v) {
-            auto& vec = c.data[col];
-            vec.template data<std::uint32_t>()[row] = v;
-            vec.validity().set(row, true);
-        }
-    } // namespace
-
     operator_resolve_namespace_t::operator_resolve_namespace_t(std::pmr::memory_resource* resource,
                                                                log_t log,
                                                                std::string name)
@@ -37,7 +27,14 @@ namespace components::operators {
         // consumers; like operator_get_schema, the executor's generic
         // pipeline drives this operator via await_async_and_resume.
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_namespace)
-        , name_(std::move(name)) {}
+        , name_(std::move(name))
+        , output_schema_(resource) {
+        // Static single-column output schema, built once here (TASK C10).
+        // We always emit a chunk (zero rows on miss, one row on hit) so
+        // downstream operators rely on a consistent schema.
+        output_schema_.emplace_back(types::logical_type::UINTEGER);
+        output_schema_.back().set_alias("namespace_oid");
+    }
 
     operator_resolve_namespace_t::operator_resolve_namespace_t(
         std::pmr::memory_resource* resource,
@@ -46,7 +43,11 @@ namespace components::operators {
         components::logical_plan::node_catalog_resolve_namespace_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_namespace)
         , name_(std::move(name))
-        , target_node_(target_node) {}
+        , target_node_(target_node)
+        , output_schema_(resource) {
+        output_schema_.emplace_back(types::logical_type::UINTEGER);
+        output_schema_.back().set_alias("namespace_oid");
+    }
 
     void operator_resolve_namespace_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
         // All work is async (single pg_namespace read). Defer to
@@ -57,14 +58,10 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_resolve_namespace_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgNamespace = catalog::well_known_oid::pg_namespace_table;
 
-        // Build the single-column output chunk schema up-front. We always emit
-        // a chunk (zero rows on miss, one row on hit) so downstream operators
-        // can rely on a consistent schema regardless of resolution outcome.
-        std::pmr::vector<types::complex_logical_type> out_types(resource_);
-        out_types.emplace_back(types::logical_type::UINTEGER);
-        out_types.back().set_alias("namespace_oid");
-
-        vector::data_chunk_t out_chunk(resource_, out_types);
+        // Output chunk built from the constructor-cached schema (TASK C10). We
+        // always emit a chunk (zero rows on miss, one row on hit) so downstream
+        // operators can rely on a consistent schema regardless of outcome.
+        vector::data_chunk_t out_chunk(resource_, output_schema_);
 
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             // No disk wired (rare — some test harnesses). Emit empty chunk and

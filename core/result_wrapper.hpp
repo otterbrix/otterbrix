@@ -55,6 +55,7 @@ namespace core {
         unrecognized_function,
         incorrect_function_argument,
         incorrect_function_return_type,
+        invalid_constraint,
     };
 
     struct error_t {

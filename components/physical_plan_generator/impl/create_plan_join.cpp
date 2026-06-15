@@ -50,7 +50,9 @@ namespace services::planner::impl {
             case join_type::full:
                 break;
             case join_type::invalid:
-                throw std::logic_error("create_plan_join: INVALID join type");
+                // Defensive guard (validation guarantees this never fires): return nullptr ->
+                // executor surfaces the error (rule 9: no throw on the operator-build path).
+                return nullptr;
         }
         components::operators::operator_ptr left;
         components::operators::operator_ptr right;

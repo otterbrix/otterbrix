@@ -61,7 +61,10 @@ namespace {
         if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(res.value())) {
             const auto& values = std::get<std::pmr::vector<types::logical_value_t>>(res.value());
             if (values.size() < N) {
-                throw std::runtime_error("batch function predicate: function returned fewer results than inputs");
+                return core::error_t(
+                    core::error_code_t::incorrect_function_return_type,
+                    std::pmr::string{"batch function predicate: function returned fewer results than inputs",
+                                     batch.resource()});
             }
             for (size_t k = 0; k < N; ++k) {
                 results[k] = values[k].value<bool>();
@@ -70,7 +73,10 @@ namespace {
             // vector_function returns data_chunk_t; result column is data[0]
             const auto& chunk = std::get<vector::data_chunk_t>(res.value());
             if (chunk.data.empty() || chunk.size() < N) {
-                throw std::runtime_error("batch function predicate: function returned fewer results than inputs");
+                return core::error_t(
+                    core::error_code_t::incorrect_function_return_type,
+                    std::pmr::string{"batch function predicate: function returned fewer results than inputs",
+                                     batch.resource()});
             }
             for (size_t k = 0; k < N; ++k) {
                 results[k] = chunk.data.front().value(k).value<bool>();

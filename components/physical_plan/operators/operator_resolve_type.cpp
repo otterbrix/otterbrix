@@ -1,5 +1,7 @@
 #include "operator_resolve_type.hpp"
 
+#include "catalog_write_helpers.hpp"
+
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
@@ -23,25 +25,15 @@ namespace components::operators {
     namespace types = components::types;
 
     namespace {
-        // File-local typed setters — pg_type schema is statically known here,
-        // so we bypass the logical_value_t variant dispatch and write directly
-        // into the column's typed buffer.
-        inline void set_uint32(vector::data_chunk_t& c, size_t col, size_t row, std::uint32_t v) {
-            auto& vec = c.data[col];
-            vec.template data<std::uint32_t>()[row] = v;
-            vec.validity().set(row, true);
-        }
-        inline void
-        set_str(vector::data_chunk_t& c, size_t col, size_t row, std::string_view v, std::pmr::memory_resource* r) {
-            auto& vec = c.data[col];
-            if (!vec.auxiliary()) {
-                vec.set_auxiliary(std::make_shared<vector::string_vector_buffer_t>(r));
-            }
-            auto* sb = static_cast<vector::string_vector_buffer_t*>(vec.auxiliary().get());
-            auto* ptr = sb->insert(v);
-            reinterpret_cast<std::string_view*>(vec.template data<std::byte>())[row] =
-                std::string_view(static_cast<const char*>(ptr), v.size());
-            vec.validity().set(row, true);
+        // pg_type output schema: (oid uint32, typname string,
+        // typnamespace uint32, typdefspec string). Built once into the cached
+        // member (TASK C10).
+        void build_output_schema(std::pmr::vector<types::complex_logical_type>& out_types) {
+            out_types.reserve(4);
+            out_types.emplace_back(types::logical_type::UINTEGER);       // oid
+            out_types.emplace_back(types::logical_type::STRING_LITERAL); // typname
+            out_types.emplace_back(types::logical_type::UINTEGER);       // typnamespace
+            out_types.emplace_back(types::logical_type::STRING_LITERAL); // typdefspec
         }
     } // namespace
 
@@ -51,7 +43,10 @@ namespace components::operators {
                                                      std::string name)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_type)
         , namespace_oid_(namespace_oid)
-        , name_(std::move(name)) {}
+        , name_(std::move(name))
+        , output_schema_(resource) {
+        build_output_schema(output_schema_);
+    }
 
     operator_resolve_type_t::operator_resolve_type_t(std::pmr::memory_resource* resource,
                                                      log_t log,
@@ -62,7 +57,10 @@ namespace components::operators {
         , namespace_oid_(catalog::INVALID_OID)
         , dbname_(std::move(dbname))
         , name_(std::move(name))
-        , target_node_(target_node) {}
+        , target_node_(target_node)
+        , output_schema_(resource) {
+        build_output_schema(output_schema_);
+    }
 
     void operator_resolve_type_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
@@ -70,12 +68,8 @@ namespace components::operators {
         constexpr catalog::oid_t kPgType = catalog::well_known_oid::pg_type_table;
         constexpr catalog::oid_t kPgNamespace = catalog::well_known_oid::pg_namespace_table;
 
-        std::pmr::vector<types::complex_logical_type> out_types(resource_);
-        out_types.reserve(4);
-        out_types.emplace_back(types::logical_type::UINTEGER);       // oid
-        out_types.emplace_back(types::logical_type::STRING_LITERAL); // typname
-        out_types.emplace_back(types::logical_type::UINTEGER);       // typnamespace
-        out_types.emplace_back(types::logical_type::STRING_LITERAL); // typdefspec
+        // Output schema is cached on the operator (output_schema_), built once
+        // in the constructor (TASK C10).
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
@@ -110,7 +104,7 @@ namespace components::operators {
             }
         }
 
-        vector::data_chunk_t chunk(resource_, out_types, /*capacity=*/1);
+        vector::data_chunk_t chunk(resource_, output_schema_, /*capacity=*/1);
 
         if (namespace_oid_ != catalog::INVALID_OID && ctx->disk_address != actor_zeta::address_t::empty_address()) {
             types::logical_value_t name_lv(resource_, std::string_view{name_});

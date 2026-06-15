@@ -66,28 +66,9 @@
 
 namespace services::dispatcher { namespace {
 
-    // Helpers: probe enrich_resolve_idx_t (plan-tree resolves stamped by
-    // operator_resolve_*_t). All catalog reads in enrich flow through
-    // these.
-    const components::logical_plan::resolved_table_metadata_t*
-    lookup_table_md_local(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
-        if (!idx)
-            return nullptr;
-        std::string key;
-        key.reserve(db.size() + 1 + rel.size());
-        key.append(db).push_back('|');
-        key.append(rel);
-        auto it = idx->tbl_md_by_qname.find(key);
-        return it != idx->tbl_md_by_qname.end() ? it->second : nullptr;
-    }
-
-    const components::logical_plan::resolved_table_metadata_t*
-    lookup_table_md_by_oid_local(const enrich_resolve_idx_t* idx, components::catalog::oid_t oid) {
-        if (!idx)
-            return nullptr;
-        auto it = idx->tbl_md_by_oid.find(oid);
-        return it != idx->tbl_md_by_oid.end() ? it->second : nullptr;
-    }
+    using services::catalog_resolve::plan_resolve_index_t;
+    using services::catalog_resolve::tbl_md_for;
+    using services::catalog_resolve::tbl_md_for_oid;
 
     void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md,
                        std::vector<std::string>& out,
@@ -100,14 +81,14 @@ namespace services::dispatcher { namespace {
     }
 
     void enrich_insert_sync(components::logical_plan::node_insert_t* node,
-                            const enrich_resolve_idx_t* idx,
+                            const plan_resolve_index_t* idx,
                             core::date::timezone_offset_t session_tz) {
         // Insert node carries only its table_oid (stamped by
         // stamp_drop_oids_from_resolves from the sibling resolve_table);
         // look up table metadata by OID rather than (db, rel) strings.
         if (node->table_oid() == components::catalog::INVALID_OID)
             return;
-        const auto* md = lookup_table_md_by_oid_local(idx, node->table_oid());
+        const auto* md = tbl_md_for_oid(idx, node->table_oid());
         if (!md)
             return;
         std::vector<std::string> nn;
@@ -171,6 +152,15 @@ namespace services::dispatcher { namespace {
                 // copy every row via cast_as. complex_logical_type::cast_as
                 // recurses STRUCT children, so nested ROW(int_literal,...)
                 // → STRUCT(INTEGER,...) is fully retyped.
+                //
+                // TODO(L3): drop the per-row logical_value_t round-trip once a
+                // typed cast accessor on vector_t/data_chunk covers this case.
+                // vector_operations::cast_vector exists but is FLAT numeric-only
+                // (asserts on strings, no STRUCT/LIST/ARRAY/MAP recursion, no
+                // session_tz for timestamps); this loop relies on cast_as's
+                // recursive composite descent + tz-aware temporal casts + null
+                // preservation. No suitable batch accessor today, so left as-is
+                // rather than inventing a new abstraction.
                 components::vector::vector_t replacement(col.resource(), *target_type, chunk.capacity());
                 const auto rows = chunk.size();
                 for (std::uint64_t row = 0; row < rows; ++row) {
@@ -190,11 +180,11 @@ namespace services::dispatcher { namespace {
         }
     }
 
-    void enrich_update_sync(components::logical_plan::node_update_t* node, const enrich_resolve_idx_t* idx) {
+    void enrich_update_sync(components::logical_plan::node_update_t* node, const plan_resolve_index_t* idx) {
         // Lookup by table_oid stamped from the sibling resolve_table.
         if (node->table_oid() == components::catalog::INVALID_OID)
             return;
-        const auto* md = lookup_table_md_by_oid_local(idx, node->table_oid());
+        const auto* md = tbl_md_for_oid(idx, node->table_oid());
         if (!md)
             return;
         std::vector<std::string> nn;
@@ -203,84 +193,19 @@ namespace services::dispatcher { namespace {
     }
 
     void enrich_create_collection_sync(components::logical_plan::node_create_collection_t* node,
-                                       const enrich_resolve_idx_t* /*idx*/) {
+                                       const plan_resolve_index_t* /*idx*/) {
         // namespace_oid stamped by stamp_drop_oids_from_resolves from the
         // sibling catalog_resolve_namespace_t; no per-node work here.
         (void) node;
     }
 
-    // Walk the plan tree, harvest namespace_oid / table_oid stamped
-    // by operator_resolve_*_t into a flat hashmap. Empty when
-    // the plan has no resolve wrap (DDL paths, disk-less harnesses).
-    // The caller (enrich_plan top-level) builds this once and threads
-    // the const-ptr through recursive calls.
-    void gather_enrich_resolve_idx(components::logical_plan::node_t* root, enrich_resolve_idx_t& out) {
-        using namespace components::logical_plan;
-        if (!root)
-            return;
-        std::queue<node_t*> q;
-        q.push(root);
-        while (!q.empty()) {
-            auto* n = q.front();
-            q.pop();
-            switch (n->type()) {
-                case node_type::catalog_resolve_table_t: {
-                    auto* rt = static_cast<node_catalog_resolve_table_t*>(n);
-                    if (rt->table_oid() != components::catalog::INVALID_OID) {
-                        std::string key;
-                        key.reserve(rt->dbname().size() + 1 + rt->relname().size());
-                        key.append(rt->dbname()).push_back('|');
-                        key.append(rt->relname());
-                        out.tbl_oid_by_qname[key] = rt->table_oid();
-                        // Stamp the full metadata pointer too when
-                        // operator_resolve_table_t populated it.
-                        if (rt->resolved_metadata().has_value()) {
-                            const auto* md_ptr = &rt->resolved_metadata().value();
-                            out.tbl_md_by_qname[std::move(key)] = md_ptr;
-                            out.tbl_md_by_oid[rt->table_oid()] = md_ptr;
-                        }
-                    }
-                    break;
-                }
-                case node_type::catalog_resolve_constraint_t: {
-                    auto* cr = static_cast<node_catalog_resolve_constraint_t*>(n);
-                    if (!cr->target())
-                        break;
-                    const auto& md = cr->target()->resolved_metadata();
-                    if (!md.has_value() || md->table_oid == components::catalog::INVALID_OID) {
-                        break;
-                    }
-                    using direction_t = node_catalog_resolve_constraint_t::direction_t;
-                    if (cr->direction() == direction_t::outgoing) {
-                        out.outgoing_fks_by_oid[md->table_oid] = cr->fks();
-                        out.check_exprs_by_oid[md->table_oid] = cr->check_exprs();
-                    } else {
-                        out.referencing_fks_by_oid[md->table_oid] = cr->fks();
-                    }
-                    break;
-                }
-                default:
-                    break;
-            }
-            for (const auto& c : n->children()) {
-                if (c)
-                    q.push(c.get());
-            }
-        }
-    }
-
-    // Name→OID lookup via plan-tree index. Returns INVALID_OID on miss;
-    // the caller decides whether a miss is fatal.
+    // Name→OID lookup via the plan-tree index. Returns INVALID_OID on miss;
+    // the caller decides whether a miss is fatal. Reads the same metadata
+    // pointers gather_plan_resolve_index harvested, keyed by (db, rel).
     components::catalog::oid_t
-    lookup_table_oid(const enrich_resolve_idx_t* idx, std::string_view db, std::string_view rel) {
-        if (!idx)
-            return components::catalog::INVALID_OID;
-        std::string key;
-        key.reserve(db.size() + 1 + rel.size());
-        key.append(db).push_back('|');
-        key.append(rel);
-        auto it = idx->tbl_oid_by_qname.find(key);
-        return it != idx->tbl_oid_by_qname.end() ? it->second : components::catalog::INVALID_OID;
+    lookup_table_oid(const plan_resolve_index_t* idx, std::string_view db, std::string_view rel) {
+        const auto* md = tbl_md_for(idx, db, rel);
+        return md ? md->table_oid : components::catalog::INVALID_OID;
     }
 
 }} // namespace services::dispatcher::
@@ -793,65 +718,20 @@ namespace services::catalog_resolve {
 
 } // namespace services::catalog_resolve
 
-namespace services::dispatcher {
+namespace services::dispatcher { namespace {
 
-    actor_zeta::unique_future<void> enrich_plan(std::pmr::memory_resource* resource,
-                                                components::logical_plan::node_ptr root,
-                                                actor_zeta::address_t disk_address,
-                                                components::execution_context_t ctx,
-                                                actor_zeta::address_t index_address,
-                                                services::context_storage_t* collections_ctx,
-                                                const enrich_resolve_idx_t* idx) {
+    // Per-node enrichment worker, recursing through children. Threads a
+    // core::error_t through the recursion (no-error state on success). idx is
+    // the executor-built plan-tree resolve index; never null here (enrich_plan
+    // is the only caller and it requires a non-null idx).
+    [[nodiscard]] actor_zeta::unique_future<core::error_t>
+    enrich_node(std::pmr::memory_resource* resource,
+                components::logical_plan::node_ptr root,
+                components::execution_context_t ctx,
+                const services::catalog_resolve::plan_resolve_index_t* idx) {
         using namespace components::logical_plan;
         if (!root)
-            co_return;
-        // Top-level entry: gather plan-tree resolve index once, then re-enter
-        // with the gathered pointer. Recursive callers already supply a non-null
-        // `idx` so this gather runs at most once per public enrich_plan call.
-        if (idx == nullptr) {
-            enrich_resolve_idx_t local_idx;
-            gather_enrich_resolve_idx(root.get(), local_idx);
-            // drop_* nodes no longer carry user-typed names; copy OIDs
-            // from their sibling catalog_resolve_* nodes inside each sequence_t
-            // before the per-node enrich cases run.
-            stamp_oids_from_resolves(root.get());
-            co_await enrich_plan(resource, root, disk_address, ctx, index_address, collections_ctx, &local_idx);
-
-            if (collections_ctx && index_address != actor_zeta::address_t::empty_address()) {
-                // Two-phase: per-table get_indexed_keys + get_indexed_descriptions
-                // are independent across tables, so send both queries for every
-                // table first, then await and consume. collections_ctx fields are
-                // overwritten per table (last table wins, as before), so the
-                // await order must match the send order; awaiting in the same loop
-                // index sequence preserves that.
-                std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>>
-                    keys_futures(resource);
-                std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::index_description_t>>>
-                    desc_futures(resource);
-                for (auto tbl_oid : root->table_oid_dependencies()) {
-                    if (tbl_oid == components::catalog::INVALID_OID) {
-                        continue;
-                    }
-                    auto [_ik, ikf] = actor_zeta::send(index_address,
-                                                       &index::manager_index_t::get_indexed_keys,
-                                                       ctx.session,
-                                                       tbl_oid);
-                    keys_futures.push_back(std::move(ikf));
-                    auto [_id, idf] = actor_zeta::send(index_address,
-                                                       &index::manager_index_t::get_indexed_descriptions,
-                                                       ctx.session,
-                                                       tbl_oid);
-                    desc_futures.push_back(std::move(idf));
-                }
-                for (auto& ikf : keys_futures) {
-                    collections_ctx->indexed_keys = co_await std::move(ikf);
-                }
-                for (auto& idf : desc_futures) {
-                    collections_ctx->indexed_descriptions = co_await std::move(idf);
-                }
-            }
-            co_return;
-        }
+            co_return core::error_t::no_error();
         // Stamp table_oid for any SELECT-side consumer that still carries
         // (db, rel) on the node body (aggregate/match/group/sort/join/limit/
         // having). DML consumers (insert/update/delete) have already been
@@ -965,7 +845,7 @@ namespace services::dispatcher {
                 // and defspecs are pre-populated by the resolve_constraint
                 // operator itself — see operator_resolve_constraint.cpp.
                 const auto* tbl = (node->table_oid() != components::catalog::INVALID_OID)
-                                      ? lookup_table_md_by_oid_local(idx, node->table_oid())
+                                      ? tbl_md_for_oid(idx, node->table_oid())
                                       : nullptr;
                 if (tbl && idx) {
                     const auto tbl_oid = tbl->table_oid;
@@ -996,9 +876,10 @@ namespace services::dispatcher {
                 auto* node = static_cast<node_create_collection_t*>(root.get());
                 enrich_create_collection_sync(node, idx);
                 // resolve_column_definitions takes an explicit plan-tree idx.
-                // enrich's `enrich_resolve_idx_t` is a different shape; build
-                // a small plan_resolve_index_t locally from the same root tree so
-                // UDT columns get resolved without thread_local state.
+                // Build a sub-tree-local plan_resolve_index_t from this node so
+                // UDT columns get resolved without thread_local state. (The
+                // executor-built `idx` covers the whole plan; gathering from
+                // `root` here keeps the original sub-tree scoping.)
                 impl::plan_resolve_index_t local_plan_idx;
                 impl::gather_plan_resolve_index(root.get(), &local_plan_idx);
                 resolve_column_definitions(node->column_definitions(), &local_plan_idx);
@@ -1017,7 +898,7 @@ namespace services::dispatcher {
                 auto* node = static_cast<node_create_index_t*>(root.get());
                 if (node->table_oid() == components::catalog::INVALID_OID)
                     break;
-                const auto* tbl = lookup_table_md_by_oid_local(idx, node->table_oid());
+                const auto* tbl = tbl_md_for_oid(idx, node->table_oid());
                 if (!tbl)
                     break;
 
@@ -1053,7 +934,7 @@ namespace services::dispatcher {
                 // resolve_table emitted by the transformer.
                 auto* node = static_cast<node_create_constraint_t*>(root.get());
                 const std::string& ns_name = node->dbname();
-                const auto* tbl = lookup_table_md_local(idx, ns_name, node->relname());
+                const auto* tbl = tbl_md_for(idx, ns_name, node->relname());
                 if (!tbl)
                     break;
                 node->set_table_oid(tbl->table_oid);
@@ -1075,7 +956,7 @@ namespace services::dispatcher {
                 // the 2nd resolve_table sibling (transformer emits FK ref table).
                 if (node->kind() == constraint_kind::foreign_key &&
                     node->ref_table_oid() != components::catalog::INVALID_OID) {
-                    const auto* rrt = lookup_table_md_by_oid_local(idx, node->ref_table_oid());
+                    const auto* rrt = tbl_md_for_oid(idx, node->ref_table_oid());
                     if (rrt) {
                         std::vector<components::catalog::oid_t> ref_attoids;
                         for (const auto& col_name : node->ref_col_names()) {
@@ -1097,7 +978,7 @@ namespace services::dispatcher {
                 // the planner rewrite (computed-vs-regular routing).
                 auto* node = static_cast<node_alter_table_t*>(root.get());
                 if (node->table_oid() != components::catalog::INVALID_OID) {
-                    const auto* tbl = lookup_table_md_by_oid_local(idx, node->table_oid());
+                    const auto* tbl = tbl_md_for_oid(idx, node->table_oid());
                     if (tbl) {
                         node->set_relkind(tbl->relkind);
                     }
@@ -1127,8 +1008,73 @@ namespace services::dispatcher {
         for (auto& child : root->children()) {
             if (!child)
                 continue;
-            co_await enrich_plan(resource, child, disk_address, ctx, index_address, collections_ctx, idx);
+            auto child_err = co_await enrich_node(resource, child, ctx, idx);
+            if (child_err.contains_error()) {
+                co_return child_err;
+            }
         }
+        co_return core::error_t::no_error();
+    }
+
+}} // namespace services::dispatcher::
+
+namespace services::dispatcher {
+
+    actor_zeta::unique_future<core::error_t>
+    enrich_plan(std::pmr::memory_resource* resource,
+                components::logical_plan::node_ptr root,
+                actor_zeta::address_t disk_address,
+                components::execution_context_t ctx,
+                const services::catalog_resolve::plan_resolve_index_t* idx,
+                actor_zeta::address_t index_address,
+                services::context_storage_t* collections_ctx) {
+        (void) disk_address;
+        if (!root)
+            co_return core::error_t::no_error();
+        // drop_* nodes no longer carry user-typed names; copy OIDs from their
+        // sibling catalog_resolve_* nodes inside each sequence_t before the
+        // per-node enrich cases run. (The executor already stamps before
+        // building `idx`; this is a defensive no-op for already-stamped trees.)
+        stamp_oids_from_resolves(root.get());
+        auto err = co_await enrich_node(resource, root, ctx, idx);
+        if (err.contains_error()) {
+            co_return err;
+        }
+
+        if (collections_ctx && index_address != actor_zeta::address_t::empty_address()) {
+            // Two-phase: per-table get_indexed_keys + get_indexed_descriptions
+            // are independent across tables, so send both queries for every
+            // table first, then await and consume. collections_ctx fields are
+            // overwritten per table (last table wins, as before), so the
+            // await order must match the send order; awaiting in the same loop
+            // index sequence preserves that.
+            std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>>
+                keys_futures(resource);
+            std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::index_description_t>>>
+                desc_futures(resource);
+            for (auto tbl_oid : root->table_oid_dependencies()) {
+                if (tbl_oid == components::catalog::INVALID_OID) {
+                    continue;
+                }
+                auto [_ik, ikf] = actor_zeta::send(index_address,
+                                                   &index::manager_index_t::get_indexed_keys,
+                                                   ctx.session,
+                                                   tbl_oid);
+                keys_futures.push_back(std::move(ikf));
+                auto [_id, idf] = actor_zeta::send(index_address,
+                                                   &index::manager_index_t::get_indexed_descriptions,
+                                                   ctx.session,
+                                                   tbl_oid);
+                desc_futures.push_back(std::move(idf));
+            }
+            for (auto& ikf : keys_futures) {
+                collections_ctx->indexed_keys = co_await std::move(ikf);
+            }
+            for (auto& idf : desc_futures) {
+                collections_ctx->indexed_descriptions = co_await std::move(idf);
+            }
+        }
+        co_return core::error_t::no_error();
     }
 
 } // namespace services::dispatcher

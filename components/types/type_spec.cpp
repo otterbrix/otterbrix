@@ -313,7 +313,7 @@ namespace components::types {
                 ++pos;
                 auto value = parse_flat_type(resource, spec, pos);
                 ++pos;
-                return complex_logical_type::create_map(key, value);
+                return complex_logical_type::create_map(resource, key, value);
             }
             if (name == "STRUCT") {
                 std::string struct_name = read_token(spec, pos);

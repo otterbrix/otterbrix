@@ -1234,7 +1234,8 @@ TEST_CASE("checkpoint_load: explicit pax support matrix accepts mixed and reject
         REQUIRE(error_message.find("not supported by USING PAX") != std::string::npos);
     };
 
-    require_unsupported_complex(complex_logical_type::create_map(logical_type::INTEGER,
+    require_unsupported_complex(complex_logical_type::create_map(std::pmr::get_default_resource(),
+                                                                 logical_type::INTEGER,
                                                                  logical_type::STRING_LITERAL,
                                                                  "map_payload"));
     require_unsupported_complex(complex_logical_type::create_variant(std::pmr::get_default_resource(), "variant_payload"));

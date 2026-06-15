@@ -378,7 +378,7 @@ namespace components::vector {
                     if (!ok) {
                         return types::complex_logical_type{types::logical_type::INVALID};
                     }
-                    return types::complex_logical_type::create_map(key, value, std::move(alias));
+                    return types::complex_logical_type::create_map(resource, key, value, std::move(alias));
                 }
                 case types::logical_type::STRUCT: {
                     std::string type_name;

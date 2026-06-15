@@ -2,6 +2,7 @@
 #include "catalog_codes.hpp"
 
 #include <array>
+#include <cassert>
 #include <charconv>
 
 #include <components/types/logical_value.hpp>
@@ -91,6 +92,11 @@ namespace components::catalog {
             c.emplace_back("relstorageformat",
                            str_col(),
                            false); // nullable; storage format (see header)
+            // PAX-specific column. operator_resolve_table.cpp and operator_vacuum.cpp read it
+            // POSITIONALLY as row[5]. Pin the layout here so an upstream column insertion trips
+            // this in tests instead of silently shifting those reads to the wrong column.
+            assert(c.size() == 6 && c.back().name() == "relstorageformat" &&
+                   "pg_class layout changed: update the row[5]=relstorageformat readers");
             return c;
         }
 

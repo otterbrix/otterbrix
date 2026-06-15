@@ -71,7 +71,7 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(future.is_ready());
-            return std::move(future).get();
+            return std::move(future).take_ready();
         }
 
         // Alias used by disk_test_helpers templates.

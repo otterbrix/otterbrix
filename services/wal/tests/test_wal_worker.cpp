@@ -68,7 +68,7 @@ static decltype(auto) await_ready(F& fut) {
         std::this_thread::yield();
     }
     REQUIRE(fut.is_ready());
-    return std::move(fut).get();
+    return std::move(fut).take_ready();
 }
 
 // ---------------------------------------------------------------------------

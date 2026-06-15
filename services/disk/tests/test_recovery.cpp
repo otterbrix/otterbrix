@@ -90,7 +90,7 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(future.is_ready());
-            return std::move(future).get();
+            return std::move(future).take_ready();
         }
 
         components::execution_context_t ctx() {

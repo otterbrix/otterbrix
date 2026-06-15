@@ -69,10 +69,10 @@ public:
     auto disk_invoke(Fn fn, Args&&... args) {
         auto [_, future] =
             actor_zeta::otterbrix::send(manager_disk_->address(), fn, std::forward<Args>(args)...);
-        while (!future.available()) {
+        while (!future.is_ready()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        return std::move(future).get();
+        return std::move(future).take_ready();
     }
 
     // Alias so test_probe::probe_* (services/disk/tests/catalog_probe.hpp) can drive
@@ -86,20 +86,20 @@ public:
     auto wal_invoke(Fn fn, Args&&... args) {
         auto [_, future] =
             actor_zeta::otterbrix::send(manager_wal_->address(), fn, std::forward<Args>(args)...);
-        while (!future.available()) {
+        while (!future.is_ready()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        return std::move(future).get();
+        return std::move(future).take_ready();
     }
 
     template<typename Fn, typename... Args>
     auto dispatcher_invoke(Fn fn, Args&&... args) {
         auto [_, future] =
             actor_zeta::otterbrix::send(manager_dispatcher_->address(), fn, std::forward<Args>(args)...);
-        while (!future.available()) {
+        while (!future.is_ready()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        return std::move(future).get();
+        return std::move(future).take_ready();
     }
 
 #if defined(DEV_MODE)

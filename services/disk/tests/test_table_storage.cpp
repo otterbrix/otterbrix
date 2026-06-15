@@ -175,7 +175,7 @@ namespace {
                 scheduler.run(10000);
                 std::this_thread::sleep_for(std::chrono::microseconds(50));
             }
-            return std::move(future).get();
+            return std::move(future).take_ready();
         }
     };
 } // namespace

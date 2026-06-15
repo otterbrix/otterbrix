@@ -46,7 +46,7 @@ namespace otterbrix {
                 event_loop_cv_.wait_for(lock, std::chrono::microseconds(100));
             }
         }
-        std::move(future).get();
+        std::move(future).take_ready();
     }
 
     auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)

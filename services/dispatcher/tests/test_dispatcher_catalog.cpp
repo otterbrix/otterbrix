@@ -85,7 +85,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());
-        return std::move(fut).get();
+        return std::move(fut).take_ready();
     }
 
     // Adapter exposing the (resource, invoke) shape that test_probe helpers expect.
@@ -111,7 +111,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         }
         REQUIRE(pending_future_->valid());
         REQUIRE(pending_future_->is_ready());
-        auto result = std::move(*pending_future_).get();
+        auto result = std::move(*pending_future_).take_ready();
         pending_future_.reset();
         // Drain again so the executor's post-result DDL pipeline (catalog writes,
         // flush, commit_txn, storage_publish_commits) finishes before returning.
@@ -135,7 +135,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());
-        return std::move(fut).get();
+        return std::move(fut).take_ready();
     }
 
     // Resolve a table via the live read_chunks_by_key path (catalog-read oracle).

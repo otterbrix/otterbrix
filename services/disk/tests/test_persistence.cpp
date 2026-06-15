@@ -75,7 +75,7 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(future.is_ready());
-            return std::move(future).get();
+            return std::move(future).take_ready();
         }
 
         void checkpoint() {
@@ -91,7 +91,7 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(cf.is_ready());
-            (void) std::move(cf).get();
+            (void) std::move(cf).take_ready();
         }
     };
 } // namespace

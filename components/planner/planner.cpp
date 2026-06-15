@@ -1,5 +1,6 @@
 #include "planner.hpp"
 
+#include <cassert>
 #include <cstdio>
 
 #include <catalog/catalog_codes.hpp>
@@ -732,7 +733,13 @@ namespace components::planner {
     auto planner_t::create_plan(std::pmr::memory_resource* resource,
                                 logical_plan::node_ptr node,
                                 catalog::oid_batch_t oid_batch) -> logical_plan::node_ptr {
-        return walk_ddl(resource, std::move(node), oid_batch);
+        auto result = walk_ddl(resource, std::move(node), oid_batch);
+        // OID lockstep: the executor (this overload's only caller) pre-allocated exactly
+        // compute_oid_demand() OIDs into this batch, so the DDL walk must consume all of them.
+        // A leftover (next < size) is a silent over-allocation that diverges from
+        // compute_oid_demand with no compile error.
+        assert(oid_batch.empty() && "DDL OID consumption diverged from compute_oid_demand");
+        return result;
     }
 
     std::size_t compute_oid_demand(const logical_plan::node_t* node) {

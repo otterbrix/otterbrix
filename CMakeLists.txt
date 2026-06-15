@@ -39,6 +39,10 @@ if (DEV_MODE)
     message("DEV_MOD ON")
     add_definitions(-DDEV_MODE)
     enable_testing()
+    # rule 9 guard: fail if a `throw` slips onto the operator-build path (physical_plan*).
+    add_test(NAME physical_plan_no_throw_lint
+             COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR}
+                     -P ${CMAKE_SOURCE_DIR}/cmake/lint_no_throw.cmake)
 endif()
 
 if (ALLOW_BENCHMARK)

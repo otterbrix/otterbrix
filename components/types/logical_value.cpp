@@ -846,7 +846,7 @@ namespace components::types {
                                                 const std::vector<logical_value_t>& values) {
         assert(keys.size() == values.size());
         logical_value_t result(r, complex_logical_type{logical_type::NA});
-        result.type_ = complex_logical_type::create_map(key_type, value_type);
+        result.type_ = complex_logical_type::create_map(r, key_type, value_type);
         auto keys_value = create_array(r, key_type, keys);
         auto values_value = create_array(r, value_type, values);
         result.data_ = reinterpret_cast<uint64_t>(

@@ -116,7 +116,11 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         ArrowArray arrow_array;
         to_arrow_schema(&schema, types);
         to_arrow_array(chunk, &arrow_array);
-        auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&resource, &schema));
+        auto schema_res = schema_from_arrow(&resource, &schema);
+        REQUIRE(!schema_res.has_error());
+        auto res_w = data_chunk_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
+        REQUIRE(!res_w.has_error());
+        auto& res = res_w.value();
         REQUIRE(chunk.column_count() == res.column_count());
         REQUIRE(chunk.size() == res.size());
         for (size_t i = 0; i < chunk.column_count(); i++) {
@@ -231,7 +235,11 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         ArrowArray arrow_array;
         to_arrow_schema(&schema, types);
         to_arrow_array(chunk, &arrow_array);
-        auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&resource, &schema));
+        auto schema_res = schema_from_arrow(&resource, &schema);
+        REQUIRE(!schema_res.has_error());
+        auto res_w = data_chunk_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
+        REQUIRE(!res_w.has_error());
+        auto& res = res_w.value();
         REQUIRE(chunk.column_count() == res.column_count());
         REQUIRE(chunk.size() == res.size());
         for (size_t i = 0; i < chunk.column_count(); i++) {
@@ -284,7 +292,11 @@ TEST_CASE("components::vector::data_chunk_to_arrow::datetime") {
     ArrowArray arrow_array;
     to_arrow_schema(&schema, types);
     to_arrow_array(chunk, &arrow_array);
-    auto res = data_chunk_from_arrow(&resource, &arrow_array, schema_from_arrow(&resource, &schema));
+    auto schema_res = schema_from_arrow(&resource, &schema);
+    REQUIRE(!schema_res.has_error());
+    auto res_w = data_chunk_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
+    REQUIRE(!res_w.has_error());
+    auto& res = res_w.value();
 
     REQUIRE(chunk.column_count() == res.column_count());
     REQUIRE(chunk.size() == res.size());

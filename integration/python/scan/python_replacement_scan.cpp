@@ -4,8 +4,7 @@
 #include <arrow/arrow_scan_function.hpp>
 #include <connection_environment/framework_object_detection.hpp>
 #include <connection_environment/connection_environment.hpp>
-#include <otterbrix_wrapper/python_dependency.hpp>
-#include <pandas/pandas_scan.hpp>
+#include "pandas_arrow_prepare.hpp"
 #include <components/tableref/tableref.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -37,35 +36,6 @@ namespace otterbrix {
             return py::hasattr(entry, "__arrow_c_stream__");
         }
 
-        //! Detect a pandas data_frame whose columns are pyarrow-backed (dtype_backend="pyarrow"),
-        //! i.e. every column dtype is an ArrowDtype. Such frames can be ingested through Arrow.
-        bool is_pyarrow_backed_pandas(const py::object &entry) {
-            if (!framework_object_detection_t::is_pandas_dataframe(entry)) {
-                return false;
-            }
-            if (has_arrow_c_stream(entry)) {
-                return true;
-            }
-            try {
-                py::object dtypes = entry.attr("dtypes");
-                py::object pandas = py::module_::import("pandas");
-                if (!py::hasattr(pandas, "ArrowDtype")) {
-                    return false;
-                }
-                py::object arrow_dtype = pandas.attr("ArrowDtype");
-                bool any = false;
-                for (auto dt : dtypes) {
-                    any = true;
-                    if (!py::isinstance(py::reinterpret_borrow<py::object>(dt), arrow_dtype)) {
-                        return false;
-                    }
-                }
-                return any;
-            } catch (const py::error_already_set &) {
-                return false;
-            }
-        }
-
         //! Build a table_ref_t that routes `arrow_source` through the core arrow path via arrow_scan_function_t.
         //! `arrow_source` must be either an arrow object understood by get_arrow_type (arrow_table_t / Dataset /
         //! Scanner / arrow_record_batch_reader_t / PyCapsule) or expose __arrow_c_stream__.
@@ -89,74 +59,54 @@ namespace otterbrix {
 
     std::unique_ptr<components::tableref::table_ref_t>
         scan_t::try_replacement_object(const py::object &entry, const std::string & /*name*/) {
-        auto table_function = std::make_unique<components::tableref::table_ref_t>();
-        std::vector<components::types::logical_value_t> children;
-        numpy_object_type_t numpy_type;
         if (framework_object_detection_t::is_polars_dataframe(entry)) {
-            // Polars exposes the Arrow C-stream PyCapsule interface; route the whole frame through
-            // the core arrow path so data lands via components::vector::arrow::data_chunk_from_arrow.
+            // Polars exposes the Arrow C-stream PyCapsule interface; route through the core arrow path.
             return build_arrow_table_ref(entry);
-        } else
-        if (is_pyarrow_backed_pandas(entry)) {
-            // pandas with dtype_backend="pyarrow" (or otherwise exposing __arrow_c_stream__):
-            // ingest through the same arrow path instead of the numpy column scanner.
-            return build_arrow_table_ref(entry);
-        } else
-        if (!framework_object_detection_t::is_pandas_dataframe(entry) &&
-            (get_arrow_type(entry) != py_arrow_object_type_t::Invalid || has_arrow_c_stream(entry))) {
+        }
+        if (framework_object_detection_t::is_pandas_dataframe(entry)) {
+            // pandas >= 2.2 exposes __arrow_c_stream__ for every DataFrame (numpy- or arrow-backed).
+            // Pre-process object columns (MAP / lenient STRING) then ingest through the arrow path.
+            return build_arrow_table_ref(prepare_dataframe_for_arrow(entry));
+        }
+        if (get_arrow_type(entry) != py_arrow_object_type_t::Invalid || has_arrow_c_stream(entry)) {
             // Native Arrow objects (pyarrow arrow_table_t / Dataset / Scanner / arrow_record_batch_reader_t /
             // Arrow C-stream capsule) ingest straight through the core arrow path.
             return build_arrow_table_ref(entry);
-        } else
-        if (framework_object_detection_t::is_pandas_dataframe(entry)) {
-                auto new_df = pandas_scan_function_t::pandas_replace_copied_names(entry);
-                table_function->external_dependency = std::make_shared<external_dependency_t>();
-                children.emplace_back(std::pmr::get_default_resource(), static_cast<void*>(new_df.ptr()));
-                table_function->function = std::make_unique<pandas_scan_function_t>();
-                table_function->children = std::move(children);
-                table_function->external_dependency->add_dependency(dependency_kind_t::data, python_dependency_item_t::create(new_df));
-        } else
-        if ((numpy_type = framework_object_detection_t::get_numpy_object_type(entry)) != numpy_object_type_t::INVALID) {
-		    py::dict data; // we will convert all the supported format to dict{"key": np.array(value)}.
-		    idx_t idx = 0;
-		    switch (numpy_type) {
-		    case numpy_object_type_t::NDARRAY1D:
-			    data["column0"] = entry;
-			    break;
-		    case numpy_object_type_t::NDARRAY2D:
-			    idx = 0;
-			    for (auto item : py::cast<py::array>(entry)) {
-				    data[("column" + std::to_string(idx)).c_str()] = item;
-				    idx++;
-			    }
-			    break;
-		    case numpy_object_type_t::LIST:
-			    idx = 0;
-			    for (auto item : py::cast<py::list>(entry)) {
-				    data[("column" + std::to_string(idx)).c_str()] = item;
-				    idx++;
-			    }
-			    break;
-		    case numpy_object_type_t::DICT:
-			    data = py::cast<py::dict>(entry);
-			    break;
-		    default:
-			    throw std::runtime_error("Unsupported Numpy object");
-			    break;
-		    }
-		    children.emplace_back(std::pmr::get_default_resource(), static_cast<void*>(data.ptr()));
-		    table_function->function = std::make_unique<pandas_scan_function_t>();//std::make_unique<FunctionExpression>("pandas_scan", std::move(children));
-            table_function->children = std::move(children);
-            std::shared_ptr<external_dependency_t> dependency = std::make_shared<external_dependency_t>();
-            dependency->add_dependency(dependency_kind_t::data, python_dependency_item_t::create(data));
-            dependency->add_dependency(dependency_kind_t::replacement_cache, python_dependency_item_t::create(entry));
-            table_function->external_dependency = dependency;
-	    } else {
-		    // This throws an error later on!
-		    return nullptr;
-
         }
-        return table_function;
+        numpy_object_type_t numpy_type = framework_object_detection_t::get_numpy_object_type(entry);
+        if (numpy_type != numpy_object_type_t::INVALID) {
+            // Raw numpy (ndarray / list / dict of arrays) has no Arrow export. Normalize to a
+            // dict {column: np.array} and wrap in a pandas DataFrame so it exposes __arrow_c_stream__
+            // (this also preserves NaN->NULL via pandas' from_pandas, matching the old numpy scanner).
+            py::dict data;
+            idx_t idx = 0;
+            switch (numpy_type) {
+            case numpy_object_type_t::NDARRAY1D:
+                data["column0"] = entry;
+                break;
+            case numpy_object_type_t::NDARRAY2D:
+                for (auto item : py::cast<py::array>(entry)) {
+                    data[("column" + std::to_string(idx)).c_str()] = item;
+                    idx++;
+                }
+                break;
+            case numpy_object_type_t::LIST:
+                for (auto item : py::cast<py::list>(entry)) {
+                    data[("column" + std::to_string(idx)).c_str()] = item;
+                    idx++;
+                }
+                break;
+            case numpy_object_type_t::DICT:
+                data = py::cast<py::dict>(entry);
+                break;
+            default:
+                throw std::runtime_error("Unsupported Numpy object");
+            }
+            py::object df = connection_environment_t::import_cache().pandas.data_frame()(data);
+            return build_arrow_table_ref(prepare_dataframe_for_arrow(df));
+        }
+        // Not suitable for a replacement scan (replacement_object turns this into scan_failure_error).
+        return nullptr;
     }
 
 

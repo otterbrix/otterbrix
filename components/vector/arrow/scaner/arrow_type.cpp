@@ -78,7 +78,8 @@ namespace components::vector::arrow {
                 auto list_info = reinterpret_cast<arrow_list_info*>(type_info_.get());
                 auto& struct_child = list_info->get_child();
                 auto struct_type = struct_child.type(true);
-                return types::complex_logical_type::create_map(struct_type.child_types()[0],
+                return types::complex_logical_type::create_map(struct_type.child_types().get_allocator().resource(),
+                                                               struct_type.child_types()[0],
                                                                struct_type.child_types()[1]);
             }
             case types::logical_type::UNION: {
@@ -114,7 +115,8 @@ namespace components::vector::arrow {
         return arrow_array_physical_type::DEFAULT;
     }
 
-    std::unique_ptr<arrow_type> type_from_format(std::string& format) {
+    core::result_wrapper_t<std::unique_ptr<arrow_type>> type_from_format(std::pmr::memory_resource* resource,
+                                                                         std::string& format) {
         if (format == "n") {
             return std::make_unique<arrow_type>(types::logical_type::NA);
         } else if (format == "b") {
@@ -142,14 +144,18 @@ namespace components::vector::arrow {
         } else if (format[0] == 'd') { //! this can be either decimal128 or decimal 256 (e.g., d:38,0)
             auto extra_info = split_string(format, ':');
             if (extra_info.size() != 2) {
-                throw std::runtime_error(
-                    "Decimal format of Arrow object is incomplete, it is missing the scale and width");
+                return core::error_t(
+                    core::error_code_t::conversion_failure,
+                    std::pmr::string("Decimal format of Arrow object is incomplete, it is missing the scale and width",
+                                     resource));
             }
             auto parameters = split_string(extra_info[1], ',');
             // Parameters must always be 2 or 3 values (i.e., width, scale and an optional bit-width)
             if (parameters.size() != 2 && parameters.size() != 3) {
-                throw std::runtime_error(
-                    "Decimal format of Arrow object is incomplete, it is missing the scale or width");
+                return core::error_t(
+                    core::error_code_t::conversion_failure,
+                    std::pmr::string("Decimal format of Arrow object is incomplete, it is missing the scale or width",
+                                     resource));
             }
             uint64_t width{};
             uint64_t scale{};
@@ -159,14 +165,20 @@ namespace components::vector::arrow {
                 return ec == std::errc{};
             };
             if (!parse_u64(parameters[0], width) || !parse_u64(parameters[1], scale)) {
-                return nullptr;
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("Decimal format of Arrow object has invalid width or scale",
+                                                      resource));
             }
             if (parameters.size() == 3 && !parse_u64(parameters[2], bitwidth)) {
                 // We have a bit-width defined
-                return nullptr;
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("Decimal format of Arrow object has invalid bit-width",
+                                                      resource));
             }
             if (width > 38 || bitwidth > 128) {
-                throw std::runtime_error("Unsupported Internal Arrow Type for Decimal");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string("Unsupported Internal Arrow Type for Decimal",
+                                                      resource));
             }
             switch (bitwidth) {
                 case 32:
@@ -190,7 +202,9 @@ namespace components::vector::arrow {
                                                                     static_cast<uint8_t>(scale)),
                         std::make_unique<arrow_decimal_info>(decimal_bit_width::DECIMAL_256));
                 default:
-                    throw std::runtime_error("Unsupported bit-width value for Arrow Decimal type");
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string("Unsupported bit-width value for Arrow Decimal type",
+                                                          resource));
             }
         } else if (format == "u") {
             return std::make_unique<arrow_type>(types::logical_type::STRING_LITERAL,
@@ -263,7 +277,9 @@ namespace components::vector::arrow {
             int fixed_size_raw{};
             auto [p, ec] = std::from_chars(parameters.data(), parameters.data() + parameters.size(), fixed_size_raw);
             if (ec != std::errc{}) {
-                return nullptr;
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("Arrow fixed-size binary format has invalid size",
+                                                      resource));
             }
             auto fixed_size = static_cast<size_t>(fixed_size_raw);
             auto type_info = std::make_unique<arrow_string_info>(fixed_size);
@@ -284,7 +300,10 @@ namespace components::vector::arrow {
                     prec = arrow_date_time_type::NANOSECONDS;
                     break;
                 default:
-                    throw std::runtime_error("Unknown timestamp precision in Arrow format: " + format);
+                    return core::error_t(
+                        core::error_code_t::unimplemented_yet,
+                        std::pmr::string("Unknown timestamp precision in Arrow format: " + format,
+                                         resource));
             }
             // "tsX:" with empty timezone → TIMESTAMP; "tsX:UTC" or similar → TIMESTAMP_TZ
             bool has_tz = format.size() > 4 && format[3] == ':' && !format.substr(4).empty();
@@ -294,11 +313,14 @@ namespace components::vector::arrow {
         return nullptr;
     }
 
-    std::unique_ptr<arrow_type>
+    core::result_wrapper_t<std::unique_ptr<arrow_type>>
     type_from_format(std::pmr::memory_resource* resource, ArrowSchema& schema, std::string& format) {
-        auto type = type_from_format(format);
-        if (type) {
-            return type;
+        auto type_res = type_from_format(resource, format);
+        if (type_res.has_error()) {
+            return type_res.error();
+        }
+        if (type_res.value()) {
+            return std::move(type_res.value());
         }
         if (format == "+l") {
             return create_list_type(resource, *schema.children[0], arrow_variable_size_type::NORMAL, false);
@@ -313,10 +335,15 @@ namespace components::vector::arrow {
             int fixed_size_raw{};
             auto [p, ec] = std::from_chars(parameters.data(), parameters.data() + parameters.size(), fixed_size_raw);
             if (ec != std::errc{}) {
-                return nullptr;
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("Arrow fixed-size list format has invalid size", resource));
             }
             auto fixed_size = static_cast<size_t>(fixed_size_raw);
-            auto child_type = arrow_logical_type(resource, *schema.children[0]);
+            auto child_type_res = arrow_logical_type(resource, *schema.children[0]);
+            if (child_type_res.has_error()) {
+                return child_type_res.error();
+            }
+            auto child_type = std::move(child_type_res.value());
 
             auto array_type = types::complex_logical_type::create_array(child_type->type(), fixed_size);
             auto type_info = std::make_unique<arrow_array_info>(std::move(child_type), fixed_size);
@@ -325,10 +352,16 @@ namespace components::vector::arrow {
             std::pmr::vector<types::complex_logical_type> child_types(resource);
             std::vector<std::shared_ptr<arrow_type>> children;
             if (schema.n_children == 0) {
-                throw std::runtime_error("Attempted to convert a STRUCT with no fields which is not supported");
+                return core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string("Attempted to convert a STRUCT with no fields which is not supported", resource));
             }
             for (size_t type_idx = 0; type_idx < static_cast<size_t>(schema.n_children); type_idx++) {
-                children.emplace_back(arrow_logical_type(resource, *schema.children[type_idx]));
+                auto child_res = arrow_logical_type(resource, *schema.children[type_idx]);
+                if (child_res.has_error()) {
+                    return child_res.error();
+                }
+                children.emplace_back(std::move(child_res.value()));
                 child_types.emplace_back(children.back()->type());
                 child_types.back().set_alias(schema.children[type_idx]->name);
             }
@@ -339,7 +372,8 @@ namespace components::vector::arrow {
             return struct_type;
         } else if (format[0] == '+' && format[1] == 'u') {
             if (format[2] != 's') {
-                throw std::runtime_error("Unsupported Internal Arrow Type: Union");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string("Unsupported Internal Arrow Type: Union", resource));
             }
             assert(format[3] == ':');
 
@@ -349,12 +383,18 @@ namespace components::vector::arrow {
             std::pmr::vector<types::complex_logical_type> members(resource);
             std::vector<std::shared_ptr<arrow_type>> children;
             if (schema.n_children == 0) {
-                throw std::runtime_error("Attempted to convert a UNION with no fields  which is not supported");
+                return core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string("Attempted to convert a UNION with no fields  which is not supported", resource));
             }
             for (size_t type_idx = 0; type_idx < static_cast<size_t>(schema.n_children); type_idx++) {
                 auto type = schema.children[type_idx];
 
-                children.emplace_back(arrow_logical_type(resource, *type));
+                auto child_res = arrow_logical_type(resource, *type);
+                if (child_res.has_error()) {
+                    return child_res.error();
+                }
+                children.emplace_back(std::move(child_res.value()));
                 members.emplace_back(children.back()->type());
                 members.back().set_alias(type->name);
             }
@@ -373,7 +413,11 @@ namespace components::vector::arrow {
             assert(std::string(schema.children[1]->name) == "values");
             for (size_t i = 0; i < n_children; i++) {
                 auto type = schema.children[i];
-                children.emplace_back(arrow_logical_type(resource, *type));
+                auto child_res = arrow_logical_type(resource, *type);
+                if (child_res.has_error()) {
+                    return child_res.error();
+                }
+                children.emplace_back(std::move(child_res.value()));
                 members.emplace_back(children.back()->type());
                 members.back().set_alias(type->name);
             }
@@ -387,15 +431,23 @@ namespace components::vector::arrow {
         } else if (format == "+m") {
             auto& arrow_struct_type = *schema.children[0];
             assert(arrow_struct_type.n_children == 2);
-            auto key_type = arrow_logical_type(resource, *arrow_struct_type.children[0]);
-            auto value_type = arrow_logical_type(resource, *arrow_struct_type.children[1]);
+            auto key_type_res = arrow_logical_type(resource, *arrow_struct_type.children[0]);
+            if (key_type_res.has_error()) {
+                return key_type_res.error();
+            }
+            auto key_type = std::move(key_type_res.value());
+            auto value_type_res = arrow_logical_type(resource, *arrow_struct_type.children[1]);
+            if (value_type_res.has_error()) {
+                return value_type_res.error();
+            }
+            auto value_type = std::move(value_type_res.value());
             std::pmr::vector<types::complex_logical_type> key_value(resource);
             key_value.emplace_back(key_type->type());
             key_value.back().set_alias("key");
             key_value.emplace_back(value_type->type());
             key_value.back().set_alias("value");
 
-            auto map_type = types::complex_logical_type::create_map(key_type->type(), value_type->type());
+            auto map_type = types::complex_logical_type::create_map(resource, key_type->type(), value_type->type());
             std::vector<std::shared_ptr<arrow_type>> children;
             children.reserve(2);
             children.push_back(std::move(key_type));
@@ -407,14 +459,19 @@ namespace components::vector::arrow {
                 arrow_list_info::create_list(std::move(inner_struct), arrow_variable_size_type::NORMAL);
             return std::make_unique<arrow_type>(map_type, std::move(map_type_info));
         }
-        throw std::runtime_error("Unsupported Internal Arrow Type");
+        return core::error_t(core::error_code_t::unimplemented_yet,
+                             std::pmr::string("Unsupported Internal Arrow Type", resource));
     }
 
-    std::unique_ptr<arrow_type> create_list_type(std::pmr::memory_resource* resource,
-                                                 ArrowSchema& child,
-                                                 arrow_variable_size_type size_type,
-                                                 bool view) {
-        auto child_type = arrow_logical_type(resource, child);
+    core::result_wrapper_t<std::unique_ptr<arrow_type>> create_list_type(std::pmr::memory_resource* resource,
+                                                                         ArrowSchema& child,
+                                                                         arrow_variable_size_type size_type,
+                                                                         bool view) {
+        auto child_type_res = arrow_logical_type(resource, child);
+        if (child_type_res.has_error()) {
+            return child_type_res.error();
+        }
+        auto child_type = std::move(child_type_res.value());
 
         std::unique_ptr<arrow_type_info> type_info;
         auto type = types::complex_logical_type::create_list(child_type->type());
@@ -425,16 +482,25 @@ namespace components::vector::arrow {
         }
         return std::make_unique<arrow_type>(type, std::move(type_info));
     }
-    std::unique_ptr<arrow_type> arrow_logical_type(std::pmr::memory_resource* resource, ArrowSchema& schema) {
-        auto arrow_type = type_from_schema(resource, schema);
+    core::result_wrapper_t<std::unique_ptr<arrow_type>> arrow_logical_type(std::pmr::memory_resource* resource,
+                                                                           ArrowSchema& schema) {
+        auto arrow_type_res = type_from_schema(resource, schema);
+        if (arrow_type_res.has_error()) {
+            return arrow_type_res.error();
+        }
+        auto arrow_type = std::move(arrow_type_res.value());
         if (schema.dictionary) {
-            auto dictionary = arrow_logical_type(resource, *schema.dictionary);
-            arrow_type->set_dictionary(std::move(dictionary));
+            auto dictionary_res = arrow_logical_type(resource, *schema.dictionary);
+            if (dictionary_res.has_error()) {
+                return dictionary_res.error();
+            }
+            arrow_type->set_dictionary(std::move(dictionary_res.value()));
         }
         return arrow_type;
     }
 
-    std::unique_ptr<arrow_type> type_from_schema(std::pmr::memory_resource* resource, ArrowSchema& schema) {
+    core::result_wrapper_t<std::unique_ptr<arrow_type>> type_from_schema(std::pmr::memory_resource* resource,
+                                                                         ArrowSchema& schema) {
         auto format = std::string(schema.format);
         arrow_schema_metadata_t schema_metadata(schema.metadata);
 
@@ -466,8 +532,10 @@ namespace components::vector::arrow {
     void arrow_array_scan_state::add_dictionary(std::unique_ptr<vector_t> dictionary, ArrowArray* arrow_dict) {
         this->dictionary = std::move(dictionary);
         assert(owned_data);
-        arrow_dictionary = std::unique_ptr<ArrowArray>{arrow_dict};
-        dictionary->get_buffer()->set_auxiliary(std::make_unique<arrow_auxiliary_data_t>(owned_data));
+        // Non-owning: arrow_dict points into the parent ArrowArray (owned by owned_data).
+        arrow_dictionary = arrow_dict;
+        // NB: the `dictionary` parameter was moved-from above; use the member.
+        this->dictionary->get_buffer()->set_auxiliary(std::make_unique<arrow_auxiliary_data_t>(owned_data));
     }
 
     bool arrow_array_scan_state::has_dictionary() const { return dictionary != nullptr; }
@@ -476,7 +544,7 @@ namespace components::vector::arrow {
         if (!this->dictionary) {
             return true;
         }
-        if (dictionary == arrow_dictionary.get()) {
+        if (dictionary == arrow_dictionary) {
             return false;
         }
         return true;

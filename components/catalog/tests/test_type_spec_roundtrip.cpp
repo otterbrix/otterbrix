@@ -69,7 +69,7 @@ TEST_CASE("catalog::type_spec::array_roundtrip") {
 TEST_CASE("catalog::type_spec::map_roundtrip") {
     auto key = complex_logical_type{logical_type::STRING_LITERAL};
     auto val = complex_logical_type{logical_type::BIGINT};
-    auto t = complex_logical_type::create_map(key, val);
+    auto t = complex_logical_type::create_map(g_resource, key, val);
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "MAP(text,int8)");
 

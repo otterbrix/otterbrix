@@ -433,7 +433,8 @@ namespace components::types {
         static complex_logical_type create_list(const complex_logical_type& internal_type, std::string alias = "");
         static complex_logical_type
         create_array(const complex_logical_type& internal_type, size_t array_size, std::string alias = "");
-        static complex_logical_type create_map(const complex_logical_type& key_type,
+        static complex_logical_type create_map(std::pmr::memory_resource* resource,
+                                               const complex_logical_type& key_type,
                                                const complex_logical_type& value_type,
                                                std::string alias = "");
         static complex_logical_type
@@ -523,8 +524,11 @@ namespace components::types {
 
     class map_logical_type_extension : public logical_type_extension {
     public:
-        map_logical_type_extension(const complex_logical_type& key, const complex_logical_type& value);
-        map_logical_type_extension(uint64_t key_id,
+        map_logical_type_extension(std::pmr::memory_resource* resource,
+                                   const complex_logical_type& key,
+                                   const complex_logical_type& value);
+        map_logical_type_extension(std::pmr::memory_resource* resource,
+                                   uint64_t key_id,
                                    const types::complex_logical_type& key,
                                    uint64_t value_id,
                                    const types::complex_logical_type& value,
@@ -536,6 +540,10 @@ namespace components::types {
         uint64_t value_id() const { return value_id_; }
         bool value_required() const { return value_required_; }
 
+        // A MAP is physically a LIST of struct<"key", "value">; node() is that element struct type,
+        // used to build the child vector (mirrors list_logical_type_extension::node()).
+        const complex_logical_type& node() const noexcept { return entries_; }
+
         bool operator==(const map_logical_type_extension& rhs) const;
 
     private:
@@ -544,6 +552,7 @@ namespace components::types {
         uint64_t key_id_;
         uint64_t value_id_;
         bool value_required_;
+        complex_logical_type entries_;
     };
 
     class list_logical_type_extension : public logical_type_extension {

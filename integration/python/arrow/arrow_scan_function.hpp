@@ -16,8 +16,7 @@ namespace otterbrix {
     //! arrow_table_t function that drains a python Arrow object through the canonical core
     //! components::vector::arrow path (schema_from_arrow + data_chunk_from_arrow).
     //!
-    //! Conventions match pandas_scan_function_t so the replacement-scan dispatcher in
-    //! python_replacement_scan.cpp can drive it generically:
+    //! The replacement-scan dispatcher in python_replacement_scan.cpp drives it generically:
     //!   inputs[0] : void* -> python_table_arrow_array_stream_factory_t*
     struct arrow_scan_function_t : public components::function::table_function_t {
     public:

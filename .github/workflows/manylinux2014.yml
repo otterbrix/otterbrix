@@ -131,10 +131,11 @@ jobs:
           sudo apt install -y python3-pip python3-venv
           pip3 install --retries=30 pytest==6.2.5
           # DataFrame ingest tests cover the full pandas/polars/arrow matrix.
-          # pyarrow is required by the pandas Arrow C-stream path; polars and
-          # pyarrow are needed so their importorskip-guarded tests actually run
-          # in CI instead of being skipped.
-          pip3 install --retries=30 numpy "pandas<3" polars "pyarrow>=14.0.0"
+          # All pandas/numpy ingestion routes through pandas' __arrow_c_stream__
+          # (pandas>=2.2, hard-requires pyarrow); polars and pyarrow are needed so
+          # their importorskip-guarded tests actually run in CI instead of being skipped.
+          # pandas<4 allows pandas 3 (Python>=3.11 runners), so CI exercises it for real.
+          pip3 install --retries=30 numpy "pandas>=2.2,<4" polars "pyarrow>=14.0.0"
 
       - name: Download artifact
         uses: actions/download-artifact@v4

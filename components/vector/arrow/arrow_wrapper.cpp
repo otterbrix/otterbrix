@@ -26,23 +26,29 @@ namespace components::vector::arrow {
         }
     }
 
-    void arrow_array_schema_wrapper_t::get_schema(arrow_schema_wrapper_t& schema) {
+    core::error_t arrow_array_schema_wrapper_t::get_schema(std::pmr::memory_resource* resource,
+                                                           arrow_schema_wrapper_t& schema) {
         assert(arrow_array_stream.get_schema);
         if (arrow_array_stream.get_schema(&arrow_array_stream, &schema.arrow_schema)) {
-            throw std::runtime_error(get_error());
+            return core::error_t(core::error_code_t::conversion_failure, std::pmr::string(get_error(), resource));
         }
         if (!schema.arrow_schema.release) {
-            throw std::runtime_error("arrow_scan: released schema passed");
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string("arrow_scan: released schema passed", resource));
         }
         if (schema.arrow_schema.n_children < 1) {
-            throw std::runtime_error("arrow_scan: empty schema passed");
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string("arrow_scan: empty schema passed", resource));
         }
+        return core::error_t::no_error();
     }
 
-    std::shared_ptr<arrow_array_wrapper_t> arrow_array_schema_wrapper_t::get_next_chunk() {
+    core::result_wrapper_t<std::shared_ptr<arrow_array_wrapper_t>>
+    arrow_array_schema_wrapper_t::get_next_chunk(std::pmr::memory_resource* resource) {
         auto current_chunk = std::make_shared<arrow_array_wrapper_t>();
         if (arrow_array_stream.get_next(&arrow_array_stream, &current_chunk->arrow_array)) {
-            throw std::logic_error("arrow_scan: get_next failed()");
+            return core::error_t(core::error_code_t::conversion_failure,
+                                 std::pmr::string("arrow_scan: get_next failed()", resource));
         }
 
         return current_chunk;

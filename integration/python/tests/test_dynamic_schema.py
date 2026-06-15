@@ -9,10 +9,16 @@ tables.
 """
 
 import os
+import shutil
 import pytest
 from otterbrix import Client
 
-client = Client(os.getcwd() + "/test_dynamic_schema")
+# Hermetic: clean the on-disk state at startup so repeated local runs don't
+# collide with persisted data (mirrors test_collection_sql.py).
+_path = os.getcwd() + "/test_dynamic_schema"
+if os.path.exists(_path):
+    shutil.rmtree(_path)
+client = Client(_path)
 client.execute("CREATE DATABASE dyn;")
 
 

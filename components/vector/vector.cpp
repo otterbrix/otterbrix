@@ -704,15 +704,19 @@ namespace components::vector {
                                               std::string(reinterpret_cast<std::string_view*>(vector->data_)[index]));
             }
             case types::logical_type::MAP: {
+                // MAP is materialized as a LIST of struct<key,value>. Surface the value as a
+                // logical_value whose type is MAP and whose children ARE those struct entries
+                // (the list-of-struct representation that set_value's LIST path and
+                // python_object_t::from_value(MAP) both consume).
                 auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
                 auto& child_vec = vector->entry();
                 std::vector<types::logical_value_t> children;
                 for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
                     children.push_back(child_vec.value(i));
                 }
-                return types::logical_value_t::create_map(vector->resource(),
-                                                          vector->child().type_,
-                                                          std::move(children));
+                return types::logical_value_t::create_struct(vector->resource(),
+                                                             vector->type_,
+                                                             std::move(children));
             }
             case types::logical_type::STRUCT: {
                 auto& child_entries = vector->entries();
@@ -825,13 +829,15 @@ namespace components::vector {
     }
 
     vector_t& vector_t::entry() {
-        assert(type_.type() == types::logical_type::ARRAY || type_.type() == types::logical_type::LIST);
+        assert(type_.type() == types::logical_type::ARRAY || type_.type() == types::logical_type::LIST ||
+               type_.type() == types::logical_type::MAP);
         if (get_vector_type() == vector_type::DICTIONARY) {
             return child().entry();
         }
         assert(get_vector_type() == vector_type::FLAT || get_vector_type() == vector_type::CONSTANT);
         assert(auxiliary_);
-        if (type_.type() == types::logical_type::LIST) {
+        // MAP is physically a LIST (of struct<key,value>), so it uses the list buffer too.
+        if (type_.type() == types::logical_type::LIST || type_.type() == types::logical_type::MAP) {
             return static_cast<list_vector_buffer_t*>(auxiliary_.get())->nested_data();
         } else {
             assert(type_.type() == types::logical_type::ARRAY);
@@ -840,13 +846,15 @@ namespace components::vector {
     }
 
     const vector_t& vector_t::entry() const {
-        assert(type_.type() == types::logical_type::ARRAY || type_.type() == types::logical_type::LIST);
+        assert(type_.type() == types::logical_type::ARRAY || type_.type() == types::logical_type::LIST ||
+               type_.type() == types::logical_type::MAP);
         if (get_vector_type() == vector_type::DICTIONARY) {
             return child().entry();
         }
         assert(get_vector_type() == vector_type::FLAT || get_vector_type() == vector_type::CONSTANT);
         assert(auxiliary_);
-        if (type_.type() == types::logical_type::LIST) {
+        // MAP is physically a LIST (of struct<key,value>), so it uses the list buffer too.
+        if (type_.type() == types::logical_type::LIST || type_.type() == types::logical_type::MAP) {
             return static_cast<list_vector_buffer_t*>(auxiliary_.get())->nested_data();
         } else {
             assert(type_.type() == types::logical_type::ARRAY);

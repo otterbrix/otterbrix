@@ -67,7 +67,11 @@ namespace otterbrix {
                           std::vector<complex_logical_type>& return_types,
                           std::vector<std::string>& names) {
             std::pmr::monotonic_buffer_resource scratch;
-            auto table_schema = schema_from_arrow(&scratch, &schema_root.arrow_schema);
+            auto sr = schema_from_arrow(&scratch, &schema_root.arrow_schema);
+            if (sr.has_error()) {
+                throw std::runtime_error(std::string(sr.error().what));
+            }
+            auto table_schema = std::move(sr.value());
             auto& types = table_schema.get_types();
             auto& column_names = table_schema.get_names();
             return_types.reserve(types.size());
@@ -138,16 +142,29 @@ namespace otterbrix {
         // (used by data_chunk_from_arrow) lives as long as the scan.
         if (!global_state.schema) {
             arrow_schema_wrapper_t schema_wrapper;
-            global_state.stream->get_schema(schema_wrapper);
-            global_state.schema =
-                std::make_unique<arrow_table_schema_t>(schema_from_arrow(resource, &schema_wrapper.arrow_schema));
+            if (auto err = global_state.stream->get_schema(resource, schema_wrapper); err.contains_error()) {
+                throw std::runtime_error(std::string(err.what));
+            }
+            auto sr = schema_from_arrow(resource, &schema_wrapper.arrow_schema);
+            if (sr.has_error()) {
+                throw std::runtime_error(std::string(sr.error().what));
+            }
+            global_state.schema = std::make_unique<arrow_table_schema_t>(std::move(sr.value()));
         }
 
         // Make sure we have an in-flight converted batch with rows still to emit.
         while (!global_state.current || global_state.current_offset >= global_state.current->size()) {
-            std::shared_ptr<arrow_array_wrapper_t> batch = global_state.stream->get_next_chunk();
+            auto batch_res = global_state.stream->get_next_chunk(resource);
+            if (batch_res.has_error()) {
+                throw std::runtime_error(std::string(batch_res.error().what));
+            }
+            std::shared_ptr<arrow_array_wrapper_t> batch = std::move(batch_res.value());
             while (batch->arrow_array.length == 0 && batch->arrow_array.release) {
-                batch = global_state.stream->get_next_chunk();
+                auto next_res = global_state.stream->get_next_chunk(resource);
+                if (next_res.has_error()) {
+                    throw std::runtime_error(std::string(next_res.error().what));
+                }
+                batch = std::move(next_res.value());
             }
             if (!batch->arrow_array.release) {
                 global_state.done = true;
@@ -158,8 +175,12 @@ namespace otterbrix {
             // Convert via the canonical core path. data_chunk_from_arrow takes the schema by value;
             // its per-column arrow_type metadata is shared_ptr-backed, so the copy is cheap and the
             // cached global_state.schema stays valid for the next batch.
-            global_state.current = std::make_unique<components::vector::data_chunk_t>(
-                data_chunk_from_arrow(resource, &batch->arrow_array, *global_state.schema));
+            auto chunk_res = data_chunk_from_arrow(resource, &batch->arrow_array, *global_state.schema);
+            if (chunk_res.has_error()) {
+                throw std::runtime_error(std::string(chunk_res.error().what));
+            }
+            global_state.current =
+                std::make_unique<components::vector::data_chunk_t>(std::move(chunk_res.value()));
             global_state.current_offset = 0;
         }
 

@@ -29,6 +29,10 @@ namespace components::table {
                                 vector::vector_t& result,
                                 bool allow_updates,
                                 uint64_t scan_count) override;
+        void scan_committed_range(uint64_t row_group_start,
+                                  uint64_t offset_in_row_group,
+                                  uint64_t count,
+                                  vector::vector_t& result) override;
         uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) override;
 
         void skip(column_scan_state& state, uint64_t count = vector::DEFAULT_VECTOR_CAPACITY) override;

@@ -32,6 +32,8 @@ namespace components::logical_plan {
 
     join_type node_join_t::type() const { return type_; }
 
+    void node_join_t::set_type(join_type type) { type_ = type; }
+
     hash_t node_join_t::hash_impl() const { return 0; }
 
     std::string node_join_t::to_string_impl() const {

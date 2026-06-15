@@ -99,7 +99,7 @@ namespace components::operators {
         std::vector<catalog::oid_t> computing_table_oids;
 
         for (std::uint64_t i = 0; i < pg_class_rows->size(); ++i) {
-            // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode
+            // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode, 5=relstorageformat
             auto rk_v = pg_class_rows->value(3, i);
             const auto rkv = rk_v.is_null() ? std::string_view{"r"} : rk_v.value<std::string_view>();
             const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];

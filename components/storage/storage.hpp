@@ -76,6 +76,12 @@ namespace components::storage {
         }
 
         virtual void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) = 0;
+        virtual void fetch(vector::data_chunk_t& output,
+                           const vector::vector_t& row_ids,
+                           uint64_t count,
+                           table::transaction_data /*txn*/) {
+            fetch(output, row_ids, count);
+        }
 
         virtual void scan_segment(int64_t start,
                                   uint64_t count,
@@ -91,7 +97,7 @@ namespace components::storage {
             update(row_ids, data);
             return {0, 0};
         }
-
+        virtual bool has_persisted_pax_layout() const { return false; }
         virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) = 0;
 
         // Txn-aware overloads with default fallbacks

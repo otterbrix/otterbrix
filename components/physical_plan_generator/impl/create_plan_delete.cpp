@@ -7,9 +7,82 @@
 #include <components/physical_plan/operators/operator_delete.hpp>
 #include <components/physical_plan/operators/scan/full_scan.hpp>
 
+#include <algorithm>
+#include <limits>
+
 #include "create_plan_data.hpp"
 
 namespace services::planner::impl {
+
+    namespace {
+
+        void append_unique_projected_col(std::vector<size_t>& projected_cols, size_t column_index) {
+            if (column_index == std::numeric_limits<size_t>::max()) {
+                return;
+            }
+            if (std::find(projected_cols.begin(), projected_cols.end(), column_index) == projected_cols.end()) {
+                projected_cols.push_back(column_index);
+            }
+        }
+
+        void collect_delete_scan_projection_from_expression(const components::expressions::expression_ptr& expression,
+                                                            std::vector<size_t>& projected_cols);
+
+        void collect_delete_scan_projection_from_param(const components::expressions::param_storage& param,
+                                                       std::vector<size_t>& projected_cols) {
+            using components::expressions::expression_ptr;
+            using components::expressions::key_t;
+
+            if (std::holds_alternative<key_t>(param)) {
+                const auto& key = std::get<key_t>(param);
+                if (!key.path().empty()) {
+                    append_unique_projected_col(projected_cols, key.path().front());
+                }
+                return;
+            }
+            if (std::holds_alternative<expression_ptr>(param)) {
+                collect_delete_scan_projection_from_expression(std::get<expression_ptr>(param), projected_cols);
+            }
+        }
+
+        void collect_delete_scan_projection_from_expression(const components::expressions::expression_ptr& expression,
+                                                            std::vector<size_t>& projected_cols) {
+            if (!expression || expression->group() != components::expressions::expression_group::compare) {
+                return;
+            }
+
+            const auto* compare = static_cast<const components::expressions::compare_expression_t*>(expression.get());
+            collect_delete_scan_projection_from_param(compare->left(), projected_cols);
+            collect_delete_scan_projection_from_param(compare->right(), projected_cols);
+            for (const auto& child : compare->children()) {
+                collect_delete_scan_projection_from_expression(child, projected_cols);
+            }
+        }
+
+        std::vector<size_t>
+        delete_scan_projection(const context_storage_t& context,
+                               const components::logical_plan::node_delete_t& node_delete,
+                               const components::logical_plan::node_ptr& node_match) {
+            if (!context.indexed_keys.empty() || !node_delete.referencing_fks().empty() || !node_match ||
+                node_match->expressions().empty()) {
+                return {};
+            }
+            // RETURNING needs every returned column materialised; a predicate-only
+            // projected scan leaves non-predicate columns as unprojected placeholders
+            // (null data), which RETURNING then reads as empty / cannot gather across
+            // chunks. Fall back to a full scan (no projection) when RETURNING is present.
+            if (!node_delete.returning().empty()) {
+                return {};
+            }
+
+            std::vector<size_t> projected_cols;
+            collect_delete_scan_projection_from_expression(node_match->expressions().front(), projected_cols);
+            std::sort(projected_cols.begin(), projected_cols.end());
+            projected_cols.erase(std::unique(projected_cols.begin(), projected_cols.end()), projected_cols.end());
+            return projected_cols;
+        }
+
+    } // namespace
 
     components::operators::operator_ptr create_plan_delete(const context_storage_t& context,
                                                            const components::logical_plan::node_ptr& node,
@@ -38,7 +111,10 @@ namespace services::planner::impl {
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         std::move(returning)));
-            plan->set_children(create_plan_match(context, node_match, limit));
+            auto projected_cols = delete_scan_projection(context, *node_delete, node_match);
+            const bool row_ids_only =
+                context.indexed_keys.empty() && node_delete->referencing_fks().empty() && !projected_cols.empty();
+            plan->set_children(create_plan_match(context, node_match, limit, projected_cols, row_ids_only));
 
             return plan;
         } else {

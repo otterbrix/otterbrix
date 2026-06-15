@@ -10,7 +10,7 @@ namespace components::table::storage {
 
     metadata_manager_t::metadata_manager_t(block_manager_t& block_manager)
         : block_manager_(block_manager)
-        , sub_block_size_(block_manager.block_allocation_size() / META_SUB_BLOCKS_PER_BLOCK) {}
+        , sub_block_size_(block_manager.block_size() / META_SUB_BLOCKS_PER_BLOCK) {}
 
     meta_block_pointer_t metadata_manager_t::allocate_handle() {
         std::lock_guard lock(lock_);

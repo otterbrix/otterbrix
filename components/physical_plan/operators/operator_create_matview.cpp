@@ -1,6 +1,7 @@
 #include "operator_create_matview.hpp"
 
 #include <components/context/context.hpp>
+#include <components/configuration/configuration.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
@@ -44,7 +45,8 @@ namespace components::operators {
                                            ctx->session,
                                            mv_oid_,
                                            namespace_oid_,
-                                           std::move(columns_));
+                                           std::move(columns_),
+                                           configuration::disk_layout_policy::auto_select);
             co_await std::move(f);
         } else {
             auto [_, f] = actor_zeta::send(ctx->disk_address,

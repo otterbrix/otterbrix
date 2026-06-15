@@ -202,6 +202,23 @@ namespace components::table {
 
     bool update_segment_t::has_updates() const { return root_.get() != nullptr; }
 
+    bool update_segment_t::has_uncommitted_updates() const {
+        auto read_lock = std::shared_lock(m_);
+        if (!root_) {
+            return false;
+        }
+        for (const auto& entry : root_->info) {
+            if (!entry.is_set()) {
+                continue;
+            }
+            auto pin = entry.pin();
+            if (pin.update_info().has_next()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool update_segment_t::has_uncommitted_updates(uint64_t vector_index) {
         auto read_lock = std::shared_lock(m_);
         auto entry = update_node(vector_index);
@@ -260,7 +277,15 @@ namespace components::table {
     }
 
     void update_segment_t::fetch_committed_range(int64_t start_row, uint64_t count, vector::vector_t& result) {
+        fetch_committed_range(start_row, count, uint64_t(0), result);
+    }
+
+    void update_segment_t::fetch_committed_range(int64_t start_row,
+                                                 uint64_t count,
+                                                 uint64_t result_offset,
+                                                 vector::vector_t& result) {
         assert(count > 0);
+        auto lock_handle = std::shared_lock(m_);
         if (!root_) {
             return;
         }
@@ -284,9 +309,13 @@ namespace components::table {
                                                               : vector::DEFAULT_VECTOR_CAPACITY;
             assert(start_in_vector < end_in_vector);
             assert(end_in_vector > 0 && end_in_vector <= vector::DEFAULT_VECTOR_CAPACITY);
-            uint64_t result_offset =
+            uint64_t vector_result_offset =
                 vector_idx * vector::DEFAULT_VECTOR_CAPACITY + start_in_vector - static_cast<uint64_t>(start_row);
-            fetch_committed_range(pin.update_info(), start_in_vector, end_in_vector, result_offset, result);
+            fetch_committed_range(pin.update_info(),
+                                  start_in_vector,
+                                  end_in_vector,
+                                  result_offset + vector_result_offset,
+                                  result);
         }
     }
 

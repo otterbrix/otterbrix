@@ -13,6 +13,8 @@ namespace components::planner {
     // Rules (in order):
     //   - constant_folding (on parameter expressions)
     //   - pushdown_filter
+    //   - join_predicate_pushdown (duplicates WHERE join predicates into comma-join ON clauses)
+    //   - column_pruning (annotates node_aggregate_t with projected_cols)
     //   - hash_join selection (needs the validate_schema stamps)
     // On DDL trees (sequence_t of primitive writes) it is a harmless no-op:
     // the planner leaves the match_t/join_t/aggregate_t these rules target

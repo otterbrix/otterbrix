@@ -2,6 +2,7 @@
 #include "catalog_codes.hpp"
 
 #include <array>
+#include <cassert>
 #include <charconv>
 
 #include <components/types/logical_value.hpp>
@@ -14,6 +15,8 @@
 //   pg_class      — no `reltuples/relpages` : optimizer reads counts live from data_table_t.
 //                 — no `reltype`             : composite-row types not implemented.
 //                 — adds `relstoragemode`    : 'd'/'m' for DISK/IN_MEMORY (otterbrix-specific).
+//                 — adds `relstorageformat`  : exact CREATE TABLE storage contract
+//                                              (in_memory/disk_auto/disk_columnar/disk_pax).
 //                 — relkind 'g' = computing : doc proposed 'c', but 'c' collides with
 //                                              PG's "composite type" relkind. 'g' aligns
 //                                              with PG GENERATED terminology.
@@ -86,6 +89,14 @@ namespace components::catalog {
                 str_col(),
                 true); // 'r' relation, 'i' index, 'S' sequence, 'v' view, 'm' macro, 'c' composite type, 'g' generated/computing
             c.emplace_back("relstoragemode", str_col(), true); // 'd' DISK, 'm' IN_MEMORY (otterbrix-specific)
+            c.emplace_back("relstorageformat",
+                           str_col(),
+                           false); // nullable; storage format (see header)
+            // PAX-specific column. operator_resolve_table.cpp and operator_vacuum.cpp read it
+            // POSITIONALLY as row[5]. Pin the layout here so an upstream column insertion trips
+            // this in tests instead of silently shifting those reads to the wrong column.
+            assert(c.size() == 6 && c.back().name() == "relstorageformat" &&
+                   "pg_class layout changed: update the row[5]=relstorageformat readers");
             return c;
         }
 

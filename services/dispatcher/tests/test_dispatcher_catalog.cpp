@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include <components/catalog/catalog_codes.hpp>
 #include <chrono>
 #include <thread>
 
@@ -243,6 +244,45 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
             auto rns = test.resolve_namespace("test");
             REQUIRE(!rns.found);
         }
+    }
+}
+
+TEST_CASE("services::dispatcher::storage_format_introspection") {
+    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_storage_format_introspection");
+
+    test.execute_sql("CREATE DATABASE test;");
+    (void) test.take_result();
+
+    struct expectation_t {
+        std::string create_sql;
+        std::string relname;
+        std::string expected_storage_format;
+    };
+    const std::vector<expectation_t> cases{
+        {"CREATE TABLE test.mem_tbl(id int);", "mem_tbl", std::string(relstorageformat::in_memory)},
+        {"CREATE TABLE test.disk_auto_tbl(id int) WITH (storage = 'disk');",
+         "disk_auto_tbl",
+         std::string(relstorageformat::disk_auto)},
+        {"CREATE TABLE test.disk_pax_tbl(id bigint) WITH (storage = 'disk') USING PAX;",
+         "disk_pax_tbl",
+         std::string(relstorageformat::disk_pax)},
+        {"CREATE TABLE test.disk_columnar_tbl(name string) WITH (storage = 'disk') USING COLUMNAR;",
+         "disk_columnar_tbl",
+         std::string(relstorageformat::disk_columnar)},
+    };
+
+    auto rns = test.resolve_namespace("test");
+    REQUIRE(rns.found);
+
+    for (const auto& spec : cases) {
+        test.execute_sql(spec.create_sql);
+        auto cur = test.take_result();
+        REQUIRE(cur->is_success());
+
+        auto rt = test.resolve_table(rns.oid, spec.relname);
+        REQUIRE(rt.found);
+        REQUIRE(rt.storage_format == spec.expected_storage_format);
     }
 }
 

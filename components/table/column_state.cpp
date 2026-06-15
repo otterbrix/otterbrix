@@ -139,6 +139,34 @@ namespace components::table {
         }
     }
 
+    storage::buffer_handle_t&
+    column_fetch_state::get_or_insert_handle(const std::shared_ptr<storage::block_handle_t>& block) {
+        auto block_id = block->block_id();
+        auto entry = handles.find(block_id);
+        if (entry == handles.end()) {
+            auto& buffer_manager = block->block_manager.buffer_manager;
+            auto owned_block = block;
+            auto handle = buffer_manager.pin(owned_block);
+            handle.set_ownership(block);
+            auto pinned_entry = handles.emplace(block_id, std::move(handle));
+            return pinned_entry.first->second;
+        }
+        return entry->second;
+    }
+
+    storage::buffer_handle_t& column_fetch_state::get_or_insert_handle(storage::block_manager_t& manager,
+                                                                       uint64_t block_id) {
+        auto entry = handles.find(block_id);
+        if (entry == handles.end()) {
+            auto block = manager.register_block(block_id);
+            auto handle = manager.buffer_manager.pin(block);
+            handle.set_ownership(block);
+            auto pinned_entry = handles.insert({block_id, std::move(handle)});
+            return pinned_entry.first->second;
+        }
+        return entry->second;
+    }
+
     uncompressed_string_segment_state::~uncompressed_string_segment_state() {
         while (head) {
             head = std::move(head->next);
@@ -148,6 +176,10 @@ namespace components::table {
     std::shared_ptr<storage::block_handle_t>
     uncompressed_string_segment_state::handle(storage::block_manager_t& manager, uint32_t block_id) {
         std::lock_guard lock(block_lock_);
+        auto overflow_entry = overflow_blocks.find(block_id);
+        if (overflow_entry != overflow_blocks.end()) {
+            return overflow_entry->second->block;
+        }
         auto entry = handles_.find(block_id);
         if (entry != handles_.end()) {
             return entry->second;

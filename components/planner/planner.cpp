@@ -1,5 +1,6 @@
 #include "planner.hpp"
 
+#include <cassert>
 #include <cstdio>
 
 #include <catalog/catalog_codes.hpp>
@@ -46,6 +47,23 @@ namespace components::planner {
 
     namespace {
         using node_ptr = logical_plan::node_ptr;
+
+        std::string_view
+        to_relstorageformat(logical_plan::create_collection_storage_format_t storage_format) noexcept {
+            using logical_plan::create_collection_storage_format_t;
+
+            switch (storage_format) {
+                case create_collection_storage_format_t::disk_auto:
+                    return catalog::relstorageformat::disk_auto;
+                case create_collection_storage_format_t::disk_columnar:
+                    return catalog::relstorageformat::disk_columnar;
+                case create_collection_storage_format_t::disk_pax:
+                    return catalog::relstorageformat::disk_pax;
+                case create_collection_storage_format_t::in_memory:
+                default:
+                    return catalog::relstorageformat::in_memory;
+            }
+        }
 
         node_ptr rewrite_insert(std::pmr::memory_resource* r, node_ptr node) {
             auto* ins = static_cast<logical_plan::node_insert_t*>(node.get());
@@ -182,7 +200,8 @@ namespace components::planner {
                                                              cc->is_disk_storage(),
                                                              ns_oid,
                                                              oid_batch,
-                                                             rk);
+                                                             rk,
+                                                             to_relstorageformat(cc->storage_format()));
             cc->set_table_oid(table_oid);
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
@@ -714,7 +733,13 @@ namespace components::planner {
     auto planner_t::create_plan(std::pmr::memory_resource* resource,
                                 logical_plan::node_ptr node,
                                 catalog::oid_batch_t oid_batch) -> logical_plan::node_ptr {
-        return walk_ddl(resource, std::move(node), oid_batch);
+        auto result = walk_ddl(resource, std::move(node), oid_batch);
+        // OID lockstep: the executor (this overload's only caller) pre-allocated exactly
+        // compute_oid_demand() OIDs into this batch, so the DDL walk must consume all of them.
+        // A leftover (next < size) is a silent over-allocation that diverges from
+        // compute_oid_demand with no compile error.
+        assert(oid_batch.empty() && "DDL OID consumption diverged from compute_oid_demand");
+        return result;
     }
 
     std::size_t compute_oid_demand(const logical_plan::node_t* node) {

@@ -2,10 +2,123 @@
 
 #include <components/vector/data_chunk.hpp>
 
+#include <cstdio>
+#include <cstdlib>
+#include <limits>
+#include <stdexcept>
+
 #include "collection.hpp"
 #include "row_group.hpp"
 
 namespace components::table {
+    namespace {
+        uint64_t read_scan_env_u64(const char* name, uint64_t default_value = 0) {
+            const char* raw = std::getenv(name);
+            if (!raw || raw[0] == '\0') {
+                return default_value;
+            }
+            char* end = nullptr;
+            auto value = std::strtoull(raw, &end, 10);
+            if (end == raw) {
+                return default_value;
+            }
+            return value;
+        }
+
+        uint64_t scan_current_row_offset(const collection_scan_state& state) {
+            if (!state.row_group) {
+                return std::numeric_limits<uint64_t>::max();
+            }
+            const auto coarse_offset = state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+            if (state.row_offset_override_active) {
+                return state.row_offset_override;
+            }
+            if (!state.row_group->has_persisted_pax_layout()) {
+                return coarse_offset;
+            }
+            for (const auto& column_state : state.column_scans) {
+                if (!column_state.current) {
+                    continue;
+                }
+                const auto fine_offset = state.vector_index_relative_to_row_group
+                                             ? column_state.row_index - state.row_group->start
+                                             : column_state.row_index;
+                if (fine_offset < 0) {
+                    continue;
+                }
+                const auto fine_offset_u = static_cast<uint64_t>(fine_offset);
+                return fine_offset_u < coarse_offset ? fine_offset_u : coarse_offset;
+            }
+            return coarse_offset;
+        }
+
+        uint64_t scan_current_absolute_row(const collection_scan_state& state) {
+            if (!state.row_group) {
+                return std::numeric_limits<uint64_t>::max();
+            }
+            return static_cast<uint64_t>(state.row_group->start) + scan_current_row_offset(state);
+        }
+
+        void maybe_log_scan_progress(const collection_scan_state& state,
+                                     uint64_t emitted_rows,
+                                     uint64_t& next_trace_row,
+                                     uint64_t trace_every_rows) {
+            if (!state.row_group || trace_every_rows == 0) {
+                return;
+            }
+            const auto current_row = scan_current_absolute_row(state);
+            if (current_row < next_trace_row) {
+                return;
+            }
+            std::fprintf(stderr,
+                         "[SCAN] emitted=%llu rg_start=%lld rg_count=%llu vector_index=%llu row_offset=%llu "
+                         "abs_row=%llu max_row=%lld max_rg_row=%lld\n",
+                         static_cast<unsigned long long>(emitted_rows),
+                         static_cast<long long>(state.row_group->start),
+                         static_cast<unsigned long long>(state.row_group->count.load()),
+                         static_cast<unsigned long long>(state.vector_index),
+                         static_cast<unsigned long long>(scan_current_row_offset(state)),
+                         static_cast<unsigned long long>(current_row),
+                         static_cast<long long>(state.max_row),
+                         static_cast<long long>(state.max_row_group_row));
+            std::fflush(stderr);
+            while (next_trace_row <= current_row) {
+                next_trace_row += trace_every_rows;
+            }
+        }
+
+        void enforce_scan_progress(const collection_scan_state& state,
+                                   const row_group_t* before_row_group,
+                                   uint64_t before_vector_index,
+                                   uint64_t before_result_size,
+                                   uint64_t after_result_size,
+                                   const char* path) {
+            if (!state.row_group || state.row_group != before_row_group) {
+                return;
+            }
+            if (state.vector_index != before_vector_index || after_result_size != before_result_size) {
+                return;
+            }
+            const bool exhausted =
+                static_cast<int64_t>(scan_current_row_offset(state)) >= state.max_row_group_row;
+            if (exhausted) {
+                return;
+            }
+            char message[256];
+            std::snprintf(message,
+                          sizeof(message),
+                          "%s made no scan progress: rg_start=%lld rg_count=%llu vector_index=%llu "
+                          "row_offset=%llu max_rg_row=%lld",
+                          path,
+                          static_cast<long long>(state.row_group->start),
+                          static_cast<unsigned long long>(state.row_group->count.load()),
+                          static_cast<unsigned long long>(state.vector_index),
+                          static_cast<unsigned long long>(scan_current_row_offset(state)),
+                          static_cast<long long>(state.max_row_group_row));
+            throw std::runtime_error(message);
+        }
+    } // namespace
+
     void scan_filter_info::initialize(table_filter_set_t& filters, const std::vector<storage_index_t>& column_ids) {
         assert(!filters.filters.empty());
         table_filters_ = &filters;
@@ -152,10 +265,13 @@ namespace components::table {
     collection_scan_state::collection_scan_state(std::pmr::memory_resource* resource, table_scan_state& parent)
         : row_group(nullptr)
         , vector_index(0)
+        , vector_index_relative_to_row_group(false)
         , max_row_group_row(0)
         , row_groups(nullptr)
         , max_row(0)
         , batch_index(0)
+        , row_offset_override_active(false)
+        , row_offset_override(0)
         , valid_indexing(resource, vector::DEFAULT_VECTOR_CAPACITY)
         , parent_(parent) {}
 
@@ -176,10 +292,23 @@ namespace components::table {
     const table_filter_t* collection_scan_state::filter() { return parent_.filter; }
 
     bool collection_scan_state::scan(vector::data_chunk_t& result) {
+        const auto trace_every_rows = read_scan_env_u64("OTTERBRIX_SCAN_TRACE_EVERY_ROWS");
+        uint64_t next_trace_row = trace_every_rows;
+        uint64_t observed_rows = 0;
         while (row_group) {
+            auto* before_row_group = row_group;
+            const auto before_vector_index = vector_index;
+            const auto before_result_size = result.size();
             row_group->scan(*this, result);
-            const bool rg_exhausted =
-                static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= max_row_group_row;
+            observed_rows += result.size() > before_result_size ? result.size() - before_result_size : 0;
+            enforce_scan_progress(*this,
+                                  before_row_group,
+                                  before_vector_index,
+                                  before_result_size,
+                                  result.size(),
+                                  "collection_scan_state::scan");
+            maybe_log_scan_progress(*this, observed_rows, next_trace_row, trace_every_rows);
+            const bool rg_exhausted = static_cast<int64_t>(scan_current_row_offset(*this)) >= max_row_group_row;
             if (!rg_exhausted) {
                 continue;
             }
@@ -208,6 +337,10 @@ namespace components::table {
                                              const std::vector<size_t>* projected_cols,
                                              std::pmr::vector<vector::data_chunk_t>& batches,
                                              std::pmr::memory_resource* resource) {
+        const auto trace_every_rows = read_scan_env_u64("OTTERBRIX_SCAN_TRACE_EVERY_ROWS");
+        const auto max_rows = read_scan_env_u64("OTTERBRIX_SCAN_MAX_ROWS");
+        uint64_t next_trace_row = trace_every_rows;
+        uint64_t emitted_rows = 0;
         while (row_group) {
             vector::data_chunk_t batch =
                 projected_cols ? vector::data_chunk_t(resource, types, *projected_cols, vector::DEFAULT_VECTOR_CAPACITY)
@@ -215,12 +348,28 @@ namespace components::table {
             for (auto& cs : column_scans) {
                 cs.result_offset = 0;
             }
+            auto* before_row_group = row_group;
+            const auto before_vector_index = vector_index;
             row_group->scan(*this, batch);
+            enforce_scan_progress(*this,
+                                  before_row_group,
+                                  before_vector_index,
+                                  0,
+                                  batch.size(),
+                                  "collection_scan_state::scan_batched");
             if (batch.size() > 0) {
+                if (max_rows > 0 && emitted_rows + batch.size() > max_rows) {
+                    batch.set_cardinality(max_rows - emitted_rows);
+                }
+                emitted_rows += batch.size();
                 batches.push_back(std::move(batch));
+                if (max_rows > 0 && emitted_rows >= max_rows) {
+                    row_group = nullptr;
+                    return;
+                }
             }
-            const bool rg_exhausted =
-                static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= max_row_group_row;
+            maybe_log_scan_progress(*this, emitted_rows, next_trace_row, trace_every_rows);
+            const bool rg_exhausted = static_cast<int64_t>(scan_current_row_offset(*this)) >= max_row_group_row;
             if (!rg_exhausted) {
                 continue;
             }

@@ -11,6 +11,7 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
+#include <components/configuration/configuration.hpp>
 #include <components/catalog/results/resolve_result.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
@@ -147,7 +148,9 @@ namespace services::disk {
         create_storage_disk(session_id_t session,
                             components::catalog::oid_t table_oid,
                             components::catalog::oid_t database_oid,
-                            std::vector<components::table::column_definition_t> columns);
+                            std::vector<components::table::column_definition_t> columns,
+                            configuration::disk_layout_policy layout_policy =
+                                configuration::disk_layout_policy::auto_select);
         // Batched DROP: partition oids per agent, fan out one inner per agent.
         actor_zeta::unique_future<void> drop_storage_many(session_id_t session,
                                                           std::pmr::vector<components::catalog::oid_t> table_oids);
@@ -167,18 +170,20 @@ namespace services::disk {
         // Batched + projected variant: returns a vector of chunks (PR #483 multi-chunk)
         // and applies index-based column projection at the disk layer (PR #477).
         // Empty `projected_cols` means "read all columns" (pass-through).
-        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        actor_zeta::unique_future<std::unique_ptr<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_scan_batched(session_id_t session,
                              components::catalog::oid_t table_oid,
                              std::unique_ptr<components::table::table_filter_t> filter,
                              int64_t limit,
                              std::vector<size_t> projected_cols,
+                             bool row_ids_only,
                              components::table::transaction_data txn);
         actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
-                      uint64_t count);
+                      uint64_t count,
+                      components::table::transaction_data txn);
         actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
 

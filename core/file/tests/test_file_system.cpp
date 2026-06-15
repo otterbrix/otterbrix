@@ -1,9 +1,12 @@
 #include <catch2/catch.hpp>
 
 #include "file_system.hpp"
+#include <algorithm>
 #include <components/log/log.hpp>
+#include <cstring>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #if defined(__linux__)
 #include <unistd.h>
@@ -164,3 +167,82 @@ TEST_CASE("core::file::filesystem") {
         }
     }
 }
+
+#if defined(DEV_MODE) && defined(PLATFORM_POSIX)
+namespace {
+    struct posix_io_hook_guard_t {
+        ~posix_io_hook_guard_t() { testing::reset_posix_positioned_io_hooks(); }
+    };
+
+    std::string g_test_pread_source;
+    std::vector<uint64_t> g_test_pread_offsets;
+    std::string g_test_pwrite_sink;
+    std::vector<uint64_t> g_test_pwrite_offsets;
+
+    int64_t test_partial_pread(int, void* buffer, size_t nr_bytes, uint64_t location) {
+        g_test_pread_offsets.push_back(location);
+        if (location >= g_test_pread_source.size()) {
+            return 0;
+        }
+        const auto available = g_test_pread_source.size() - static_cast<size_t>(location);
+        const auto chunk = std::min<size_t>({size_t{3}, nr_bytes, available});
+        std::memcpy(buffer, g_test_pread_source.data() + static_cast<size_t>(location), chunk);
+        return static_cast<int64_t>(chunk);
+    }
+
+    int64_t test_partial_pwrite(int, const void* buffer, size_t nr_bytes, uint64_t location) {
+        g_test_pwrite_offsets.push_back(location);
+        const auto chunk = std::min<size_t>(size_t{2}, nr_bytes);
+        const auto required = static_cast<size_t>(location) + chunk;
+        if (g_test_pwrite_sink.size() < required) {
+            g_test_pwrite_sink.resize(required, '\0');
+        }
+        std::memcpy(g_test_pwrite_sink.data() + static_cast<size_t>(location), buffer, chunk);
+        return static_cast<int64_t>(chunk);
+    }
+} // namespace
+
+TEST_CASE("core::file::filesystem_posix_positioned_io_advances_offset_on_partial_io") {
+    local_file_system_t fs;
+    if (!directory_exists(fs, testing_directory)) {
+        create_directory(fs, testing_directory);
+    }
+
+    auto fname = testing_directory;
+    fname /= "positioned_partial_io";
+    posix_io_hook_guard_t hook_guard;
+
+    auto handle =
+        open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE, file_lock_type::NO_LOCK);
+    REQUIRE(handle);
+
+    SECTION("pread retries from the advanced location") {
+        g_test_pread_source = "abcdefgh";
+        g_test_pread_offsets.clear();
+        std::vector<char> buffer(g_test_pread_source.size(), '\0');
+
+        testing::set_posix_pread_hook(&test_partial_pread);
+        REQUIRE(handle->read(buffer.data(), buffer.size(), 0));
+
+        REQUIRE(std::string(buffer.data(), buffer.size()) == g_test_pread_source);
+        REQUIRE(g_test_pread_offsets == std::vector<uint64_t>{0, 3, 6});
+        testing::set_posix_pread_hook(nullptr);
+    }
+
+    SECTION("pwrite retries from the advanced location") {
+        const std::string payload = "uvwxyz";
+        g_test_pwrite_sink.clear();
+        g_test_pwrite_offsets.clear();
+
+        testing::set_posix_pwrite_hook(&test_partial_pwrite);
+        REQUIRE(handle->write(const_cast<char*>(payload.data()), payload.size(), 0));
+
+        REQUIRE(g_test_pwrite_sink == payload);
+        REQUIRE(g_test_pwrite_offsets == std::vector<uint64_t>{0, 2, 4});
+        testing::set_posix_pwrite_hook(nullptr);
+    }
+
+    handle.reset();
+    remove_file(fs, fname);
+}
+#endif

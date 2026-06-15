@@ -166,20 +166,29 @@ TEST_CASE("components::sql::update_from") {
         fields f;
         f.emplace_back(new update_expr_set_t(components::expressions::key_t{&resource, "price"}));
         update_expr_ptr calculate_1 = new update_expr_calculate_t(update_expr_type::mult);
-        calculate_1->left() =
-            new update_expr_get_value_t(components::expressions::key_t{&resource, "price", side_t::right});
-        calculate_1->right() =
-            new update_expr_get_value_t(components::expressions::key_t{&resource, "discount", side_t::left});
+        calculate_1->left() = new update_expr_get_value_t(components::expressions::key_t{
+            std::pmr::vector<std::pmr::string>{
+                {std::pmr::string{"othertestcollection", &resource}, std::pmr::string{"price", &resource}},
+                &resource},
+            side_t::right});
+        calculate_1->right() = new update_expr_get_value_t(components::expressions::key_t{
+            std::pmr::vector<std::pmr::string>{
+                {std::pmr::string{"testcollection", &resource}, std::pmr::string{"discount", &resource}},
+                &resource},
+            side_t::left});
         update_expr_ptr calculate_2 = new update_expr_calculate_t(update_expr_type::sub);
-        calculate_2->left() =
-            new update_expr_get_value_t(components::expressions::key_t{&resource, "price", side_t::right});
+        calculate_2->left() = new update_expr_get_value_t(components::expressions::key_t{
+            std::pmr::vector<std::pmr::string>{
+                {std::pmr::string{"othertestcollection", &resource}, std::pmr::string{"price", &resource}},
+                &resource},
+            side_t::right});
         calculate_2->right() = std::move(calculate_1);
         f.back()->left() = std::move(calculate_2);
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection
 SET price = OtherTestCollection.price - (OtherTestCollection.price * TestCollection.discount)
 FROM OtherTestCollection
 WHERE TestCollection.id = OtherTestCollection.id;)_",
-                           R"_($update: <oid:0> {$upsert: 0, $match: {"id": {$eq: "id"}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$upsert: 0, $match: {"testcollection/id": {$eq: "othertestcollection/id"}}, $limit: -1})_",
                            vec({}),
                            f);
     }

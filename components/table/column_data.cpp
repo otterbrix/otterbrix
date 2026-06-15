@@ -202,6 +202,11 @@ namespace components::table {
         return updates_.get();
     }
 
+    bool column_data_t::has_uncommitted_updates() const {
+        std::lock_guard update_guard(update_lock_);
+        return updates_ && updates_->has_uncommitted_updates();
+    }
+
     scan_vector_type
     column_data_t::get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
         if (result.get_vector_type() != vector::vector_type::FLAT) {
@@ -272,6 +277,7 @@ namespace components::table {
                                              uint64_t count,
                                              vector::vector_t& result) {
         column_scan_state child_state;
+        child_state.initialize(type_);
         initialize_scan_with_offset(child_state, static_cast<int64_t>(row_group_start + offset_in_row_group));
         auto scan_count = scan_vector(child_state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
         if (has_updates()) {
@@ -279,6 +285,21 @@ namespace components::table {
             result.flatten(scan_count);
             updates_->fetch_committed_range(static_cast<int64_t>(offset_in_row_group), count, result);
         }
+    }
+
+    void column_data_t::fetch_committed_updates_range(uint64_t offset_in_row_group,
+                                                      uint64_t count,
+                                                      vector::vector_t& result,
+                                                      uint64_t result_offset) {
+        if (count == 0) {
+            return;
+        }
+        std::lock_guard update_guard(update_lock_);
+        if (!updates_) {
+            return;
+        }
+        result.flatten(result_offset + count);
+        updates_->fetch_committed_range(static_cast<int64_t>(offset_in_row_group), count, result_offset, result);
     }
 
     uint64_t column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
@@ -348,11 +369,11 @@ namespace components::table {
             apend_transient_segment(l, start_);
         }
         auto segment = data_.last_segment(l);
-        // Disk-loaded segments have block_offset()!=0 (they share a block with other
-        // segments). They are read-only; appending to them would trip the assert in
-        // column_segment_t::append. Create a fresh in-memory segment positioned just
-        // after the last loaded segment so new rows land in appendable storage.
-        if (segment->block_offset() != 0) {
+        // Loaded-from-disk segments can't be appended to in place (shared-block segments are
+        // read-only, compressed/persisted ones hold encoded bytes). Roll over to a fresh
+        // uncompressed in-memory segment right after the last one.
+        if (segment && (segment->is_persisted() || segment->block_offset() != 0 ||
+                        segment->compression() != compression::compression_type::UNCOMPRESSED)) {
             apend_transient_segment(l, segment->start + static_cast<int64_t>(segment->count));
             segment = data_.last_segment(l);
         }
@@ -362,7 +383,7 @@ namespace components::table {
 
     void column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
         statistics_.update(vector, count);
-        // Update per-segment statistics (conservative: full vector stats go to current segment)
+        // per-segment statistics
         if (state.current) {
             base_statistics_t batch_stats(resource_, type_.type());
             batch_stats.update(vector, count);
@@ -569,13 +590,28 @@ namespace components::table {
         return std::make_unique<standard_column_data_t>(resource, block_manager, column_index, start_row, type, parent);
     }
 
-    void column_data_t::apend_transient_segment(std::unique_lock<std::mutex>& l, int64_t start_row) {
+    void column_data_t::apend_transient_segment(std::unique_lock<std::mutex>& l,
+                                                int64_t start_row,
+                                                uint64_t requested_size) {
         const auto block_size = block_manager_.block_size();
         const auto type_size = type_.size();
         auto vector_segment_size = block_size;
 
-        if (start_row == static_cast<uint64_t>(MAX_ROW_ID)) {
+        // Fixed-width segments only need DEFAULT_VECTOR_CAPACITY * type_size bytes; reserving a
+        // whole block each wastes memory and exhausts the buffer pool on large loads. Variable-width
+        // types keep the full block (payload packed inline); validity children are right-sized to
+        // the row-group bitmask.
+        if (type_.type() == components::types::logical_type::VALIDITY) {
+            vector_segment_size = vector::validity_mask_t::validity_mask_size(vector::DEFAULT_VECTOR_CAPACITY);
+        } else if (start_row == static_cast<uint64_t>(MAX_ROW_ID) ||
+                   components::types::complex_logical_type::type_is_constant_size(type_.type())) {
             vector_segment_size = vector::DEFAULT_VECTOR_CAPACITY * type_size;
+        }
+
+        // An explicit requested_size overrides the default; register_transient_memory routes any
+        // size < block_size to a right-sized tiny buffer.
+        if (requested_size != 0) {
+            vector_segment_size = requested_size;
         }
 
         uint64_t segment_size = block_size < vector_segment_size ? block_size : vector_segment_size;
@@ -593,6 +629,7 @@ namespace components::table {
             throw std::logic_error("scan_vector called with SCAN_FLAT_VECTOR but result is not a flat vector");
         }
         state.previous_states.clear();
+        state.overflow_states.clear();
         if (!state.initialized) {
             assert(state.current);
             state.current->initialize_scan(state);
@@ -614,13 +651,6 @@ namespace components::table {
                                                static_cast<uint64_t>(state.row_index));
             uint64_t result_offset = state.result_offset + initial_remaining - remaining;
             if (scan_count > 0) {
-                for (uint64_t i = 0; i < scan_count; i++) {
-                    column_fetch_state fetch_state;
-                    state.current->fetch_row(fetch_state,
-                                             state.row_index + static_cast<int64_t>(i),
-                                             result,
-                                             result_offset + i);
-                }
                 state.current->scan(state, scan_count, result, result_offset, scan_type);
 
                 state.row_index += static_cast<int64_t>(scan_count);
@@ -729,6 +759,7 @@ namespace components::table {
                                                               dp.block_pointer.offset,
                                                               dp.segment_size);
             segment->set_compression(dp.compression);
+            segment->set_persisted(true);
             if (i < persistent_data.segment_statistics.size() && persistent_data.segment_statistics[i].has_stats()) {
                 segment->set_segment_statistics(persistent_data.segment_statistics[i]);
             }
@@ -747,14 +778,21 @@ namespace components::table {
     }
 
     void column_data_t::initialize_column_validity(const persistent_column_data_t& persistent_data) {
-        // create transient in-memory segments matching the data pointers
-        // used for validity columns that don't have their own persistent data yet
+        // Create transient in-memory validity segments matching the data pointers,
+        // for validity columns without their own persistent data yet.
         auto l = data_.lock();
         for (const auto& dp : persistent_data.data_pointers) {
-            apend_transient_segment(l, static_cast<int64_t>(dp.row_start));
+            // Size the transient validity segment to exactly the mask it holds, not a whole block.
+            const auto validity_size = vector::validity_mask_t::validity_mask_size(dp.tuple_count);
+            apend_transient_segment(l, static_cast<int64_t>(dp.row_start), validity_size);
             auto* seg = data_.last_segment(l);
             if (seg) {
                 seg->count = dp.tuple_count;
+                // Mark as persisted: this segment is a right-sized snapshot of a checkpointed page,
+                // not appendable space. Its bits past the page's row count are stale (create_from_pointer
+                // memset/memcpy's only the page payload), so appending into it in place would let
+                // non-null appended rows inherit stale invalid bits and read back as spurious NULLs.
+                seg->set_persisted(true);
             }
         }
         if (!persistent_data.data_pointers.empty()) {

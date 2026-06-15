@@ -199,13 +199,19 @@ namespace services::disk {
     void manager_disk_t::create_storage_disk_sync(components::catalog::oid_t table_oid,
                                                   components::catalog::oid_t /*database_oid*/,
                                                   std::vector<components::table::column_definition_t> columns,
-                                                  const std::filesystem::path& otbx_path) {
+                                                  const std::filesystem::path& otbx_path,
+                                                  configuration::disk_layout_policy layout_policy) {
         trace(log_,
               "manager_disk_t::create_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
               otbx_path.string());
         // SFBM is constructed on the agent thread via bootstrap_create_disk_inner_sync;
-        // the manager never opens .otbx (would race the exclusive WRITE_LOCK).
+        // the manager never opens .otbx (would race the exclusive WRITE_LOCK). The
+        // layout_policy/pax_rows_per_page are applied by the block_manager the agent's
+        // table_storage_t builds (config_.pax_rows_per_page is read agent-side); the
+        // router itself only forwards oid/columns/path, so layout_policy is accepted
+        // for API symmetry but not re-threaded here.
+        static_cast<void>(layout_policy);
         if (agents_.empty()) {
             return;
         }

@@ -103,6 +103,7 @@ namespace components::table::storage {
         uint64_t block_location(uint64_t block_id) const;
         void checksum_and_write(file_buffer_t& buffer, uint64_t block_id);
         bool verify_checksum(file_buffer_t& buffer);
+        void write_header_slot(const database_header_t& header, uint64_t slot);
 
         core::filesystem::local_file_system_t& fs_;
         std::string path_;

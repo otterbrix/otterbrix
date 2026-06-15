@@ -51,6 +51,10 @@ namespace components::table {
                                           uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
         auto scan_count = column_data_t::scan(vector_index, state, result, target_count);
+        // The scan driver doesn't sync the validity child's result_offset with the parent's,
+        // so mirror it here; otherwise multi-row-group scans into one chunk write the null mask
+        // over an earlier row group.
+        state.child_states[0].result_offset = state.result_offset;
         validity.scan(vector_index, state.child_states[0], result, target_count);
         return scan_count;
     }
@@ -62,8 +66,18 @@ namespace components::table {
                                                     uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
         auto scan_count = column_data_t::scan_committed(vector_index, state, result, allow_updates, target_count);
+        // See scan(): keep the validity child's result_offset aligned with the parent.
+        state.child_states[0].result_offset = state.result_offset;
         validity.scan_committed(vector_index, state.child_states[0], result, allow_updates, target_count);
         return scan_count;
+    }
+
+    void standard_column_data_t::fetch_committed_updates_range(uint64_t offset_in_row_group,
+                                                               uint64_t count,
+                                                               vector::vector_t& result,
+                                                               uint64_t result_offset) {
+        column_data_t::fetch_committed_updates_range(offset_in_row_group, count, result, result_offset);
+        validity.fetch_committed_updates_range(offset_in_row_group, count, result, result_offset);
     }
 
     uint64_t standard_column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
@@ -144,8 +158,15 @@ namespace components::table {
     void standard_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
         column_data_t::initialize_column(persistent_data);
 
-        // create matching transient validity segments for each data segment
-        validity.initialize_column_validity(persistent_data);
+        // Restore the validity child from its on-disk segments when persisted (COLUMNAR layout);
+        // otherwise fall back to matching all-valid transient segments (PAX restores validity
+        // separately via create_from_pointer, and all-valid columns have no persisted child).
+        if (!persistent_data.child_columns.empty() && persistent_data.child_columns[0] &&
+            !persistent_data.child_columns[0]->data_pointers.empty()) {
+            validity.initialize_column(*persistent_data.child_columns[0]);
+        } else {
+            validity.initialize_column_validity(persistent_data);
+        }
     }
 
 } // namespace components::table

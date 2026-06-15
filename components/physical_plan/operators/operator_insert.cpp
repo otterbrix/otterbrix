@@ -46,7 +46,6 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 
         // When a resolver sibling supplied catalog metadata, compute a
@@ -56,29 +55,40 @@ namespace components::operators {
         // diagnostics today — the field is the wiring hook for a future
         // storage_append(...,key_translation) signature change. We log
         // mismatches at trace level so resolver/data drift is visible.
-        if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
-            auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
+        auto log_metadata_mismatches = [&](const data_chunk_t& chunk) {
+            if (!resolved_metadata_.has_value() || chunk.column_count() == 0) {
+                return;
+            }
+            auto translation = build_column_key_translation(*resolved_metadata_, chunk);
             for (std::size_t i = 0; i < translation.size(); ++i) {
-                if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
+                if (translation[i] < 0 && chunk.data[i].type().has_alias()) {
                     trace(log_,
                           "operator_insert: resolved metadata has no column matching chunk alias '{}'",
-                          std::string(out_chunk.data[i].type().alias()));
+                          std::string(chunk.data[i].type().alias()));
                 }
             }
+        };
+
+        auto& out_chunk = output_->data_chunk();
+        log_metadata_mismatches(out_chunk);
+
+        // 1. Capture WAL data only when WAL is active, to skip the full-chunk
+        // copy when it's disabled.
+        const bool write_wal = ctx->wal_address != actor_zeta::address_t::empty_address();
+        std::unique_ptr<data_chunk_t> wal_data;
+        if (write_wal) {
+            wal_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
+            out_chunk.copy(*wal_data, 0);
         }
 
-        // 1. Capture WAL data BEFORE storage_append moves the chunk.
-        auto wal_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-        out_chunk.copy(*wal_data, 0);
-
         // 2. storage_append (handles schema adoption, _id dedup).
-        auto data_copy = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-        out_chunk.copy(*data_copy, 0);
+        auto append_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
+        out_chunk.copy(*append_data, 0);
         auto [_a, af] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::storage_append,
                                          exec_ctx,
                                          table_oid_,
-                                         std::move(data_copy));
+                                         std::move(append_data));
         auto [start_row, actual_count] = co_await std::move(af);
 
         if (actual_count == 0) {
@@ -89,7 +99,7 @@ namespace components::operators {
         }
 
         // 3. WAL physical_insert (synchronous; flush is fire-and-forget).
-        if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
+        if (write_wal) {
             // database_oid selects the WAL worker. Hardcoded to main_database
             // until catalog_resolve_database_t populates ctx->database_oid.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;

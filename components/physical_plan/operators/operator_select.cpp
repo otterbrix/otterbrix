@@ -2,6 +2,7 @@
 
 #include "arithmetic_eval.hpp"
 #include <components/expressions/compare_expression.hpp>
+#include <components/physical_plan/operators/predicates/utils.hpp>
 
 namespace components::operators {
 
@@ -161,6 +162,10 @@ namespace components::operators {
                                                                      vector::data_chunk_t* right_input) {
         const auto num_rows = input->size();
         const uint64_t cap = num_rows > 0 ? num_rows : 1;
+        // Function-kind projection columns evaluate against the process-global
+        // function registry (the RETURNING / select callers do not thread a
+        // per-pipeline registry through evaluate_projection's contract).
+        const auto* function_registry = compute::function_registry_t::get_default();
 
         // Assemble the output chunk directly: one column per projection entry
         // (star_expand fans out to one per input column). Columns are pushed
@@ -209,6 +214,43 @@ namespace components::operators {
                         vec.set_value(row, col.constant_value);
                     }
                     vec.set_type_alias(std::string{col.key.name});
+                    result.data.push_back(std::move(vec));
+                    break;
+                }
+                case select_column_t::kind::function: {
+                    if (!col.function_expr || !function_registry) {
+                        return core::error_t(core::error_code_t::unrecognized_function,
+                                             std::pmr::string{"function expression is not resolved", resource});
+                    }
+
+                    auto getter = predicates::impl::create_value_getter(resource,
+                                                                        function_registry,
+                                                                        col.function_expr,
+                                                                        &parameters);
+                    // A right-side key reads from right_input; the merged JOIN chunk
+                    // is passed as both, so a getter over either side resolves.
+                    const vector::data_chunk_t& right_src = right_input ? *right_input : *input;
+                    types::complex_logical_type col_type{types::logical_type::NA};
+                    std::pmr::vector<types::logical_value_t> values(resource);
+                    values.reserve(num_rows);
+                    for (uint64_t row = 0; row < num_rows; ++row) {
+                        auto value = getter(*input, right_src, row, row);
+                        if (value.has_error()) {
+                            return value.error();
+                        }
+                        auto val = std::move(value.value());
+                        if (col_type.type() == types::logical_type::NA) {
+                            col_type = val.type();
+                        }
+                        values.push_back(std::move(val));
+                    }
+
+                    vector::vector_t vec(resource, col_type, cap);
+                    for (uint64_t row = 0; row < num_rows; ++row) {
+                        vec.set_value(row, values[row]);
+                    }
+                    vec.set_type_alias(col.function_expr->result_alias().empty() ? col.function_expr->name()
+                                                                                  : col.function_expr->result_alias());
                     result.data.push_back(std::move(vec));
                     break;
                 }

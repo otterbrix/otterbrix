@@ -1,6 +1,7 @@
 #include "single_file_block_manager.hpp"
 
 #include <cassert>
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
 
@@ -12,6 +13,15 @@
 #include <core/file/local_file_system.hpp>
 
 namespace components::table::storage {
+
+    namespace {
+        // CRC32c over the header fields before the checksum field (the field itself and trailing
+        // padding are excluded), so a torn or corrupted header is rejected on load.
+        uint64_t compute_header_checksum(const database_header_t& header) {
+            return static_cast<uint64_t>(static_cast<uint32_t>(absl::ComputeCrc32c(
+                {reinterpret_cast<const char*>(&header), offsetof(database_header_t, checksum)})));
+        }
+    } // namespace
 
     single_file_block_manager_t::single_file_block_manager_t(buffer_manager_t& buffer_manager,
                                                              core::filesystem::local_file_system_t& fs,
@@ -42,15 +52,17 @@ namespace components::table::storage {
 
         main_header_t main_header;
         main_header.initialize();
-        handle_->write(&main_header, sizeof(main_header), 0);
+        if (!handle_->write(&main_header, sizeof(main_header), 0)) {
+            throw std::runtime_error("create_new_database: failed to write main header");
+        }
 
         database_header_t db_header;
         db_header.initialize();
         db_header.block_alloc_size = block_allocation_size();
-        handle_->write(&db_header, sizeof(db_header), SECTOR_SIZE);
-        handle_->write(&db_header, sizeof(db_header), 2 * SECTOR_SIZE);
-
-        handle_->sync();
+        // Checksum the initial header too, so a create-then-reopen with no checkpoint still validates.
+        db_header.checksum = compute_header_checksum(db_header);
+        write_header_slot(db_header, SECTOR_SIZE);
+        write_header_slot(db_header, 2 * SECTOR_SIZE);
 
         iteration_ = 0;
         max_block_ = 0;
@@ -84,7 +96,17 @@ namespace components::table::storage {
             throw std::runtime_error("Failed to read database header 2");
         }
 
-        const database_header_t& active = (header1.iteration >= header2.iteration) ? header1 : header2;
+        // Pick the active header only from slots that pass the checksum; if one slot is torn, recover
+        // from the other intact one rather than promoting the torn slot by iteration.
+        const bool valid1 = header1.checksum == compute_header_checksum(header1);
+        const bool valid2 = header2.checksum == compute_header_checksum(header2);
+        if (!valid1 && !valid2) {
+            throw std::runtime_error(
+                "load_existing_database: both database header slots failed checksum (torn or corrupt header)");
+        }
+        const database_header_t& active = (valid1 && valid2)
+                                              ? ((header1.iteration >= header2.iteration) ? header1 : header2)
+                                              : (valid1 ? header1 : header2);
 
         iteration_ = active.iteration;
         meta_block_ = active.meta_block;
@@ -110,9 +132,28 @@ namespace components::table::storage {
         }
     }
 
-    void single_file_block_manager_t::read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t /*count*/) {
+    void single_file_block_manager_t::read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t block_count) {
         auto location = block_location(start_block);
         buffer.read(*handle_, location);
+
+        // Verify every block's CRC32c; the single-block read() path does this but the batch path
+        // didn't. Blocks sit at block_allocation_size() stride, each laid out as
+        // [8-byte checksum][block_size() payload]. The stride check guards against a short buffer.
+        auto* base = buffer.internal_buffer();
+        const auto stride = block_allocation_size();
+        const auto payload_size = block_size();
+        for (uint64_t i = 0; i < block_count; i++) {
+            if ((i + 1) * stride > buffer.allocation_size()) {
+                break;
+            }
+            auto* block_ptr = base + i * stride;
+            auto stored_checksum = *reinterpret_cast<uint64_t*>(block_ptr);
+            auto computed = static_cast<uint64_t>(static_cast<uint32_t>(absl::ComputeCrc32c(
+                {reinterpret_cast<const char*>(block_ptr + sizeof(uint64_t)), payload_size})));
+            if (stored_checksum != computed) {
+                throw std::runtime_error("Block checksum mismatch for block " + std::to_string(start_block + i));
+            }
+        }
     }
 
     void single_file_block_manager_t::write(file_buffer_t& buffer, uint64_t block_id) {
@@ -210,8 +251,13 @@ namespace components::table::storage {
             static_cast<uint32_t>(absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), payload_size})));
         *checksum_slot = crc;
 
+        // A failed block write must abort the checkpoint; file_buffer_t::write drops the handle's
+        // bool result, so write directly and check it.
         auto location = block_location(block_id);
-        buffer.write(*handle_, location);
+        if (!handle_->write(data, alloc_size, location)) {
+            throw std::runtime_error("checksum_and_write: failed to write block " + std::to_string(block_id) +
+                                     " (checkpoint not durable)");
+        }
     }
 
     bool single_file_block_manager_t::verify_checksum(file_buffer_t& buffer) {
@@ -237,21 +283,35 @@ namespace components::table::storage {
         write_header.block_count = max_block_;
         write_header.block_alloc_size = block_allocation_size();
         write_header.meta_block = meta_block_;
+        // Checksum last, over the finalized fields; validated on load.
+        write_header.checksum = compute_header_checksum(write_header);
 
         // double-header protocol: alternate between slot 1 and slot 2
         uint64_t slot = (iteration_ % 2 == 1) ? SECTOR_SIZE : (2 * SECTOR_SIZE);
-        handle_->write(&write_header, sizeof(write_header), slot);
-        handle_->sync();
+        write_header_slot(write_header, slot);
 
         // write to the other slot as well for redundancy
         uint64_t other_slot = (slot == SECTOR_SIZE) ? (2 * SECTOR_SIZE) : SECTOR_SIZE;
-        handle_->write(&write_header, sizeof(write_header), other_slot);
-        handle_->sync();
+        write_header_slot(write_header, other_slot);
+    }
+
+    void single_file_block_manager_t::write_header_slot(const database_header_t& header, uint64_t slot) {
+        // write() and sync() return false on failure; propagate so a non-durable checkpoint can't
+        // report success.
+        if (!handle_->write(const_cast<database_header_t*>(&header), sizeof(header), slot)) {
+            throw std::runtime_error("write_header: failed to write database header slot");
+        }
+        if (!handle_->sync()) {
+            throw std::runtime_error("write_header: failed to fsync database header slot");
+        }
     }
 
     void single_file_block_manager_t::file_sync() {
         if (handle_) {
-            handle_->sync();
+            // Durability barrier for the checkpoint commit; propagate fsync failure.
+            if (!handle_->sync()) {
+                throw std::runtime_error("file_sync: fsync failed (checkpoint not durable)");
+            }
         }
     }
 

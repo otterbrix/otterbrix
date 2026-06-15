@@ -109,6 +109,18 @@ namespace components::table {
         return scan_count;
     }
 
+    void struct_column_data_t::scan_committed_range(uint64_t row_group_start,
+                                                    uint64_t offset_in_row_group,
+                                                    uint64_t count,
+                                                    vector::vector_t& result) {
+        column_scan_state state;
+        state.initialize(type_);
+        const auto row_index = static_cast<int64_t>(row_group_start + offset_in_row_group);
+        initialize_scan_with_offset(state, row_index);
+        const auto vector_index = static_cast<uint64_t>(row_index) / vector::DEFAULT_VECTOR_CAPACITY;
+        scan_committed(vector_index, state, result, true, count);
+    }
+
     uint64_t struct_column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         auto scan_count = validity.scan_count(state.child_states[0], result, count);
         auto& child_entries = result.entries();

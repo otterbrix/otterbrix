@@ -480,10 +480,12 @@ namespace components::vector {
                         auxiliary_ = std::make_unique<string_vector_buffer_t>(resource());
                     }
                     assert(auxiliary_->type() == vector_buffer_type::STRING);
+                    const auto* string_value = val.value<std::string*>();
                     reinterpret_cast<std::string_view*>(data_)[index] =
                         std::string_view(reinterpret_cast<char*>(static_cast<string_vector_buffer_t*>(auxiliary_.get())
-                                                                     ->insert(*(val.value<std::string*>()))),
-                                         val.value<std::string*>()->size());
+                                                                     ->insert(string_value->data(),
+                                                                              string_value->size())),
+                                         string_value->size());
                 }
                 break;
             }
@@ -728,9 +730,7 @@ namespace components::vector {
                         children.back().set_alias(vector->type_.child_name(child_idx));
                     }
                 }
-                return types::logical_value_t::create_struct(vector->resource(),
-                                                             vector->type_.type_name(),
-                                                             std::move(children));
+                return types::logical_value_t::create_struct(vector->resource(), vector->type_, std::move(children));
             }
             case types::logical_type::LIST: {
                 auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
@@ -1274,11 +1274,27 @@ namespace components::vector {
     }
 
     void vector_t::set_vector_type(vector_type vector_type) {
-        this->vector_type_ = vector_type;
+        const auto previous_type = vector_type_;
+
         if (types::complex_logical_type::type_is_constant_size(type_.type()) &&
-            (vector_type_ == vector_type::CONSTANT || vector_type_ == vector_type::FLAT)) {
+            (vector_type == vector_type::CONSTANT || vector_type == vector_type::FLAT)) {
+            if (previous_type == vector_type::DICTIONARY && auxiliary_) {
+                auto& child_vector = child();
+                buffer_ = child_vector.buffer_;
+                data_ = child_vector.data_;
+                validity_ = child_vector.validity_;
+            } else if (previous_type == vector_type::CONSTANT || previous_type == vector_type::SEQUENCE || !buffer_ ||
+                       buffer_->type() != vector_buffer_type::STANDARD) {
+                const auto capacity = validity_.count() == 0 ? uint64_t(1) : validity_.count();
+                buffer_ = std::make_shared<vector_buffer_t>(resource(), type_, capacity);
+                data_ = buffer_->data();
+            } else {
+                data_ = buffer_->data();
+            }
             auxiliary_.reset();
         }
+
+        this->vector_type_ = vector_type;
         if (vector_type_ == vector_type::CONSTANT && type_.to_physical_type() == types::physical_type::STRUCT) {
             for (auto& entry : entries()) {
                 entry->set_vector_type(vector_type_);

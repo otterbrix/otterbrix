@@ -163,7 +163,8 @@ namespace components::operators {
                                                    ctx->session,
                                                    fk_.child_table_oid,
                                                    std::move(fetch_ids),
-                                                   static_cast<uint64_t>(all_child_ids.size()));
+                                                   static_cast<uint64_t>(all_child_ids.size()),
+                                                   ctx->txn);
                 auto fetched = co_await std::move(ffut);
                 if (!fetched || fetched->size() == 0)
                     break;

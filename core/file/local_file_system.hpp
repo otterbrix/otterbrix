@@ -1,6 +1,8 @@
 #pragma once
 
 #include "file_handle.hpp"
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -76,6 +78,19 @@ namespace core::filesystem {
 
 #ifdef PLATFORM_WINDOWS
     std::string last_error_as_string(local_file_system_t&);
+#endif
+
+#if defined(DEV_MODE) && defined(PLATFORM_POSIX)
+    namespace testing {
+        using posix_pread_hook_t = int64_t (*)(int fd, void* buffer, size_t nr_bytes, uint64_t location);
+        using posix_pwrite_hook_t = int64_t (*)(int fd, const void* buffer, size_t nr_bytes, uint64_t location);
+        using posix_fsync_hook_t = int (*)(int fd);
+
+        void set_posix_pread_hook(posix_pread_hook_t hook);
+        void set_posix_pwrite_hook(posix_pwrite_hook_t hook);
+        void set_posix_fsync_hook(posix_fsync_hook_t hook);
+        void reset_posix_positioned_io_hooks();
+    } // namespace testing
 #endif
 
 } // namespace core::filesystem

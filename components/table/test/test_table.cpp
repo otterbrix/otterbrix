@@ -967,3 +967,189 @@ TEST_CASE("components::table::data_table") {
         }
     }
 }
+
+TEST_CASE("components::table::data_table row id projection covers indexed scan paths") {
+    using namespace components::types;
+    using namespace components::vector;
+    using namespace components::table;
+
+    std::pmr::synchronized_pool_resource resource;
+    core::filesystem::local_file_system_t fs;
+    auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+    auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
+    auto block_manager = storage::in_memory_block_manager_t(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE);
+
+    std::vector<column_definition_t> columns;
+    columns.emplace_back("value", logical_type::BIGINT);
+    auto table = std::make_unique<data_table_t>(&resource, block_manager, std::move(columns), "row_id_projection");
+
+    constexpr uint64_t row_count = 32;
+    {
+        auto types = table->copy_types();
+        data_chunk_t chunk(&resource, types, row_count);
+        for (uint64_t i = 0; i < row_count; i++) {
+            chunk.set_value(0, i, logical_value_t(&resource, static_cast<int64_t>(100 + i)));
+        }
+        chunk.set_cardinality(row_count);
+
+        table_append_state state(&resource);
+        table->append_lock(state);
+        table->initialize_append(state);
+        table->append(chunk, state);
+        table->finalize_append(state, transaction_data{0, 0});
+    }
+
+    auto make_result_types = [&]() {
+        std::pmr::vector<complex_logical_type> types(&resource);
+        types.emplace_back(logical_type::BIGINT, "value");
+        types.emplace_back(logical_type::BIGINT, "row_id");
+        return types;
+    };
+    std::vector<storage_index_t> projection{storage_index_t(0), storage_index_t()};
+
+    {
+        table_scan_state state(&resource);
+        table->initialize_scan(state, projection);
+        auto result_types = make_result_types();
+        data_chunk_t result(&resource, result_types, row_count);
+        table->scan(result, state);
+
+        REQUIRE(result.size() == row_count);
+        result.flatten();
+        const auto* values = result.data[0].data<int64_t>();
+        const auto* row_ids = result.data[1].data<int64_t>();
+        for (uint64_t i = 0; i < row_count; i++) {
+            REQUIRE(values[i] == static_cast<int64_t>(100 + i));
+            REQUIRE(row_ids[i] == static_cast<int64_t>(i));
+        }
+    }
+
+    {
+        auto filter = constant_filter_t(components::expressions::compare_type::gte,
+                                        logical_value_t(&resource, int64_t{116}),
+                                        std::pmr::vector<uint64_t>{{uint64_t{0}}, &resource});
+        table_scan_state state(&resource);
+        table->initialize_scan(state, projection, &filter);
+        auto result_types = make_result_types();
+        data_chunk_t result(&resource, result_types, row_count);
+        table->scan(result, state);
+
+        REQUIRE(result.size() == 16);
+        result.flatten();
+        const auto* values = result.data[0].data<int64_t>();
+        const auto* row_ids = result.data[1].data<int64_t>();
+        for (uint64_t i = 0; i < result.size(); i++) {
+            REQUIRE(values[i] == static_cast<int64_t>(116 + i));
+            REQUIRE(row_ids[i] == static_cast<int64_t>(16 + i));
+        }
+    }
+
+    {
+        auto filter = constant_filter_t(components::expressions::compare_type::lt,
+                                        logical_value_t(&resource, int64_t{0}),
+                                        std::pmr::vector<uint64_t>{{uint64_t{0}}, &resource});
+        table_scan_state state(&resource);
+        table->initialize_scan(state, projection, &filter);
+        auto result_types = make_result_types();
+        data_chunk_t result(&resource, result_types, row_count);
+        table->scan(result, state);
+
+        REQUIRE(result.size() == 0);
+    }
+
+    {
+        vector_t deleted_row_ids(&resource, logical_type::BIGINT, row_count / 2);
+        for (uint64_t i = 0; i < row_count; i += 2) {
+            deleted_row_ids.set_value(i / 2, logical_value_t(&resource, static_cast<int64_t>(i)));
+        }
+        auto delete_state = table->initialize_delete({});
+        REQUIRE(table->delete_rows(*delete_state, deleted_row_ids, row_count / 2, 0) == row_count / 2);
+
+        table_scan_state state(&resource);
+        table->initialize_scan(state, projection);
+        auto result_types = make_result_types();
+        data_chunk_t result(&resource, result_types, row_count);
+        table->scan(result, state);
+
+        REQUIRE(result.size() == row_count / 2);
+        result.flatten();
+        const auto* values = result.data[0].data<int64_t>();
+        const auto* row_ids = result.data[1].data<int64_t>();
+        for (uint64_t i = 0; i < result.size(); i++) {
+            const auto original_row = static_cast<int64_t>(i * 2 + 1);
+            REQUIRE(values[i] == 100 + original_row);
+            REQUIRE(row_ids[i] == original_row);
+        }
+    }
+}
+
+TEST_CASE("components::table::data_table string column update owns long strings") {
+    using namespace components::types;
+    using namespace components::vector;
+    using namespace components::table;
+
+    std::pmr::synchronized_pool_resource resource;
+    core::filesystem::local_file_system_t fs;
+    auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+    auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
+    auto block_manager = storage::in_memory_block_manager_t(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE);
+
+    std::vector<column_definition_t> columns;
+    columns.emplace_back("id", logical_type::BIGINT);
+    columns.emplace_back("name", logical_type::STRING_LITERAL);
+    auto table = std::make_unique<data_table_t>(&resource, block_manager, std::move(columns), "string_update");
+
+    constexpr uint64_t row_count = DEFAULT_VECTOR_CAPACITY + 64;
+    {
+        auto types = table->copy_types();
+        data_chunk_t chunk(&resource, types, row_count);
+        for (uint64_t i = 0; i < row_count; i++) {
+            chunk.set_value(0, i, logical_value_t(&resource, static_cast<int64_t>(i)));
+            chunk.set_value(1, i, logical_value_t(&resource, std::string{"name_" + std::to_string(i)}));
+        }
+        chunk.set_cardinality(row_count);
+
+        table_append_state state(&resource);
+        table->append_lock(state);
+        table->initialize_append(state);
+        table->append(chunk, state);
+        table->finalize_append(state, transaction_data{0, 0});
+    }
+
+    const std::string updated = "updated_name_with_a_much_longer_materialized_value";
+    constexpr uint64_t update_count = 16;
+    constexpr uint64_t update_start = DEFAULT_VECTOR_CAPACITY + 8;
+    {
+        vector_t row_ids(&resource, logical_type::BIGINT, update_count);
+        data_chunk_t updates(&resource, {logical_type::STRING_LITERAL}, update_count);
+        for (uint64_t i = 0; i < update_count; i++) {
+            row_ids.set_value(i, logical_value_t(&resource, static_cast<int64_t>(update_start + i)));
+            updates.set_value(0, i, logical_value_t(&resource, updated));
+            const auto update_value = updates.data[0].value(i);
+            REQUIRE(update_value.value<std::string_view>() == updated);
+        }
+        updates.set_cardinality(update_count);
+        table->update_column(row_ids, {1}, updates);
+    }
+
+    {
+        std::vector<storage_index_t> projection{storage_index_t(0), storage_index_t(1)};
+        table_scan_state state(&resource);
+        table->initialize_scan(state, projection);
+        auto result_types = table->copy_types();
+        data_chunk_t result(&resource, result_types, row_count);
+        table->scan(result, state);
+        result.flatten();
+
+        REQUIRE(result.size() == row_count);
+        for (uint64_t i = 0; i < row_count; i++) {
+            const auto logical_value = result.data[1].value(i);
+            const auto value = std::string(logical_value.value<std::string_view>());
+            if (i >= update_start && i < update_start + update_count) {
+                REQUIRE(value == updated);
+            } else {
+                REQUIRE(value == std::string{"name_" + std::to_string(i)});
+            }
+        }
+    }
+}

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/expressions/function_expression.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 
@@ -14,6 +15,7 @@ namespace components::operators {
             case_when,  // CASE WHEN ... END                   — uses group_key_t::kind::case_when
             arithmetic, // add/subtract/multiply/divide/...    — uses arith_op + operands
             constant,   // literal constant                    — uses constant_value
+            function,   // row/vector function call
             star_expand // SELECT * — copy all columns from input chunk as-is
         };
 
@@ -30,6 +32,9 @@ namespace components::operators {
 
         // Used for constant.
         types::logical_value_t constant_value;
+
+        // Used for function.
+        expressions::function_expression_ptr function_expr;
 
         explicit select_column_t(std::pmr::memory_resource* r)
             : key(r)

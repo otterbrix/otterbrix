@@ -69,7 +69,7 @@ target_link_libraries(
 
 include(CTest)
 include(Catch)
-catch_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 1800)
+otterbrix_discover_tests(${PROJECT_NAME} PROPERTIES TIMEOUT 1800)
 
 # Profiling binary for arithmetic
 add_executable(profile_arithmetic profile_arithmetic.cpp)

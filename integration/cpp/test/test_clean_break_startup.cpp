@@ -40,7 +40,7 @@ namespace {
 
     // The manager actors self-drive on internal threads; futures become ready
     // asynchronously. Pump the (thread-safe) child scheduler with a bounded poll
-    // until the future is ready before extracting its value with take_ready().
+    // until the future is ready before extracting its value with std::move(fut).take_ready().
     template<typename Fut>
     void poll_ready(core::non_thread_scheduler::scheduler_test_t* scheduler, Fut& fut) {
         for (int i = 0; i < 100000 && !fut.is_ready(); ++i) {

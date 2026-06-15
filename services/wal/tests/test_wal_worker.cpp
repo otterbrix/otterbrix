@@ -57,7 +57,7 @@ static const std::filesystem::path base_wal_worker_path = "/tmp/otterbrix_test_w
 
 // The manager self-drives on an internal loop thread and runs its workers on
 // the real shared_work scheduler, so futures from a send() to it become ready
-// asynchronously. Poll until ready before take_ready (which asserts readiness).
+// asynchronously. Poll until ready, then get() (already ready, so it won't block).
 template<typename F>
 static decltype(auto) await_ready(F& fut) {
     // Wall-clock deadline, not iteration-bounded: under TSAN or parallel-ctest

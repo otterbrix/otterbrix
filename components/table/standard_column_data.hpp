@@ -29,6 +29,10 @@ namespace components::table {
                                 vector::vector_t& result,
                                 bool allow_updates,
                                 uint64_t target_count) override;
+        void fetch_committed_updates_range(uint64_t offset_in_row_group,
+                                           uint64_t count,
+                                           vector::vector_t& result,
+                                           uint64_t result_offset = 0) override;
         uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) override;
 
         void initialize_append(column_append_state& state) override;

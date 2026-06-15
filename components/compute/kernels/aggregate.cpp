@@ -1,6 +1,9 @@
 #include "../function.hpp"
 #include <components/types/logical_value.hpp>
 
+#include <string>
+#include <string_view>
+
 using namespace components::compute;
 using namespace components::types;
 using namespace components::vector;
@@ -388,9 +391,48 @@ namespace {
 
     logical_value_t sum(const vector_t& v, size_t count) { return operator_switch<sum_operator_t>(v, count); }
 
-    logical_value_t min(const vector_t& v, size_t count) { return operator_switch<min_operator_t>(v, count); }
+    // operator_switch only dispatches numeric physical types, so handle string
+    // MIN/MAX (lexicographic) separately. SUM on strings stays unsupported.
+    inline bool aggregate_is_string_type(const vector_t& v) {
+        return v.type().to_physical_type() == physical_type::STRING;
+    }
 
-    logical_value_t max(const vector_t& v, size_t count) { return operator_switch<max_operator_t>(v, count); }
+    logical_value_t string_extreme(const vector_t& v, size_t count, bool want_min) {
+        std::string best;
+        bool has_any = false;
+        for (size_t i = 0; i < count; i++) {
+            if (v.is_null(i)) {
+                continue;
+            }
+            const auto element = v.value(i);
+            if (element.type().type() == logical_type::NA) {
+                continue;
+            }
+            const auto sv = element.value<std::string_view>();
+            if (!has_any || (want_min ? sv < std::string_view(best) : sv > std::string_view(best))) {
+                best.assign(sv);
+                has_any = true;
+            }
+        }
+        if (!has_any) {
+            return logical_value_t(std::pmr::null_memory_resource(), logical_type::NA);
+        }
+        return logical_value_t{v.resource(), std::string_view(best)};
+    }
+
+    logical_value_t min(const vector_t& v, size_t count) {
+        if (aggregate_is_string_type(v)) {
+            return string_extreme(v, count, true);
+        }
+        return operator_switch<min_operator_t>(v, count);
+    }
+
+    logical_value_t max(const vector_t& v, size_t count) {
+        if (aggregate_is_string_type(v)) {
+            return string_extreme(v, count, false);
+        }
+        return operator_switch<max_operator_t>(v, count);
+    }
 
     struct sum_kernel_state : kernel_state {
         explicit sum_kernel_state(std::pmr::memory_resource* resource)

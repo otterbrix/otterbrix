@@ -75,12 +75,12 @@ TEST_CASE("components::sql::functions") {
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT * FROM col1 join col2 on udf(col1.id, col2.id);)_",
-        R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $function: {name: {"udf"}, args: {"id", "id"}}}})_",
+        R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $function: {name: {"udf"}, args: {"col1/id", "col2/id"}}}})_",
         vec());
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT * FROM col1 join col2 on udf(col1.id, (col2.struct_type).field);)_",
-        R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $function: {name: {"udf"}, args: {"id", "struct_type/field"}}}})_",
+        R"_($aggregate: {$join: {$type: inner, $aggregate: {}, $aggregate: {}, $function: {name: {"udf"}, args: {"col1/id", "col2/struct_type/field"}}}})_",
         vec());
 
     /*

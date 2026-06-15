@@ -40,6 +40,15 @@ namespace components::table {
         return total;
     }
 
+    bool collection_t::has_persisted_pax_layout() const {
+        for (auto* rg = row_groups_->root_segment(); rg; rg = row_groups_->next_segment(rg)) {
+            if (rg->has_persisted_pax_layout()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool collection_t::has_version_above(uint64_t watermark) const {
         for (auto* rg = row_groups_->root_segment(); rg; rg = row_groups_->next_segment(rg)) {
             if (rg->has_version_above(watermark)) {
@@ -80,6 +89,7 @@ namespace components::table {
             return;
         }
         state.row_groups = row_groups_.get();
+        state.vector_index_relative_to_row_group = false;
         state.max_row = row_start_ + static_cast<int64_t>(total_rows_.load());
         state.initialize(types_);
         while (row_group && !row_group->initialize_scan(state)) {
@@ -98,6 +108,7 @@ namespace components::table {
         auto row_group = row_groups_->get_segment(start_row);
         assert(row_group);
         state.row_groups = row_groups_.get();
+        state.vector_index_relative_to_row_group = true;
         state.max_row = end_row;
         state.initialize(types_);
         uint64_t start_vector = static_cast<uint64_t>(start_row - row_group->start) / vector::DEFAULT_VECTOR_CAPACITY;
@@ -113,6 +124,7 @@ namespace components::table {
                                                     int64_t max_row) {
         state.max_row = max_row;
         state.row_groups = collection.row_groups_.get();
+        state.vector_index_relative_to_row_group = true;
         if (state.column_scans.empty()) {
             state.initialize(collection.types());
         }
@@ -171,6 +183,36 @@ namespace components::table {
                 row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
             }
             row_group->fetch_row(state, column_ids, row_id, result, count);
+            count++;
+        }
+        result.set_cardinality(count);
+    }
+
+    void collection_t::fetch(vector::data_chunk_t& result,
+                             const std::vector<storage_index_t>& column_ids,
+                             const vector::vector_t& row_identifiers,
+                             uint64_t fetch_count,
+                             transaction_data txn,
+                             column_fetch_state& state) {
+        auto row_ids = row_identifiers.data<int64_t>();
+        auto* result_row_ids = result.row_ids.data<int64_t>();
+        uint64_t count = 0;
+        for (uint64_t i = 0; i < fetch_count; i++) {
+            auto row_id = row_ids[i];
+            row_group_t* row_group;
+            {
+                uint64_t segment_index;
+                auto l = row_groups_->lock();
+                if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
+                    continue;
+                }
+                row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+            }
+            if (!row_group->row_visible(txn, row_id)) {
+                continue;
+            }
+            row_group->fetch_row(state, column_ids, row_id, result, count);
+            result_row_ids[count] = row_id;
             count++;
         }
         result.set_cardinality(count);

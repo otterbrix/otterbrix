@@ -9,6 +9,7 @@
 #include <components/log/log.hpp>
 #include <core/executor.hpp>
 #include <components/table/data_table.hpp>
+#include <components/table/row_group.hpp> // row_group_scan_path_counts_t (benchmark accessor return type)
 #include <components/vector/data_chunk.hpp>
 #include <core/date/timezones.hpp>
 #include <core/file/file_handle.hpp>
@@ -103,6 +104,18 @@ namespace services::disk {
         // mailbox handler post-start.
         [[nodiscard]] const collection_storage_entry_t*
         storage_entry_sync(components::catalog::oid_t oid) const noexcept;
+
+        // Benchmark/observability aggregation over this agent's own user-table slice
+        // (table_oid >= catalog::FIRST_USER_OID). Sums the per-row-group scan-path
+        // counters of every user collection. Same single-threaded contract as
+        // storage_entry_sync: the agent mailbox serializes writes, so a sync read is
+        // race-free only while the agent thread is idle (pre-start bootstrap or inside
+        // the manager mailbox lock).
+        [[nodiscard]] components::table::row_group_scan_path_counts_t
+        user_table_scan_path_counts_sync() const noexcept;
+        // Resets the per-row-group scan-path counters of every user collection in this
+        // agent's slice. Same single-threaded contract as above.
+        void reset_user_table_scan_path_counts_sync() noexcept;
 
         /// Bootstrap-only ownership-transfer: moves the rvalue entry into the
         /// storages_ slice keyed by `oid`. Returns false if `oid` was already present

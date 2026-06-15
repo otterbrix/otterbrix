@@ -322,7 +322,7 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
 %type <chr>		enable_trigger
 
 %type <str>		copy_file_name
-				database_name access_method_clause access_method attr_name
+				database_name access_method_clause opt_table_access_method_clause access_method attr_name
 				name cursor_name file_name
 				index_name opt_index_name cluster_index_specification
 
@@ -4145,7 +4145,7 @@ copy_generic_opt_arg_list_item:
  *****************************************************************************/
 
 CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
-			OptInherit OptWith OnCommitOption OptTableSpace OptDistributedBy
+			OptInherit OptWith opt_table_access_method_clause OnCommitOption OptTableSpace OptDistributedBy
 			OptTabPartitionBy
 				{
 					CreateStmt *n = makeNode(resource, CreateStmt);
@@ -4155,16 +4155,17 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->inhRelations = $8;
 					n->constraints = NIL;
 					n->options = $9;
-					n->oncommit = $10;
-					n->tablespacename = $11;
+					n->accessMethod = $10;
+					n->oncommit = $11;
+					n->tablespacename = $12;
 					n->if_not_exists = false;
-					n->distributedBy = (DistributedBy *) $12;
-					n->partitionBy = $13;
+					n->distributedBy = (DistributedBy *) $13;
+					n->partitionBy = $14;
 					n->relKind = RELKIND_RELATION;
 					$$ = (Node *)n;
 				}
 		| CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name '('
-			OptTableElementList ')' OptInherit OptWith OnCommitOption
+			OptTableElementList ')' OptInherit OptWith opt_table_access_method_clause OnCommitOption
 			OptTableSpace OptDistributedBy
 			OptTabPartitionBy
 				{
@@ -4175,16 +4176,17 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->inhRelations = $11;
 					n->constraints = NIL;
 					n->options = $12;
-					n->oncommit = $13;
-					n->tablespacename = $14;
+					n->accessMethod = $13;
+					n->oncommit = $14;
+					n->tablespacename = $15;
 					n->if_not_exists = true;
-					n->distributedBy = (DistributedBy *) $15;
-					n->partitionBy = $16;
+					n->distributedBy = (DistributedBy *) $16;
+					n->partitionBy = $17;
 					n->relKind = RELKIND_RELATION;
 					$$ = (Node *)n;
 				}
 		| CREATE OptTemp TABLE qualified_name OF any_name
-			OptTypedTableElementList OptWith OnCommitOption OptTableSpace
+			OptTypedTableElementList OptWith opt_table_access_method_clause OnCommitOption OptTableSpace
 			OptDistributedBy OptTabPartitionBy
 				{
 					CreateStmt *n = makeNode(resource, CreateStmt);
@@ -4195,16 +4197,17 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->ofTypename->location = @6;
 					n->constraints = NIL;
 					n->options = $8;
-					n->oncommit = $9;
-					n->tablespacename = $10;
+					n->accessMethod = $9;
+					n->oncommit = $10;
+					n->tablespacename = $11;
 					n->if_not_exists = false;
-					n->distributedBy = (DistributedBy *) $11;
-					n->partitionBy = $12;
+					n->distributedBy = (DistributedBy *) $12;
+					n->partitionBy = $13;
 					n->relKind = RELKIND_RELATION;
 					$$ = (Node *)n;
 				}
 		| CREATE OptTemp TABLE IF_P NOT EXISTS qualified_name OF any_name
-			OptTypedTableElementList OptWith OnCommitOption OptTableSpace
+			OptTypedTableElementList OptWith opt_table_access_method_clause OnCommitOption OptTableSpace
 			OptDistributedBy OptTabPartitionBy
 				{
 					CreateStmt *n = makeNode(resource, CreateStmt);
@@ -4215,11 +4218,12 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->ofTypename->location = @9;
 					n->constraints = NIL;
 					n->options = $11;
-					n->oncommit = $12;
-					n->tablespacename = $13;
+					n->accessMethod = $12;
+					n->oncommit = $13;
+					n->tablespacename = $14;
 					n->if_not_exists = true;
-					n->distributedBy = (DistributedBy *) $14;
-					n->partitionBy = $15;
+					n->distributedBy = (DistributedBy *) $15;
+					n->partitionBy = $16;
 					n->relKind = RELKIND_RELATION;
 					$$ = (Node *)n;
 				}
@@ -8792,6 +8796,11 @@ opt_index_name:
 access_method_clause:
 			USING access_method						{ $$ = $2; }
 			| /*EMPTY*/								{ $$ = DEFAULT_INDEX_TYPE; }
+		;
+
+opt_table_access_method_clause:
+			USING access_method						{ $$ = $2; }
+			| /*EMPTY*/								{ $$ = NULL; }
 		;
 
 index_params:	index_elem							{ $$ = list_make1(resource, $1); }

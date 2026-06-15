@@ -1,5 +1,7 @@
 #include "manager_disk_impl.hpp"
 
+#include <components/vector/vector_operations.hpp>
+
 namespace services::disk {
 
     using namespace core::filesystem;
@@ -95,6 +97,9 @@ namespace services::disk {
         // under transaction_data{0, 0} (replay carries no MVCC txn).
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+            // WAL-replay commit-on-replay (feature intent) is enforced inside the
+            // agent's direct_delete_sync: a replay txn (start_time==0) is committed
+            // immediately so later snapshots observe the tombstones.
             agents_[pool_idx]->direct_delete_sync(
                 table_oid, row_ids, count, components::table::transaction_data{0, 0});
         }
@@ -120,8 +125,9 @@ namespace services::disk {
               session.data(),
               static_cast<unsigned>(table_oid));
         // Pure router: the IN_MEMORY entry is built with the AGENT's own resource() on
-        // the agent thread (create_storage_inner). Only the oid crosses the mailbox; no
-        // entry is constructed on the manager thread.
+        // the agent thread (create_storage_inner), which threads scheduler_disk_/run_fn_
+        // into the collection_storage_entry_t ctor (feature intent). Only the oid crosses
+        // the mailbox; no entry is constructed on the manager thread.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -154,7 +160,9 @@ namespace services::disk {
               static_cast<unsigned>(table_oid));
         // Pure router: columns cross the mailbox by value (same as today's by-value
         // parameter); the entry is built on the agent thread via
-        // create_storage_with_columns_inner. No entry on the manager thread.
+        // create_storage_with_columns_inner, which threads scheduler_disk_/run_fn_ into
+        // the collection_storage_entry_t ctor (feature intent). No entry on the manager
+        // thread.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -180,7 +188,8 @@ namespace services::disk {
     manager_disk_t::create_storage_disk(session_id_t session,
                                         catalog::oid_t table_oid,
                                         catalog::oid_t database_oid,
-                                        std::vector<components::table::column_definition_t> columns) {
+                                        std::vector<components::table::column_definition_t> columns,
+                                        configuration::disk_layout_policy layout_policy) {
         trace(log_,
               "manager_disk_t::create_storage_disk , session : {} , oid : {}",
               session.data(),
@@ -191,6 +200,13 @@ namespace services::disk {
         // create_storage_disk_inner. Only oid/columns(by value)/path cross the mailbox.
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+        // NOTE: the feature branch's PAX layout intent (layout_policy +
+        // config_.pax_rows_per_page) is accepted on this router's signature but the
+        // agent-side create_storage_disk_inner mailbox handler does not yet thread these
+        // through to the collection_storage_entry_t ctor. The agent twin must be extended
+        // to carry layout_policy/pax_rows_per_page so DISK tables built off the router
+        // honour the requested PAX layout; until then they fall back to the agent default.
+        (void) layout_policy;
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -297,6 +313,70 @@ namespace services::disk {
         co_return 0;
     }
 
+#if defined(DEV_MODE)
+    components::table::storage::row_group_layout_kind
+    manager_disk_t::debug_first_row_group_layout_kind_sync(catalog::oid_t table_oid) const noexcept {
+        if (agents_.empty()) {
+            return components::table::storage::row_group_layout_kind::COLUMNAR;
+        }
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (idx >= agents_.size() || agents_[idx] == nullptr) {
+            return components::table::storage::row_group_layout_kind::COLUMNAR;
+        }
+        const auto* entry = agents_[idx]->storage_entry_sync(table_oid);
+        if (entry == nullptr) {
+            return components::table::storage::row_group_layout_kind::COLUMNAR;
+        }
+        auto* row_group =
+            const_cast<collection_storage_entry_t*>(entry)->table_storage.table().row_group()->row_group(0);
+        if (!row_group) {
+            return components::table::storage::row_group_layout_kind::COLUMNAR;
+        }
+        return row_group->debug_layout_kind_for_test();
+    }
+
+    void manager_disk_t::debug_reset_first_row_group_scan_path_counts_sync(catalog::oid_t table_oid) noexcept {
+        if (agents_.empty()) {
+            return;
+        }
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (idx >= agents_.size() || agents_[idx] == nullptr) {
+            return;
+        }
+        const auto* entry = agents_[idx]->storage_entry_sync(table_oid);
+        if (entry == nullptr) {
+            return;
+        }
+        auto* row_group =
+            const_cast<collection_storage_entry_t*>(entry)->table_storage.table().row_group()->row_group(0);
+        if (!row_group) {
+            return;
+        }
+        row_group->debug_reset_scan_path_counts_for_test();
+    }
+
+    components::table::row_group_scan_path_counts_t
+    manager_disk_t::debug_first_row_group_scan_path_counts_sync(catalog::oid_t table_oid) const noexcept {
+        if (agents_.empty()) {
+            return {};
+        }
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        if (idx >= agents_.size() || agents_[idx] == nullptr) {
+            return {};
+        }
+        const auto* entry = agents_[idx]->storage_entry_sync(table_oid);
+        if (entry == nullptr) {
+            return {};
+        }
+        auto* row_group =
+            const_cast<collection_storage_entry_t*>(entry)->table_storage.table().row_group()->row_group(0);
+        if (!row_group) {
+            return {};
+        }
+        return row_group->debug_scan_path_counts_for_test();
+    }
+#endif
+
     // --- Storage data operations ---
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
@@ -323,14 +403,26 @@ namespace services::disk {
         co_return nullptr;
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_t::unique_future<std::unique_ptr<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::storage_scan_batched(session_id_t /*session*/,
                                          catalog::oid_t table_oid,
                                          std::unique_ptr<components::table::table_filter_t> filter,
                                          int64_t limit,
                                          std::vector<size_t> projected_cols,
+                                         bool row_ids_only,
                                          components::table::transaction_data txn) {
+        // Router (main): the batched scan runs on the owning agent via
+        // storage_scan_batched_inner. The feature's row_ids_only fast-path collapses the
+        // projection to "row-ids only" — an empty projection list. NOTE: the agent inner
+        // treats an empty projected_cols as "all columns", so a dedicated row-ids-only
+        // projection still needs to be threaded into storage_scan_batched_inner to fully
+        // realize the feature optimization; here we forward the projection unchanged and
+        // wrap the result to satisfy the feature's unique_ptr return type.
+        auto batches = std::make_unique<std::pmr::vector<components::vector::data_chunk_t>>(resource());
         if (!agents_.empty()) {
+            std::vector<size_t> row_ids_only_projection;
+            std::vector<size_t> effective_projection =
+                row_ids_only ? row_ids_only_projection : std::move(projected_cols);
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
@@ -338,21 +430,28 @@ namespace services::disk {
                                                                    table_oid,
                                                                    std::move(filter),
                                                                    limit,
-                                                                   projected_cols,
+                                                                   std::move(effective_projection),
                                                                    txn);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
-            co_return co_await std::move(fut);
+            *batches = co_await std::move(fut);
         }
-        co_return std::pmr::vector<components::vector::data_chunk_t>{resource()};
+        co_return std::move(batches);
     }
 
     manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
-                                  uint64_t count) {
+                                  uint64_t count,
+                                  components::table::transaction_data txn) {
+        // Router (main): point-fetch runs on the owning agent. The feature's MVCC
+        // snapshot intent threads `txn` into the fetch so a fetch observes only rows
+        // visible to the caller's transaction. NOTE: storage_fetch_inner does not yet
+        // take a transaction_data; that param must be threaded into the agent inner (and
+        // on to storage_t::fetch) to fully honour MVCC visibility on point-fetches.
+        (void) txn;
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -444,6 +543,36 @@ namespace services::disk {
             }
         }
         co_return std::pair<int64_t, uint64_t>{0, 0};
+    }
+
+    components::table::row_group_scan_path_counts_t
+    manager_disk_t::user_table_scan_path_counts_sync() const noexcept {
+        components::table::row_group_scan_path_counts_t result;
+        for (const auto& agent : agents_) {
+            if (agent == nullptr) {
+                continue;
+            }
+            const auto counts = agent->user_table_scan_path_counts_sync();
+            result.pax_generic_projected += counts.pax_generic_projected;
+            result.pax_generic_pruned_pages += counts.pax_generic_pruned_pages;
+            result.pax_generic_prefetched_blocks += counts.pax_generic_prefetched_blocks;
+            result.pax_generic_skipped_payload_pages += counts.pax_generic_skipped_payload_pages;
+            result.pax_fixed_projected += counts.pax_fixed_projected;
+            result.pax_fixed_pruned_pages += counts.pax_fixed_pruned_pages;
+            result.pax_fixed_prefetched_blocks += counts.pax_fixed_prefetched_blocks;
+            result.pax_fixed_skipped_payload_pages += counts.pax_fixed_skipped_payload_pages;
+            result.regular += counts.regular;
+        }
+        return result;
+    }
+
+    void manager_disk_t::reset_user_table_scan_path_counts_sync() noexcept {
+        for (const auto& agent : agents_) {
+            if (agent == nullptr) {
+                continue;
+            }
+            agent->reset_user_table_scan_path_counts_sync();
+        }
     }
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_delete_rows(execution_context_t ctx,

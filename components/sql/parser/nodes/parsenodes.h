@@ -1809,6 +1809,7 @@ typedef struct CreateStmt {
     TypeName* ofTypename;    /* OF typename */
     List* constraints;       /* constraints (list of Constraint nodes) */
     List* options;           /* options from WITH clause */
+    char* accessMethod;      /* name of table access method (eg. pax) */
     OnCommitAction oncommit; /* what do we do at COMMIT? */
     char* tablespacename;    /* table space to use, or NULL */
     bool if_not_exists;      /* just do nothing if it already exists? */

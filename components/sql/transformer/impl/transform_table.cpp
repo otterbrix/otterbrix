@@ -8,6 +8,7 @@
 #include <components/logical_plan/node_drop_type.hpp>
 #include <components/logical_plan/node_drop_view.hpp>
 #include <components/logical_plan/node_sequence.hpp>
+#include <components/table/row_group.hpp>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -39,12 +40,6 @@ namespace components::sql::transform {
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string dbname = qn.dbname;
 
-        logical_plan::node_ptr created;
-        if (col_defs.value().empty()) {
-            created =
-                logical_plan::make_node_create_collection(resource_, core::relname_t{qn.relname}, node.if_not_exists);
-        }
-
         auto constraints = extract_table_constraints(resource_, *coldefs);
         if (constraints.has_error()) {
             error_ = constraints.error();
@@ -68,12 +63,52 @@ namespace components::sql::transform {
             }
         }
 
-        created = logical_plan::make_node_create_collection(resource_,
-                                                            core::relname_t{qn.relname},
-                                                            std::move(col_defs.value()),
-                                                            std::move(constraints.value()),
-                                                            disk_storage,
-                                                            node.if_not_exists);
+        std::string access_method = node.accessMethod ? node.accessMethod : "";
+        logical_plan::create_collection_storage_format_t storage_format =
+            disk_storage ? logical_plan::create_collection_storage_format_t::disk_auto
+                         : logical_plan::create_collection_storage_format_t::in_memory;
+
+        if (!access_method.empty()) {
+            if (!disk_storage) {
+                error_ = core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"USING PAX/COLUMNAR requires WITH(storage='disk')", resource_});
+                return nullptr;
+            }
+            if (access_method == "pax") {
+                storage_format = logical_plan::create_collection_storage_format_t::disk_pax;
+            } else if (access_method == "columnar") {
+                storage_format = logical_plan::create_collection_storage_format_t::disk_columnar;
+            } else {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"unsupported table access method: " + access_method,
+                                                        resource_});
+                return nullptr;
+            }
+        }
+
+        if (storage_format == logical_plan::create_collection_storage_format_t::disk_columnar &&
+            col_defs.value().empty()) {
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"USING COLUMNAR requires a declared schema", resource_});
+            return nullptr;
+        }
+
+        if (storage_format == logical_plan::create_collection_storage_format_t::disk_pax) {
+            std::string pax_error;
+            if (!components::table::detail::supports_explicit_pax_schema(col_defs.value(), &pax_error)) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{std::move(pax_error), resource_});
+                return nullptr;
+            }
+        }
+
+        auto created = logical_plan::make_node_create_collection(resource_,
+                                                                 core::relname_t{qn.relname},
+                                                                 std::move(col_defs.value()),
+                                                                 std::move(constraints.value()),
+                                                                 storage_format,
+                                                                 node.if_not_exists);
         // Collect every UDT type_name referenced by the column defs
         // (including nested STRUCT children) so Pass 1's resolve_type
         // operator can stamp pg_type metadata into the plan-tree idx.

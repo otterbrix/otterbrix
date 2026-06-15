@@ -10,7 +10,9 @@ namespace core {
 
     void* string_heap_t::insert(const void* data, size_t size) {
         void* ptr = arena_allocator_.allocate(size);
-        std::memcpy(ptr, data, size);
+        if (size > 0) {
+            std::memcpy(ptr, data, size);
+        }
         return ptr;
     }
 

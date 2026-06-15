@@ -32,7 +32,8 @@ namespace components::operators {
                                              ctx->session,
                                              table_oid_,
                                              std::move(row_ids_copy),
-                                             size_);
+                                             size_,
+                                             ctx->txn);
             auto data = co_await std::move(ff);
 
             if (data) {

@@ -65,7 +65,7 @@ namespace {
 
         template<typename Fn, typename... Args>
         auto invoke_async(Fn fn, Args&&... args) {
-            auto [_, future] = actor_zeta::send(manager->address(), fn, std::forward<Args>(args)...);
+            auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
             for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
                 scheduler->run(1000);
                 std::this_thread::yield();

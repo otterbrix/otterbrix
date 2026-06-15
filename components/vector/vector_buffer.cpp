@@ -33,6 +33,8 @@ namespace components::vector {
 
     void* string_vector_buffer_t::insert(void* data, size_t size) { return string_heap_.insert(data, size); }
 
+    void* string_vector_buffer_t::insert(const void* data, size_t size) { return string_heap_.insert(data, size); }
+
     void* string_vector_buffer_t::empty_string(size_t size) { return string_heap_.empty_string(size); }
 
     void string_vector_buffer_t::add_heap_reference(std::unique_ptr<vector_buffer_t> heap) {

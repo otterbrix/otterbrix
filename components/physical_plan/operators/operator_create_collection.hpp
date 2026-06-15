@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/logical_plan/node_create_collection.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -21,7 +22,7 @@ namespace components::operators {
                                      components::catalog::oid_t table_oid,
                                      components::catalog::oid_t database_oid,
                                      std::vector<table::column_definition_t> columns,
-                                     bool is_disk_storage,
+                                     components::logical_plan::create_collection_storage_format_t storage_format,
                                      std::vector<catalog_write_t> catalog_writes);
 
     private:
@@ -31,7 +32,7 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         components::catalog::oid_t database_oid_;
         std::vector<table::column_definition_t> columns_;
-        bool is_disk_storage_;
+        components::logical_plan::create_collection_storage_format_t storage_format_;
         std::vector<catalog_write_t> catalog_writes_;
     };
 

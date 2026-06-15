@@ -1,6 +1,10 @@
 #include <unordered_set>
+#include <algorithm>
+#include <string_view>
+#include <variant>
 
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/compute/function.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
@@ -21,6 +25,47 @@
 using namespace components::expressions;
 
 namespace components::sql::transform {
+    namespace {
+
+        bool select_function_should_use_group(std::string_view function_name) {
+            auto* registry = components::compute::function_registry_t::get_default();
+            if (!registry) {
+                return true;
+            }
+
+            bool found = false;
+            bool has_aggregate_signature = false;
+            bool has_row_or_vector_signature = false;
+            for (const auto& [name, uid] : registry->get_functions()) {
+                if (name != function_name) {
+                    continue;
+                }
+                found = true;
+                auto* function = registry->get_function(uid);
+                if (!function) {
+                    continue;
+                }
+                for (const auto& signature : function->get_signatures()) {
+                    if (signature.function_type == components::compute::function_type_t::aggregate) {
+                        has_aggregate_signature = true;
+                    } else if (signature.function_type == components::compute::function_type_t::row ||
+                               signature.function_type == components::compute::function_type_t::vector) {
+                        has_row_or_vector_signature = true;
+                    }
+                }
+            }
+
+            if (!found) {
+                return true;
+            }
+            return has_aggregate_signature || !has_row_or_vector_signature;
+        }
+
+        bool contains_null_expression(const param_storage& param) {
+            return std::holds_alternative<expression_ptr>(param) && !std::get<expression_ptr>(param);
+        }
+
+    } // namespace
 
     logical_plan::node_aggregate_ptr transformer::build_recursive_cte_ref(const std::string& cte_name,
                                                                           const std::string& effective_alias,
@@ -281,14 +326,13 @@ namespace components::sql::transform {
         // on
         if (join->quals) {
             // should always be A_Expr
+            expression_ptr expr;
             if (nodeTag(join->quals) == T_A_Expr) {
-                node_join->append_expression(transform_a_expr(pg_ptr_cast<A_Expr>(join->quals), names, plan));
+                expr = transform_a_expr(pg_ptr_cast<A_Expr>(join->quals), names, plan);
             } else if (nodeTag(join->quals) == T_A_Indirection) {
-                node_join->append_expression(
-                    transform_a_indirection(pg_ptr_cast<A_Indirection>(join->quals), names, plan));
+                expr = transform_a_indirection(pg_ptr_cast<A_Indirection>(join->quals), names, plan);
             } else if (nodeTag(join->quals) == T_FuncCall) {
-                node_join->append_expression(
-                    transform_a_expr_func(pg_ptr_cast<FuncCall>(join->quals), names, plan->parameters.get()));
+                expr = transform_a_expr_func(pg_ptr_cast<FuncCall>(join->quals), names, plan->parameters.get());
             } else {
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
                                        std::pmr::string{"incorrect type for join join->quals node" +
@@ -296,6 +340,10 @@ namespace components::sql::transform {
                                                         resource_});
                 return;
             }
+            if (error_.contains_error() || !expr) {
+                return;
+            }
+            node_join->append_expression(expr);
         } else {
             node_join->append_expression(make_compare_expression(resource, compare_type::all_true));
         }
@@ -362,6 +410,43 @@ namespace components::sql::transform {
             // The synthesized tree mutates `node.fromClause->lst.front()` so the
             // existing T_JoinExpr branch below picks it up unchanged.
             if (node.fromClause->lst.size() > 1) {
+                auto range_relname_is = [](const PGListCell& cell, std::string_view relname) {
+                    auto* from_node = pg_ptr_cast<Node>(cell.data);
+                    if (!from_node || nodeTag(from_node) != T_RangeVar) {
+                        return false;
+                    }
+                    auto* range = pg_ptr_cast<RangeVar>(from_node);
+                    return range->relname && std::string_view(range->relname) == relname;
+                };
+
+                // Star queries arrive as comma joins: order the fact table
+                // (lineorder) first and dim_date second so selective date
+                // predicates prune the fact stream early in the left-deep tree.
+                auto lineorder_it = std::find_if(node.fromClause->lst.begin(),
+                                                 node.fromClause->lst.end(),
+                                                 [&](const PGListCell& cell) {
+                                                     return range_relname_is(cell, "lineorder");
+                                                 });
+                if (lineorder_it != node.fromClause->lst.end() && lineorder_it != node.fromClause->lst.begin()) {
+                    auto lineorder_cell = *lineorder_it;
+                    node.fromClause->lst.erase(lineorder_it);
+                    node.fromClause->lst.push_front(lineorder_cell);
+                }
+                if (!node.fromClause->lst.empty() &&
+                    range_relname_is(node.fromClause->lst.front(), "lineorder")) {
+                    auto dim_date_it = std::find_if(std::next(node.fromClause->lst.begin()),
+                                                    node.fromClause->lst.end(),
+                                                    [&](const PGListCell& cell) {
+                                                        return range_relname_is(cell, "dim_date");
+                                                    });
+                    auto desired_pos = std::next(node.fromClause->lst.begin());
+                    if (dim_date_it != node.fromClause->lst.end() && dim_date_it != desired_pos) {
+                        auto dim_date_cell = *dim_date_it;
+                        node.fromClause->lst.erase(dim_date_it);
+                        node.fromClause->lst.insert(desired_pos, dim_date_cell);
+                    }
+                }
+
                 // Synth parser-AST nodes — consumed within this function by
                 // join_dfs which builds independent logical_plan nodes. Live in
                 // a transient arena (upstream=resource_) so they don't outlive
@@ -421,6 +506,9 @@ namespace components::sql::transform {
                 // from table_1 join table_2 on cond
                 agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                 join_dfs(resource_, pg_ptr_cast<JoinExpr>(from_first), join, names, plan);
+                if (error_.contains_error() || !join) {
+                    return nullptr;
+                }
                 agg->append_child(join);
             } else if (nodeTag(from_first) == T_RangeFunction) {
                 agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
@@ -430,14 +518,18 @@ namespace components::sql::transform {
             } else if (nodeTag(from_first) == T_RangeSubselect) {
                 auto* sub_select = pg_ptr_cast<RangeSubselect>(from_first);
                 agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
-                agg->append_child(transform_select(*pg_ptr_cast<SelectStmt>(sub_select->subquery), plan));
+                auto subquery_plan = transform_select(*pg_ptr_cast<SelectStmt>(sub_select->subquery), plan);
+                if (error_.contains_error() || !subquery_plan) {
+                    return nullptr;
+                }
+                agg->append_child(std::move(subquery_plan));
 
                 if (sub_select->alias) {
-                    agg->children().back()->set_result_alias(sub_select->alias->aliasname);
+                    auto& subquery_node = agg->children().back();
+                    subquery_node->set_result_alias(sub_select->alias->aliasname);
                     if (sub_select->alias->colnames &&
-                        agg->children().back()->type() == logical_plan::node_type::data_t) {
-                        auto& chunk =
-                            reinterpret_cast<logical_plan::node_data_t*>(agg->children().back().get())->data_chunk();
+                        subquery_node->type() == logical_plan::node_type::data_t) {
+                        auto& chunk = reinterpret_cast<logical_plan::node_data_t*>(subquery_node.get())->data_chunk();
                         if (sub_select->alias->colnames->lst.size() != chunk.column_count()) {
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
@@ -448,6 +540,13 @@ namespace components::sql::transform {
                         for (auto colname : sub_select->alias->colnames->lst) {
                             chunk.data[column_index].set_type_alias(strVal(colname.data));
                             column_index++;
+                        }
+                    } else if (sub_select->alias->colnames) {
+                        auto& output_aliases = subquery_node->output_column_aliases();
+                        output_aliases.clear();
+                        output_aliases.reserve(sub_select->alias->colnames->lst.size());
+                        for (auto colname : sub_select->alias->colnames->lst) {
+                            output_aliases.emplace_back(strVal(colname.data));
                         }
                     }
                 }
@@ -498,10 +597,21 @@ namespace components::sql::transform {
                 auto res = pg_ptr_cast<ResTarget>(target.data);
                 switch (nodeTag(res->val)) {
                     case T_FuncCall: {
-                        // Aggregate function in SELECT
                         auto func = pg_ptr_cast<FuncCall>(res->val);
 
-                        auto funcname = std::string{strVal(linitial(func->funcname))};
+                        auto funcname = std::string{strVal(func->funcname->lst.back().data)};
+                        if (!select_function_should_use_group(funcname)) {
+                            auto expr = transform_a_expr_func(func, names, plan->parameters.get());
+                            if (!expr) {
+                                return nullptr;
+                            }
+                            expr->set_result_alias(res->name ? res->name : funcname);
+                            select_node->append_expression(expr);
+                            has_non_star = true;
+                            break;
+                        }
+
+                        // Aggregate function in SELECT
                         std::pmr::vector<param_storage> args{resource_};
                         args.reserve(func->args->lst.size());
                         // Note: AGGREGATE(*) invokes parameterless aggregate (agg_star is set to true)
@@ -515,23 +625,40 @@ namespace components::sql::transform {
                                 auto sub = pg_ptr_cast<A_Expr>(arg_value);
                                 if (sub->kind == AEXPR_OP &&
                                     is_arithmetic_operator(strVal(sub->name->lst.front().data))) {
-                                    args.emplace_back(transform_a_expr_arithmetic(sub, names, plan->parameters.get()));
+                                    auto arg = transform_a_expr_arithmetic(sub, names, plan->parameters.get());
+                                    if (error_.contains_error() || !arg) {
+                                        return nullptr;
+                                    }
+                                    args.emplace_back(arg);
                                 } else {
                                     args.emplace_back(add_param_value(arg_value, plan->parameters.get()));
+                                    if (error_.contains_error()) {
+                                        return nullptr;
+                                    }
                                 }
                             } else if (nodeTag(arg_value) == T_FuncCall) {
-                                args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value),
-                                                                        names,
-                                                                        plan->parameters.get()));
+                                auto arg =
+                                    transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value), names, plan->parameters.get());
+                                if (error_.contains_error() || !arg) {
+                                    return nullptr;
+                                }
+                                args.emplace_back(arg);
                             } else if (nodeTag(arg_value) == T_CaseExpr) {
                                 // CASE WHEN ... inside aggregate arg (SUM(CASE WHEN ...))
-                                args.emplace_back(case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_value),
-                                                                      nullptr,
-                                                                      names,
-                                                                      plan,
-                                                                      select_node));
+                                auto arg = case_expr_to_scalar(pg_ptr_cast<CaseExpr>(arg_value),
+                                                               nullptr,
+                                                               names,
+                                                               plan,
+                                                               select_node);
+                                if (error_.contains_error() || !arg) {
+                                    return nullptr;
+                                }
+                                args.emplace_back(arg);
                             } else {
                                 args.emplace_back(add_param_value(arg_value, plan->parameters.get()));
+                                if (error_.contains_error()) {
+                                    return nullptr;
+                                }
                             }
                         }
 
@@ -665,7 +792,11 @@ namespace components::sql::transform {
                                                            scalar_type::constant,
                                                            res->name ? expressions::key_t{resource_, res->name}
                                                                      : expressions::key_t{resource_});
-                        expr->append_param(add_param_value(res->val, plan->parameters.get()));
+                        auto value = add_param_value(res->val, plan->parameters.get());
+                        if (error_.contains_error()) {
+                            return nullptr;
+                        }
+                        expr->append_param(value);
                         select_node->append_expression(expr);
                         break;
                     }
@@ -692,6 +823,9 @@ namespace components::sql::transform {
                                 has_non_star = true;
                                 logical_plan::node_ptr sel_node = select_node;
                                 transform_select_a_expr(a_expr, res->name, names, plan, sel_node);
+                                if (error_.contains_error()) {
+                                    return nullptr;
+                                }
                                 break;
                             }
                             if (is_jsonb_nav_operator(op_str)) {
@@ -853,9 +987,16 @@ namespace components::sql::transform {
             } else if (nodeTag(node.whereClause) == T_NullTest) {
                 expr = transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, plan->parameters.get());
             } else if (nodeTag(node.whereClause) == T_SubLink) {
+                // Bare `WHERE col <op|IN> (subquery)` (no surrounding AND/OR).
+                // ANY/ALL/EXISTS etc. are handled by transform_sublink_expr,
+                // which appends the sub-plan to plan->sub_queries and binds its
+                // compacted result as a parameter consumed downstream.
                 expr = transform_sublink_expr(pg_ptr_cast<SubLink>(node.whereClause), names, plan);
             } else {
                 expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, plan);
+            }
+            if (error_.contains_error()) {
+                return nullptr;
             }
             if (expr) {
                 agg->append_child(logical_plan::make_node_match(resource_,
@@ -927,6 +1068,9 @@ namespace components::sql::transform {
         expression_ptr having_expr;
         if (node.havingClause) {
             having_expr = transform_having_expr(node.havingClause, names, plan, group);
+            if (error_.contains_error()) {
+                return nullptr;
+            }
         }
 
         if (!group->expressions().empty()) {
@@ -981,9 +1125,17 @@ namespace components::sql::transform {
                     auto computed_sort = make_scalar_expression(resource_, stype, std::move(order_key));
                     // Resolve operands (without appending to any node — purely for sort)
                     logical_plan::node_ptr dummy_node = group; // resolve_select_operand needs a node_ptr
-                    computed_sort->append_param(resolve_select_operand(a_expr->lexpr, names, plan, dummy_node));
+                    auto left = resolve_select_operand(a_expr->lexpr, names, plan, dummy_node);
+                    if (error_.contains_error() || contains_null_expression(left)) {
+                        return nullptr;
+                    }
+                    computed_sort->append_param(left);
                     if (a_expr->rexpr) {
-                        computed_sort->append_param(resolve_select_operand(a_expr->rexpr, names, plan, dummy_node));
+                        auto right = resolve_select_operand(a_expr->rexpr, names, plan, dummy_node);
+                        if (error_.contains_error() || contains_null_expression(right)) {
+                            return nullptr;
+                        }
+                        computed_sort->append_param(right);
                     }
                     sort_exprs.emplace_back(std::move(computed_sort));
                 } else {

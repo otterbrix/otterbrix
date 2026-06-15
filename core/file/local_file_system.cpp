@@ -44,6 +44,26 @@ extern "C" WINBASEAPI BOOL WINAPI GetPhysicallyInstalledSystemMemory(PULONGLONG)
 
 namespace core::filesystem {
 
+#if defined(DEV_MODE) && defined(PLATFORM_POSIX)
+    namespace testing {
+        static posix_pread_hook_t g_posix_pread_hook = nullptr;
+        static posix_pwrite_hook_t g_posix_pwrite_hook = nullptr;
+        static posix_fsync_hook_t g_posix_fsync_hook = nullptr;
+
+        void set_posix_pread_hook(posix_pread_hook_t hook) { g_posix_pread_hook = hook; }
+
+        void set_posix_pwrite_hook(posix_pwrite_hook_t hook) { g_posix_pwrite_hook = hook; }
+
+        void set_posix_fsync_hook(posix_fsync_hook_t hook) { g_posix_fsync_hook = hook; }
+
+        void reset_posix_positioned_io_hooks() {
+            g_posix_pread_hook = nullptr;
+            g_posix_pwrite_hook = nullptr;
+            g_posix_fsync_hook = nullptr;
+        }
+    } // namespace testing
+#endif
+
     static constexpr uint64_t INVALID_INDEX = uint64_t(-1);
 
 #ifndef PLATFORM_WINDOWS
@@ -394,11 +414,20 @@ namespace core::filesystem {
         int fd = reinterpret_cast<unix_file_handle_t&>(handle).fd;
         auto read_buffer = reinterpret_cast<char*>(buffer);
         while (nr_bytes > 0) {
-            int64_t bytes_read = pread(fd, read_buffer, static_cast<size_t>(nr_bytes), static_cast<off_t>(location));
+            int64_t bytes_read;
+#if defined(DEV_MODE)
+            if (testing::g_posix_pread_hook) {
+                bytes_read = testing::g_posix_pread_hook(fd, read_buffer, static_cast<size_t>(nr_bytes), location);
+            } else
+#endif
+            {
+                bytes_read = pread(fd, read_buffer, static_cast<size_t>(nr_bytes), static_cast<off_t>(location));
+            }
             if (bytes_read == -1 || bytes_read == 0) {
                 return false;
             }
             read_buffer += bytes_read;
+            location += static_cast<uint64_t>(bytes_read);
             nr_bytes -= bytes_read;
         }
         return true;
@@ -414,12 +443,20 @@ namespace core::filesystem {
         int fd = reinterpret_cast<unix_file_handle_t&>(handle).fd;
         auto write_buffer = reinterpret_cast<char*>(buffer);
         while (nr_bytes > 0) {
-            int64_t bytes_written =
-                pwrite(fd, write_buffer, static_cast<size_t>(nr_bytes), static_cast<off_t>(location));
+            int64_t bytes_written;
+#if defined(DEV_MODE)
+            if (testing::g_posix_pwrite_hook) {
+                bytes_written = testing::g_posix_pwrite_hook(fd, write_buffer, static_cast<size_t>(nr_bytes), location);
+            } else
+#endif
+            {
+                bytes_written = pwrite(fd, write_buffer, static_cast<size_t>(nr_bytes), static_cast<off_t>(location));
+            }
             if (bytes_written <= 0) {
                 return false;
             }
             write_buffer += bytes_written;
+            location += static_cast<uint64_t>(bytes_written);
             nr_bytes -= bytes_written;
         }
         return true;
@@ -602,7 +639,17 @@ namespace core::filesystem {
 
     bool file_sync(local_file_system_t&, file_handle_t& handle) {
         int fd = reinterpret_cast<unix_file_handle_t&>(handle).fd;
-        if (fsync(fd) != 0) {
+        int rc;
+#if defined(DEV_MODE) && defined(PLATFORM_POSIX)
+        if (testing::g_posix_fsync_hook) {
+            rc = testing::g_posix_fsync_hook(fd);
+        } else {
+            rc = fsync(fd);
+        }
+#else
+        rc = fsync(fd);
+#endif
+        if (rc != 0) {
             return false;
         }
         return true;

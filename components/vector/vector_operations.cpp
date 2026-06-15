@@ -728,10 +728,11 @@ namespace components::vector::vector_ops {
                     }
                     auto target_idx = target_offset + i;
                     if (tmask.row_is_valid(target_idx)) {
+                        auto source_value = ldata[source_idx];
                         tdata[target_idx] = std::string_view(
                             reinterpret_cast<char*>(static_cast<string_vector_buffer_t*>(target.auxiliary().get())
-                                                        ->insert(ldata[source_idx])),
-                            ldata[source_idx].size());
+                                                        ->insert(source_value.data(), source_value.size())),
+                            source_value.size());
                     }
                 }
                 break;

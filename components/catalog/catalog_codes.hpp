@@ -4,6 +4,8 @@
 // Mirrors the PostgreSQL convention of storing kind/type discriminators
 // as single chars in catalog tables (relkind, contype, etc.).
 
+#include <string_view>
+
 namespace components::catalog {
 
     // pg_class.relkind
@@ -29,6 +31,14 @@ namespace components::catalog {
         inline constexpr char disk = 'd';      // table.otbx on disk
         inline constexpr char in_memory = 'm'; // no persistence
     }                                          // namespace relstoragemode
+
+    // pg_class.relstorageformat (otterbrix-specific: requested storage format)
+    namespace relstorageformat {
+        inline constexpr std::string_view in_memory = "in_memory";
+        inline constexpr std::string_view disk_auto = "disk_auto";
+        inline constexpr std::string_view disk_columnar = "disk_columnar";
+        inline constexpr std::string_view disk_pax = "disk_pax";
+    } // namespace relstorageformat
 
     // pg_constraint.confmatchtype (FK match strategy)
     namespace fk_match {

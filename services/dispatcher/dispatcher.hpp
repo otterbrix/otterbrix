@@ -24,6 +24,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/session_catalog.hpp>
 #include <components/compute/function.hpp>
+#include <components/context/execution_context.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/execution_plan.hpp>

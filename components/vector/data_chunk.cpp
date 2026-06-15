@@ -64,6 +64,11 @@ namespace components::vector {
             return;
         }
         capacity_ = DEFAULT_VECTOR_CAPACITY;
+        // Scans only set invalid bits, never clear them, so a reused chunk must reset
+        // validity to all-valid or it keeps stale NULLs from a prior fill.
+        for (auto& column : data) {
+            column.validity().reset(capacity_);
+        }
         set_cardinality(0);
     }
 
@@ -439,13 +444,31 @@ namespace components::vector {
     }
 
     core::result_wrapper_t<types::logical_value_t> compact_to_array_value(const data_chunk_t& data) {
-        if (!data.empty() && data.column_count() == 1) {
+        // A single-column result compacts to an array (used to materialise the
+        // right-hand side of `x IN (subquery)` / ANY / ALL). Zero rows is a
+        // valid, common case — an empty IN-list — and must yield an EMPTY array
+        // (so `x IN ()` evaluates to false), NOT an error. The column type is
+        // still available on an empty chunk (empty() means zero rows, not zero
+        // columns), so the element type is preserved. Mirrors
+        // compact_to_single_value, which yields NULL rather than erroring on an
+        // empty scalar sub-query. Only a genuine shape violation (more than one
+        // column) is an error.
+        if (data.column_count() == 1) {
             std::vector<types::logical_value_t> array;
             array.reserve(data.size());
             for (size_t i = 0; i < data.size(); ++i) {
                 array.emplace_back(data.value(0, i));
             }
             return types::logical_value_t::create_array(data.resource(), data.data[0].type(), array);
+        } else if (data.column_count() == 0 && data.size() == 0) {
+            // An empty sub-query result whose single projected column was a
+            // placeholder gets stripped at the cursor boundary, leaving zero
+            // columns. An IN-list with no values is always false regardless of
+            // element type, so yield an empty array (NA element type) rather
+            // than erroring — mirrors the empty single-column case above.
+            std::vector<types::logical_value_t> empty_array;
+            return types::logical_value_t::create_array(
+                data.resource(), types::complex_logical_type{types::logical_type::NA}, empty_array);
         } else {
             return core::error_t(core::error_code_t::conversion_failure,
                                  std::pmr::string{"could not convert data_chunk_t to a array value", data.resource()});

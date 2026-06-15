@@ -2,7 +2,68 @@
 
 #include "resolved_table_metadata.hpp"
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+
 namespace components::operators {
+    namespace {
+        bool trace_nodes_enabled() {
+            const char* raw = std::getenv("OTTERBRIX_EXEC_TRACE_NODES");
+            return raw && raw[0] != '\0' && raw[0] != '0';
+        }
+
+        const char* operator_type_name(operator_type type) {
+            switch (type) {
+                case operator_type::match:
+                    return "match";
+                case operator_type::full_scan:
+                    return "full_scan";
+                case operator_type::transfer_scan:
+                    return "transfer_scan";
+                case operator_type::index_scan:
+                    return "index_scan";
+                case operator_type::sort:
+                    return "sort";
+                case operator_type::select:
+                    return "select";
+                case operator_type::join:
+                    return "join";
+                case operator_type::aggregate:
+                    return "aggregate";
+                case operator_type::raw_data:
+                    return "raw_data";
+                case operator_type::batch:
+                    return "batch";
+                default:
+                    return "other";
+            }
+        }
+
+        std::size_t output_rows(const operator_ptr& op) {
+            return (op && op->output()) ? op->output()->size() : 0;
+        }
+
+        std::size_t output_chunks(const operator_data_ptr& out) { return out ? out->chunk_count() : 0; }
+
+        void trace_node(operator_type type,
+                        const operator_ptr& left,
+                        const operator_ptr& right,
+                        const operator_data_ptr& out,
+                        double elapsed_ms) {
+            if (!trace_nodes_enabled()) {
+                return;
+            }
+            std::fprintf(stderr,
+                         "OTBX_EXEC_NODE node=%s rows_left=%zu rows_right=%zu rows_out=%zu chunks_out=%zu time_ms=%.3f\n",
+                         operator_type_name(type),
+                         output_rows(left),
+                         output_rows(right),
+                         out ? out->size() : 0,
+                         output_chunks(out),
+                         elapsed_ms);
+        }
+    } // namespace
 
     bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
 
@@ -49,18 +110,44 @@ namespace components::operators {
                 }
             }
             if (is_success(left_) && is_success(right_)) {
+                const auto trace_enabled = trace_nodes_enabled();
+                std::chrono::steady_clock::time_point start;
+                if (trace_enabled) {
+                    start = std::chrono::steady_clock::now();
+                }
                 on_execute_impl(pipeline_context);
+                auto elapsed_ms = 0.0;
+                if (trace_enabled) {
+                    elapsed_ms =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+                }
                 if (has_error()) {
                     state_ = operator_state::failed;
                     return;
                 }
                 if (!is_wait_sync_disk()) {
                     state_ = operator_state::executed;
+                    if (trace_enabled) {
+                        trace_node(type_, left_, right_, output_, elapsed_ms);
+                    }
                 }
             }
         } else if (is_wait_sync_disk()) {
+            const auto trace_enabled = trace_nodes_enabled();
+            std::chrono::steady_clock::time_point start;
+            if (trace_enabled) {
+                start = std::chrono::steady_clock::now();
+            }
             on_resume_impl(pipeline_context);
+            auto elapsed_ms = 0.0;
+            if (trace_enabled) {
+                elapsed_ms =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            }
             state_ = operator_state::executed;
+            if (trace_enabled) {
+                trace_node(type_, left_, right_, output_, elapsed_ms);
+            }
         }
     }
 

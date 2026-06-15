@@ -100,6 +100,13 @@ namespace components::table {
         compression::compression_type compression() const { return compression_; }
         void set_compression(compression::compression_type c) { compression_ = c; }
 
+        // Set for segments rebuilt from a persisted row group on load. They are read-only;
+        // appending in place corrupts neighbouring persisted state, so initialize_append()
+        // rolls a fresh transient segment. block_offset()/compression() alone don't catch all
+        // cases (a reopened uncompressed validity segment has neither set).
+        bool is_persisted() const { return persisted_; }
+        void set_persisted(bool persisted) { persisted_ = persisted; }
+
     private:
         void scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result);
         void
@@ -111,6 +118,7 @@ namespace components::table {
         std::unique_ptr<compressed_segment_state> segment_state_;
         base_statistics_t segment_statistics_;
         compression::compression_type compression_{compression::compression_type::UNCOMPRESSED};
+        bool persisted_{false};
     };
 
 } // namespace components::table

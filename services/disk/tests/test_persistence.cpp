@@ -18,6 +18,7 @@
 
 #include <filesystem>
 #include <limits>
+#include <string_view>
 #include <thread>
 #include <unistd.h>
 
@@ -209,6 +210,140 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
         REQUIRE(child_oid != INVALID_OID);
         REQUIRE(parent_oid != INVALID_OID);
     }
+    std::filesystem::remove_all(dir);
+}
+
+// Feature: requested storage format (disk_auto / disk_pax / disk_columnar) is
+// written to pg_class.relstorageformat and survives checkpoint + restart. The
+// read-back goes through the same read_chunks_by_key boundary production uses —
+// the former resolve_table read oracle was deleted, so relstorageformat (pg_class
+// column index 4: oid, relname, relnamespace, relkind, relstorageformat) is read
+// directly here, keyed on relname.
+TEST_CASE("services::disk::persistence::table_storage_format_roundtrip") {
+    auto dir = persist_dir() + "/storage_format_roundtrip";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    auto create_disk_table = [](fresh_disk& fd,
+                                oid_t ns_oid,
+                                const std::string& name,
+                                const std::vector<components::table::column_definition_t>& cols,
+                                configuration::disk_layout_policy layout_policy,
+                                std::string_view storage_format) {
+        auto oids = fd.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1 + cols.size()});
+        const oid_t table_oid = oids[0];
+
+        fd.invoke(&manager_disk_t::create_storage_disk, session_id_t{}, table_oid, ns_oid, cols, layout_policy);
+
+        catalog::oid_batch_t batch;
+        batch.oids = std::move(oids);
+        auto writes = catalog::build_create_table_writes(&fd.resource,
+                                                         std::string("public"),
+                                                         name,
+                                                         cols,
+                                                         true,
+                                                         ns_oid,
+                                                         batch,
+                                                         catalog::relkind::regular,
+                                                         storage_format);
+        std::vector<components::pg_catalog_append_range_t> appends_local;
+        append_writes(fd, auto_ctx(), writes, appends_local);
+        fd.invoke(&manager_disk_t::storage_publish_commits,
+                  rebuild_ctx(),
+                  std::uint64_t{1000},
+                  std::move(appends_local));
+        return table_oid;
+    };
+
+    {
+        fresh_disk fd(dir);
+        fd.manager->bootstrap_system_tables_sync();
+        const oid_t ns_oid = test_create_namespace(fd, "sf_ns");
+
+        std::vector<components::table::column_definition_t> int_cols;
+        int_cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+
+        std::vector<components::table::column_definition_t> str_cols;
+        str_cols.emplace_back("name",
+                              components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
+
+        create_disk_table(fd,
+                          ns_oid,
+                          "disk_auto_tbl",
+                          int_cols,
+                          configuration::disk_layout_policy::auto_select,
+                          catalog::relstorageformat::disk_auto);
+        create_disk_table(fd,
+                          ns_oid,
+                          "disk_pax_tbl",
+                          int_cols,
+                          configuration::disk_layout_policy::pax_only,
+                          catalog::relstorageformat::disk_pax);
+        create_disk_table(fd,
+                          ns_oid,
+                          "disk_columnar_tbl",
+                          str_cols,
+                          configuration::disk_layout_policy::columnar_only,
+                          catalog::relstorageformat::disk_columnar);
+
+        fd.checkpoint();
+    }
+
+    {
+        fresh_disk fd(dir);
+        fd.manager->bootstrap_system_tables_sync();
+        fd.manager->restore_oid_generator_sync();
+        fd.manager->load_user_table_storages_sync();
+
+        auto ns = fd.invoke(&manager_disk_t::resolve_namespace, fd.ctx(), std::string("sf_ns"), std::uint64_t{0});
+        REQUIRE(ns.found);
+        const oid_t ns_oid = ns.oid;
+
+        const std::vector<std::pair<std::string, std::string>> expected{
+            {"disk_auto_tbl", std::string(catalog::relstorageformat::disk_auto)},
+            {"disk_pax_tbl", std::string(catalog::relstorageformat::disk_pax)},
+            {"disk_columnar_tbl", std::string(catalog::relstorageformat::disk_columnar)},
+        };
+
+        // pg_class layout: oid(0), relname(1), relnamespace(2), relkind(3),
+        // relstoragemode(4), relstorageformat(5). Read the surviving format straight
+        // from pg_class via the production read path, keyed on (relnamespace, relname).
+        constexpr oid_t pg_class = well_known_oid::pg_class_table;
+        for (const auto& [name, expected_format] : expected) {
+            std::pmr::vector<std::string> keys{&fd.resource};
+            keys.emplace_back("relnamespace");
+            keys.emplace_back("relname");
+            std::pmr::vector<components::types::logical_value_t> vals{&fd.resource};
+            vals.emplace_back(components::types::logical_value_t(&fd.resource, ns_oid));
+            vals.emplace_back(components::types::logical_value_t(&fd.resource, name));
+            auto batches =
+                fd.invoke(&manager_disk_t::read_chunks_by_key,
+                          fd.ctx(),
+                          pg_class,
+                          std::move(keys),
+                          test_probe::build_key_chunk(&fd.resource, std::move(vals)));
+            bool found = false;
+            std::string actual_format;
+            for (const auto& chunk : batches) {
+                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto oid_v = chunk.value(0, i);
+                    if (oid_v.is_null())
+                        continue;
+                    found = true;
+                    auto fmt_v = chunk.value(5, i);
+                    if (!fmt_v.is_null())
+                        actual_format = std::string(fmt_v.template value<std::string_view>());
+                    break;
+                }
+                if (found)
+                    break;
+            }
+            INFO("relation: " << name);
+            REQUIRE(found);
+            REQUIRE(actual_format == expected_format);
+        }
+    }
+
     std::filesystem::remove_all(dir);
 }
 

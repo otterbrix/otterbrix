@@ -82,7 +82,8 @@ namespace disk_test_helpers {
                                                          false,
                                                          ns_oid,
                                                          batch,
-                                                         relkind_char);
+                                                         relkind_char,
+                                                         catalog::relstorageformat::in_memory);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         fx.invoke(&manager_disk_t::storage_publish_commits,
@@ -105,7 +106,8 @@ namespace disk_test_helpers {
                                                          false,
                                                          ns_oid,
                                                          batch,
-                                                         catalog::relkind::computed);
+                                                         catalog::relkind::computed,
+                                                         catalog::relstorageformat::in_memory);
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         fx.invoke(&manager_disk_t::storage_publish_commits,

@@ -73,6 +73,16 @@ namespace components::table {
         return scan_count(state, result, count);
     }
 
+    void list_column_data_t::scan_committed_range(uint64_t row_group_start,
+                                                  uint64_t offset_in_row_group,
+                                                  uint64_t count,
+                                                  vector::vector_t& result) {
+        column_scan_state state;
+        state.initialize(type_);
+        initialize_scan_with_offset(state, static_cast<int64_t>(row_group_start + offset_in_row_group));
+        scan_count(state, result, count);
+    }
+
     uint64_t list_column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         if (count == 0) {
             return 0;
@@ -288,4 +298,6 @@ namespace components::table {
         col_path.back() = 1;
         child_column->get_column_segment_info(row_group_index, col_path, result);
     }
+
+    uint64_t list_column_data_t::list_offset(int64_t row_idx) { return fetch_list_offset(row_idx); }
 } // namespace components::table

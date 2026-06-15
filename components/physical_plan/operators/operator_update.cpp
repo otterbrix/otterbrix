@@ -8,6 +8,9 @@
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
+#include <algorithm>
+#include <unordered_map>
+
 namespace components::operators {
 
     operator_update::operator_update(std::pmr::memory_resource* resource,
@@ -34,6 +37,197 @@ namespace components::operators {
     }
 
     namespace {
+        bool is_unprojected_placeholder(const vector::vector_t& vector) noexcept {
+            return vector.data() == nullptr && vector.auxiliary() == nullptr;
+        }
+
+        std::vector<size_t> materialized_columns(const vector::data_chunk_t& chunk) {
+            std::vector<size_t> result;
+            result.reserve(chunk.column_count());
+            for (size_t column = 0; column < chunk.column_count(); column++) {
+                if (!is_unprojected_placeholder(chunk.data[column])) {
+                    result.push_back(column);
+                }
+            }
+            return result;
+        }
+
+        void append_unique_column(std::vector<size_t>& columns, size_t column_index) {
+            if (std::find(columns.begin(), columns.end(), column_index) == columns.end()) {
+                columns.push_back(column_index);
+            }
+        }
+
+        bool has_unprojected_placeholders(const vector::data_chunk_t& chunk) {
+            for (const auto& column : chunk.data) {
+                if (is_unprojected_placeholder(column)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        bool has_unprojected_placeholders(const chunks_vector_t& chunks) {
+            for (const auto& chunk : chunks) {
+                if (has_unprojected_placeholders(chunk)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        vector::data_chunk_t combine_update_chunks(std::pmr::memory_resource* resource,
+                                                   const chunks_vector_t& chunks,
+                                                   const std::vector<size_t>& projected_cols) {
+            if (chunks.empty()) {
+                std::pmr::vector<types::complex_logical_type> empty_types(resource);
+                return vector::data_chunk_t(resource, empty_types, 0);
+            }
+
+            uint64_t total_count = 0;
+            for (const auto& chunk : chunks) {
+                total_count += chunk.size();
+            }
+
+            auto types = chunks.front().types();
+            const bool sparse = projected_cols.size() < chunks.front().column_count();
+            vector::data_chunk_t result =
+                sparse ? vector::data_chunk_t(resource, types, projected_cols, total_count == 0 ? 1 : total_count)
+                       : vector::data_chunk_t(resource, types, total_count == 0 ? 1 : total_count);
+
+            uint64_t offset = 0;
+            for (const auto& chunk : chunks) {
+                if (chunk.size() == 0) {
+                    continue;
+                }
+                for (const auto column : projected_cols) {
+                    vector::vector_ops::copy(chunk.data[column], result.data[column], chunk.size(), 0, offset);
+                }
+                vector::vector_ops::copy(chunk.row_ids, result.row_ids, chunk.size(), 0, offset);
+                offset += chunk.size();
+            }
+            result.set_cardinality(total_count);
+            return result;
+        }
+
+        vector::data_chunk_t combine_update_chunks(std::pmr::memory_resource* resource, const chunks_vector_t& chunks) {
+            if (chunks.empty()) {
+                std::pmr::vector<types::complex_logical_type> empty_types(resource);
+                return vector::data_chunk_t(resource, empty_types, 0);
+            }
+            return combine_update_chunks(resource, chunks, materialized_columns(chunks.front()));
+        }
+
+        void copy_materialized_columns_by_row_id(const vector::data_chunk_t& source,
+                                                 vector::data_chunk_t& target,
+                                                 const std::vector<size_t>& projected_cols) {
+            std::unordered_map<int64_t, uint64_t> source_offsets;
+            source_offsets.reserve(source.size());
+            const auto* source_row_ids = source.row_ids.data<int64_t>();
+            for (uint64_t row = 0; row < source.size(); row++) {
+                source_offsets.emplace(source_row_ids[row], row);
+            }
+
+            const auto* target_row_ids = target.row_ids.data<int64_t>();
+            for (uint64_t row = 0; row < target.size(); row++) {
+                const auto found = source_offsets.find(target_row_ids[row]);
+                if (found == source_offsets.end()) {
+                    continue;
+                }
+                const auto source_row = found->second;
+                for (const auto column : projected_cols) {
+                    if (column >= source.column_count() || column >= target.column_count() ||
+                        is_unprojected_placeholder(source.data[column])) {
+                        continue;
+                    }
+                    vector::vector_ops::copy(source.data[column], target.data[column], source_row + 1, source_row, row);
+                }
+            }
+        }
+
+        void collect_update_target_paths(const expressions::update_expr_ptr& expression,
+                                         std::vector<std::vector<uint64_t>>& target_paths) {
+            if (!expression) {
+                return;
+            }
+            if (expression->type() == expressions::update_expr_type::set) {
+                const auto* set_expr = dynamic_cast<const expressions::update_expr_set_t*>(expression.get());
+                if (!set_expr || set_expr->key().path().empty()) {
+                    return;
+                }
+                std::vector<uint64_t> path{static_cast<uint64_t>(set_expr->key().path().front())};
+                if (std::find(target_paths.begin(), target_paths.end(), path) == target_paths.end()) {
+                    target_paths.emplace_back(std::move(path));
+                }
+                return;
+            }
+            collect_update_target_paths(expression->left(), target_paths);
+            collect_update_target_paths(expression->right(), target_paths);
+        }
+
+        std::vector<std::vector<uint64_t>>
+        collect_update_target_paths(const std::pmr::vector<expressions::update_expr_ptr>& updates) {
+            std::vector<std::vector<uint64_t>> target_paths;
+            for (const auto& update : updates) {
+                collect_update_target_paths(update, target_paths);
+            }
+            return target_paths;
+        }
+
+        void collect_update_source_columns(const expressions::update_expr_ptr& expression,
+                                           std::vector<size_t>& source_columns,
+                                           size_t column_count) {
+            if (!expression) {
+                return;
+            }
+
+            if (expression->type() == expressions::update_expr_type::set) {
+                const auto* set_expr = dynamic_cast<const expressions::update_expr_set_t*>(expression.get());
+                if (set_expr && set_expr->key().path().size() > 1) {
+                    const auto column = set_expr->key().path().front();
+                    if (column < column_count) {
+                        append_unique_column(source_columns, static_cast<size_t>(column));
+                    }
+                }
+            } else if (expression->type() == expressions::update_expr_type::get_value) {
+                const auto* get_expr = dynamic_cast<const expressions::update_expr_get_value_t*>(expression.get());
+                if (get_expr && !get_expr->key().path().empty()) {
+                    const auto column = get_expr->key().path().front();
+                    if (column < column_count) {
+                        append_unique_column(source_columns, static_cast<size_t>(column));
+                    }
+                }
+            }
+
+            collect_update_source_columns(expression->left(), source_columns, column_count);
+            collect_update_source_columns(expression->right(), source_columns, column_count);
+        }
+
+        std::vector<size_t> update_source_columns(const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                                  size_t column_count) {
+            std::vector<size_t> columns;
+            for (const auto& update : updates) {
+                collect_update_source_columns(update, columns, column_count);
+            }
+            std::sort(columns.begin(), columns.end());
+            columns.erase(std::unique(columns.begin(), columns.end()), columns.end());
+            return columns;
+        }
+
+        std::vector<size_t> writable_update_columns(const std::vector<size_t>& source_columns,
+                                                    const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                                    size_t column_count) {
+            auto columns = source_columns;
+            for (const auto& path : collect_update_target_paths(updates)) {
+                if (!path.empty() && path.front() < column_count) {
+                    append_unique_column(columns, static_cast<size_t>(path.front()));
+                }
+            }
+            std::sort(columns.begin(), columns.end());
+            columns.erase(std::unique(columns.begin(), columns.end()), columns.end());
+            return columns;
+        }
+
         // Applies all update expressions to out_chunk[0..match_count) and
         // populates modified_/no_modified_ lists.
         void apply_updates(std::pmr::memory_resource* resource,
@@ -216,7 +410,12 @@ namespace components::operators {
                     if (chunk.size() == 0) {
                         continue;
                     }
-                    vector::data_chunk_t out_chunk(resource, types, chunk.size());
+                    const auto source_cols = update_source_columns(updates_, chunk.column_count());
+                    const auto writable_cols = writable_update_columns(source_cols, updates_, chunk.column_count());
+                    const bool sparse = writable_cols.size() < chunk.column_count();
+                    vector::data_chunk_t out_chunk =
+                        sparse ? vector::data_chunk_t(resource, types, writable_cols, chunk.size())
+                               : vector::data_chunk_t(resource, types, chunk.size());
                     size_t index = 0;
                     for (size_t i = 0; i < chunk.size(); ++i) {
                         auto res = predicate->check(chunk, i);
@@ -227,13 +426,8 @@ namespace components::operators {
                         if (!res.value()) {
                             continue;
                         }
-                        if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                            out_chunk.row_ids.data<int64_t>()[index] =
-                                static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
-                        } else {
-                            out_chunk.row_ids.data<int64_t>()[index] = chunk.row_ids.data<int64_t>()[i];
-                        }
-                        for (size_t k = 0; k < chunk.column_count(); ++k) {
+                        out_chunk.row_ids.data<int64_t>()[index] = chunk.row_ids.data<int64_t>()[i];
+                        for (const auto k : source_cols) {
                             vector::vector_ops::copy(chunk.data[k], out_chunk.data[k], i + 1, i, index);
                         }
                         vector::validate_chunk_capacity(out_chunk, ++index);
@@ -273,8 +467,45 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+
+        const bool projected_update = has_unprojected_placeholders(output_->chunks());
+        std::unique_ptr<data_chunk_t> materialized_update_chunk;
+        std::unique_ptr<data_chunk_t> old_data_for_index;
+
+        if (projected_update) {
+            auto projected_chunk = combine_update_chunks(resource_, output_->chunks());
+            vector_t fetch_row_ids(resource_, types::logical_type::BIGINT, projected_chunk.size());
+            for (uint64_t i = 0; i < projected_chunk.size(); i++) {
+                fetch_row_ids.data<int64_t>()[i] = projected_chunk.row_ids.data<int64_t>()[i];
+            }
+
+            auto [_f, ff] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_fetch,
+                                             ctx->session,
+                                             table_oid_,
+                                             std::move(fetch_row_ids),
+                                             projected_chunk.size(),
+                                             ctx->txn);
+            auto fetched = co_await std::move(ff);
+            if (!fetched) {
+                mark_executed();
+                co_return;
+            }
+
+            old_data_for_index = std::make_unique<data_chunk_t>(resource_, fetched->types(), fetched->size());
+            fetched->copy(*old_data_for_index, 0);
+
+            const auto projected_cols = materialized_columns(projected_chunk);
+            copy_materialized_columns_by_row_id(projected_chunk, *fetched, projected_cols);
+            materialized_update_chunk = std::move(fetched);
+        }
+
+        auto& out_chunk = projected_update ? *materialized_update_chunk : output_->data_chunk();
+        if (out_chunk.size() == 0) {
+            mark_executed();
+            co_return;
+        }
 
         // If a resolver sibling supplied catalog metadata, compute a
         // chunk_position -> table_position translation. See
@@ -337,10 +568,15 @@ namespace components::operators {
 
         // 4. Mirror to index (old + new data).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            if (auto scan_out = left_ ? left_->output() : nullptr) {
-                auto& sc = scan_out->data_chunk();
-                auto old_data = std::make_unique<data_chunk_t>(resource_, sc.types(), sc.size());
-                sc.copy(*old_data, 0);
+            if (old_data_for_index || (left_ && left_->output())) {
+                std::unique_ptr<data_chunk_t> old_data;
+                if (old_data_for_index) {
+                    old_data = std::move(old_data_for_index);
+                } else {
+                    auto& sc = left_->output()->data_chunk();
+                    old_data = std::make_unique<data_chunk_t>(resource_, sc.types(), sc.size());
+                    sc.copy(*old_data, 0);
+                }
                 auto new_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
                 out_chunk.copy(*new_data, 0);
                 auto idx_ids = std::pmr::vector<int64_t>(resource_);

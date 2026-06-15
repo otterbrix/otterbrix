@@ -4,6 +4,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/physical_plan/operators/arithmetic_eval.hpp>
 #include <components/physical_plan/operators/operator_batch.hpp>
+#include <sstream>
 #include <unordered_set>
 
 namespace {
@@ -41,9 +42,25 @@ namespace {
         return true;
     }
 
-    void resolve_columns(const std::pmr::vector<expressions::param_storage>& args,
+    std::string describe_columns(const vector::data_chunk_t& chunk) {
+        std::ostringstream out;
+        out << "[";
+        for (size_t i = 0; i < chunk.data.size(); ++i) {
+            if (i > 0) {
+                out << ", ";
+            }
+            out << i << ":";
+            const auto& type = chunk.data[i].type();
+            out << (type.has_alias() ? std::string(type.alias()) : std::string("<no-alias>"));
+        }
+        out << "]";
+        return out.str();
+    }
+
+    bool resolve_columns(const std::pmr::vector<expressions::param_storage>& args,
                          vector::data_chunk_t& chunk,
                          pipeline::context_t* pipeline_context,
+                         operator_func_t& op,
                          std::pmr::vector<columns_var>& columns,
                          std::vector<vector::vector_t>& computed_vecs) {
         size_t computed_idx = 0;
@@ -52,6 +69,20 @@ namespace {
                 const auto& key = std::get<expressions::key_t>(arg);
                 assert(!key.path().empty() && "aggregate key path must be resolved");
                 assert(key.path().front() < chunk.data.size() && "aggregate key path out of range");
+                if (key.path().empty() || key.path().front() >= chunk.data.size()) {
+                    std::string msg = "aggregate key path out of range: key=" + key.as_string();
+                    msg += " path=";
+                    if (key.path().empty()) {
+                        msg += "<empty>";
+                    } else {
+                        msg += std::to_string(key.path().front());
+                    }
+                    msg += " chunk_columns=" + std::to_string(chunk.data.size());
+                    msg += " aliases=" + describe_columns(chunk);
+                    op.set_error(core::error_t(core::error_code_t::physical_plan_error,
+                                               std::pmr::string{msg, chunk.resource()}));
+                    return false;
+                }
                 columns.emplace_back(chunk.data.begin() + static_cast<std::ptrdiff_t>(key.path().front()));
             } else if (std::holds_alternative<core::parameter_id_t>(arg)) {
                 const auto& id = std::get<core::parameter_id_t>(arg);
@@ -65,6 +96,7 @@ namespace {
                 }
             }
         }
+        return true;
     }
 
     vector::data_chunk_t build_arg_chunk(std::pmr::memory_resource* resource,
@@ -145,7 +177,9 @@ namespace components::operators::aggregate {
 
             std::pmr::vector<columns_var> columns(left_->output()->resource());
             columns.reserve(args_.size());
-            resolve_columns(args_, chunk, pipeline_context, columns, computed_vecs);
+            if (!resolve_columns(args_, chunk, pipeline_context, *this, columns, computed_vecs)) {
+                return result;
+            }
 
             if (columns.size() == args_.size()) {
                 auto c = build_arg_chunk(left_->output()->resource(), columns, chunk);
@@ -186,7 +220,9 @@ namespace components::operators::aggregate {
 
             std::pmr::vector<columns_var> columns(resource_);
             columns.reserve(args_.size());
-            resolve_columns(args_, chunk, pipeline_context, columns, computed_vecs);
+            if (!resolve_columns(args_, chunk, pipeline_context, *this, columns, computed_vecs)) {
+                return compute::datum_t{std::pmr::vector<types::logical_value_t>(resource_)};
+            }
 
             if (columns.size() == args_.size()) {
                 auto c = build_arg_chunk(resource_, columns, chunk);

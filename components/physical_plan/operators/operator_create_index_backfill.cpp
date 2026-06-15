@@ -228,7 +228,8 @@ namespace components::operators {
                                                      ctx->session,
                                                      rec.table_oid,
                                                      std::move(fetch_ids),
-                                                     static_cast<uint64_t>(rec.physical_row_ids.size()));
+                                                     static_cast<uint64_t>(rec.physical_row_ids.size()),
+                                                     ctx->txn);
                     fetch_futures.push_back(std::move(ff));
                     fetch_slots.push_back(r);
                 }

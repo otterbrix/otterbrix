@@ -118,7 +118,8 @@ namespace components::catalog {
                               bool is_disk_storage,
                               oid_t namespace_oid,
                               oid_batch_t& oid_batch,
-                              char relkind_char) {
+                              char relkind_char,
+                              std::string_view storage_format_name) {
         std::vector<catalog_write_t> result;
 
         const std::string& table_name = relname;
@@ -129,6 +130,7 @@ namespace components::catalog {
             const char rk = is_disk_storage ? relstoragemode::disk : relstoragemode::in_memory;
             const std::string relkind_str(1, relkind_char);
             const std::string storagemode_str(1, rk);
+            const std::string storage_format_str(storage_format_name);
 
             auto chunk =
                 make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
@@ -137,6 +139,9 @@ namespace components::catalog {
                     set_oid(c, 2, 0, namespace_oid);
                     set_str(c, 3, 0, relkind_str, r);
                     set_str(c, 4, 0, storagemode_str, r);
+                    if (c.column_count() > 5 && !storage_format_str.empty()) {
+                        set_str(c, 5, 0, storage_format_str, r);
+                    }
                 });
             result.push_back(make_write(pg_class_full, std::move(chunk)));
         }

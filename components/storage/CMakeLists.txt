@@ -12,6 +12,7 @@ target_include_directories(otterbrix_${PROJECT_NAME} INTERFACE
 
 target_link_libraries(
     otterbrix_${PROJECT_NAME} INTERFACE
+    actor-zeta::actor-zeta
     otterbrix::table
     otterbrix::vector
 )

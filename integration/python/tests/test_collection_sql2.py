@@ -1,11 +1,17 @@
 import os
+import shutil
 import pytest
 from otterbrix import Client
 
 database_name = "testdb2"
 collection_name = "testcol2"
 
-client = Client(os.getcwd() + "/test_collection_sql2")
+# Hermetic: start from a clean on-disk state so the fixed _id rows below don't
+# collide with data persisted by a previous run (mirrors test_collection_sql.py).
+_path = os.getcwd() + "/test_collection_sql2"
+if os.path.exists(_path):
+    shutil.rmtree(_path)
+client = Client(_path)
 client.execute("CREATE DATABASE {};".format(database_name))
 client.execute("CREATE TABLE {}.{}();".format(database_name, collection_name))
 
@@ -49,11 +55,10 @@ def test_select_all(col):
     assert len(c) == 100
     c.close()
 
-# TODO:
-# def test_select_count(col):
-#     c = col.execute("SELECT COUNT(*) FROM {}.{};".format(database_name, collection_name))
-#     assert len(c) == 1
-#     c.close()
+def test_select_count(col):
+    c = col.execute("SELECT COUNT(*) FROM {}.{};".format(database_name, collection_name))
+    assert len(c) == 1
+    c.close()
 
 
 def test_select_where_eq(col):

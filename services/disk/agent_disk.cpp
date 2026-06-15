@@ -1,6 +1,7 @@
 #include "agent_disk.hpp"
 #include "manager_disk.hpp"
 #include "inline_scan.hpp" // services::disk::detail::inline_scan (catalog DDL on the agent)
+#include <components/vector/vector_operations.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <fstream>
 #include <unordered_set>
@@ -929,10 +930,24 @@ namespace services::disk {
             co_return std::unique_ptr<components::vector::data_chunk_t>{};
         }
         auto types = entry->storage->types();
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        entry->storage->scan_segment(start, count, [&result](components::vector::data_chunk_t& chunk) {
-            chunk.copy(*result, 0);
+        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types, count);
+        uint64_t rows_appended = 0;
+        entry->storage->scan_segment(start, count, [&](components::vector::data_chunk_t& chunk) {
+            const auto chunk_rows = chunk.size();
+            if (chunk_rows == 0) {
+                return;
+            }
+            for (uint64_t col = 0; col < chunk.column_count(); ++col) {
+                auto& src = chunk.data[col];
+                if (src.get_vector_type() != components::vector::vector_type::FLAT) {
+                    src.flatten(chunk_rows);
+                }
+                components::vector::vector_ops::copy(src, result->data[col], chunk_rows, 0, rows_appended);
+            }
+            components::vector::vector_ops::copy(chunk.row_ids, result->row_ids, chunk_rows, 0, rows_appended);
+            rows_appended += chunk_rows;
         });
+        result->set_cardinality(rows_appended);
         co_return std::move(result);
     }
 

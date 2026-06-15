@@ -28,6 +28,7 @@ void print_usage() {
               << "  --generate-config=FILE  Generate config file from loaded benchmarks\n"
               << "  --skip-load         Skip setup/load phase (use with --disk)\n"
               << "  --load-only         Only run setup/load, then exit (use with --disk)\n"
+              << "  --no-setup          Do not execute sibling _setup.sql for SQL benchmarks\n"
               << "  --csv-checkpoint-mb=N  Periodic CHECKPOINT every N mb during CSV load (disabled by default)\n"
               << "  --verbose           Verbose output\n"
               << "  --help              Show this help\n"
@@ -76,6 +77,8 @@ int main(int argc, char* argv[]) {
             config.skip_load = true;
         } else if (arg == "--load-only") {
             config.load_only = true;
+        } else if (arg == "--no-setup") {
+            config.no_setup = true;
         } else if (arg == "--verbose" || arg == "-v") {
             config.verbose = true;
         } else if (arg.starts_with("--csv-checkpoint-mb=")) {

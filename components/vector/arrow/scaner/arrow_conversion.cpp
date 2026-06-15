@@ -41,6 +41,11 @@ namespace components::vector::arrow::scaner {
         if (array.null_count != 0 && array.n_buffers > 0 && array.buffers[0]) {
             auto bit_offset = get_effective_offset(array, parent_offset, chunk_offset, nested_offset);
             auto n_bitmask_bytes = (size + 8 - 1) / 8;
+            if (mask.all_valid()) {
+                // The validity mask is lazily allocated (all_valid() => data() == nullptr).
+                // Materialize it before memcpy'ing the arrow null bitmap into mask.data().
+                mask.resize(mask.resource(), size);
+            }
             if (bit_offset % 8 == 0) {
                 memcpy(mask.data(), arrow_buffer_data<std::byte>(array, 0) + bit_offset / 8, n_bitmask_bytes);
             } else {
@@ -161,11 +166,11 @@ namespace components::vector::arrow::scaner {
     }
 
     template<class RUN_END_TYPE>
-    static void flatten_run_ends_switch(vector_t& result,
-                                        arrow_run_end_encoding_state& run_end_encoding,
-                                        size_t compressed_size,
-                                        size_t scan_offset,
-                                        size_t size) {
+    [[nodiscard]] static core::error_t flatten_run_ends_switch(vector_t& result,
+                                                               arrow_run_end_encoding_state& run_end_encoding,
+                                                               size_t compressed_size,
+                                                               size_t scan_offset,
+                                                               size_t size) {
         auto& values = *run_end_encoding.values;
         auto type = values.type().to_physical_type();
 
@@ -227,18 +232,21 @@ namespace components::vector::arrow::scaner {
                 break;
             }
             default:
-                throw std::logic_error("run_end_encoded value type not supported yet");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string("run_end_encoded value type not supported yet",
+                                                      result.resource()));
         }
+        return core::error_t::no_error();
     }
-    void arrow_column_to_run_end_encoded(vector_t& vector,
-                                         const ArrowArray& array,
-                                         size_t chunk_offset,
-                                         arrow_array_scan_state& array_state,
-                                         size_t size,
-                                         const arrow_type& arrow_type,
-                                         int64_t nested_offset,
-                                         validity_mask_t*,
-                                         uint64_t parent_offset) {
+    [[nodiscard]] core::error_t arrow_column_to_run_end_encoded(vector_t& vector,
+                                                                const ArrowArray& array,
+                                                                size_t chunk_offset,
+                                                                arrow_array_scan_state& array_state,
+                                                                size_t size,
+                                                                const arrow_type& arrow_type,
+                                                                int64_t nested_offset,
+                                                                validity_mask_t*,
+                                                                uint64_t parent_offset) {
         assert(array.n_children == 2);
         auto& run_ends_array = *array.children[0];
         auto& values_array = *array.children[1];
@@ -261,12 +269,15 @@ namespace components::vector::arrow::scaner {
             array_state.run_end_encoding.values =
                 std::make_unique<vector_t>(vector.resource(), values_type.type(), compressed_size);
 
-            arrow_column_to_vector(*array_state.run_end_encoding.run_ends,
-                                   run_ends_array,
-                                   chunk_offset,
-                                   array_state,
-                                   compressed_size,
-                                   run_ends_type);
+            if (auto err = arrow_column_to_vector(*array_state.run_end_encoding.run_ends,
+                                                  run_ends_array,
+                                                  chunk_offset,
+                                                  array_state,
+                                                  compressed_size,
+                                                  run_ends_type);
+                err.contains_error()) {
+                return err;
+            }
             auto& values = *array_state.run_end_encoding.values;
             set_validity(values,
                          values_array,
@@ -274,7 +285,11 @@ namespace components::vector::arrow::scaner {
                          compressed_size,
                          static_cast<int64_t>(parent_offset),
                          nested_offset);
-            arrow_column_to_vector(values, values_array, chunk_offset, array_state, compressed_size, values_type);
+            if (auto err =
+                    arrow_column_to_vector(values, values_array, chunk_offset, array_state, compressed_size, values_type);
+                err.contains_error()) {
+                return err;
+            }
         }
 
         size_t scan_offset =
@@ -282,29 +297,41 @@ namespace components::vector::arrow::scaner {
         auto type = run_ends_type.type().to_physical_type();
         switch (type) {
             case types::physical_type::INT16:
-                flatten_run_ends_switch<int16_t>(vector,
-                                                 array_state.run_end_encoding,
-                                                 compressed_size,
-                                                 scan_offset,
-                                                 size);
+                if (auto err = flatten_run_ends_switch<int16_t>(vector,
+                                                                array_state.run_end_encoding,
+                                                                compressed_size,
+                                                                scan_offset,
+                                                                size);
+                    err.contains_error()) {
+                    return err;
+                }
                 break;
             case types::physical_type::INT32:
-                flatten_run_ends_switch<int32_t>(vector,
-                                                 array_state.run_end_encoding,
-                                                 compressed_size,
-                                                 scan_offset,
-                                                 size);
+                if (auto err = flatten_run_ends_switch<int32_t>(vector,
+                                                                array_state.run_end_encoding,
+                                                                compressed_size,
+                                                                scan_offset,
+                                                                size);
+                    err.contains_error()) {
+                    return err;
+                }
                 break;
             case types::physical_type::INT64:
-                flatten_run_ends_switch<int32_t>(vector,
-                                                 array_state.run_end_encoding,
-                                                 compressed_size,
-                                                 scan_offset,
-                                                 size);
+                if (auto err = flatten_run_ends_switch<int32_t>(vector,
+                                                                array_state.run_end_encoding,
+                                                                compressed_size,
+                                                                scan_offset,
+                                                                size);
+                    err.contains_error()) {
+                    return err;
+                }
                 break;
             default:
-                throw std::logic_error("Type not implemented for array_state.run_end_encoding");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string("Type not implemented for array_state.run_end_encoding",
+                                                      vector.resource()));
         }
+        return core::error_t::no_error();
     }
     static void direct_conversion(vector_t& vector,
                                   ArrowArray& array,
@@ -319,7 +346,7 @@ namespace components::vector::arrow::scaner {
         vector.set_data(data_ptr);
     }
     template<class T>
-    static void set_vector_string(vector_t& vector, size_t size, char* cdata, T* offsets) {
+    [[nodiscard]] static core::error_t set_vector_string(vector_t& vector, size_t size, char* cdata, T* offsets) {
         auto strings = vector.data<std::string_view>();
         for (size_t row_idx = 0; row_idx < size; row_idx++) {
             if (vector.is_null(row_idx)) {
@@ -328,10 +355,13 @@ namespace components::vector::arrow::scaner {
             auto cptr = cdata + offsets[row_idx];
             auto str_len = offsets[row_idx + 1] - offsets[row_idx];
             if (str_len > std::numeric_limits<uint32_t>::max()) {
-                throw std::logic_error("OtterBrix does not support strings over 4 GB");
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("OtterBrix does not support strings over 4 GB",
+                                                      vector.resource()));
             }
             strings[row_idx] = std::string_view(cptr, static_cast<uint32_t>(str_len));
         }
+        return core::error_t::no_error();
     }
 
     static void set_vector_string_view(vector_t& vector, size_t size, ArrowArray& array, size_t current_pos) {
@@ -356,15 +386,15 @@ namespace components::vector::arrow::scaner {
     }
 
     template<class SRC>
-    void convert_decimal(SRC src_ptr,
-                         vector_t& vector,
-                         ArrowArray& array,
-                         size_t size,
-                         int64_t nested_offset,
-                         uint64_t parent_offset,
-                         size_t chunk_offset,
-                         validity_mask_t& val_mask,
-                         decimal_bit_width arrow_bit_width) {
+    [[nodiscard]] core::error_t convert_decimal(SRC src_ptr,
+                                                vector_t& vector,
+                                                ArrowArray& array,
+                                                size_t size,
+                                                int64_t nested_offset,
+                                                uint64_t parent_offset,
+                                                size_t chunk_offset,
+                                                validity_mask_t& val_mask,
+                                                decimal_bit_width arrow_bit_width) {
         switch (vector.type().to_physical_type()) {
             case types::physical_type::INT16: {
                 auto tgt_ptr = vector.data<int16_t>();
@@ -428,8 +458,10 @@ namespace components::vector::arrow::scaner {
                 break;
             }
             default:
-                throw std::logic_error("Unsupported physical type for Decimal");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string("Unsupported physical type for Decimal", vector.resource()));
         }
+        return core::error_t::no_error();
     }
 
     struct arrow_list_offset_data {
@@ -522,15 +554,15 @@ namespace components::vector::arrow::scaner {
             }
         }
     }
-    static void arrow_to_list(vector_t& vector,
-                              ArrowArray& array,
-                              size_t chunk_offset,
-                              arrow_array_scan_state& array_state,
-                              size_t size,
-                              const arrow_type& arrow_type,
-                              int64_t nested_offset,
-                              const validity_mask_t* parent_mask,
-                              int64_t parent_offset) {
+    [[nodiscard]] static core::error_t arrow_to_list(vector_t& vector,
+                                                     ArrowArray& array,
+                                                     size_t chunk_offset,
+                                                     arrow_array_scan_state& array_state,
+                                                     size_t size,
+                                                     const arrow_type& arrow_type,
+                                                     int64_t nested_offset,
+                                                     const validity_mask_t* parent_mask,
+                                                     int64_t parent_offset) {
         auto& list_info = arrow_type.get_type_info<arrow_list_info>();
         set_validity(vector, array, chunk_offset, size, parent_offset, nested_offset);
 
@@ -564,53 +596,69 @@ namespace components::vector::arrow::scaner {
 
         if (list_size == 0 && start_offset == 0) {
             assert(!child_array.dictionary);
-            arrow_column_to_vector(child_vector, child_array, chunk_offset, child_state, list_size, child_type, -1);
-            return;
+            return arrow_column_to_vector(child_vector,
+                                          child_array,
+                                          chunk_offset,
+                                          child_state,
+                                          list_size,
+                                          child_type,
+                                          -1);
         }
 
         auto array_physical_type = child_type.get_physical_type();
         switch (array_physical_type) {
             case arrow_array_physical_type::DICTIONARY_ENCODED:
-                arrow_column_to_dictionary(child_vector,
-                                           child_array,
-                                           chunk_offset,
-                                           child_state,
-                                           list_size,
-                                           child_type,
-                                           static_cast<int64_t>(start_offset));
+                if (auto err = arrow_column_to_dictionary(child_vector,
+                                                          child_array,
+                                                          chunk_offset,
+                                                          child_state,
+                                                          list_size,
+                                                          child_type,
+                                                          static_cast<int64_t>(start_offset));
+                    err.contains_error()) {
+                    return err;
+                }
                 break;
             case arrow_array_physical_type::RUN_END_ENCODED:
-                arrow_column_to_run_end_encoded(child_vector,
-                                                child_array,
-                                                chunk_offset,
-                                                child_state,
-                                                list_size,
-                                                child_type,
-                                                static_cast<int64_t>(start_offset));
+                if (auto err = arrow_column_to_run_end_encoded(child_vector,
+                                                               child_array,
+                                                               chunk_offset,
+                                                               child_state,
+                                                               list_size,
+                                                               child_type,
+                                                               static_cast<int64_t>(start_offset));
+                    err.contains_error()) {
+                    return err;
+                }
                 break;
             case arrow_array_physical_type::DEFAULT:
-                arrow_column_to_vector(child_vector,
-                                       child_array,
-                                       chunk_offset,
-                                       child_state,
-                                       list_size,
-                                       child_type,
-                                       static_cast<int64_t>(start_offset));
+                if (auto err = arrow_column_to_vector(child_vector,
+                                                      child_array,
+                                                      chunk_offset,
+                                                      child_state,
+                                                      list_size,
+                                                      child_type,
+                                                      static_cast<int64_t>(start_offset));
+                    err.contains_error()) {
+                    return err;
+                }
                 break;
             default:
-                throw std::logic_error("arrow_array_physical_type not recognized");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string("arrow_array_physical_type not recognized", vector.resource()));
         }
+        return core::error_t::no_error();
     }
 
-    static void arrow_to_array(vector_t& vector,
-                               ArrowArray& array,
-                               size_t chunk_offset,
-                               arrow_array_scan_state& array_state,
-                               size_t size,
-                               const arrow_type& arrow_type,
-                               int64_t nested_offset,
-                               const validity_mask_t* parent_mask,
-                               int64_t parent_offset) {
+    [[nodiscard]] static core::error_t arrow_to_array(vector_t& vector,
+                                                      ArrowArray& array,
+                                                      size_t chunk_offset,
+                                                      arrow_array_scan_state& array_state,
+                                                      size_t size,
+                                                      const arrow_type& arrow_type,
+                                                      int64_t nested_offset,
+                                                      const validity_mask_t* parent_mask,
+                                                      int64_t parent_offset) {
         auto& array_info = arrow_type.get_type_info<arrow_array_info>();
         auto array_size = array_info.fixed_size();
         auto child_count = array_size * size;
@@ -653,54 +701,70 @@ namespace components::vector::arrow::scaner {
         auto& child_type = array_info.get_child();
         if (child_count == 0 && child_offset == 0) {
             assert(!child_array.dictionary);
-            arrow_column_to_vector(child_vector, child_array, chunk_offset, child_state, child_count, child_type, -1);
+            return arrow_column_to_vector(child_vector,
+                                          child_array,
+                                          chunk_offset,
+                                          child_state,
+                                          child_count,
+                                          child_type,
+                                          -1);
         } else {
             if (child_array.dictionary) {
-                arrow_column_to_dictionary(child_vector,
-                                           child_array,
-                                           chunk_offset,
-                                           child_state,
-                                           child_count,
-                                           child_type,
-                                           static_cast<int64_t>(child_offset));
+                if (auto err = arrow_column_to_dictionary(child_vector,
+                                                          child_array,
+                                                          chunk_offset,
+                                                          child_state,
+                                                          child_count,
+                                                          child_type,
+                                                          static_cast<int64_t>(child_offset));
+                    err.contains_error()) {
+                    return err;
+                }
             } else {
-                arrow_column_to_vector(child_vector,
-                                       child_array,
-                                       chunk_offset,
-                                       child_state,
-                                       child_count,
-                                       child_type,
-                                       static_cast<int64_t>(child_offset));
+                if (auto err = arrow_column_to_vector(child_vector,
+                                                      child_array,
+                                                      chunk_offset,
+                                                      child_state,
+                                                      child_count,
+                                                      child_type,
+                                                      static_cast<int64_t>(child_offset));
+                    err.contains_error()) {
+                    return err;
+                }
             }
         }
+        return core::error_t::no_error();
     }
 
-    void arrow_column_to_vector(vector_t& vector,
-                                ArrowArray& array,
-                                size_t chunk_offset,
-                                arrow_array_scan_state& array_state,
-                                size_t size,
-                                const arrow_type& arrow_type,
-                                int64_t nested_offset,
-                                validity_mask_t* parent_mask,
-                                uint64_t parent_offset,
-                                bool ignore_extensions) {
+    [[nodiscard]] core::error_t arrow_column_to_vector(vector_t& vector,
+                                                       ArrowArray& array,
+                                                       size_t chunk_offset,
+                                                       arrow_array_scan_state& array_state,
+                                                       size_t size,
+                                                       const arrow_type& arrow_type,
+                                                       int64_t nested_offset,
+                                                       validity_mask_t* parent_mask,
+                                                       uint64_t parent_offset,
+                                                       bool ignore_extensions) {
         assert(!array.dictionary);
         if (!ignore_extensions && arrow_type.has_extension()) {
             if (arrow_type.extension_data->arrow_to_unique) {
                 vector_t input_data(vector.resource(), arrow_type.extension_data->internal_type());
-                arrow_column_to_vector(input_data,
-                                       array,
-                                       chunk_offset,
-                                       array_state,
-                                       size,
-                                       arrow_type,
-                                       nested_offset,
-                                       parent_mask,
-                                       parent_offset,
-                                       /*ignore_extensions*/ true);
+                if (auto err = arrow_column_to_vector(input_data,
+                                                      array,
+                                                      chunk_offset,
+                                                      array_state,
+                                                      size,
+                                                      arrow_type,
+                                                      nested_offset,
+                                                      parent_mask,
+                                                      parent_offset,
+                                                      /*ignore_extensions*/ true);
+                    err.contains_error()) {
+                    return err;
+                }
                 arrow_type.extension_data->arrow_to_unique(input_data, vector, size);
-                return;
+                return core::error_t::no_error();
             }
         }
 
@@ -771,7 +835,8 @@ namespace components::vector::arrow::scaner {
                         break;
                     }
                     default:
-                        throw std::logic_error("Unsupported Arrow date precision");
+                        return core::error_t(core::error_code_t::unimplemented_yet,
+                                             std::pmr::string("Unsupported Arrow date precision", vector.resource()));
                 }
                 break;
             }
@@ -809,7 +874,8 @@ namespace components::vector::arrow::scaner {
                         break;
                     }
                     default:
-                        throw std::logic_error("Unsupported Arrow time precision");
+                        return core::error_t(core::error_code_t::unimplemented_yet,
+                                             std::pmr::string("Unsupported Arrow time precision", vector.resource()));
                 }
                 break;
             }
@@ -850,7 +916,9 @@ namespace components::vector::arrow::scaner {
                         break;
                     }
                     default:
-                        throw std::logic_error("Unsupported Arrow timestamp precision");
+                        return core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string("Unsupported Arrow timestamp precision", vector.resource()));
                 }
                 break;
             }
@@ -949,7 +1017,9 @@ namespace components::vector::arrow::scaner {
                                                             static_cast<int64_t>(parent_offset),
                                                             chunk_offset,
                                                             nested_offset);
-                        set_vector_string(vector, size, cdata, offsets);
+                        if (auto err = set_vector_string(vector, size, cdata, offsets); err.contains_error()) {
+                            return err;
+                        }
                         break;
                     }
                     case arrow_variable_size_type::NORMAL: {
@@ -959,7 +1029,9 @@ namespace components::vector::arrow::scaner {
                                                             static_cast<int64_t>(parent_offset),
                                                             chunk_offset,
                                                             nested_offset);
-                        set_vector_string(vector, size, cdata, offsets);
+                        if (auto err = set_vector_string(vector, size, cdata, offsets); err.contains_error()) {
+                            return err;
+                        }
                         break;
                     }
                     case arrow_variable_size_type::VIEW: {
@@ -1017,15 +1089,18 @@ namespace components::vector::arrow::scaner {
                                                             static_cast<int64_t>(parent_offset),
                                                             chunk_offset,
                                                             nested_offset);
-                        convert_decimal(src_ptr,
-                                        vector,
-                                        array,
-                                        size,
-                                        nested_offset,
-                                        parent_offset,
-                                        chunk_offset,
-                                        val_mask,
-                                        bit_width);
+                        if (auto err = convert_decimal(src_ptr,
+                                                       vector,
+                                                       array,
+                                                       size,
+                                                       nested_offset,
+                                                       parent_offset,
+                                                       chunk_offset,
+                                                       val_mask,
+                                                       bit_width);
+                            err.contains_error()) {
+                            return err;
+                        }
                         break;
                     }
 
@@ -1035,15 +1110,18 @@ namespace components::vector::arrow::scaner {
                                                             static_cast<int64_t>(parent_offset),
                                                             chunk_offset,
                                                             nested_offset);
-                        convert_decimal(src_ptr,
-                                        vector,
-                                        array,
-                                        size,
-                                        nested_offset,
-                                        parent_offset,
-                                        chunk_offset,
-                                        val_mask,
-                                        bit_width);
+                        if (auto err = convert_decimal(src_ptr,
+                                                       vector,
+                                                       array,
+                                                       size,
+                                                       nested_offset,
+                                                       parent_offset,
+                                                       chunk_offset,
+                                                       val_mask,
+                                                       bit_width);
+                            err.contains_error()) {
+                            return err;
+                        }
                         break;
                     }
 
@@ -1053,56 +1131,70 @@ namespace components::vector::arrow::scaner {
                                                             static_cast<int64_t>(parent_offset),
                                                             chunk_offset,
                                                             nested_offset);
-                        convert_decimal(src_ptr,
-                                        vector,
-                                        array,
-                                        size,
-                                        nested_offset,
-                                        parent_offset,
-                                        chunk_offset,
-                                        val_mask,
-                                        bit_width);
+                        if (auto err = convert_decimal(src_ptr,
+                                                       vector,
+                                                       array,
+                                                       size,
+                                                       nested_offset,
+                                                       parent_offset,
+                                                       chunk_offset,
+                                                       val_mask,
+                                                       bit_width);
+                            err.contains_error()) {
+                            return err;
+                        }
                         break;
                     }
                     default:
-                        throw std::logic_error("Unsupported precision for Arrow Decimal Type.");
+                        return core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string("Unsupported precision for Arrow Decimal Type.", vector.resource()));
                 }
                 break;
             }
             case types::logical_type::LIST: {
-                arrow_to_list(vector,
-                              array,
-                              chunk_offset,
-                              array_state,
-                              size,
-                              arrow_type,
-                              nested_offset,
-                              parent_mask,
-                              static_cast<int64_t>(parent_offset));
+                if (auto err = arrow_to_list(vector,
+                                             array,
+                                             chunk_offset,
+                                             array_state,
+                                             size,
+                                             arrow_type,
+                                             nested_offset,
+                                             parent_mask,
+                                             static_cast<int64_t>(parent_offset));
+                    err.contains_error()) {
+                    return err;
+                }
                 break;
             }
             case types::logical_type::ARRAY: {
-                arrow_to_array(vector,
-                               array,
-                               chunk_offset,
-                               array_state,
-                               size,
-                               arrow_type,
-                               nested_offset,
-                               parent_mask,
-                               static_cast<int64_t>(parent_offset));
+                if (auto err = arrow_to_array(vector,
+                                              array,
+                                              chunk_offset,
+                                              array_state,
+                                              size,
+                                              arrow_type,
+                                              nested_offset,
+                                              parent_mask,
+                                              static_cast<int64_t>(parent_offset));
+                    err.contains_error()) {
+                    return err;
+                }
                 break;
             }
             case types::logical_type::MAP: {
-                arrow_to_list(vector,
-                              array,
-                              chunk_offset,
-                              array_state,
-                              size,
-                              arrow_type,
-                              nested_offset,
-                              parent_mask,
-                              static_cast<int64_t>(parent_offset));
+                if (auto err = arrow_to_list(vector,
+                                             array,
+                                             chunk_offset,
+                                             array_state,
+                                             size,
+                                             arrow_type,
+                                             nested_offset,
+                                             parent_mask,
+                                             static_cast<int64_t>(parent_offset));
+                    err.contains_error()) {
+                    return err;
+                }
                 break;
             }
             case types::logical_type::STRUCT: {
@@ -1128,41 +1220,52 @@ namespace components::vector::arrow::scaner {
                     auto array_physical_type = child_type.get_physical_type();
                     switch (array_physical_type) {
                         case arrow_array_physical_type::DICTIONARY_ENCODED:
-                            arrow_column_to_dictionary(child_entry,
-                                                       child_array,
-                                                       chunk_offset,
-                                                       child_state,
-                                                       size,
-                                                       child_type,
-                                                       nested_offset,
-                                                       &struct_validity_mask,
-                                                       static_cast<uint64_t>(array.offset));
+                            if (auto err = arrow_column_to_dictionary(child_entry,
+                                                                      child_array,
+                                                                      chunk_offset,
+                                                                      child_state,
+                                                                      size,
+                                                                      child_type,
+                                                                      nested_offset,
+                                                                      &struct_validity_mask,
+                                                                      static_cast<uint64_t>(array.offset));
+                                err.contains_error()) {
+                                return err;
+                            }
                             break;
                         case arrow_array_physical_type::RUN_END_ENCODED:
-                            arrow_column_to_run_end_encoded(child_entry,
-                                                            child_array,
-                                                            chunk_offset,
-                                                            child_state,
-                                                            size,
-                                                            child_type,
-                                                            nested_offset,
-                                                            &struct_validity_mask,
-                                                            static_cast<uint64_t>(array.offset));
+                            if (auto err = arrow_column_to_run_end_encoded(child_entry,
+                                                                           child_array,
+                                                                           chunk_offset,
+                                                                           child_state,
+                                                                           size,
+                                                                           child_type,
+                                                                           nested_offset,
+                                                                           &struct_validity_mask,
+                                                                           static_cast<uint64_t>(array.offset));
+                                err.contains_error()) {
+                                return err;
+                            }
                             break;
                         case arrow_array_physical_type::DEFAULT:
-                            arrow_column_to_vector(child_entry,
-                                                   child_array,
-                                                   chunk_offset,
-                                                   child_state,
-                                                   size,
-                                                   child_type,
-                                                   nested_offset,
-                                                   &struct_validity_mask,
-                                                   static_cast<uint64_t>(array.offset),
-                                                   false);
+                            if (auto err = arrow_column_to_vector(child_entry,
+                                                                  child_array,
+                                                                  chunk_offset,
+                                                                  child_state,
+                                                                  size,
+                                                                  child_type,
+                                                                  nested_offset,
+                                                                  &struct_validity_mask,
+                                                                  static_cast<uint64_t>(array.offset),
+                                                                  false);
+                                err.contains_error()) {
+                                return err;
+                            }
                             break;
                         default:
-                            throw std::logic_error("arrow_array_physical_type not recognized");
+                            return core::error_t(
+                                core::error_code_t::unimplemented_yet,
+                                std::pmr::string("arrow_array_physical_type not recognized", vector.resource()));
                     }
                 }
                 break;
@@ -1191,29 +1294,45 @@ namespace components::vector::arrow::scaner {
 
                     switch (array_physical_type) {
                         case arrow_array_physical_type::DICTIONARY_ENCODED:
-                            arrow_column_to_dictionary(child, child_array, chunk_offset, child_state, size, child_type);
+                            if (auto err = arrow_column_to_dictionary(child,
+                                                                      child_array,
+                                                                      chunk_offset,
+                                                                      child_state,
+                                                                      size,
+                                                                      child_type);
+                                err.contains_error()) {
+                                return err;
+                            }
                             break;
                         case arrow_array_physical_type::RUN_END_ENCODED:
-                            arrow_column_to_run_end_encoded(child,
-                                                            child_array,
-                                                            chunk_offset,
-                                                            child_state,
-                                                            size,
-                                                            child_type);
+                            if (auto err = arrow_column_to_run_end_encoded(child,
+                                                                           child_array,
+                                                                           chunk_offset,
+                                                                           child_state,
+                                                                           size,
+                                                                           child_type);
+                                err.contains_error()) {
+                                return err;
+                            }
                             break;
                         case arrow_array_physical_type::DEFAULT:
-                            arrow_column_to_vector(child,
-                                                   child_array,
-                                                   chunk_offset,
-                                                   child_state,
-                                                   size,
-                                                   child_type,
-                                                   nested_offset,
-                                                   &validity_mask,
-                                                   false);
+                            if (auto err = arrow_column_to_vector(child,
+                                                                  child_array,
+                                                                  chunk_offset,
+                                                                  child_state,
+                                                                  size,
+                                                                  child_type,
+                                                                  nested_offset,
+                                                                  &validity_mask,
+                                                                  false);
+                                err.contains_error()) {
+                                return err;
+                            }
                             break;
                         default:
-                            throw std::logic_error("arrow_array_physical_type not recognized");
+                            return core::error_t(
+                                core::error_code_t::unimplemented_yet,
+                                std::pmr::string("arrow_array_physical_type not recognized", vector.resource()));
                     }
 
                     children.push_back(std::move(child));
@@ -1224,7 +1343,8 @@ namespace components::vector::arrow::scaner {
 
                     auto out_of_range = tag >= array.n_children;
                     if (out_of_range) {
-                        throw std::logic_error("Arrow union tag out of range");
+                        return core::error_t(core::error_code_t::conversion_failure,
+                                             std::pmr::string("Arrow union tag out of range", vector.resource()));
                     }
 
                     const types::logical_value_t& value = children[tag].value(row_idx);
@@ -1238,8 +1358,10 @@ namespace components::vector::arrow::scaner {
                 break;
             }
             default:
-                throw std::logic_error("Unsupported type for arrow conversion");
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string("Unsupported type for arrow conversion", vector.resource()));
         }
+        return core::error_t::no_error();
     }
     static bool can_contain_null(const ArrowArray& array, const validity_mask_t* parent_mask) {
         if (array.null_count > 0) {
@@ -1283,12 +1405,13 @@ namespace components::vector::arrow::scaner {
         }
     }
 
-    static void set_indexing_vector(indexing_vector_t& indexing,
-                                    std::byte* indices_p,
-                                    const types::complex_logical_type& logical_type,
-                                    size_t size,
-                                    validity_mask_t* mask = nullptr,
-                                    size_t last_element_pos = 0) {
+    [[nodiscard]] static core::error_t set_indexing_vector(indexing_vector_t& indexing,
+                                                           std::byte* indices_p,
+                                                           const types::complex_logical_type& logical_type,
+                                                           size_t size,
+                                                           validity_mask_t* mask = nullptr,
+                                                           size_t last_element_pos = 0,
+                                                           std::pmr::memory_resource* resource = nullptr) {
         indexing.reset(size);
 
         if (mask) {
@@ -1319,7 +1442,9 @@ namespace components::vector::arrow::scaner {
                     break;
 
                 default:
-                    throw std::logic_error("(Arrow) Unsupported type for selection vectors");
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string("(Arrow) Unsupported type for selection vectors",
+                                                          resource));
             }
 
         } else {
@@ -1357,25 +1482,38 @@ namespace components::vector::arrow::scaner {
                     }
                     break;
                 default:
-                    throw std::logic_error("(Arrow) Unsupported type for selection vectors");
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string("(Arrow) Unsupported type for selection vectors",
+                                                          resource));
             }
         }
+        return core::error_t::no_error();
     }
 
-    void arrow_column_to_dictionary(vector_t& vector,
-                                    ArrowArray& array,
-                                    size_t chunk_offset,
-                                    arrow_array_scan_state& array_state,
-                                    size_t size,
-                                    const arrow_type& arrow_type,
-                                    int64_t nested_offset,
-                                    const validity_mask_t* parent_mask,
-                                    uint64_t parent_offset) {
+    [[nodiscard]] core::error_t arrow_column_to_dictionary(vector_t& vector,
+                                                           ArrowArray& array,
+                                                           size_t chunk_offset,
+                                                           arrow_array_scan_state& array_state,
+                                                           size_t size,
+                                                           const arrow_type& arrow_type,
+                                                           int64_t nested_offset,
+                                                           const validity_mask_t* parent_mask,
+                                                           uint64_t parent_offset) {
         if (vector.get_buffer()) {
             vector.get_buffer()->set_auxiliary(std::make_unique<arrow_auxiliary_data_t>(array_state.owned_data));
         }
         assert(arrow_type.has_dictionary());
         const bool has_nulls = can_contain_null(array, parent_mask);
+        // The null-aware dictionary index/sentinel decode mis-places nulls (pre-existing,
+        // tracked separately). Report it via the error channel instead of returning wrong data;
+        // null-free dictionary/categorical columns decode correctly. (pandas categoricals never
+        // reach here — they are expanded to their values before the Arrow export.)
+        if (has_nulls) {
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string("arrow: dictionary-encoded (categorical/enum) columns with "
+                                                  "null values are not yet supported",
+                                                  vector.resource()));
+        }
         if (array_state.cache_outdated(array.dictionary)) {
             auto base_vector = std::make_unique<vector_t>(vector.resource(),
                                                           vector.type(),
@@ -1392,31 +1530,42 @@ namespace components::vector::arrow::scaner {
             ;
             switch (arrow_physical_type) {
                 case arrow_array_physical_type::DICTIONARY_ENCODED:
-                    arrow_column_to_dictionary(*base_vector,
-                                               *array.dictionary,
-                                               chunk_offset,
-                                               array_state,
-                                               static_cast<size_t>(array.dictionary->length),
-                                               dictionary_type);
+                    if (auto err = arrow_column_to_dictionary(*base_vector,
+                                                              *array.dictionary,
+                                                              chunk_offset,
+                                                              array_state,
+                                                              static_cast<size_t>(array.dictionary->length),
+                                                              dictionary_type);
+                        err.contains_error()) {
+                        return err;
+                    }
                     break;
                 case arrow_array_physical_type::RUN_END_ENCODED:
-                    arrow_column_to_run_end_encoded(*base_vector,
-                                                    *array.dictionary,
-                                                    chunk_offset,
-                                                    array_state,
-                                                    static_cast<size_t>(array.dictionary->length),
-                                                    dictionary_type);
+                    if (auto err = arrow_column_to_run_end_encoded(*base_vector,
+                                                                   *array.dictionary,
+                                                                   chunk_offset,
+                                                                   array_state,
+                                                                   static_cast<size_t>(array.dictionary->length),
+                                                                   dictionary_type);
+                        err.contains_error()) {
+                        return err;
+                    }
                     break;
                 case arrow_array_physical_type::DEFAULT:
-                    arrow_column_to_vector(*base_vector,
-                                           *array.dictionary,
-                                           chunk_offset,
-                                           array_state,
-                                           static_cast<size_t>(array.dictionary->length),
-                                           dictionary_type);
+                    if (auto err = arrow_column_to_vector(*base_vector,
+                                                          *array.dictionary,
+                                                          chunk_offset,
+                                                          array_state,
+                                                          static_cast<size_t>(array.dictionary->length),
+                                                          dictionary_type);
+                        err.contains_error()) {
+                        return err;
+                    }
                     break;
                 default:
-                    throw std::logic_error("arrow_array_physical_type not recognized");
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string("arrow_array_physical_type not recognized",
+                                                          vector.resource()));
             };
             array_state.add_dictionary(std::move(base_vector), array.dictionary);
         }
@@ -1438,16 +1587,24 @@ namespace components::vector::arrow::scaner {
                     }
                 }
             }
-            set_indexing_vector(indexing,
-                                indices,
-                                offset_type,
-                                size,
-                                &indices_validity,
-                                static_cast<size_t>(array.dictionary->length));
+            if (auto err = set_indexing_vector(indexing,
+                                               indices,
+                                               offset_type,
+                                               size,
+                                               &indices_validity,
+                                               static_cast<size_t>(array.dictionary->length),
+                                               vector.resource());
+                err.contains_error()) {
+                return err;
+            }
         } else {
-            set_indexing_vector(indexing, indices, offset_type, size);
+            if (auto err = set_indexing_vector(indexing, indices, offset_type, size, nullptr, 0, vector.resource());
+                err.contains_error()) {
+                return err;
+            }
         }
         vector.slice(array_state.get_dictionary(), indexing, size);
+        return core::error_t::no_error();
     }
 
 } // namespace components::vector::arrow::scaner

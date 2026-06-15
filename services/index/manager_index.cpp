@@ -1218,6 +1218,47 @@ namespace services::index {
             for (uint64_t i = 0; i < row_count; ++i) {
                 engine_after->insert_row(*chunk, i, static_cast<int64_t>(i), /*txn_id=*/0, session_tz);
             }
+
+            agent_batch_map_t insert_batches;
+            agent_addr_map_t insert_addrs;
+            engine_after->for_each_pending_disk_insert(
+                0,
+                [&](const actor_zeta::address_t& agent_addr,
+                    const components::index::value_t& key,
+                    int64_t row_index) {
+                    auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
+                    insert_addrs.try_emplace(id, agent_addr);
+                    insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
+                });
+
+            std::pmr::vector<unique_future<core::error_t>> futures(resource_);
+            futures.reserve(insert_batches.size());
+            for (auto& [id, batch] : insert_batches) {
+                auto& addr = insert_addrs.at(id);
+                auto [needs_sched, f] = actor_zeta::otterbrix::send(addr,
+                                                                   &index_agent_disk_t::insert_many,
+                                                                   session,
+                                                                   uint64_t{0},
+                                                                   std::move(batch));
+                schedule_agent(addr, needs_sched);
+                futures.emplace_back(std::move(f));
+            }
+            for (auto& f : futures) {
+                auto err = co_await std::move(f);
+                if (err.contains_error()) {
+                    trace(log_,
+                          "manager_index_t::repopulate_table: disk mirror failed for oid={} error={}",
+                          static_cast<unsigned>(table_oid),
+                          err.what);
+                }
+            }
+
+            for (auto& idx_name : engine_after->indexes()) {
+                auto* idx = components::index::search_index(engine_after, idx_name);
+                if (idx) {
+                    idx->commit_insert(0, 0);
+                }
+            }
         }
 
         co_return;

@@ -4,6 +4,7 @@
 #include "optimizer/rules/constant_folding.hpp"
 #include "optimizer/rules/hash_join.hpp"
 #include "optimizer/rules/join_predicate_pushdown.hpp"
+#include "optimizer/rules/pushdown_filter.hpp"
 
 namespace components::planner {
 
@@ -18,6 +19,8 @@ namespace components::planner {
         if (parameters) {
             optimizer::fold_constants(resource, node, parameters);
         }
+
+        node = optimizer::pushdown_filter(resource, node);
 
         return node;
     }

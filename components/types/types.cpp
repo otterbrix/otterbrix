@@ -39,6 +39,7 @@ namespace components::types {
             t[uint8_t(logical_type::UNION)] = physical_type::STRUCT;
             t[uint8_t(logical_type::VARIANT)] = physical_type::STRUCT;
             t[uint8_t(logical_type::LIST)] = physical_type::LIST;
+            t[uint8_t(logical_type::MAP)] = physical_type::LIST; // MAP is stored as a list of key/value structs
             return t;
         }
 
@@ -390,12 +391,16 @@ namespace components::types {
     }
 
     const complex_logical_type& complex_logical_type::child_type() const {
-        assert(type_ == logical_type::ARRAY || type_ == logical_type::LIST);
+        assert(type_ == logical_type::ARRAY || type_ == logical_type::LIST || type_ == logical_type::MAP);
         if (type_ == logical_type::ARRAY) {
             return static_cast<array_logical_type_extension*>(extension_.get())->internal_type();
         }
         if (type_ == logical_type::LIST) {
             return static_cast<list_logical_type_extension*>(extension_.get())->node();
+        }
+        if (type_ == logical_type::MAP) {
+            // MAP is physically a LIST of struct<"key", "value">.
+            return static_cast<map_logical_type_extension*>(extension_.get())->node();
         }
 
         return INVALID_TYPE;
@@ -527,11 +532,12 @@ namespace components::types {
                                     std::move(alias));
     }
 
-    complex_logical_type complex_logical_type::create_map(const complex_logical_type& key_type,
+    complex_logical_type complex_logical_type::create_map(std::pmr::memory_resource* resource,
+                                                          const complex_logical_type& key_type,
                                                           const complex_logical_type& value_type,
                                                           std::string alias) {
         return complex_logical_type(logical_type::MAP,
-                                    std::make_unique<map_logical_type_extension>(key_type, value_type),
+                                    std::make_unique<map_logical_type_extension>(resource, key_type, value_type),
                                     std::move(alias));
     }
 
@@ -596,16 +602,34 @@ namespace components::types {
         return items_type_ == rhs.items_type_ && size_ == rhs.size_;
     }
 
-    map_logical_type_extension::map_logical_type_extension(const complex_logical_type& key,
+    namespace {
+        // A MAP is stored as a LIST of struct<"key", "value">. Build that element struct so the
+        // map vector can construct its child vector via complex_logical_type::child_type().
+        complex_logical_type make_map_entries_struct(std::pmr::memory_resource* resource,
+                                                     const complex_logical_type& key,
+                                                     const complex_logical_type& value) {
+            std::pmr::vector<complex_logical_type> kv(resource);
+            kv.emplace_back(key);
+            kv.back().set_alias("key");
+            kv.emplace_back(value);
+            kv.back().set_alias("value");
+            return complex_logical_type::create_struct("entries", kv);
+        }
+    } // namespace
+
+    map_logical_type_extension::map_logical_type_extension(std::pmr::memory_resource* resource,
+                                                           const complex_logical_type& key,
                                                            const complex_logical_type& value)
         : logical_type_extension(extension_type::MAP)
         , key_(key)
         , value_(value)
         , key_id_(0)
         , value_id_(0)
-        , value_required_(true) {}
+        , value_required_(true)
+        , entries_(make_map_entries_struct(resource, key, value)) {}
 
-    map_logical_type_extension::map_logical_type_extension(uint64_t key_id,
+    map_logical_type_extension::map_logical_type_extension(std::pmr::memory_resource* resource,
+                                                           uint64_t key_id,
                                                            const types::complex_logical_type& key,
                                                            uint64_t value_id,
                                                            const types::complex_logical_type& value,
@@ -615,7 +639,8 @@ namespace components::types {
         , value_(value)
         , key_id_(key_id)
         , value_id_(value_id)
-        , value_required_(value_required) {}
+        , value_required_(value_required)
+        , entries_(make_map_entries_struct(resource, key, value)) {}
 
     bool map_logical_type_extension::operator==(const map_logical_type_extension& rhs) const {
         return key_ == rhs.key_ && value_ == rhs.value_ && key_id_ == rhs.key_id_ && value_id_ == rhs.value_id_ &&

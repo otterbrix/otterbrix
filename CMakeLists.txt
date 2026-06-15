@@ -138,6 +138,14 @@ find_package(BZip2 1.0.8 REQUIRED)
 find_package(actor-zeta REQUIRED)
 find_package(FastFloat REQUIRED)
 
+if(BUILD_PYTHON)
+    set(PYBIND11_FINDPYTHON ON)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
+    find_package(pybind11 CONFIG REQUIRED)
+    find_package(utf8proc CONFIG REQUIRED)
+    find_package(tabulate CONFIG REQUIRED)
+endif()
+
 if ((ENABLE_ASAN OR ENABLE_TSAN OR ENABLE_UBSAN) AND NOT APPLE)
     # build abseil-cpp locally to avoid ABI issues (skip on macOS ARM64 due to SSE flags).
     # All sanitizer builds need a source-built absl: the prebuilt conan package is uninstrumented

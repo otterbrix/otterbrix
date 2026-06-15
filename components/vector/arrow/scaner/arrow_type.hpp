@@ -4,6 +4,7 @@
 #include <components/vector/arrow/arrow.hpp>
 #include <components/vector/arrow/arrow_wrapper.hpp>
 #include <components/vector/vector.hpp>
+#include <core/result_wrapper.hpp>
 
 namespace components::vector::arrow {
 
@@ -89,15 +90,18 @@ namespace components::vector::arrow {
         bool not_implemented_ = false;
     };
 
-    std::unique_ptr<arrow_type> type_from_format(std::string& format);
-    std::unique_ptr<arrow_type>
+    core::result_wrapper_t<std::unique_ptr<arrow_type>> type_from_format(std::pmr::memory_resource* resource,
+                                                                         std::string& format);
+    core::result_wrapper_t<std::unique_ptr<arrow_type>>
     type_from_format(std::pmr::memory_resource* resource, ArrowSchema& schema, std::string& format);
-    std::unique_ptr<arrow_type> type_from_schema(std::pmr::memory_resource* resource, ArrowSchema& schema);
-    std::unique_ptr<arrow_type> create_list_type(std::pmr::memory_resource* resource,
-                                                 ArrowSchema& child,
-                                                 arrow_variable_size_type size_type,
-                                                 bool view);
-    std::unique_ptr<arrow_type> arrow_logical_type(std::pmr::memory_resource* resource, ArrowSchema& schema);
+    core::result_wrapper_t<std::unique_ptr<arrow_type>> type_from_schema(std::pmr::memory_resource* resource,
+                                                                         ArrowSchema& schema);
+    core::result_wrapper_t<std::unique_ptr<arrow_type>> create_list_type(std::pmr::memory_resource* resource,
+                                                                         ArrowSchema& child,
+                                                                         arrow_variable_size_type size_type,
+                                                                         bool view);
+    core::result_wrapper_t<std::unique_ptr<arrow_type>> arrow_logical_type(std::pmr::memory_resource* resource,
+                                                                           ArrowSchema& schema);
 
     using arrow_column_map_t = std::unordered_map<size_t, std::shared_ptr<arrow_type>>;
 
@@ -132,7 +136,9 @@ namespace components::vector::arrow {
 
         std::shared_ptr<arrow_array_wrapper_t> owned_data;
         std::unordered_map<size_t, std::unique_ptr<arrow_array_scan_state>> children;
-        std::unique_ptr<ArrowArray> arrow_dictionary = nullptr;
+        // Non-owning cache key: points into the parent ArrowArray (released via owned_data),
+        // so it must NOT own/free it. Only compared in cache_outdated().
+        ArrowArray* arrow_dictionary = nullptr;
         std::unique_ptr<vector_t> dictionary;
         arrow_run_end_encoding_state run_end_encoding;
 

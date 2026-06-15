@@ -25,6 +25,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_clean_break_startup.cpp
         test_column_projection.cpp
         test_computed_schema.cpp
+        test_pushdown_filter.cpp
         test_subqueries.cpp
         test_hash_join.cpp
         test_returning.cpp
@@ -46,6 +47,7 @@ target_link_libraries(
         otterbrix::cursor
         otterbrix::session
         otterbrix::services
+        otterbrix::planner
         otterbrix::locks
 
         spdlog::spdlog

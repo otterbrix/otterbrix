@@ -45,7 +45,7 @@ namespace services::dispatcher {
     // Returns a no-error error_t (core::error_t::no_error()) on success.
     // On failure the returned error_t::contains_error() is true and the caller
     // must surface it (enrich silently dropped errors before this channel).
-    actor_zeta::unique_future<core::error_t>
+    [[nodiscard]] actor_zeta::unique_future<core::error_t>
     enrich_plan(std::pmr::memory_resource* resource,
                 components::logical_plan::node_ptr root,
                 actor_zeta::address_t disk_address,

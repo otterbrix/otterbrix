@@ -1250,7 +1250,7 @@ namespace services::collection::executor {
                     if (cstr->kind() == constraint_kind::check && cstr->check_expr().empty()) {
                         co_return execute_result_t{make_cursor(
                             resource(),
-                            core::error_t{core::error_code_t::other_error,
+                            core::error_t{core::error_code_t::invalid_constraint,
                                           std::pmr::string{"CHECK constraint expression is empty or contains "
                                                            "unsupported constructs (functions, subqueries, and CASE "
                                                            "expressions are not allowed; valid: comparisons, AND/OR/NOT, "

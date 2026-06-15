@@ -22,7 +22,9 @@ namespace services::planner::impl {
                    t == scalar_type::unary_minus;
         }
 
-        void add_group_scalar(boost::intrusive_ptr<components::operators::operator_group_t>& group,
+        // Returns false on a defensive validation failure so the caller can return nullptr ->
+        // executor surfaces the error (rule 9: no throw on the operator-build path).
+        bool add_group_scalar(boost::intrusive_ptr<components::operators::operator_group_t>& group,
                               const components::expressions::scalar_expression_t* expr,
                               std::pmr::memory_resource* resource,
                               const components::logical_plan::storage_parameters* storage_params,
@@ -164,9 +166,10 @@ namespace services::planner::impl {
                 default: {
                     if (is_arithmetic_scalar_type(expr->type())) {
                         if (expr->key().storage().empty()) {
-                            throw std::logic_error(
-                                "create_plan_group: arithmetic expression has empty storage for key: " +
-                                expr->key().as_string());
+                            // Defensive guard (validation guarantees this never fires): signal
+                            // failure so the caller returns nullptr -> executor surfaces the error
+                            // (rule 9: no throw on the operator-build path).
+                            return false;
                         }
                         auto alias = std::pmr::string(expr->key().storage().back(), resource);
                         if (!expr->key().path().empty() && expr->key().path()[0] == SIZE_MAX) {
@@ -183,6 +186,7 @@ namespace services::planner::impl {
                     break;
                 }
             }
+            return true;
         }
 
         void add_group_aggregate(std::pmr::memory_resource* resource,
@@ -238,7 +242,11 @@ namespace services::planner::impl {
 
             if (expr->group() == expression_group::scalar) {
                 auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
-                add_group_scalar(group, scalar_expr, plan_resource, params, key_idx);
+                if (!add_group_scalar(group, scalar_expr, plan_resource, params, key_idx)) {
+                    // Defensive guard tripped: return nullptr -> executor surfaces the error
+                    // (rule 9: no throw on the operator-build path).
+                    return nullptr;
+                }
                 // Track key_idx for arithmetic computed columns
                 switch (scalar_expr->type()) {
                     case scalar_type::group_field:

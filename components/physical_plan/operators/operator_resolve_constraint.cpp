@@ -29,7 +29,13 @@ namespace components::operators {
         log_t log,
         components::logical_plan::node_catalog_resolve_constraint_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_constraint)
-        , target_node_(target_node) {}
+        , target_node_(target_node)
+        , output_schema_(resource) {
+        // Single-column placeholder schema, built once (TASK C10). This
+        // operator stamps data on the target logical node rather than emitting
+        // rows, so the chunk it produces is always an empty placeholder.
+        output_schema_.emplace_back(types::logical_type::UINTEGER);
+    }
 
     void operator_resolve_constraint_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
@@ -42,10 +48,9 @@ namespace components::operators {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         // Empty single-column placeholder chunk — this operator's purpose is to
-        // stamp data on the target logical node, not to emit rows.
-        std::pmr::vector<types::complex_logical_type> out_types(resource_);
-        out_types.emplace_back(types::logical_type::UINTEGER);
-        output_ = make_operator_data(resource_, out_types, 0);
+        // stamp data on the target logical node, not to emit rows. Schema is
+        // cached on the operator (output_schema_), built once in the ctor.
+        output_ = make_operator_data(resource_, output_schema_, 0);
         output_->data_chunk().set_cardinality(0);
 
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {

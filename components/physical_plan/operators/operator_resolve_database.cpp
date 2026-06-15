@@ -1,5 +1,7 @@
 #include "operator_resolve_database.hpp"
 
+#include "catalog_write_helpers.hpp"
+
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
 #include <components/logical_plan/node_catalog_resolve_database.hpp>
@@ -18,20 +20,17 @@ namespace components::operators {
 
     namespace catalog = components::catalog;
 
-    namespace {
-        // Direct write into the uint32_t column buffer, avoiding a logical_value_t round-trip.
-        inline void set_uint32(vector::data_chunk_t& c, size_t col, size_t row, std::uint32_t v) {
-            auto& vec = c.data[col];
-            vec.template data<std::uint32_t>()[row] = v;
-            vec.validity().set(row, true);
-        }
-    } // namespace
-
     operator_resolve_database_t::operator_resolve_database_t(std::pmr::memory_resource* resource,
                                                              log_t log,
                                                              std::string name)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_database)
-        , name_(std::move(name)) {}
+        , name_(std::move(name))
+        , output_schema_(resource) {
+        // Single-column UINTEGER (database_oid) schema, built once (TASK C10).
+        // Always emitted, even on miss, so downstream sees a consistent schema.
+        output_schema_.emplace_back(types::logical_type::UINTEGER);
+        output_schema_.back().set_alias("database_oid");
+    }
 
     operator_resolve_database_t::operator_resolve_database_t(
         std::pmr::memory_resource* resource,
@@ -40,20 +39,20 @@ namespace components::operators {
         components::logical_plan::node_catalog_resolve_database_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_database)
         , name_(std::move(name))
-        , target_node_(target_node) {}
+        , target_node_(target_node)
+        , output_schema_(resource) {
+        output_schema_.emplace_back(types::logical_type::UINTEGER);
+        output_schema_.back().set_alias("database_oid");
+    }
 
     void operator_resolve_database_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_resolve_database_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgDatabase = catalog::well_known_oid::pg_database_table;
 
-        // Single-column UINTEGER (database_oid) chunk. Always emitted, even on
-        // miss, so downstream operators see a consistent schema.
-        std::pmr::vector<types::complex_logical_type> out_types(resource_);
-        out_types.emplace_back(types::logical_type::UINTEGER);
-        out_types.back().set_alias("database_oid");
-
-        vector::data_chunk_t out_chunk(resource_, out_types);
+        // Output chunk built from the constructor-cached schema (TASK C10).
+        // Always emitted, even on miss, so downstream sees a consistent schema.
+        vector::data_chunk_t out_chunk(resource_, output_schema_);
 
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             out_chunk.set_cardinality(0);

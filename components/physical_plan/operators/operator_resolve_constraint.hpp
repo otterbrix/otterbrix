@@ -2,6 +2,9 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/types/types.hpp>
+
+#include <memory_resource>
 
 namespace components::logical_plan {
     class node_catalog_resolve_constraint_t;
@@ -41,6 +44,8 @@ namespace components::operators {
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         components::logical_plan::node_catalog_resolve_constraint_t* target_node_{nullptr};
+        // Static placeholder output schema, built once in the constructor (TASK C10).
+        std::pmr::vector<components::types::complex_logical_type> output_schema_;
     };
 
 } // namespace components::operators

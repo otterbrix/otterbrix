@@ -50,6 +50,7 @@ namespace services::index {
         constexpr const char* segment_prefix = "bitcask.";
         constexpr const char* segment_suffix = ".data";
         constexpr const char* current_segment_file = "CURRENT";
+        constexpr const char* merge_manifest_file = "bitcask.merge";
         constexpr const char* hash_index_file = "hash_index.bin";
         constexpr const char* txn_log_file = "bitcask.txn.log";
         constexpr const char* txn_applied_file = "bitcask.txn.applied";
@@ -137,7 +138,97 @@ namespace services::index {
             return !input.fail();
         }
 
-        void write_current_segment_id(const std::filesystem::path& directory, uint64_t segment_id) {
+        std::filesystem::path merge_manifest_path(const std::filesystem::path& directory) {
+            return directory / merge_manifest_file;
+        }
+
+        bool read_merge_manifest(const std::filesystem::path& directory,
+                                 uint64_t& merged_segment_id,
+                                 std::vector<uint64_t>& removed_segment_ids) {
+            std::ifstream input(merge_manifest_path(directory));
+            if (!input.good()) {
+                return false;
+            }
+            std::size_t removed_count = 0;
+            input >> merged_segment_id >> removed_count;
+            if (input.fail()) {
+                return false;
+            }
+            removed_segment_ids.clear();
+            removed_segment_ids.reserve(removed_count);
+            for (std::size_t i = 0; i < removed_count; ++i) {
+                uint64_t removed_id = 0;
+                input >> removed_id;
+                if (input.fail()) {
+                    removed_segment_ids.clear();
+                    return false;
+                }
+                removed_segment_ids.push_back(removed_id);
+            }
+            return true;
+        }
+
+        void remove_merge_manifest(const std::filesystem::path& directory) {
+            std::error_code ec;
+            std::filesystem::remove(merge_manifest_path(directory), ec);
+        }
+
+        // Durably publish a sidecar: fsync temp, then rename over target.
+        // rename(2) atomically replaces an existing target on POSIX, so never
+        // unlink the target first — that leaves a crash window with no file.
+        [[nodiscard]] bool publish_replacement_file(core::filesystem::local_file_system_t& fs,
+                                                    const std::filesystem::path& temp_path,
+                                                    const std::filesystem::path& target_path) {
+            auto temp_file =
+                open_file(fs, temp_path, file_flags::READ | file_flags::WRITE, file_lock_type::NO_LOCK);
+            if (!temp_file || !temp_file->sync()) {
+                return false;
+            }
+            temp_file.reset();
+            if (move_files(fs, temp_path, target_path)) {
+                return true;
+            }
+#if defined(_WIN32)
+            std::error_code ec;
+            std::filesystem::remove(target_path, ec);
+            return move_files(fs, temp_path, target_path);
+#else
+            return false;
+#endif
+        }
+
+        void write_merge_manifest(core::filesystem::local_file_system_t& fs,
+                                  const std::filesystem::path& directory,
+                                  uint64_t merged_segment_id,
+                                  const std::vector<uint64_t>& removed_segment_ids) {
+            const auto manifest_path = merge_manifest_path(directory);
+            const auto temp_path = manifest_path.string() + ".tmp";
+            {
+                std::ofstream output(temp_path, std::ios::trunc);
+                if (!output.good()) {
+                    assert(false && "bitcask I/O failure");
+                    std::abort();
+                }
+                output << merged_segment_id << ' ' << removed_segment_ids.size();
+                for (const auto removed_id : removed_segment_ids) {
+                    output << ' ' << removed_id;
+                }
+                output << '\n';
+                output.flush();
+                if (!output.good()) {
+                    assert(false && "bitcask I/O failure");
+                    std::abort();
+                }
+            }
+            if (!publish_replacement_file(fs, temp_path, manifest_path)) {
+                assert(false && "bitcask I/O failure");
+                std::abort();
+            }
+        }
+
+        void write_current_segment_id(core::filesystem::local_file_system_t& fs,
+                                      const std::filesystem::path& directory,
+                                      uint64_t segment_id) {
             const auto current_path = current_segment_path(directory);
             const auto temp_path = current_path.string() + ".tmp";
             {
@@ -155,9 +246,10 @@ namespace services::index {
                     std::abort();
                 }
             }
-            std::error_code ec;
-            std::filesystem::remove(current_path, ec);
-            std::filesystem::rename(temp_path, current_path);
+            if (!publish_replacement_file(fs, temp_path, current_path)) {
+                assert(false && "bitcask I/O failure");
+                std::abort();
+            }
         }
 
         void write_record(core::filesystem::file_handle_t& file,
@@ -330,6 +422,27 @@ namespace services::index {
         return components::index::codec::encode_disk_hash_key(normalized);
     }
 
+    void bitcask_index_disk_t::apply_merge_recovery_cleanup() {
+        uint64_t merged_segment_id = 0;
+        std::vector<uint64_t> removed_segment_ids;
+        if (!read_merge_manifest(path_, merged_segment_id, removed_segment_ids)) {
+            return;
+        }
+
+        if (!std::filesystem::exists(segment_file_path(path_, merged_segment_id))) {
+            remove_merge_manifest(path_);
+            return;
+        }
+
+        for (const auto removed_id : removed_segment_ids) {
+            const auto removed_path = segment_file_path(path_, removed_id);
+            if (!std::filesystem::exists(removed_path)) {
+                continue;
+            }
+            remove_file(fs_, removed_path);
+        }
+    }
+
     void bitcask_index_disk_t::load_from_disk() {
         const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
         struct restore_rehash_state_t {
@@ -342,10 +455,12 @@ namespace services::index {
             }
         } restore_rehash_state{hash_index_.get(), prev_rehash_suppressed};
 
+        apply_merge_recovery_cleanup();
+
         auto segments = collect_segments();
         if (segments.empty()) {
-            active_segment_id_ = 1;
-            next_segment_id_.store(2);
+            active_segment_id_ = regular_segment_id_start_;
+            next_segment_id_.store(regular_segment_id_start_ + 1);
             active_data_file_path_ = segment_file_path(path_, active_segment_id_);
             restore_rehash_state.table = nullptr;
             hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
@@ -469,7 +584,7 @@ namespace services::index {
             std::abort();
         }
         file_->seek(file_->file_size());
-        write_current_segment_id(path_, active_segment_id_);
+        write_current_segment_id(fs_, path_, active_segment_id_);
     }
 
     uint64_t bitcask_index_disk_t::allocate_next_segment_id() { return next_segment_id_.fetch_add(1); }
@@ -603,9 +718,11 @@ namespace services::index {
                                      std::pmr::string{"bitcask: applied-offset sidecar flush failed", resource_}};
             }
         }
-        std::error_code ec;
-        std::filesystem::remove(applied_path, ec);
-        std::filesystem::rename(temp_path, applied_path);
+        if (!publish_replacement_file(fs_, temp_path, applied_path)) {
+            remove_file(fs_, temp_path);
+            return core::error_t{core::error_code_t::index_create_fail,
+                                 std::pmr::string{"bitcask: applied-offset sidecar publish failed", resource_}};
+        }
         return core::error_t::no_error();
     }
 
@@ -958,6 +1075,7 @@ namespace services::index {
     void bitcask_index_disk_t::merge_immutable_segments() {
         uint64_t frontier_segment_id = 0;
         std::vector<segment_info_t> immutable_segments;
+        std::vector<uint64_t> removed_segment_ids;
         std::vector<disk_hash_table_t::value_ref_t> refs;
         uint64_t merged_segment_id = 0;
         bool built = false;
@@ -974,6 +1092,10 @@ namespace services::index {
             if (immutable_segments.empty()) {
                 return;
             }
+            merged_segment_id = immutable_segments.front().id - 1;
+            for (const auto& seg : immutable_segments) {
+                removed_segment_ids.push_back(seg.id);
+            }
             const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
             bulk_prev_rehash_suppressed_ = prev_rehash_suppressed;
             hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
@@ -986,8 +1108,6 @@ namespace services::index {
                 return;
             }
         }
-
-        merged_segment_id = allocate_next_segment_id();
         const auto merged_path = segment_file_path(path_, merged_segment_id);
         const auto temp_path = merge_temp_file_path(path_, merged_segment_id);
         const auto meta_temp_path = std::filesystem::path(temp_path.string() + ".meta");
@@ -1044,7 +1164,9 @@ namespace services::index {
             meta_file->sync();
             merged_file.reset();
             meta_file.reset();
+            write_merge_manifest(fs_, path_, merged_segment_id, removed_segment_ids);
             if (!move_files(fs_, temp_path, merged_path)) {
+                remove_merge_manifest(path_);
                 assert(false && "bitcask I/O failure");
                 std::abort();
             }
@@ -1124,8 +1246,9 @@ namespace services::index {
         meta_file.reset();
         remove_file(fs_, meta_temp_path);
         hash_index_->sync();
-        for (const auto& segment : immutable_segments) {
-            remove_file(fs_, segment.path);
+        for (const auto removed_id : removed_segment_ids) {
+            const auto removed_path = segment_file_path(path_, removed_id);
+            remove_file(fs_, removed_path);
         }
         hash_index_->set_auto_rehash_suppressed(bulk_prev_rehash_suppressed_);
         if (!bulk_prev_rehash_suppressed_) {
@@ -1167,9 +1290,10 @@ namespace services::index {
         }
         remove_file(fs_, txn_log_file_path());
         remove_file(fs_, txn_applied_file_path());
+        remove_merge_manifest(path_);
         reset_flush_state();
         next_timestamp_ = 0;
-        next_segment_id_.store(1);
+        next_segment_id_.store(regular_segment_id_start_);
         active_segment_id_ = 0;
         active_segment_records_ = 0;
         active_data_file_path_.clear();
@@ -1212,7 +1336,7 @@ namespace services::index {
         hash_index_.reset();
         reset_flush_state();
         next_timestamp_ = 0;
-        next_segment_id_.store(1);
+        next_segment_id_.store(regular_segment_id_start_);
         active_segment_id_ = 0;
         active_segment_records_ = 0;
         active_data_file_path_.clear();

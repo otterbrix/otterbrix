@@ -1,5 +1,7 @@
 #include "operator_resolve_table.hpp"
 
+#include "catalog_write_helpers.hpp"
+
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/system_table_schemas.hpp>
@@ -26,30 +28,17 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
-        // File-local typed setters — the relkind='g' output chunk has a fixed
-        // 5-column schema known here, so we skip the logical_value_t variant
-        // round-trip and write directly into the typed buffers.
-        inline void set_int32(vector::data_chunk_t& c, size_t col, size_t row, std::int32_t v) {
-            auto& vec = c.data[col];
-            vec.template data<std::int32_t>()[row] = v;
-            vec.validity().set(row, true);
-        }
-        inline void set_uint32(vector::data_chunk_t& c, size_t col, size_t row, std::uint32_t v) {
-            auto& vec = c.data[col];
-            vec.template data<std::uint32_t>()[row] = v;
-            vec.validity().set(row, true);
-        }
-        inline void
-        set_str(vector::data_chunk_t& c, size_t col, size_t row, std::string_view v, std::pmr::memory_resource* r) {
-            auto& vec = c.data[col];
-            if (!vec.auxiliary()) {
-                vec.set_auxiliary(std::make_shared<vector::string_vector_buffer_t>(r));
-            }
-            auto* sb = static_cast<vector::string_vector_buffer_t*>(vec.auxiliary().get());
-            auto* ptr = sb->insert(v);
-            reinterpret_cast<std::string_view*>(vec.template data<std::byte>())[row] =
-                std::string_view(static_cast<const char*>(ptr), v.size());
-            vec.validity().set(row, true);
+        // Output schema: (position int32, attoid uint32, attname string,
+        // atttypid uint32, atttypspec string). Built once per operator into the
+        // cached member (TASK C10) so even an empty result (table not found)
+        // yields a valid-typed empty chunk.
+        void build_output_schema(std::pmr::vector<types::complex_logical_type>& out_types) {
+            out_types.reserve(5);
+            out_types.emplace_back(types::logical_type::INTEGER);        // position
+            out_types.emplace_back(types::logical_type::UINTEGER);       // attoid
+            out_types.emplace_back(types::logical_type::STRING_LITERAL); // attname
+            out_types.emplace_back(types::logical_type::UINTEGER);       // atttypid
+            out_types.emplace_back(types::logical_type::STRING_LITERAL); // atttypspec
         }
     } // namespace
 
@@ -57,7 +46,10 @@ namespace components::operators {
                                                        log_t log,
                                                        catalog::oid_t table_oid)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
-        , table_oid_(table_oid) {}
+        , table_oid_(table_oid)
+        , output_schema_(resource) {
+        build_output_schema(output_schema_);
+    }
 
     operator_resolve_table_t::operator_resolve_table_t(std::pmr::memory_resource* resource,
                                                        log_t log,
@@ -66,7 +58,10 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
         , table_oid_(catalog::INVALID_OID)
         , input_namespace_oid_(namespace_oid)
-        , relname_(std::move(relname)) {}
+        , relname_(std::move(relname))
+        , output_schema_(resource) {
+        build_output_schema(output_schema_);
+    }
 
     operator_resolve_table_t::operator_resolve_table_t(
         std::pmr::memory_resource* resource,
@@ -78,7 +73,10 @@ namespace components::operators {
         , table_oid_(catalog::INVALID_OID)
         , input_namespace_oid_(namespace_oid)
         , relname_(std::move(relname))
-        , target_node_(target_node) {}
+        , target_node_(target_node)
+        , output_schema_(resource) {
+        build_output_schema(output_schema_);
+    }
 
     void operator_resolve_table_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
         // All catalog reads are async: defer to await_async_and_resume so the
@@ -94,21 +92,13 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        // Output schema: (position int32, attoid uint32, attname string,
-        // atttypid uint32, atttypspec string). Pre-built here so even an
-        // empty result (table not found) yields a valid-typed empty chunk.
-        std::pmr::vector<types::complex_logical_type> out_types(resource_);
-        out_types.reserve(5);
-        out_types.emplace_back(types::logical_type::INTEGER);        // position
-        out_types.emplace_back(types::logical_type::UINTEGER);       // attoid
-        out_types.emplace_back(types::logical_type::STRING_LITERAL); // attname
-        out_types.emplace_back(types::logical_type::UINTEGER);       // atttypid
-        out_types.emplace_back(types::logical_type::STRING_LITERAL); // atttypspec
+        // Output schema is cached on the operator (output_schema_), built once
+        // in the constructor (TASK C10).
 
         // Bail with empty output when the disk actor is not wired (test
         // harnesses).
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
-            output_ = make_operator_data(resource_, out_types, 0);
+            output_ = make_operator_data(resource_, output_schema_, 0);
             output_->data_chunk().set_cardinality(0);
             mark_executed();
             co_return;
@@ -119,7 +109,7 @@ namespace components::operators {
         // If relname_ is empty we cannot resolve — emit empty output.
         if (table_oid_ == catalog::INVALID_OID) {
             if (relname_.empty()) {
-                output_ = make_operator_data(resource_, out_types, 0);
+                output_ = make_operator_data(resource_, output_schema_, 0);
                 output_->data_chunk().set_cardinality(0);
                 mark_executed();
                 co_return;
@@ -142,7 +132,7 @@ namespace components::operators {
             if (lookup_batches.empty() || lookup_batches[0].size() == 0 || lookup_batches[0].column_count() == 0 ||
                 lookup_batches[0].value(0, 0).is_null()) {
                 // Not found — emit empty output, leave found_=false.
-                output_ = make_operator_data(resource_, out_types, 0);
+                output_ = make_operator_data(resource_, output_schema_, 0);
                 output_->data_chunk().set_cardinality(0);
                 mark_executed();
                 co_return;
@@ -192,7 +182,7 @@ namespace components::operators {
 
         if (!found_) {
             // Table not found: emit an empty, correctly-typed chunk.
-            output_ = make_operator_data(resource_, out_types, 0);
+            output_ = make_operator_data(resource_, output_schema_, 0);
             output_->data_chunk().set_cardinality(0);
             mark_executed();
             co_return;
@@ -503,7 +493,7 @@ namespace components::operators {
         // manager_disk_resolve.cpp's synthetic attnum for relkind='g').
         const auto row_count = rows.size();
         const uint64_t capacity = std::max<uint64_t>(row_count, vector::DEFAULT_VECTOR_CAPACITY);
-        output_ = make_operator_data(resource_, out_types, capacity);
+        output_ = make_operator_data(resource_, output_schema_, capacity);
         auto& out_chunk = output_->data_chunk();
         for (std::size_t i = 0; i < row_count; ++i) {
             const auto& r = rows[i];

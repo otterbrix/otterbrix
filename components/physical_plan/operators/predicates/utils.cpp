@@ -134,6 +134,10 @@ namespace components::operators::predicates::impl {
             if (right_val.has_error()) {
                 return right_val;
             }
+            // TODO(L2): per-row predicate arithmetic boxes operands into logical_value_t. No typed
+            // scalar-scalar arithmetic helper exists (only vector::compute_* over vectors/scalars,
+            // and logical_value_t::sum/...); using vectors per row would be the L4 anti-pattern.
+            // Skipped: a typed path would require a new helper, which is out of scope here.
             switch (op) {
                 case expressions::scalar_type::add:
                     return types::logical_value_t::sum(left_val.value(), right_val.value());

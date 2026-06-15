@@ -5,23 +5,22 @@
 
 namespace components::planner {
 
-    // Early optimization pass. Runs BEFORE the schema validator / enrich.
-    // Safe rules only — those that don't need resolved column indices or
-    // table OIDs.
+    // Single optimization pass. Runs AFTER the planner rewrite, i.e. after
+    // resolve → validate → enrich → planner.create_plan, so node->table_oid()
+    // is populated, sibling catalog_resolve_table_t nodes carry
+    // resolved_metadata(), and the schema stamps key.side()/key.path() set by
+    // validate_schema are present.
+    // Rules (in order):
     //   - constant_folding (on parameter expressions)
+    //   - pushdown_filter
+    //   - join_predicate_pushdown (duplicates WHERE join predicates into comma-join ON clauses)
+    //   - column_pruning (annotates node_aggregate_t with projected_cols)
+    //   - hash_join selection (needs the validate_schema stamps)
+    // On DDL trees (sequence_t of primitive writes) it is a harmless no-op:
+    // the planner leaves the match_t/join_t/aggregate_t these rules target
+    // intact (DML wrappers sit on top; DDL has no such nodes).
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters);
-
-    // Late optimization pass. Runs AFTER validate_schema +
-    // stamp_oids_from_resolves, so node->table_oid() is populated and
-    // sibling catalog_resolve_table_t nodes carry resolved_metadata().
-    // Schema-aware rules go here.
-    //   - join_predicate_pushdown (duplicates WHERE join predicates into comma-join ON clauses)
-    //   - column_pruning (annotates node_aggregate_t with projected_cols)
-    //
-    // Schema info is read from the plan tree itself (sibling resolves);
-    // the optimizer is self-contained and needs no external catalog handle.
-    logical_plan::node_ptr post_validate_optimize(std::pmr::memory_resource* resource, logical_plan::node_ptr node);
 
 } // namespace components::planner

@@ -15,23 +15,20 @@ namespace components::planner {
             return nullptr;
         }
 
-        // Constant folding: resolve arithmetic on parameters at plan time.
+        // Single post-planner pass. Order matters: fold constants on parameter
+        // expressions, push filters down, duplicate cross-join WHERE predicates,
+        // prune aggregate input columns, then select hash joins. Hash-join
+        // selection reads key.side()/key.path() stamped by validate_schema,
+        // which has already run. All rules are safe here — the planner wraps
+        // DML on top and lowers DDL to sequences, leaving the
+        // match_t/join_t/aggregate_t these rules target intact.
         if (parameters) {
             optimizer::fold_constants(resource, node, parameters);
         }
-
         node = optimizer::pushdown_filter(resource, node);
 
-        return node;
-    }
-
-    logical_plan::node_ptr post_validate_optimize(std::pmr::memory_resource* resource, logical_plan::node_ptr node) {
-        if (!node) {
-            return nullptr;
-        }
-
-        // Feature branch: push WHERE predicates that span both join sides onto
-        // the synthesized cross join (adds a join filter; WHERE is untouched).
+        // Push WHERE predicates that span both join sides onto the synthesized
+        // cross join (adds a join filter; WHERE is untouched).
         optimizer::push_down_join_predicates(node);
 
         // Column pruning: annotate aggregate nodes with the column indices each
@@ -40,10 +37,6 @@ namespace components::planner {
         // hash-join rewrite below converts them into node_hash_join_t.
         optimizer::prune_columns(node);
 
-        // Hash-join selection: rewrite eligible nested-loop joins (single
-        // eq(left.key, right.key) condition) into node_hash_join_t so the planner
-        // can lower them to operator_hash_join_t. Relies on key.side()/key.path()
-        // stamped by validate_schema, which has already run at this point.
         node = optimizer::rewrite_hash_joins(resource, std::move(node));
 
         return node;

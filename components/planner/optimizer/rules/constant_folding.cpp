@@ -72,6 +72,10 @@ namespace components::planner::optimizer {
             }
 
             // TODO: this is even worse than using logical_value_t...
+            // TODO(L4): skipped — the only non-throwing alternatives are this 1-element-vector
+            // boxing or a brand-new scalar arithmetic helper (a new abstraction, forbidden).
+            // logical_value_t::sum/subtract/... throw on unprocessable types, and this function
+            // returns bool (cannot propagate an error), so switching to them would add a throw.
             // Create single-element vectors from the values
             vector_t left_vec(resource, left_val, 1);
             vector_t right_vec(resource, right_val, 1);

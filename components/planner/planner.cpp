@@ -735,4 +735,43 @@ namespace components::planner {
         return walk_ddl(resource, std::move(node), oid_batch);
     }
 
+    std::size_t compute_oid_demand(const logical_plan::node_t* node) {
+        using LT = components::types::logical_type;
+        using nt = logical_plan::node_type;
+        if (!node) {
+            return 0;
+        }
+        switch (node->type()) {
+            case nt::create_collection_t:
+                return std::size_t{1} +
+                       static_cast<const logical_plan::node_create_collection_t*>(node)->column_definitions().size();
+            case nt::create_database_t:
+                return 1;
+            case nt::create_type_t: {
+                const auto* ct = static_cast<const logical_plan::node_create_type_t*>(node);
+                return ct->type().type() == LT::STRUCT ? std::size_t{1} + ct->type().child_types().size()
+                                                       : std::size_t{1};
+            }
+            case nt::create_sequence_t:
+                return 1;
+            case nt::create_view_t:
+            case nt::create_macro_t:
+                return 2;
+            case nt::create_matview_t: {
+                const auto* cm = static_cast<const logical_plan::node_create_matview_t*>(node);
+                // Empty inferred columns → rewrite_create_matview returns the node
+                // unchanged and consumes nothing.
+                return cm->inferred_columns().empty() ? std::size_t{0}
+                                                      : std::size_t{2} + cm->inferred_columns().size();
+            }
+            case nt::create_index_t:
+                return 1;
+            case nt::create_constraint_t:
+                return 1;
+            default:
+                // DROP * / ALTER TABLE / DML / non-DDL — no pre-allocated OIDs.
+                return 0;
+        }
+    }
+
 } // namespace components::planner

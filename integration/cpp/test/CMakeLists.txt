@@ -32,6 +32,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
         test_vector_search.cpp
+        test_vector_persistence.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

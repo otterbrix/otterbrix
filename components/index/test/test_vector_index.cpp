@@ -10,6 +10,7 @@
 #include <memory_resource>
 #include <random>
 #include <set>
+#include <stdexcept>
 #include <vector>
 
 using namespace components::index;
@@ -133,8 +134,11 @@ TEST_CASE("vector_index::key_value_methods_are_safe_noops") {
     REQUIRE(rub.first == rub.second);
     REQUIRE(idx.cbegin() == idx.cend());
 
+    // insert with a scalar (non-vector) key extracts no vector → graph stays empty.
     idx.insert(v, int64_t{0}, tz);
-    idx.remove(v, tz);
+    // Non-transactional remove is rejected outright (B5): deletes must go through
+    // the MVCC mark_delete path with a row_id, never the generic index_t::remove.
+    REQUIRE_THROWS_AS(idx.remove(v, tz), std::logic_error);
     REQUIRE(idx.size() == 0);
 }
 

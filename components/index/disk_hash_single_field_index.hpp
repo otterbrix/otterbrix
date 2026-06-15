@@ -29,6 +29,12 @@ namespace components::index {
                                        disk_hash_storage_ptr storage);
         ~disk_hash_single_field_index_t() override;
 
+        // Bootstrap: the persisted bitcask is authoritative on restart, so the
+        // scan-based repopulate must skip a disk-hash index whose backing was
+        // already loaded — otherwise every key lands in both the on-disk store
+        // and pending_inserts_, and find() returns each row twice.
+        void set_suspend_inserts(bool v) noexcept { suspend_inserts_ = v; }
+
     private:
         class impl_t final : public index_t::iterator::iterator_impl_t {
         public:
@@ -79,6 +85,7 @@ namespace components::index {
         void clean_memory_to_new_elements_impl(std::size_t count) final;
 
         disk_hash_storage_ptr disk_table_;
+        bool suspend_inserts_ = false;
         mutable result_storage_t scratch_results_;
         pending_txn_map_t pending_inserts_;
         pending_txn_map_t pending_deletes_;

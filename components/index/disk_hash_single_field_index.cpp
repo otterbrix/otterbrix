@@ -112,6 +112,9 @@ namespace components::index {
                                                          int64_t row_index,
                                                          uint64_t txn_id,
                                                          core::date::timezone_offset_t local_timezone) {
+        if (suspend_inserts_) {
+            return;
+        }
         auto encoded = encode_key(key, local_timezone);
         pending_inserts_[txn_id].emplace_back(std::pmr::string(encoded.data(), encoded.size(), resource()), row_index);
     }

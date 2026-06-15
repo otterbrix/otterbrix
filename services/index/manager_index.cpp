@@ -896,6 +896,7 @@ namespace services::index {
         // vector index whose graph snapshot was already loaded (size > 0) is
         // left intact and suspended so the scan-based reinserts below skip it.
         std::vector<components::index::vector_index_t*> suspended;
+        std::vector<components::index::disk_hash_single_field_index_t*> suspended_disk_hash;
         for (auto& idx_name : engine->indexes()) {
             auto* idx = components::index::search_index(engine, idx_name);
             if (!idx) {
@@ -909,6 +910,17 @@ namespace services::index {
                     continue;
                 }
             }
+            // A disk-backed hash index serves queries straight from its persisted
+            // bitcask, which bootstrap_index_sync already loaded — that store is
+            // authoritative. Re-inserting the table scan would land every key in
+            // both the bitcask and pending_inserts_, so find() returns each row
+            // twice. Leave the on-disk store intact and suspend the scan inserts.
+            if (idx->type() == components::logical_plan::index_type::hashed && idx->is_disk()) {
+                auto* dhidx = static_cast<components::index::disk_hash_single_field_index_t*>(idx);
+                dhidx->set_suspend_inserts(true);
+                suspended_disk_hash.push_back(dhidx);
+                continue;
+            }
             idx->clean_memory_to_new_elements(0);
         }
         // Re-insert each row with its current physical row_id (post-checkpoint
@@ -919,6 +931,9 @@ namespace services::index {
         }
         for (auto* vidx : suspended) {
             vidx->set_suspend_inserts(false);
+        }
+        for (auto* dhidx : suspended_disk_hash) {
+            dhidx->set_suspend_inserts(false);
         }
         trace(log_,
               "manager_index_t::bootstrap_repopulate_sync: oid={} rows={}",

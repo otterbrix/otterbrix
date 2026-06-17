@@ -6,51 +6,71 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    // Every catalog read here goes through agent-0's storage_scan_batched_inner
-    // (catalog oids route to agent-0). Reading via the mailbox — not a borrowed
-    // storage_entry_sync pointer — serialises against agent-0's compact path
-    // (checkpoint/vacuum/maybe_cleanup_inner) running on the scheduler_disk_
-    // threads, avoiding a borrowed-pointer race. transaction_data{} = "see all
-    // committed". read_chunks_by_key is a thin router: the column NAME→index
-    // resolution and the eq-AND filtered scan both run intra-agent in
+    // Every catalog read here goes through scan_table → agent-0's
+    // storage_scan_batched_inner (catalog oids route to agent-0). Reading via the
+    // mailbox — not a borrowed storage_entry_sync pointer — serialises against
+    // agent-0's compact path (checkpoint/vacuum/maybe_cleanup_inner) running on the
+    // scheduler_disk_ threads, avoiding a borrowed-pointer race. transaction_data{}
+    // = "see all committed". read_chunks_by_key is a thin router: the column
+    // NAME→index resolution and the eq-AND filtered scan both run intra-agent in
     // read_chunks_by_key_inner.
+
+    // Single manager-side scan funnel: route to the owning agent, send one batched
+    // scan, schedule if needed, await the chunk batches. The three resolve_* readers
+    // below all flow through here so the send/enqueue/await boilerplate lives in ONE
+    // place. A null filter = "see all rows"; the C++-side row filtering stays in each
+    // caller (it differs per table: equality on name, name-match collect, enumerate).
+    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_t::scan_table(components::catalog::oid_t table_oid,
+                               std::unique_ptr<components::table::table_filter_t> filter,
+                               std::vector<std::size_t> projected_cols,
+                               components::table::transaction_data txn) {
+        std::pmr::vector<components::vector::data_chunk_t> empty(resource());
+        if (agents_.empty()) {
+            co_return empty;
+        }
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        auto& agent = agents_[idx];
+        if (agent == nullptr) {
+            co_return empty;
+        }
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                              &agent_disk_t::storage_scan_batched_inner,
+                                                              table_oid,
+                                                              std::move(filter),
+                                                              int64_t{-1},
+                                                              std::move(projected_cols),
+                                                              txn);
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        co_return co_await std::move(fut);
+    }
 
     manager_disk_t::unique_future<resolve_namespace_result_t>
     manager_disk_t::resolve_namespace(execution_context_t /*ctx*/, std::string name, std::uint64_t /*since_version*/) {
         resolve_namespace_result_t out(resource());
 
-        if (!agents_.empty() && agents_[0] != nullptr) {
-            const std::size_t idx = pool_idx_for_oid(pg_namespace_oid_tbl, agents_.size());
-            std::vector<size_t> projected{0, 1};
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
-                                                                  &agent_disk_t::storage_scan_batched_inner,
-                                                                  pg_namespace_oid_tbl,
-                                                                  std::unique_ptr<components::table::table_filter_t>{},
-                                                                  int64_t{-1},
-                                                                  std::move(projected),
-                                                                  components::table::transaction_data{});
-            if (needs_sched) {
-                scheduler_disk_->enqueue(agents_[idx].get());
+        auto batches = co_await scan_table(pg_namespace_oid_tbl,
+                                           std::unique_ptr<components::table::table_filter_t>{},
+                                           std::vector<std::size_t>{0, 1});
+        for (auto& chunk : batches) {
+            bool stop = false;
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                auto oid_v = chunk.value(0, i);
+                auto name_v = chunk.value(1, i);
+                if (oid_v.is_null() || name_v.is_null())
+                    continue;
+                if (name_v.value<std::string_view>() != name)
+                    continue;
+                out.found = true;
+                out.oid = static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>());
+                out.name = name;
+                stop = true;
+                break;
             }
-            auto batches = co_await std::move(fut);
-            for (auto& chunk : batches) {
-                bool stop = false;
-                for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto oid_v = chunk.value(0, i);
-                    auto name_v = chunk.value(1, i);
-                    if (oid_v.is_null() || name_v.is_null())
-                        continue;
-                    if (name_v.value<std::string_view>() != name)
-                        continue;
-                    out.found = true;
-                    out.oid = static_cast<components::catalog::oid_t>(oid_v.value<std::uint32_t>());
-                    out.name = name;
-                    stop = true;
-                    break;
-                }
-                if (stop)
-                    break;
-            }
+            if (stop)
+                break;
         }
         co_return out;
     }
@@ -60,22 +80,9 @@ namespace services::disk {
                                              std::string name,
                                              std::uint64_t /*since_version*/) {
         std::pmr::vector<resolve_function_result_t> out(resource());
-        if (agents_.empty() || agents_[0] == nullptr) {
-            co_return out;
-        }
-        const std::size_t idx = pool_idx_for_oid(pg_proc_oid, agents_.size());
-        std::vector<size_t> projected{0, 1, 2, 3, 4, 5, 6};
-        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
-                                                              &agent_disk_t::storage_scan_batched_inner,
-                                                              pg_proc_oid,
-                                                              std::unique_ptr<components::table::table_filter_t>{},
-                                                              int64_t{-1},
-                                                              std::move(projected),
-                                                              components::table::transaction_data{});
-        if (needs_sched) {
-            scheduler_disk_->enqueue(agents_[idx].get());
-        }
-        auto batches = co_await std::move(fut);
+        auto batches = co_await scan_table(pg_proc_oid,
+                                           std::unique_ptr<components::table::table_filter_t>{},
+                                           std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6});
         for (auto& chunk : batches) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (!str_equals(chunk.value(1, i), name))
@@ -108,22 +115,9 @@ namespace services::disk {
     manager_disk_t::unique_future<std::pmr::vector<std::string>>
     manager_disk_t::list_namespaces(execution_context_t /*ctx*/) {
         std::pmr::vector<std::string> out(resource());
-        if (agents_.empty() || agents_[0] == nullptr) {
-            co_return out;
-        }
-        const std::size_t idx = pool_idx_for_oid(pg_namespace_oid_tbl, agents_.size());
-        std::vector<size_t> projected{0, 1};
-        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
-                                                              &agent_disk_t::storage_scan_batched_inner,
-                                                              pg_namespace_oid_tbl,
-                                                              std::unique_ptr<components::table::table_filter_t>{},
-                                                              int64_t{-1},
-                                                              std::move(projected),
-                                                              components::table::transaction_data{});
-        if (needs_sched) {
-            scheduler_disk_->enqueue(agents_[idx].get());
-        }
-        auto batches = co_await std::move(fut);
+        auto batches = co_await scan_table(pg_namespace_oid_tbl,
+                                           std::unique_ptr<components::table::table_filter_t>{},
+                                           std::vector<std::size_t>{0, 1});
         for (auto& chunk : batches) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 auto name_v = chunk.value(1, i);

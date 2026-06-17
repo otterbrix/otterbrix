@@ -5,30 +5,17 @@ set(SOURCE_${PROJECT_NAME}
         execution_plan.cpp
         node.cpp
         node_aggregate.cpp
-        node_alter_column_add.cpp
-        node_alter_column_drop.cpp
-        node_alter_column_rename.cpp
+        node_alter_column.cpp
         node_alter_table.cpp
         node_check_constraint.cpp
         node_fk_check.cpp
         node_fk_cascade.cpp
         node_sequence.cpp
-        node_primitive_write.cpp
-        node_primitive_delete.cpp
         node_dynamic_cascade_delete.cpp
         node_register_udf.cpp
         node_unregister_udf.cpp
-        node_commit_transaction.cpp
-        node_abort_transaction.cpp
-        node_begin_transaction.cpp
-        node_computed_field_register.cpp
-        node_computed_field_unregister.cpp
-        node_catalog_resolve_table.cpp
-        node_catalog_resolve_namespace.cpp
-        node_catalog_resolve_database.cpp
-        node_catalog_resolve_type.cpp
-        node_catalog_resolve_function.cpp
-        node_catalog_resolve_constraint.cpp
+        node_transaction.cpp
+        node_catalog_resolve.cpp
         node_allocate_oids.cpp
         node_checkpoint.cpp
         node_create_collection.cpp
@@ -43,13 +30,7 @@ set(SOURCE_${PROJECT_NAME}
         node_refresh_matview.cpp
         node_data.cpp
         node_delete.cpp
-        node_drop_collection.cpp
-        node_drop_database.cpp
-        node_drop_index.cpp
-        node_drop_macro.cpp
-        node_drop_sequence.cpp
-        node_drop_type.cpp
-        node_drop_view.cpp
+        node_drop.cpp
         node_function.cpp
         node_group.cpp
         node_having.cpp

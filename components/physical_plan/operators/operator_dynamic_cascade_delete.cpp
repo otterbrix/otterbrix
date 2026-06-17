@@ -84,7 +84,7 @@ namespace components::operators {
                                                                          catalog::drop_behavior_t behavior)
         // Tagged as dynamic_cascade_delete; the executor's generic-DDL path
         // treats it as a write-only no-output step (same convention as
-        // operator_drop_index_t / operator_primitive_delete_t).
+        // operator_drop_index_t / operator_delete's catalog branch).
         : read_write_operator_t(resource, std::move(log), operator_type::dynamic_cascade_delete)
         , seed_classid_(seed_classid)
         , seed_objid_(seed_objid)

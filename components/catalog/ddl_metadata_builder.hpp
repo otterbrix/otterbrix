@@ -18,7 +18,8 @@ namespace components::catalog {
 
     // Build pg_catalog write rows for a CREATE TABLE statement.
     // Returns plain catalog_write_t values (no logical_plan dependency).
-    // The caller (planner) wraps each into node_primitive_write_t.
+    // The caller (planner) wraps each into a catalog-write node_insert_t
+    // (table_oid = pg_catalog oid; the row chunk as its node_data_t child).
     //
     // Preconditions:
     //   - Each column must have atttypid set. Columns with atttypid == INVALID_OID

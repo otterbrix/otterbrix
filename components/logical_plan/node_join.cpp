@@ -1,5 +1,6 @@
 #include "node_join.hpp"
 
+#include <boost/container_hash/hash.hpp>
 #include <sstream>
 
 namespace components::logical_plan {
@@ -32,12 +33,39 @@ namespace components::logical_plan {
 
     join_type node_join_t::type() const { return type_; }
 
-    hash_t node_join_t::hash_impl() const { return 0; }
+    node_join_t::join_algo node_join_t::algo() const noexcept { return algo_; }
+
+    void node_join_t::set_algo(join_algo algo) noexcept { algo_ = algo; }
+
+    std::size_t node_join_t::left_col() const noexcept { return left_col_; }
+
+    std::size_t node_join_t::right_col() const noexcept { return right_col_; }
+
+    void node_join_t::set_equi_columns(std::size_t left, std::size_t right) noexcept {
+        left_col_ = left;
+        right_col_ = right;
+        algo_ = join_algo::hash;
+    }
+
+    hash_t node_join_t::hash_impl() const {
+        // node_t::hash() combines type_ + hash_impl(); a hash-annotated join carries
+        // the same node_type::join_t as a nested-loop one, so fold the annotation in
+        // here to keep them in distinct buckets — this mirrors how the former
+        // node_hash_join_t differed by node_type.
+        hash_t hash_value{0};
+        boost::hash_combine(hash_value, static_cast<uint8_t>(algo_));
+        boost::hash_combine(hash_value, left_col_);
+        boost::hash_combine(hash_value, right_col_);
+        return hash_value;
+    }
 
     std::string node_join_t::to_string_impl() const {
         std::stringstream stream;
         stream << "$join: {";
         stream << "$type: " << logical_plan::to_string(type_);
+        if (algo_ == join_algo::hash) {
+            stream << ", $algo: hash, $left_col: " << left_col_ << ", $right_col: " << right_col_;
+        }
         for (const auto& child : children_) {
             stream << ", " << child->to_string();
         }
@@ -53,45 +81,6 @@ namespace components::logical_plan {
                                  core::relname_t relname,
                                  join_type type) {
         return {new node_join_t{resource, std::move(dbname), std::move(relname), type}};
-    }
-
-    node_hash_join_t::node_hash_join_t(std::pmr::memory_resource* resource,
-                                       core::dbname_t dbname,
-                                       core::relname_t relname,
-                                       join_type type,
-                                       std::size_t left_col,
-                                       std::size_t right_col)
-        : node_t(resource, node_type::hash_join_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname)))
-        , type_(type)
-        , left_col_(left_col)
-        , right_col_(right_col) {}
-
-    hash_t node_hash_join_t::hash_impl() const { return 0; }
-
-    std::string node_hash_join_t::to_string_impl() const {
-        std::stringstream stream;
-        stream << "$hash_join: {";
-        stream << "$type: " << logical_plan::to_string(type_);
-        stream << ", $left_col: " << left_col_ << ", $right_col: " << right_col_;
-        for (const auto& child : children_) {
-            stream << ", " << child->to_string();
-        }
-        for (const auto& expr : expressions()) {
-            stream << ", " << expr->to_string();
-        }
-        stream << "}";
-        return stream.str();
-    }
-
-    node_hash_join_ptr make_node_hash_join(std::pmr::memory_resource* resource,
-                                           core::dbname_t dbname,
-                                           core::relname_t relname,
-                                           join_type type,
-                                           std::size_t left_col,
-                                           std::size_t right_col) {
-        return {new node_hash_join_t{resource, std::move(dbname), std::move(relname), type, left_col, right_col}};
     }
 
 } // namespace components::logical_plan

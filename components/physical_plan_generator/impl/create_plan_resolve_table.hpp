@@ -6,7 +6,7 @@
 
 namespace services::planner::impl {
 
-    // Bridge node_catalog_resolve_table_t -> operator_resolve_table_t.
+    // Bridge node_catalog_resolve_t (resolve_kind::table) -> operator_resolve_table_t.
     // Forwards (namespace_oid, relname) into the operator's name-form ctor;
     // the operator itself handles oid resolution via pg_class scan inside
     // its async resume path. When namespace_oid() is INVALID_OID

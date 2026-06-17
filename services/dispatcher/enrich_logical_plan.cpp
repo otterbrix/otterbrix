@@ -20,15 +20,9 @@
 #include <components/cursor/cursor.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_alter_column_add.hpp>
-#include <components/logical_plan/node_alter_column_drop.hpp>
-#include <components/logical_plan/node_alter_column_rename.hpp>
+#include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
-#include <components/logical_plan/node_catalog_resolve_constraint.hpp>
-#include <components/logical_plan/node_catalog_resolve_database.hpp>
-#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
-#include <components/logical_plan/node_catalog_resolve_type.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_constraint.hpp>
 #include <components/logical_plan/node_create_index.hpp>
@@ -38,13 +32,7 @@
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_drop_collection.hpp>
-#include <components/logical_plan/node_drop_database.hpp>
-#include <components/logical_plan/node_drop_index.hpp>
-#include <components/logical_plan/node_drop_macro.hpp>
-#include <components/logical_plan/node_drop_sequence.hpp>
-#include <components/logical_plan/node_drop_type.hpp>
-#include <components/logical_plan/node_drop_view.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -295,29 +283,32 @@ namespace services::catalog_resolve {
             auto* n = q.front();
             q.pop();
             if (n->type() == node_type::sequence_t) {
-                node_catalog_resolve_namespace_t* rn = nullptr;
-                node_catalog_resolve_table_t* rt = nullptr;
-                node_catalog_resolve_table_t* rt_index = nullptr;
-                node_catalog_resolve_type_t* ry = nullptr;
+                node_catalog_resolve_t* rn = nullptr;
+                node_catalog_resolve_t* rt = nullptr;
+                node_catalog_resolve_t* rt_index = nullptr;
+                node_catalog_resolve_t* ry = nullptr;
                 for (const auto& c : n->children()) {
                     if (!c)
                         continue;
-                    switch (c->type()) {
-                        case node_type::catalog_resolve_namespace_t:
-                            rn = static_cast<node_catalog_resolve_namespace_t*>(c.get());
+                    if (c->type() != node_type::catalog_resolve_t)
+                        continue;
+                    auto* cr = static_cast<node_catalog_resolve_t*>(c.get());
+                    switch (cr->kind()) {
+                        case resolve_kind::namespace_:
+                            rn = cr;
                             break;
-                        case node_type::catalog_resolve_table_t:
+                        case resolve_kind::table:
                             // For DROP INDEX the transformer emits two resolve_table
                             // siblings — the first is the parent table, the second
                             // is the index entry (also a pg_class row).
                             if (!rt) {
-                                rt = static_cast<node_catalog_resolve_table_t*>(c.get());
+                                rt = cr;
                             } else if (!rt_index) {
-                                rt_index = static_cast<node_catalog_resolve_table_t*>(c.get());
+                                rt_index = cr;
                             }
                             break;
-                        case node_type::catalog_resolve_type_t:
-                            ry = static_cast<node_catalog_resolve_type_t*>(c.get());
+                        case resolve_kind::type:
+                            ry = cr;
                             break;
                         default:
                             break;
@@ -327,70 +318,60 @@ namespace services::catalog_resolve {
                     if (!c)
                         continue;
                     switch (c->type()) {
-                        case node_type::drop_database_t: {
-                            auto* d = static_cast<node_drop_database_t*>(c.get());
-                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                d->set_namespace_oid(rn->namespace_oid());
-                            }
-                            break;
-                        }
-                        case node_type::drop_collection_t: {
-                            auto* d = static_cast<node_drop_collection_t*>(c.get());
-                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                d->set_namespace_oid(rn->namespace_oid());
-                            } else if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
-                                d->set_namespace_oid(rt->namespace_oid());
-                            }
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid(rt->table_oid());
-                            }
-                            break;
-                        }
-                        case node_type::drop_view_t: {
-                            auto* d = static_cast<node_drop_view_t*>(c.get());
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_relation_oid(rt->table_oid());
-                            }
-                            break;
-                        }
-                        case node_type::drop_sequence_t: {
-                            auto* d = static_cast<node_drop_sequence_t*>(c.get());
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_relation_oid(rt->table_oid());
-                            }
-                            break;
-                        }
-                        case node_type::drop_macro_t: {
-                            auto* d = static_cast<node_drop_macro_t*>(c.get());
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_relation_oid(rt->table_oid());
-                            }
-                            break;
-                        }
-                        case node_type::drop_index_t: {
-                            auto* d = static_cast<node_drop_index_t*>(c.get());
-                            if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
-                                d->set_namespace_oid(rn->namespace_oid());
-                            } else if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
-                                d->set_namespace_oid(rt->namespace_oid());
-                            }
-                            if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid(rt->table_oid());
-                            }
-                            if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_index_oid(rt_index->table_oid());
-                            }
-                            // Stamp the runtime name used by manager_index_t::drop_index
-                            // (the index actor keys engine entries by (table_oid, name)).
-                            if (rt_index) {
-                                d->set_runtime_index_name(rt_index->relname());
-                            }
-                            break;
-                        }
-                        case node_type::drop_type_t: {
-                            auto* d = static_cast<node_drop_type_t*>(c.get());
-                            if (ry && ry->type_oid() != components::catalog::INVALID_OID) {
-                                d->set_type_oid(ry->type_oid());
+                        case node_type::drop_t: {
+                            auto* d = static_cast<node_drop_t*>(c.get());
+                            switch (d->kind()) {
+                                case drop_target_kind::database: {
+                                    if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                        d->set_namespace_oid(rn->namespace_oid());
+                                    }
+                                    break;
+                                }
+                                case drop_target_kind::collection: {
+                                    if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                        d->set_namespace_oid(rn->namespace_oid());
+                                    } else if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
+                                        d->set_namespace_oid(rt->namespace_oid());
+                                    }
+                                    if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                        d->set_table_oid(rt->table_oid());
+                                    }
+                                    break;
+                                }
+                                case drop_target_kind::view:
+                                case drop_target_kind::sequence:
+                                case drop_target_kind::macro: {
+                                    // Migrated from set_relation_oid → base set_table_oid.
+                                    if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                        d->set_table_oid(rt->table_oid());
+                                    }
+                                    break;
+                                }
+                                case drop_target_kind::index: {
+                                    if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
+                                        d->set_namespace_oid(rn->namespace_oid());
+                                    } else if (rt && rt->namespace_oid() != components::catalog::INVALID_OID) {
+                                        d->set_namespace_oid(rt->namespace_oid());
+                                    }
+                                    if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
+                                        d->set_table_oid(rt->table_oid());
+                                    }
+                                    if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
+                                        d->set_index_oid(rt_index->table_oid());
+                                    }
+                                    // Stamp the runtime name used by manager_index_t::drop_index
+                                    // (the index actor keys engine entries by (table_oid, name)).
+                                    if (rt_index) {
+                                        d->set_runtime_index_name(rt_index->relname());
+                                    }
+                                    break;
+                                }
+                                case drop_target_kind::type: {
+                                    if (ry && ry->type_oid() != components::catalog::INVALID_OID) {
+                                        d->set_type_oid(ry->type_oid());
+                                    }
+                                    break;
+                                }
                             }
                             break;
                         }
@@ -508,9 +489,7 @@ namespace services::catalog_resolve {
                         // table_oid set at construction time — re-stamping
                         // from a sibling resolve here is a no-op for them.
                         case node_type::alter_table_t:
-                        case node_type::alter_column_add_t:
-                        case node_type::alter_column_drop_t:
-                        case node_type::alter_column_rename_t: {
+                        case node_type::alter_column_t: {
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
                                 c->set_table_oid(rt->table_oid());
                             }
@@ -530,17 +509,20 @@ namespace services::catalog_resolve {
 
     // --- SELECT-time view expansion helpers ---
 
-    components::logical_plan::node_catalog_resolve_table_t*
+    components::logical_plan::node_catalog_resolve_t*
     find_first_view_resolve(components::logical_plan::node_t* root) {
         using namespace components::logical_plan;
         if (!root || root->type() != node_type::sequence_t) {
             return nullptr;
         }
         for (auto& c : root->children()) {
-            if (!c || c->type() != node_type::catalog_resolve_table_t) {
+            if (!c || c->type() != node_type::catalog_resolve_t) {
                 continue;
             }
-            auto* rt = static_cast<node_catalog_resolve_table_t*>(c.get());
+            auto* rt = static_cast<node_catalog_resolve_t*>(c.get());
+            if (rt->kind() != resolve_kind::table) {
+                continue;
+            }
             const auto& md = rt->resolved_metadata();
             if (md && md->relkind == components::catalog::relkind::view && !md->view_sql.empty()) {
                 return rt;
@@ -601,28 +583,27 @@ namespace services::catalog_resolve {
         for (auto& c : root->children()) {
             if (!c)
                 continue;
-            const auto t = c->type();
-            const bool is_resolve =
-                t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_database_t ||
-                t == node_type::catalog_resolve_table_t || t == node_type::catalog_resolve_type_t ||
-                t == node_type::catalog_resolve_function_t || t == node_type::catalog_resolve_constraint_t;
-            if (!is_resolve)
+            if (c->type() != node_type::catalog_resolve_t)
                 continue;
-            if (t == node_type::catalog_resolve_table_t) {
-                auto* rt = static_cast<node_catalog_resolve_table_t*>(c.get());
-                if (rt->resolved_metadata().has_value()) {
-                    continue; // already resolved (outer plan's resolve)
-                }
-            } else if (t == node_type::catalog_resolve_namespace_t) {
-                auto* rn = static_cast<components::logical_plan::node_catalog_resolve_namespace_t*>(c.get());
-                if (rn->namespace_oid() != components::catalog::INVALID_OID) {
-                    continue; // already resolved
-                }
-            } else if (t == node_type::catalog_resolve_database_t) {
-                auto* rd = static_cast<components::logical_plan::node_catalog_resolve_database_t*>(c.get());
-                if (rd->database_oid() != components::catalog::INVALID_OID) {
-                    continue; // already resolved
-                }
+            auto* r = static_cast<node_catalog_resolve_t*>(c.get());
+            switch (r->kind()) {
+                case resolve_kind::table:
+                    if (r->resolved_metadata().has_value()) {
+                        continue; // already resolved (outer plan's resolve)
+                    }
+                    break;
+                case resolve_kind::namespace_:
+                    if (r->namespace_oid() != components::catalog::INVALID_OID) {
+                        continue; // already resolved
+                    }
+                    break;
+                case resolve_kind::database:
+                    if (r->database_oid() != components::catalog::INVALID_OID) {
+                        continue; // already resolved
+                    }
+                    break;
+                default:
+                    break;
             }
             out.push_back(c);
         }
@@ -638,16 +619,12 @@ namespace services::catalog_resolve {
             return n;
         }
         using nt = components::logical_plan::node_type;
-        auto is_catalog_resolve = [](nt t) {
-            return t == nt::catalog_resolve_namespace_t || t == nt::catalog_resolve_database_t ||
-                   t == nt::catalog_resolve_table_t || t == nt::catalog_resolve_type_t ||
-                   t == nt::catalog_resolve_function_t;
-        };
+        auto is_catalog_resolve = [](nt t) { return t == nt::catalog_resolve_t; };
         const auto& kids = n->children();
         // Only descend if the first child is a catalog_resolve_* — this
         // distinguishes the transformer's resolve-wrapping sequence_t from
         // the planner's DDL/DML rewrite sequence_t (which has e.g.
-        // create_collection_t + primitive_write children, no resolves).
+        // create_collection_t + catalog-write node_insert_t children, no resolves).
         if (kids.empty() || !kids.front() || !is_catalog_resolve(kids.front()->type())) {
             return n;
         }
@@ -680,16 +657,17 @@ namespace services::catalog_resolve {
         for (const auto& c : plan_root->children()) {
             if (!c)
                 continue;
-            if (c->type() == node_type::catalog_resolve_namespace_t) {
-                auto* rn = static_cast<const node_catalog_resolve_namespace_t*>(c.get());
+            if (c->type() != node_type::catalog_resolve_t)
+                continue;
+            auto* r = static_cast<const node_catalog_resolve_t*>(c.get());
+            if (r->kind() == resolve_kind::namespace_) {
                 if (db.empty())
-                    db = rn->dbname();
-            } else if (c->type() == node_type::catalog_resolve_table_t) {
-                auto* rt = static_cast<const node_catalog_resolve_table_t*>(c.get());
+                    db = r->dbname();
+            } else if (r->kind() == resolve_kind::table) {
                 if (db.empty())
-                    db = rt->dbname();
+                    db = r->dbname();
                 if (rel.empty())
-                    rel = rt->relname();
+                    rel = r->relname();
             }
         }
         return {std::move(db), std::move(rel)};
@@ -923,11 +901,6 @@ namespace services::dispatcher { namespace {
                 node->set_indkey(std::move(indkey));
                 break;
             }
-            case node_type::drop_index_t: {
-                // OIDs are stamped by stamp_drop_oids_from_resolves at the
-                // top of enrich_plan from sibling resolve nodes; no per-node work.
-                break;
-            }
             case node_type::create_constraint_t: {
                 // idx provides ns/table metadata for the target. The FK
                 // reference table (when constraint is FK) needs a separate
@@ -985,14 +958,10 @@ namespace services::dispatcher { namespace {
                 }
                 break;
             }
-            case node_type::drop_database_t:
-            case node_type::drop_collection_t:
-            case node_type::drop_type_t:
-            case node_type::drop_sequence_t:
-            case node_type::drop_view_t:
-            case node_type::drop_macro_t: {
-                // OIDs are stamped by stamp_drop_oids_from_resolves at the
-                // top of enrich_plan from sibling resolve nodes; no per-node work.
+            case node_type::drop_t: {
+                // All DROP kinds (incl. index): OIDs are stamped by
+                // stamp_drop_oids_from_resolves at the top of enrich_plan from
+                // the sibling resolve nodes; no per-node work in this pass.
                 break;
             }
             default:

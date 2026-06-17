@@ -367,8 +367,7 @@ namespace services::disk {
         // Cross-namespace function lookup: returns ALL pg_proc rows whose proname matches
         // `name`, regardless of pronamespace. Used by the UDF admin paths (#41 Path 2/4):
         // register_udf needs to detect cross-namespace conflicts; drop_udf needs to purge
-        // every row sharing the name. The single-namespace resolve_function above is the
-        // hot-path query API; this one is admin-scope and may return an empty vector.
+        // every row sharing the name. Admin-scope (register/drop UDF); may return an empty vector.
         unique_future<std::pmr::vector<resolve_function_result_t>>
         resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
 
@@ -733,6 +732,22 @@ namespace services::disk {
         // access goes through agent storage_*_inner mailbox handlers.
         void create_agent(int count_agents);
         auto agent() -> actor_zeta::address_t;
+
+        // Single manager-side scan funnel over the owning agent's
+        // storage_scan_batched_inner. Routes `table_oid` to its agent
+        // (pool_idx_for_oid), sends one batched scan, schedules the agent if the
+        // send needs it, and awaits the chunk batches. `filter` may be null
+        // ("see all rows"); `projected_cols` empty means "all columns". Returns an
+        // empty (resource-backed) batch vector when there are no agents or the
+        // owning slot is null — identical to the prior inline behaviour. The
+        // catalog resolve_* readers funnel through this so there is ONE place that
+        // issues a catalog scan. txn defaults to transaction_data{} = "see all
+        // committed", which every catalog reader uses.
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        scan_table(components::catalog::oid_t table_oid,
+                   std::unique_ptr<components::table::table_filter_t> filter,
+                   std::vector<std::size_t> projected_cols,
+                   components::table::transaction_data txn = components::table::transaction_data{});
 
         // Hash-route by table_oid. Catalog tables (oid < FIRST_USER_OID) → agent 0;
         // user tables hash across agents_[1..N-1].

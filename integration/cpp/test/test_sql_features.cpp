@@ -2286,7 +2286,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_multi_statement_t
 }
 
 // SQL explicit transactions, end to end. transform_transaction lowers
-// TRANS_STMT_BEGIN/COMMIT/ROLLBACK to node_begin/commit/abort_transaction_t,
+// TRANS_STMT_BEGIN/COMMIT/ROLLBACK to node_transaction_t(op),
 // the planner builds operator_{begin,commit,abort}_transaction, and the
 // executor runs them in its pipeline. The statements MUST share one
 // session_id_t: transaction_manager_t keys active transactions by

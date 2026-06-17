@@ -16,11 +16,7 @@
 #include <components/catalog/fk_info.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/logical_plan/node.hpp>
-#include <components/logical_plan/node_catalog_resolve_constraint.hpp>
-#include <components/logical_plan/node_catalog_resolve_function.hpp>
-#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
-#include <components/logical_plan/node_catalog_resolve_type.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 
 #include <components/types/types.hpp>
 #include <queue>
@@ -40,8 +36,8 @@ namespace services::catalog_resolve {
     using cte_schema_t = std::vector<cte_schema_column_t>;
 
     struct plan_resolve_index_t {
-        // Namespace name -> ns_oid (from node_catalog_resolve_namespace_t
-        // AND from node_catalog_resolve_table_t::namespace_oid()).
+        // Namespace name -> ns_oid (from node_catalog_resolve_t namespace_ kind
+        // AND from the table-kind node's namespace_oid()).
         std::unordered_map<std::string, components::catalog::oid_t> ns_by_dbname;
         // "dbname|relname" -> const resolved_table_metadata_t*. Points into
         // the resolve_table node's resolved_metadata() optional (stamped by
@@ -50,15 +46,11 @@ namespace services::catalog_resolve {
         // table_oid -> const resolved_table_metadata_t*. Oid-keyed mirror.
         std::unordered_map<components::catalog::oid_t, const components::logical_plan::resolved_table_metadata_t*>
             tbl_md_by_oid;
-        // "dbname|typename" -> type_oid (from resolve_type nodes).
-        std::unordered_map<std::string, components::catalog::oid_t> type_oid_by_qname;
         // "dbname|typename" -> const resolved_type_metadata_t*. Points
         // into the resolve_type node's resolved_metadata() optional.
         // resolve_type.cpp + enrich(drop_type_t) + dispatcher UDT existence
         // checks read decoded complex_logical_type via this map.
         std::unordered_map<std::string, const components::logical_plan::resolved_type_metadata_t*> type_md_by_qname;
-        // "dbname|fnname" -> fn_oid (from resolve_function nodes).
-        std::unordered_map<std::string, components::catalog::oid_t> fn_oid_by_qname;
         // Constraint snapshots keyed by parent table_oid.
         // outgoing_fks_by_oid: FKs where the target is the CHILD (INSERT/UPDATE).
         // referencing_fks_by_oid: FKs where the target is the PARENT (DELETE).
@@ -75,8 +67,10 @@ namespace services::catalog_resolve {
         std::unordered_map<std::pmr::string, cte_schema_t> cte_schemas;
 
         bool empty() const noexcept {
-            return ns_by_dbname.empty() && type_oid_by_qname.empty() && fn_oid_by_qname.empty() &&
-                   outgoing_fks_by_oid.empty() && referencing_fks_by_oid.empty() && check_exprs_by_oid.empty();
+            // type_md_by_qname stands in for the former type_oid_by_qname slot
+            // (the live, read signal that resolve-type data is present).
+            return ns_by_dbname.empty() && type_md_by_qname.empty() && outgoing_fks_by_oid.empty() &&
+                   referencing_fks_by_oid.empty() && check_exprs_by_oid.empty();
         }
     };
 
@@ -92,79 +86,72 @@ namespace services::catalog_resolve {
         while (!q.empty()) {
             auto* n = q.front();
             q.pop();
-            switch (n->type()) {
-                case node_type::catalog_resolve_namespace_t: {
-                    auto* rn = static_cast<node_catalog_resolve_namespace_t*>(n);
-                    if (rn->namespace_oid() != components::catalog::INVALID_OID) {
-                        out->ns_by_dbname[rn->dbname()] = rn->namespace_oid();
+            if (n->type() == node_type::catalog_resolve_t) {
+                auto* rn = static_cast<node_catalog_resolve_t*>(n);
+                switch (rn->kind()) {
+                    case resolve_kind::namespace_: {
+                        if (rn->namespace_oid() != components::catalog::INVALID_OID) {
+                            out->ns_by_dbname[rn->dbname()] = rn->namespace_oid();
+                        }
+                        break;
                     }
-                    break;
-                }
-                case node_type::catalog_resolve_table_t: {
-                    auto* rt = static_cast<node_catalog_resolve_table_t*>(n);
-                    if (rt->namespace_oid() != components::catalog::INVALID_OID) {
-                        out->ns_by_dbname[rt->dbname()] = rt->namespace_oid();
-                        std::string key;
-                        key.reserve(rt->dbname().size() + 1 + rt->relname().size());
-                        key.append(rt->dbname()).push_back('|');
-                        key.append(rt->relname());
-                        // Stamp table metadata pointer so validate /
-                        // dispatcher can read columns + relkind from the
-                        // plan-tree idx.
-                        if (rt->resolved_metadata().has_value()) {
-                            const auto* md_ptr = &rt->resolved_metadata().value();
-                            out->tbl_md_by_qname[std::move(key)] = md_ptr;
-                            if (rt->table_oid() != components::catalog::INVALID_OID) {
-                                out->tbl_md_by_oid[rt->table_oid()] = md_ptr;
+                    case resolve_kind::table: {
+                        auto* rt = rn;
+                        if (rt->namespace_oid() != components::catalog::INVALID_OID) {
+                            out->ns_by_dbname[rt->dbname()] = rt->namespace_oid();
+                            std::string key;
+                            key.reserve(rt->dbname().size() + 1 + rt->relname().size());
+                            key.append(rt->dbname()).push_back('|');
+                            key.append(rt->relname());
+                            // Stamp table metadata pointer so validate /
+                            // dispatcher can read columns + relkind from the
+                            // plan-tree idx.
+                            if (rt->resolved_metadata().has_value()) {
+                                const auto* md_ptr = &rt->resolved_metadata().value();
+                                out->tbl_md_by_qname[std::move(key)] = md_ptr;
+                                if (rt->table_oid() != components::catalog::INVALID_OID) {
+                                    out->tbl_md_by_oid[rt->table_oid()] = md_ptr;
+                                }
                             }
                         }
+                        break;
                     }
-                    break;
-                }
-                case node_type::catalog_resolve_type_t: {
-                    auto* tr = static_cast<node_catalog_resolve_type_t*>(n);
-                    if (tr->type_oid() != components::catalog::INVALID_OID) {
-                        std::string key;
-                        key.reserve(tr->dbname().size() + 1 + tr->type_name().size());
-                        key.append(tr->dbname()).push_back('|');
-                        key.append(tr->type_name());
-                        out->type_oid_by_qname[key] = tr->type_oid();
-                        if (tr->resolved_metadata().has_value()) {
-                            out->type_md_by_qname[std::move(key)] = &tr->resolved_metadata().value();
+                    case resolve_kind::type: {
+                        auto* tr = rn;
+                        if (tr->type_oid() != components::catalog::INVALID_OID) {
+                            std::string key;
+                            key.reserve(tr->dbname().size() + 1 + tr->type_name().size());
+                            key.append(tr->dbname()).push_back('|');
+                            key.append(tr->type_name());
+                            if (tr->resolved_type_metadata().has_value()) {
+                                out->type_md_by_qname[std::move(key)] = &tr->resolved_type_metadata().value();
+                            }
                         }
-                    }
-                    break;
-                }
-                case node_type::catalog_resolve_function_t: {
-                    auto* fr = static_cast<node_catalog_resolve_function_t*>(n);
-                    if (fr->function_oid() != components::catalog::INVALID_OID) {
-                        std::string key;
-                        key.reserve(fr->dbname().size() + 1 + fr->function_name().size());
-                        key.append(fr->dbname()).push_back('|');
-                        key.append(fr->function_name());
-                        out->fn_oid_by_qname[std::move(key)] = fr->function_oid();
-                    }
-                    break;
-                }
-                case node_type::catalog_resolve_constraint_t: {
-                    auto* cr = static_cast<node_catalog_resolve_constraint_t*>(n);
-                    if (!cr->target())
-                        break;
-                    const auto& md = cr->target()->resolved_metadata();
-                    if (!md.has_value() || md->table_oid == components::catalog::INVALID_OID) {
                         break;
                     }
-                    using direction_t = node_catalog_resolve_constraint_t::direction_t;
-                    if (cr->direction() == direction_t::outgoing) {
-                        out->outgoing_fks_by_oid[md->table_oid] = cr->fks();
-                        out->check_exprs_by_oid[md->table_oid] = cr->check_exprs();
-                    } else {
-                        out->referencing_fks_by_oid[md->table_oid] = cr->fks();
+                    case resolve_kind::constraint: {
+                        auto* cr = rn;
+                        if (!cr->target())
+                            break;
+                        // target() is a sibling kind()==table node; its table
+                        // metadata carries the table_oid we key constraints on.
+                        const auto& md = cr->target()->resolved_metadata();
+                        if (!md.has_value() || md->table_oid == components::catalog::INVALID_OID) {
+                            break;
+                        }
+                        if (cr->direction() == resolve_direction::outgoing) {
+                            out->outgoing_fks_by_oid[md->table_oid] = cr->fks();
+                            out->check_exprs_by_oid[md->table_oid] = cr->check_exprs();
+                        } else {
+                            out->referencing_fks_by_oid[md->table_oid] = cr->fks();
+                        }
+                        break;
                     }
-                    break;
+                    case resolve_kind::database:
+                        // database resolve has no plan-tree idx harvest (its oid
+                        // flows into execution_context_t.database_oid directly).
+                        break;
                 }
-                default:
-                    break;
             }
             for (const auto& c : n->children()) {
                 if (c)

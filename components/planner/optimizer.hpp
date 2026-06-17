@@ -7,8 +7,8 @@ namespace components::planner {
 
     // Single optimization pass. Runs AFTER the planner rewrite, i.e. after
     // resolve → validate → enrich → planner.create_plan, so node->table_oid()
-    // is populated, sibling catalog_resolve_table_t nodes carry
-    // resolved_metadata(), and the schema stamps key.side()/key.path() set by
+    // is populated, sibling node_catalog_resolve_t (resolve_kind::table) nodes
+    // carry resolved_metadata(), and the schema stamps key.side()/key.path() set by
     // validate_schema are present.
     // Rules (in order):
     //   - constant_folding (on parameter expressions)

@@ -49,10 +49,6 @@ namespace components::operators {
         fk_cascade,
         // DDL sequencing operator
         sequence,
-        // DDL primitive write (planner-built pg_catalog row)
-        primitive_write,
-        // DDL primitive delete (planner-built pg_catalog row delete)
-        primitive_delete,
         // DDL create collection (storage + index registration + catalog writes)
         create_collection,
         // ALTER TABLE per-clause primitives
@@ -97,7 +93,7 @@ namespace components::operators {
         abort_transaction,
         // BEGIN / START TRANSACTION: ensures an active transaction exists and
         // marks it explicit, so DML accumulates for a batched COMMIT-time publish
-        // (see node_begin_transaction.hpp).
+        // (see node_transaction.hpp).
         begin_transaction,
         // COMPUTED_FIELD_REGISTER / COMPUTED_FIELD_UNREGISTER —
         // maintain pg_computed_column rows for relkind='g' dynamic-schema
@@ -135,12 +131,6 @@ namespace components::operators {
         // out-of-scope; that path stays on the synchronous resolve_type_sync
         // helper until a separate operator covers it.
         resolve_type,
-        // RESOLVE_FUNCTION — leaf operator that scans pg_proc by
-        // (proname, pronamespace) and emits matching pg_proc rows as a
-        // data_chunk (cols: oid, proname, pronamespace, pronargs, prouid,
-        // proargmatchers, prorettype). Mirrors manager_disk_t::resolve_function
-        // without the dedicated actor message — drives read_rows_by_key only.
-        resolve_function,
         // RESOLVE_CONSTRAINT — pipeline FK + CHECK constraint resolution.
         // Reads pg_constraint by (conrelid|confrelid) +
         // pg_attribute (column-name lookups) + pg_class + pg_namespace

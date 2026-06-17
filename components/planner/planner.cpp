@@ -7,12 +7,9 @@
 #include <catalog/ddl_metadata_builder.hpp>
 #include <catalog/oid_batch.hpp>
 #include <catalog/system_table_schemas.hpp>
-#include <logical_plan/node_alter_column_add.hpp>
-#include <logical_plan/node_alter_column_drop.hpp>
-#include <logical_plan/node_alter_column_rename.hpp>
+#include <logical_plan/node_alter_column.hpp>
 #include <logical_plan/node_alter_table.hpp>
 #include <logical_plan/node_check_constraint.hpp>
-#include <logical_plan/node_computed_field_unregister.hpp>
 #include <logical_plan/node_create_collection.hpp>
 #include <logical_plan/node_create_constraint.hpp>
 #include <logical_plan/node_create_database.hpp>
@@ -23,19 +20,11 @@
 #include <logical_plan/node_create_type.hpp>
 #include <logical_plan/node_create_view.hpp>
 #include <logical_plan/node_delete.hpp>
-#include <logical_plan/node_drop_collection.hpp>
-#include <logical_plan/node_drop_database.hpp>
-#include <logical_plan/node_drop_index.hpp>
-#include <logical_plan/node_drop_macro.hpp>
-#include <logical_plan/node_drop_sequence.hpp>
-#include <logical_plan/node_drop_type.hpp>
-#include <logical_plan/node_drop_view.hpp>
+#include <logical_plan/node_drop.hpp>
 #include <logical_plan/node_dynamic_cascade_delete.hpp>
 #include <logical_plan/node_fk_cascade.hpp>
 #include <logical_plan/node_fk_check.hpp>
 #include <logical_plan/node_insert.hpp>
-#include <logical_plan/node_primitive_delete.hpp>
-#include <logical_plan/node_primitive_write.hpp>
 #include <logical_plan/node_refresh_matview.hpp>
 #include <logical_plan/node_sequence.hpp>
 #include <logical_plan/node_update.hpp>
@@ -46,6 +35,17 @@ namespace components::planner {
 
     namespace {
         using node_ptr = logical_plan::node_ptr;
+
+        // Build a catalog-write leaf: a node_insert_t whose table_oid is the
+        // pg_catalog table and whose single data child carries the ready-made
+        // row. create_plan lowers it to operator_insert's catalog branch
+        // (append_pg_catalog_row). Replaces node_primitive_write_t.
+        node_ptr make_catalog_write(std::pmr::memory_resource* r, catalog::oid_t catalog_table_oid,
+                                    vector::data_chunk_t&& row) {
+            auto ins = logical_plan::make_node_insert(r, std::move(row));
+            ins->set_table_oid(catalog_table_oid);
+            return ins;
+        }
 
         node_ptr rewrite_insert(std::pmr::memory_resource* r, node_ptr node) {
             auto* ins = static_cast<logical_plan::node_insert_t*>(node.get());
@@ -120,16 +120,11 @@ namespace components::planner {
                     return rewrite_update(r, node);
                 case node_type::delete_t:
                     return rewrite_delete(r, node);
-                // catalog_resolve_* nodes are leaf sub-plans emitted by the SQL
+                // catalog_resolve_t nodes are leaf sub-plans emitted by the SQL
                 // transformer; physical_plan_generator lowers them to
                 // operator_resolve_*_t which performs the pg_catalog lookup at
                 // execute time. Pass through unchanged — no children to walk.
-                case node_type::catalog_resolve_table_t:
-                case node_type::catalog_resolve_namespace_t:
-                case node_type::catalog_resolve_database_t:
-                case node_type::catalog_resolve_type_t:
-                case node_type::catalog_resolve_function_t:
-                case node_type::catalog_resolve_constraint_t:
+                case node_type::catalog_resolve_t:
                 case node_type::allocate_oids_t:
                     return node;
                 default:
@@ -140,7 +135,7 @@ namespace components::planner {
             }
         }
 
-        // CREATE DATABASE → sequence_t(primitive_write × N) over pg_namespace.
+        // CREATE DATABASE → sequence_t(catalog-write node_insert_t × N) over pg_namespace.
         // The namespace_oid is pre-allocated in the dispatcher and arrives as the first OID in the batch.
         node_ptr rewrite_create_database(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cd = static_cast<logical_plan::node_create_database_t*>(node.get());
@@ -151,15 +146,14 @@ namespace components::planner {
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {
-                seq->append_child(
-                    boost::intrusive_ptr(new logical_plan::node_primitive_write_t(r, w.table_oid, std::move(w.row))));
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
         }
 
-        // DDL rewrite: produces sequence_t(create_collection_t, primitive_write×N).
+        // DDL rewrite: produces sequence_t(create_collection_t, catalog-write node_insert_t × N).
         // The original node is kept as first child so execute_ddl can create physical
-        // storage; the primitive_write children carry the pg_catalog rows to insert.
+        // storage; the catalog-write children carry the pg_catalog rows to insert.
         // Column types must already be resolved (done by enrich_plan).
         node_ptr rewrite_create_table(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cc = static_cast<logical_plan::node_create_collection_t*>(node.get());
@@ -188,13 +182,12 @@ namespace components::planner {
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             seq->append_child(node); // child 0: physical storage creation
             for (auto& w : writes) {
-                seq->append_child(
-                    boost::intrusive_ptr(new logical_plan::node_primitive_write_t(r, w.table_oid, std::move(w.row))));
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
         }
 
-        // CREATE CONSTRAINT → sequence_t(primitive_write × N) over pg_constraint + pg_depend.
+        // CREATE CONSTRAINT → sequence_t(catalog-write node_insert_t × N) over pg_constraint + pg_depend.
         // Resolved fields (table_oid, ref_table_oid, fk/ref attoids) are populated by
         // enrich_logical_plan before the planner runs, so the rewrite is purely synchronous.
         node_ptr
@@ -217,13 +210,12 @@ namespace components::planner {
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {
-                seq->append_child(
-                    boost::intrusive_ptr(new logical_plan::node_primitive_write_t(r, w.table_oid, std::move(w.row))));
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
         }
 
-        // CREATE SEQUENCE → sequence_t(primitive_write × N) over pg_class + pg_sequence
+        // CREATE SEQUENCE → sequence_t(catalog-write node_insert_t × N) over pg_class + pg_sequence
         // + pg_depend (seq → ns 'n'). namespace_oid is set by the enrich phase
         // (from the plan-tree resolve idx); the seq_oid is allocated from the dispatcher's batch.
         node_ptr rewrite_create_sequence(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
@@ -243,13 +235,12 @@ namespace components::planner {
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {
-                seq->append_child(
-                    boost::intrusive_ptr(new logical_plan::node_primitive_write_t(r, w.table_oid, std::move(w.row))));
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
         }
 
-        // CREATE VIEW → sequence_t(primitive_write × N) over pg_class (relkind='v')
+        // CREATE VIEW → sequence_t(catalog-write node_insert_t × N) over pg_class (relkind='v')
         // + pg_rewrite + pg_depend (view → ns 'n'). namespace_oid is set by enrich.
         // OID batch must hold at least 2 OIDs (view_oid + rule_oid).
         node_ptr rewrite_create_view(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
@@ -267,13 +258,12 @@ namespace components::planner {
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {
-                seq->append_child(
-                    boost::intrusive_ptr(new logical_plan::node_primitive_write_t(r, w.table_oid, std::move(w.row))));
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
         }
 
-        // CREATE MACRO → sequence_t(primitive_write × N) over pg_class (relkind='m')
+        // CREATE MACRO → sequence_t(catalog-write node_insert_t × N) over pg_class (relkind='m')
         // + pg_rewrite + pg_depend (macro → ns 'n'). namespace_oid is set by enrich.
         // OID batch must hold at least 2 OIDs (macro_oid + rule_oid).
         node_ptr rewrite_create_macro(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
@@ -291,8 +281,7 @@ namespace components::planner {
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {
-                seq->append_child(
-                    boost::intrusive_ptr(new logical_plan::node_primitive_write_t(r, w.table_oid, std::move(w.row))));
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
         }
@@ -347,7 +336,7 @@ namespace components::planner {
             return node;
         }
 
-        // CREATE TYPE → sequence_t(primitive_write × N).
+        // CREATE TYPE → sequence_t(catalog-write node_insert_t × N).
         //
         //   STRUCT  → composite type, persisted PostgreSQL-style as a pg_class entry
         //             with relkind='c' + one pg_attribute row per field. We reuse
@@ -427,13 +416,12 @@ namespace components::planner {
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {
-                seq->append_child(
-                    boost::intrusive_ptr(new logical_plan::node_primitive_write_t(r, w.table_oid, std::move(w.row))));
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
         }
 
-        // CREATE INDEX → sequence_t(primitive_write × N, create_index_t).
+        // CREATE INDEX → sequence_t(catalog-write node_insert_t × N, create_index_t).
         //
         // The trailing create_index_t carries the resolved metadata (name, keys,
         // type, namespace_oid, table_oid, index_oid, indkey, column_attoids) so
@@ -467,8 +455,7 @@ namespace components::planner {
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {
-                seq->append_child(
-                    boost::intrusive_ptr(new logical_plan::node_primitive_write_t(r, w.table_oid, std::move(w.row))));
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             // Backfill marker: the original create_index_t now carries resolved
             // metadata for the physical plan generator. Kept as the *last* child
@@ -477,7 +464,7 @@ namespace components::planner {
             return seq;
         }
 
-        // DROP INDEX → sequence_t(primitive_delete × N, drop_index_t).
+        // DROP INDEX → sequence_t(catalog-delete node_delete_t × N, drop_index_t).
         //
         // The deletes scrub pg_index/pg_depend/pg_class rows for the index oid;
         // the trailing drop_index_t carries the index name and OID so
@@ -488,7 +475,7 @@ namespace components::planner {
         // call no-ops on a missing engine entry — matching the pre-migration
         // executor behavior of returning silent success.
         node_ptr rewrite_drop_index(std::pmr::memory_resource* r, node_ptr node) {
-            auto* di = static_cast<logical_plan::node_drop_index_t*>(node.get());
+            auto* di = static_cast<logical_plan::node_drop_t*>(node.get());
             const catalog::oid_t index_oid = di->index_oid();
 
             constexpr catalog::oid_t pg_idx_coll = catalog::well_known_oid::pg_index_table;
@@ -497,14 +484,10 @@ namespace components::planner {
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             if (index_oid != catalog::INVALID_OID) {
-                seq->append_child(boost::intrusive_ptr(
-                    new logical_plan::node_primitive_delete_t(r, pg_idx_coll, std::int64_t{0}, index_oid)));
-                seq->append_child(boost::intrusive_ptr(
-                    new logical_plan::node_primitive_delete_t(r, pg_dep_coll, std::int64_t{1}, index_oid)));
-                seq->append_child(boost::intrusive_ptr(
-                    new logical_plan::node_primitive_delete_t(r, pg_dep_coll, std::int64_t{3}, index_oid)));
-                seq->append_child(boost::intrusive_ptr(
-                    new logical_plan::node_primitive_delete_t(r, pg_class_coll, std::int64_t{0}, index_oid)));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_idx_coll, std::int64_t{0}, index_oid));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_dep_coll, std::int64_t{1}, index_oid));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_dep_coll, std::int64_t{3}, index_oid));
+                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_class_coll, std::int64_t{0}, index_oid));
             }
             // Trailing drop_index_t marker → operator_drop_index_t.
             seq->append_child(node);
@@ -520,69 +503,51 @@ namespace components::planner {
         // The seed (classid, objid) is enrich-resolved on the legacy drop_X node and
         // simply forwarded here. INVALID_OID seeds become a runtime no-op inside the
         // operator — matches the legacy `if (rns.found)` / `if (rt.found)` guards.
-        node_ptr rewrite_drop_database(std::pmr::memory_resource* r, node_ptr node) {
-            auto* dd = static_cast<logical_plan::node_drop_database_t*>(node.get());
+        // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → one
+        // node_dynamic_cascade_delete_t. The (classid, seed objid) pair is
+        // derived from the merged node's kind(); behavior() is forwarded.
+        // DROP INDEX is NOT routed here — it keeps its own rewrite_drop_index
+        // path because the dynamic cascade operator never tears down the index
+        // actor for relkind 'i'.
+        node_ptr rewrite_drop(std::pmr::memory_resource* r, node_ptr node) {
+            auto* d = static_cast<logical_plan::node_drop_t*>(node.get());
+            catalog::oid_t classid = catalog::INVALID_OID;
+            catalog::oid_t seed_objid = catalog::INVALID_OID;
+            switch (d->kind()) {
+                case logical_plan::drop_target_kind::database:
+                    classid = catalog::well_known_oid::pg_namespace_table;
+                    seed_objid = d->namespace_oid();
+                    break;
+                case logical_plan::drop_target_kind::type:
+                    classid = catalog::well_known_oid::pg_type_table;
+                    seed_objid = d->type_oid();
+                    break;
+                case logical_plan::drop_target_kind::collection:
+                case logical_plan::drop_target_kind::sequence:
+                case logical_plan::drop_target_kind::view:
+                case logical_plan::drop_target_kind::macro:
+                    // sequence/view/macro seed migrated from relation_oid() → table_oid().
+                    classid = catalog::well_known_oid::pg_class_table;
+                    seed_objid = d->table_oid();
+                    break;
+                case logical_plan::drop_target_kind::index:
+                    // Handled by rewrite_drop_index — never reached here.
+                    break;
+            }
             return boost::intrusive_ptr(
-                new logical_plan::node_dynamic_cascade_delete_t(r,
-                                                                catalog::well_known_oid::pg_namespace_table,
-                                                                dd->namespace_oid(),
-                                                                dd->behavior()));
-        }
-
-        node_ptr rewrite_drop_collection(std::pmr::memory_resource* r, node_ptr node) {
-            auto* dc = static_cast<logical_plan::node_drop_collection_t*>(node.get());
-            return boost::intrusive_ptr(
-                new logical_plan::node_dynamic_cascade_delete_t(r,
-                                                                catalog::well_known_oid::pg_class_table,
-                                                                dc->table_oid(),
-                                                                dc->behavior()));
-        }
-
-        node_ptr rewrite_drop_type(std::pmr::memory_resource* r, node_ptr node) {
-            auto* dt = static_cast<logical_plan::node_drop_type_t*>(node.get());
-            return boost::intrusive_ptr(
-                new logical_plan::node_dynamic_cascade_delete_t(r,
-                                                                catalog::well_known_oid::pg_type_table,
-                                                                dt->type_oid(),
-                                                                dt->behavior()));
-        }
-
-        node_ptr rewrite_drop_sequence(std::pmr::memory_resource* r, node_ptr node) {
-            auto* ds = static_cast<logical_plan::node_drop_sequence_t*>(node.get());
-            return boost::intrusive_ptr(
-                new logical_plan::node_dynamic_cascade_delete_t(r,
-                                                                catalog::well_known_oid::pg_class_table,
-                                                                ds->relation_oid(),
-                                                                ds->behavior()));
-        }
-
-        node_ptr rewrite_drop_view(std::pmr::memory_resource* r, node_ptr node) {
-            auto* dv = static_cast<logical_plan::node_drop_view_t*>(node.get());
-            return boost::intrusive_ptr(
-                new logical_plan::node_dynamic_cascade_delete_t(r,
-                                                                catalog::well_known_oid::pg_class_table,
-                                                                dv->relation_oid(),
-                                                                dv->behavior()));
-        }
-
-        node_ptr rewrite_drop_macro(std::pmr::memory_resource* r, node_ptr node) {
-            auto* dm = static_cast<logical_plan::node_drop_macro_t*>(node.get());
-            return boost::intrusive_ptr(
-                new logical_plan::node_dynamic_cascade_delete_t(r,
-                                                                catalog::well_known_oid::pg_class_table,
-                                                                dm->relation_oid(),
-                                                                dm->behavior()));
+                new logical_plan::node_dynamic_cascade_delete_t(r, classid, seed_objid, d->behavior()));
         }
 
         // ALTER TABLE → sequence_t(alter_column_{add,rename,drop}_t × N).
         //
-        // Splits a multi-clause node_alter_table_t into per-clause primitives. Each
-        // primitive is lowered by the physical-plan generator into a dedicated
-        // operator that performs the pg_attribute / pg_depend / in-memory schema
-        // work for that single clause.
+        // Splits a multi-clause node_alter_table_t into per-clause primitives —
+        // node_alter_column_t(op) leaves (add/rename/drop), plus the computed_=true
+        // variant for relkind='g' DROP COLUMN. Each is lowered by the physical-plan
+        // generator into a dedicated operator that performs the pg_attribute /
+        // pg_depend / in-memory schema work for that single clause.
         //
         // Pre-conditions: enrich_logical_plan has stamped table_oid on the node.
-        // No OIDs are pre-allocated; alter_column_add_t allocates its own attoid at
+        // No OIDs are pre-allocated; the add operator allocates its own attoid at
         // execution time (one per clause) since attnum/attoid are per-row. The
         // drop_column operator looks up the attoid by (table_oid, column_name) at
         // execution time too.
@@ -607,30 +572,29 @@ namespace components::planner {
                                 col.type().set_alias(alias);
                         }
                     }
-                    seq->append_child(
-                        boost::intrusive_ptr(new logical_plan::node_alter_column_add_t(r, table_oid, std::move(col))));
+                    auto add = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::add);
+                    add->set_table_oid(table_oid);
+                    add->set_column(std::move(col));
+                    seq->append_child(add);
                 } else if (sub.kind == logical_plan::alter_table_kind::rename_column) {
-                    seq->append_child(boost::intrusive_ptr(
-                        new logical_plan::node_alter_column_rename_t(r,
-                                                                     table_oid,
-                                                                     core::columnname_t{sub.column_name},
-                                                                     core::columnname_t{sub.new_column_name})));
+                    auto rename = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::rename);
+                    rename->set_table_oid(table_oid);
+                    rename->set_old_name(core::columnname_t{sub.column_name});
+                    rename->set_new_name(core::columnname_t{sub.new_column_name});
+                    seq->append_child(rename);
                 } else if (sub.kind == logical_plan::alter_table_kind::drop_column) {
+                    auto drop = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::drop);
+                    drop->set_table_oid(table_oid);
+                    drop->set_column_name(core::columnname_t{sub.column_name});
                     if (alter->relkind() == catalog::relkind::computed) {
-                        seq->append_child(boost::intrusive_ptr(
-                            new logical_plan::node_computed_field_unregister_t(r,
-                                                                               core::dbname_t{},
-                                                                               core::relname_t{},
-                                                                               table_oid,
-                                                                               core::columnname_t{sub.column_name})));
+                        // relkind='g' DROP COLUMN: computed-field unregister
+                        // (dependency-free; lowers to operator_computed_field_unregister_t).
+                        drop->set_computed(true);
                     } else {
-                        seq->append_child(boost::intrusive_ptr(
-                            new logical_plan::node_alter_column_drop_t(r,
-                                                                       table_oid,
-                                                                       catalog::INVALID_OID,
-                                                                       core::columnname_t{sub.column_name},
-                                                                       catalog::drop_behavior_t::cascade_)));
+                        drop->set_namespace_oid(catalog::INVALID_OID);
+                        drop->set_behavior(catalog::drop_behavior_t::cascade_);
                     }
+                    seq->append_child(drop);
                 }
             }
             return seq;
@@ -668,32 +632,22 @@ namespace components::planner {
                     return rewrite_create_type(r, node, oid_batch);
                 case node_type::create_index_t:
                     return rewrite_create_index(r, node, oid_batch);
-                case node_type::drop_index_t:
-                    return rewrite_drop_index(r, node);
-                case node_type::drop_database_t:
-                    return rewrite_drop_database(r, node);
-                case node_type::drop_collection_t:
-                    return rewrite_drop_collection(r, node);
-                case node_type::drop_type_t:
-                    return rewrite_drop_type(r, node);
-                case node_type::drop_sequence_t:
-                    return rewrite_drop_sequence(r, node);
-                case node_type::drop_view_t:
-                    return rewrite_drop_view(r, node);
-                case node_type::drop_macro_t:
-                    return rewrite_drop_macro(r, node);
+                case node_type::drop_t:
+                    // DROP INDEX keeps its own sequence-of-deletes rewrite (the
+                    // cascade driver never tears down the index actor); every
+                    // other DROP kind lowers to the dynamic cascade-delete driver.
+                    if (static_cast<logical_plan::node_drop_t*>(node.get())->kind() ==
+                        logical_plan::drop_target_kind::index) {
+                        return rewrite_drop_index(r, node);
+                    }
+                    return rewrite_drop(r, node);
                 case node_type::alter_table_t:
                     return rewrite_alter_table(r, node);
-                // catalog_resolve_* nodes are leaf sub-plans appearing as
+                // catalog_resolve_t nodes are leaf sub-plans appearing as
                 // siblings of DDL/DML consumer nodes inside a sequence_t. Pass
                 // through unchanged — the actual lookup happens in
                 // operator_resolve_*_t at execute time.
-                case node_type::catalog_resolve_table_t:
-                case node_type::catalog_resolve_namespace_t:
-                case node_type::catalog_resolve_database_t:
-                case node_type::catalog_resolve_type_t:
-                case node_type::catalog_resolve_function_t:
-                case node_type::catalog_resolve_constraint_t:
+                case node_type::catalog_resolve_t:
                 case node_type::allocate_oids_t:
                     return node;
                 default:

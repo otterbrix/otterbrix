@@ -49,6 +49,42 @@ namespace components::operators {
         auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 
+        // Catalog-table insert (DDL pg_catalog row): delegate to the WAL-first
+        // append_pg_catalog_row instead of the user append-first path. The row is
+        // a ready-made pg_catalog tuple built by ddl_metadata_builder (atttypid /
+        // attoid already allocated), so the user preprocess — _id dedup, NOT-NULL
+        // checks, DEFAULT fill, type promotion, RETURNING readback — is skipped;
+        // append_pg_catalog_row runs the lighter catalog preprocess on the agent.
+        // The returned range MUST land in ctx->pg_catalog_appends (NOT dml_*):
+        // operator_commit_transaction publishes catalog rows via
+        // storage_publish_commits keyed off that vector — pushing to dml_* would
+        // silently leave the row unpublished. (Folded from operator_primitive_write_t.)
+        //
+        // The chunk is one ready-made row per catalog_write_t / node_insert here
+        // (build_*_writes always emits 1-row chunks, one node per row), matching
+        // operator_primitive_write's per-node ×N shape — so the whole chunk is
+        // sent as a single catalog row.
+        if (components::catalog::is_catalog_table(table_oid_)) {
+            data_chunk_t row(resource_, out_chunk.types(), out_chunk.size());
+            out_chunk.copy(row, 0);
+            auto [_c, cf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::append_pg_catalog_row,
+                                             exec_ctx,
+                                             table_oid_,
+                                             std::move(row));
+            auto rng = co_await std::move(cf);
+            if (rng.count > 0) {
+                ctx->pg_catalog_appends.push_back(std::move(rng));
+            }
+            // No RETURNING for catalog inserts; emit a cardinality-only chunk like
+            // the user no-RETURNING path so any downstream cursor sees the count.
+            data_chunk_t res_chunk(resource_, {}, out_chunk.size());
+            res_chunk.set_cardinality(out_chunk.size());
+            set_output(make_operator_data(resource_, std::move(res_chunk)));
+            mark_executed();
+            co_return;
+        }
+
         // When a resolver sibling supplied catalog metadata, compute a
         // chunk_position -> table_position translation via alias matching.
         // The disk-actor's storage_append already aligns by alias (with
@@ -91,7 +127,7 @@ namespace components::operators {
         // 3. WAL physical_insert (synchronous; flush is fire-and-forget).
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
             // database_oid selects the WAL worker. Hardcoded to main_database
-            // until catalog_resolve_database_t populates ctx->database_oid.
+            // until the database resolve (resolve_kind::database) populates ctx->database_oid.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                              &services::wal::manager_wal_replicate_t::write_physical_insert,

@@ -17,12 +17,29 @@ namespace components::logical_plan {
 
     class node_join_t final : public node_t {
     public:
+        // Physical algorithm chosen for this logical join. Stamped by the optimizer
+        // rule rewrite_hash_joins (via set_equi_columns) and read by create_plan_join.
+        // This is an ANNOTATION only — it does NOT change the logical semantics.
+        enum class join_algo : uint8_t
+        {
+            nested,
+            hash
+        };
+
         explicit node_join_t(std::pmr::memory_resource* resource,
                              core::dbname_t dbname,
                              core::relname_t relname,
                              join_type type);
 
         join_type type() const;
+
+        join_algo algo() const noexcept;
+        void set_algo(join_algo algo) noexcept;
+        std::size_t left_col() const noexcept;
+        std::size_t right_col() const noexcept;
+        // Records the detected equi-key column indices (into each side's input chunk)
+        // and switches algo() to hash. Called by rewrite_hash_joins.
+        void set_equi_columns(std::size_t left, std::size_t right) noexcept;
 
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
@@ -31,6 +48,9 @@ namespace components::logical_plan {
         std::string dbname_;
         std::string relname_;
         join_type type_;
+        join_algo algo_{join_algo::nested};
+        std::size_t left_col_{0};
+        std::size_t right_col_{0};
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -40,46 +60,5 @@ namespace components::logical_plan {
 
     node_join_ptr
     make_node_join(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname, join_type type);
-
-    // Optimizer-produced equi-join node (see node_type::hash_join_t). Same shape as
-    // node_join_t (children = left/right inputs, expressions = the ON condition) but
-    // additionally carries the equi-key column indices into each side's input chunk,
-    // detected by rewrite_hash_joins. The planner lowers it directly into
-    // operator_hash_join_t without re-inspecting the condition.
-    class node_hash_join_t final : public node_t {
-    public:
-        node_hash_join_t(std::pmr::memory_resource* resource,
-                         core::dbname_t dbname,
-                         core::relname_t relname,
-                         join_type type,
-                         std::size_t left_col,
-                         std::size_t right_col);
-
-        join_type type() const noexcept { return type_; }
-        std::size_t left_col() const noexcept { return left_col_; }
-        std::size_t right_col() const noexcept { return right_col_; }
-
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
-
-    private:
-        std::string dbname_;
-        std::string relname_;
-        join_type type_;
-        std::size_t left_col_;
-        std::size_t right_col_;
-
-        hash_t hash_impl() const override;
-        std::string to_string_impl() const override;
-    };
-
-    using node_hash_join_ptr = boost::intrusive_ptr<node_hash_join_t>;
-
-    node_hash_join_ptr make_node_hash_join(std::pmr::memory_resource* resource,
-                                           core::dbname_t dbname,
-                                           core::relname_t relname,
-                                           join_type type,
-                                           std::size_t left_col,
-                                           std::size_t right_col);
 
 } // namespace components::logical_plan

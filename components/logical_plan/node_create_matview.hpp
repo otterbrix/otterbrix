@@ -19,7 +19,7 @@ namespace components::logical_plan {
     // body_plan->aggregate.expressions + source's stamped resolved_metadata
     // to derive the output schema before lowering to:
     //   sequence_t(create_collection(relkind='m'),
-    //              primitive_write × N (pg_class + pg_attribute + pg_rewrite + pg_depend),
+    //              catalog writes × N (pg_class + pg_attribute + pg_rewrite + pg_depend),
     //              insert_t(target=mv_oid, source=body_plan))
     class node_create_matview_t final : public node_t {
     public:

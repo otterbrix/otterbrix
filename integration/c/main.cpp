@@ -2,8 +2,7 @@
 
 #include <components/cursor/cursor.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
-#include <components/logical_plan/node_drop_collection.hpp>
-#include <components/logical_plan/node_drop_database.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
@@ -259,7 +258,8 @@ extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_na
         auto node = components::sql::transform::maybe_wrap_with_catalog_resolve_namespace(
             dispatcher->resource(),
             database,
-            components::logical_plan::make_node_drop_database(dispatcher->resource()));
+            components::logical_plan::make_node_drop(dispatcher->resource(),
+                                                     components::logical_plan::drop_target_kind::database));
         auto cursor = dispatcher->execute_plan(
             session,
             components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
@@ -283,7 +283,8 @@ extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_
             dispatcher->resource(),
             database,
             collection,
-            components::logical_plan::make_node_drop_collection(dispatcher->resource()));
+            components::logical_plan::make_node_drop(dispatcher->resource(),
+                                                     components::logical_plan::drop_target_kind::collection));
         auto cursor = dispatcher->execute_plan(
             session,
             components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});

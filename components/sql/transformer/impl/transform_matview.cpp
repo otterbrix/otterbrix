@@ -1,6 +1,5 @@
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_matview.hpp>
 #include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_sequence.hpp>

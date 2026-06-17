@@ -4,7 +4,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
-#include <components/logical_plan/node_catalog_resolve_database.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -36,7 +36,7 @@ namespace components::operators {
         std::pmr::memory_resource* resource,
         log_t log,
         std::string name,
-        components::logical_plan::node_catalog_resolve_database_t* target_node)
+        components::logical_plan::node_catalog_resolve_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_database)
         , name_(std::move(name))
         , target_node_(target_node)

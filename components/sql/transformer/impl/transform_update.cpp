@@ -1,6 +1,6 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>

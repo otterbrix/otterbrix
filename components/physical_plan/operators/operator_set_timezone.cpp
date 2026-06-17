@@ -66,7 +66,7 @@ namespace components::operators {
         // Record the append range so the executor's commit tail publishes (and,
         // on error, reverts) this pg_settings row through the unified DML path.
         // append_pg_catalog_row returns count==0 for the txn-less (transaction_id
-        // == 0) case, mirroring operator_primitive_write's recording guard.
+        // == 0) case, mirroring operator_insert's catalog-branch recording guard.
         auto rng = co_await std::move(uf);
         if (rng.count > 0)
             ctx->pg_catalog_appends.push_back(std::move(rng));

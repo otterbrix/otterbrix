@@ -1,5 +1,4 @@
-#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
-#include <components/logical_plan/node_catalog_resolve_type.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/sql/transformer/transformer.hpp>

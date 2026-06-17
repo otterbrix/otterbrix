@@ -11,8 +11,8 @@ namespace components::planner::optimizer {
     // Must run AFTER validate_schema (paths must be resolved to column indices)
     // and AFTER stamp_oids_from_resolves (so consumer nodes carry table_oid).
     //
-    // Schema info is read from sibling catalog_resolve_table_t nodes inside
-    // each sequence_t — the optimizer is self-contained and needs no external
+    // Schema info is read from sibling node_catalog_resolve_t (resolve_kind::table)
+    // nodes inside each sequence_t — the optimizer is self-contained and needs no external
     // catalog handle.
     //
     // Handles:

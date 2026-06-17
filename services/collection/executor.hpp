@@ -185,7 +185,7 @@ namespace services::collection::executor {
                                                            components::table::transaction_data txn,
                                                            uint64_t lowest_active_start_time);
 
-        // THE unified commit publisher: builds node_commit_transaction_t
+        // THE unified commit publisher: builds node_transaction_t(commit)
         // (ddl_mode adds the flush/WAL prefix) and runs it through the same
         // execute_plan pipeline every statement uses. The operator drains
         // transaction_t via txn_commit_drain_msg, batch-publishes storage,

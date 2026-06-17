@@ -472,6 +472,12 @@ namespace services::disk {
         void direct_update_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 components::vector::data_chunk_t& new_data);
+        // WAL-replay of a PHYSICAL_ADD_COLUMN record: re-apply each schema column to
+        // the owned storage ahead of the dependent PHYSICAL_INSERT. `schema_chunk` is
+        // a 0-row chunk whose columns ARE the new columns (alias-tagged types).
+        // Idempotent: columns already present (by name) are skipped.
+        void direct_add_column_sync(components::catalog::oid_t table_oid,
+                                    const components::vector::data_chunk_t& schema_chunk);
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }

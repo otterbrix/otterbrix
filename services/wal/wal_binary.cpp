@@ -159,6 +159,38 @@ namespace services::wal {
     }
 
     // -----------------------------------------------------------------------
+    // encode_add_column
+    //
+    // Schema-growth record (IN_MEMORY / computed dynamic add_column). The payload
+    // is a 0-row data_chunk whose columns ARE the new columns (each vector carries
+    // its column's alias-tagged complex_logical_type), serialized via the same
+    // data_chunk binary codec INSERT uses. row_count = number of new columns
+    // (informational); row_start = 0 (unused for schema records). Reusing the chunk
+    // codec means the types round-trip through the exact path the row data does.
+    // -----------------------------------------------------------------------
+    crc32_t encode_add_column(buffer_t& buffer,
+                              crc32_t last_crc32,
+                              id_t wal_id,
+                              uint64_t txn_id,
+                              components::catalog::oid_t table_oid,
+                              const components::vector::data_chunk_t& schema_chunk,
+                              uint64_t column_count) {
+        buffer_t payload_buf(buffer.get_allocator());
+        components::vector::serialize_binary(schema_chunk, payload_buf);
+
+        return write_dml_record(buffer,
+                                last_crc32,
+                                wal_id,
+                                txn_id,
+                                wal_record_type::PHYSICAL_ADD_COLUMN,
+                                table_oid,
+                                0,
+                                column_count,
+                                payload_buf.data(),
+                                static_cast<uint32_t>(payload_buf.size()));
+    }
+
+    // -----------------------------------------------------------------------
     // encode_delete
     // -----------------------------------------------------------------------
     crc32_t encode_delete(buffer_t& buffer,
@@ -361,7 +393,11 @@ namespace services::wal {
 
         // --- Type-specific payload decoding ---
         switch (rec.record_type) {
-            case wal_record_type::PHYSICAL_INSERT: {
+            case wal_record_type::PHYSICAL_INSERT:
+            // PHYSICAL_ADD_COLUMN shares INSERT's payload shape: a serialized
+            // data_chunk (0-row for schema records). Decode it into physical_data;
+            // the replay handler reads the column types from it.
+            case wal_record_type::PHYSICAL_ADD_COLUMN: {
                 if (payload_size > 0) {
                     bool ok = false;
                     auto chunk = components::vector::deserialize_binary(payload, payload_size, resource, ok);

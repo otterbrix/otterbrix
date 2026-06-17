@@ -103,11 +103,16 @@ namespace components::operators {
             }
         }
 
-        // 1. Capture WAL data BEFORE storage_append moves the chunk.
-        auto wal_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-        out_chunk.copy(*wal_data, 0);
-
-        // 2. storage_append (handles schema adoption, _id dedup).
+        // 1. storage_append — WAL-FIRST canonical append. The disk agent now owns
+        //    the WAL write: it preprocesses (schema adoption/growth, _id dedup,
+        //    NOT NULL, defaults, type promotion), allocates the start_row, writes the
+        //    WAL (PHYSICAL_ADD_COLUMN for any dynamic schema growth, then
+        //    PHYSICAL_INSERT carrying the final start_row + post-dedup count), and only
+        //    THEN materializes — all in one mailbox-atomic handler. This unifies user
+        //    inserts onto the SAME WAL-first ordering as catalog inserts
+        //    (append_pg_catalog_row), so the operator no longer issues its own WAL
+        //    record here. db_oid selection now lives in the agent (it reads
+        //    ctx.database_oid, falling back to main_database).
         auto data_copy = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
         out_chunk.copy(*data_copy, 0);
         auto [_a, af] = actor_zeta::send(ctx->disk_address,
@@ -118,33 +123,14 @@ namespace components::operators {
         auto [start_row, actual_count] = co_await std::move(af);
 
         if (actual_count == 0) {
-            // Nothing inserted (e.g. duplicate _id). Clear output and drop WAL.
+            // Nothing inserted (e.g. duplicate _id). The agent wrote no WAL for a
+            // no-op append, so there is nothing to drop. Clear output and finish.
             set_output(nullptr);
             mark_executed();
             co_return;
         }
 
-        // 3. WAL physical_insert (synchronous; flush is fire-and-forget).
-        if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            // database_oid selects the WAL worker. Hardcoded to main_database
-            // until the database resolve (resolve_kind::database) populates ctx->database_oid.
-            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-            auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                             &services::wal::manager_wal_replicate_t::write_physical_insert,
-                                             ctx->session,
-                                             table_oid_,
-                                             std::move(wal_data),
-                                             static_cast<uint64_t>(start_row),
-                                             actual_count,
-                                             ctx->txn.transaction_id,
-                                             db_oid);
-            auto wal_id = co_await std::move(wf);
-            auto [_d, df] =
-                actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);
-            ctx->add_pending_disk_future(std::move(df));
-        }
-
-        // 4. Mirror to index (txn-aware).
+        // 2. Mirror to index (txn-aware).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto idx_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
             out_chunk.copy(*idx_data, 0);
@@ -158,12 +144,12 @@ namespace components::operators {
             co_await std::move(ixf);
         }
 
-        // 5. Record swap-info on context for executor's commit-side block.
+        // 3. Record swap-info on context for executor's commit-side block.
         ctx->dml_append_row_start = static_cast<int64_t>(start_row);
         ctx->dml_append_row_count = actual_count;
         ctx->dml_table_oid = table_oid_;
 
-        // 6. Build the result chunk.
+        // 4. Build the result chunk.
         if (returning_.empty()) {
             // No RETURNING: emit a column-less chunk whose cardinality carries
             // the affected-row count for the cursor.

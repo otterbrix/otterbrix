@@ -62,6 +62,18 @@ namespace services::wal {
                               uint64_t txn_id,
                               components::catalog::oid_t database_oid);
 
+        // Schema-growth record (dynamic add_column on IN_MEMORY / computed tables).
+        // schema_chunk is a 0-row data_chunk whose columns ARE the new columns
+        // (alias-tagged types). Written BEFORE the PHYSICAL_INSERT that depends on
+        // them so WAL-first replay re-applies the schema before the rows.
+        actor_zeta::unique_future<id_t>
+        write_physical_add_column(session_id_t session,
+                                  components::catalog::oid_t table_oid,
+                                  std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                                  uint64_t column_count,
+                                  uint64_t txn_id,
+                                  components::catalog::oid_t database_oid);
+
         // Retention guard for CREATE INDEX backfill. The build registers its
         // start wal_position before backfill and unregisters on success/fail;
         // truncate_before clamps to min(active set) so the catchup loop never
@@ -77,6 +89,7 @@ namespace services::wal {
                                                             &wal_contract::write_physical_insert,
                                                             &wal_contract::write_physical_delete,
                                                             &wal_contract::write_physical_update,
+                                                            &wal_contract::write_physical_add_column,
                                                             &wal_contract::register_active_build,
                                                             &wal_contract::unregister_active_build>;
 

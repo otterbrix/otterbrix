@@ -262,27 +262,19 @@ namespace components::operators {
             }
         }
 
-        // 1. Capture WAL row IDs.
+        // 1. Capture WAL row IDs. The row_ids come from the upstream scan, so they
+        //    are fully known before any storage mutation — unlike INSERT (whose final
+        //    count depends on dedup), DELETE has no post-op dependency. This lets the
+        //    user delete adopt the SAME WAL-first ordering as the catalog delete
+        //    (delete_pg_catalog_rows_inner: WAL physical_delete, then the storage mark).
         std::pmr::vector<int64_t> wal_row_ids(resource_);
         wal_row_ids.reserve(modified_size);
         for (size_t i = 0; i < modified_size; i++) {
             wal_row_ids.push_back(static_cast<int64_t>(ids[i]));
         }
 
-        // 2. storage_delete_rows.
-        vector_t row_ids(resource_, types::logical_type::BIGINT, modified_size);
-        for (size_t i = 0; i < modified_size; i++) {
-            row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
-        }
-        auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_delete_rows,
-                                         exec_ctx,
-                                         table_oid_,
-                                         std::move(row_ids),
-                                         static_cast<uint64_t>(modified_size));
-        co_await std::move(df);
-
-        // 3. WAL physical_delete.
+        // 2. WAL-FIRST: physical_delete BEFORE the storage mark, so a crash between
+        //    the two replays the delete (uncommitted deletes are filtered by replay).
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
             auto count = static_cast<uint64_t>(wal_row_ids.size());
             // See operator_insert comment on db_oid temporary hardcode.
@@ -300,6 +292,19 @@ namespace components::operators {
                 actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);
             ctx->add_pending_disk_future(std::move(dff));
         }
+
+        // 3. storage_delete_rows — mark the rows deleted under this txn (MVCC).
+        vector_t row_ids(resource_, types::logical_type::BIGINT, modified_size);
+        for (size_t i = 0; i < modified_size; i++) {
+            row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
+        }
+        auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_delete_rows,
+                                         exec_ctx,
+                                         table_oid_,
+                                         std::move(row_ids),
+                                         static_cast<uint64_t>(modified_size));
+        co_await std::move(df);
 
         // 4. Mirror to index (uses scan output for old data).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {

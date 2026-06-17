@@ -238,6 +238,33 @@ namespace otterbrix {
                                 disk_ptr->direct_append_sync(table_oid, *r->physical_data, {});
                             }
                             break;
+                        case services::wal::wal_record_type::PHYSICAL_ADD_COLUMN:
+                            // Schema-growth record: re-apply the new columns to the
+                            // storage BEFORE the dependent PHYSICAL_INSERT (which has a
+                            // higher wal_id, so it replays after this within the bucket).
+                            // Ensure the storage exists first (load .otbx or synthesise
+                            // from the schema chunk's column types), then add columns.
+                            if (r->physical_data) {
+                                if (!disk_ptr->has_storage(table_oid)) {
+                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
+                                    if (!disk_ptr->has_storage(table_oid)) {
+                                        auto types = r->physical_data->types();
+                                        std::vector<components::table::column_definition_t> cols;
+                                        cols.reserve(types.size());
+                                        for (const auto& t : types) {
+                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                        }
+                                        disk_ptr->create_storage_with_columns_sync(table_oid,
+                                                                                   main_db_oid,
+                                                                                   std::move(cols));
+                                        // create_* already seeded these columns; nothing
+                                        // more to add for a freshly-synthesised storage.
+                                        break;
+                                    }
+                                }
+                                disk_ptr->direct_add_column_sync(table_oid, *r->physical_data);
+                            }
+                            break;
                         case services::wal::wal_record_type::PHYSICAL_DELETE: {
                             disk_ptr->direct_delete_sync(table_oid, r->physical_row_ids, r->physical_row_count);
                             break;

@@ -87,13 +87,22 @@ namespace services::wal {
                                                        uint64_t txn_id,
                                                        wal::id_t wal_id);
 
+        unique_future<wal::id_t>
+        write_physical_add_column(session_id_t session,
+                                  components::catalog::oid_t table_oid,
+                                  std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                                  uint64_t column_count,
+                                  uint64_t txn_id,
+                                  wal::id_t wal_id);
+
         using dispatch_traits = actor_zeta::dispatch_traits<&wal_worker_t::load,
                                                             &wal_worker_t::commit_txn,
                                                             &wal_worker_t::truncate_before,
                                                             &wal_worker_t::current_wal_id,
                                                             &wal_worker_t::write_physical_insert,
                                                             &wal_worker_t::write_physical_delete,
-                                                            &wal_worker_t::write_physical_update>;
+                                                            &wal_worker_t::write_physical_update,
+                                                            &wal_worker_t::write_physical_add_column>;
 
     private:
         // -----------------------------------------------------------------------

@@ -160,6 +160,11 @@ namespace services::disk {
         void direct_update_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 components::vector::data_chunk_t& new_data);
+        // WAL-replay of PHYSICAL_ADD_COLUMN: re-apply the schema columns carried by
+        // `schema_chunk` (0-row; column j's alias-tagged type IS new column j) to the
+        // local slice ahead of the dependent PHYSICAL_INSERT. Idempotent by column name.
+        void direct_add_column_sync(components::catalog::oid_t table_oid,
+                                    const components::vector::data_chunk_t& schema_chunk);
 
         unique_future<void> fix_wal_id(wal::id_t wal_id);
 
@@ -177,15 +182,21 @@ namespace services::disk {
         // Mutation handlers: these inner bodies are the SOLE owner of each mutation;
         // manager-side bodies are pure routers. Not-owned OIDs no-op.
         //
-        // storage_append_inner — canonical append. Owns the FULL preprocessing
-        //   pipeline (schema adoption/growth, column expansion, NOT NULL, dedup,
-        //   type promotion), so even the preprocessing reads are mailbox-serialized
-        //   with every same-oid access. Returns (start_row, count); (0,0) on no-op.
+        // storage_append_inner — canonical WAL-FIRST append. Owns the FULL
+        //   preprocessing pipeline (schema adoption/growth, column expansion,
+        //   NOT NULL, dedup, type promotion), then — because it runs on this agent's
+        //   mailbox (one handler coroutine at a time, atomic across the WAL co_await) —
+        //   it allocates the start_row WITHOUT materializing, writes the WAL records
+        //   (PHYSICAL_ADD_COLUMN for any dynamic schema growth, then PHYSICAL_INSERT
+        //   carrying the final start_row + count), and only THEN materializes the
+        //   append. Mirror of append_pg_catalog_row_inner's WAL-first ordering, so
+        //   user + catalog inserts share ONE write ordering. Returns (start_row, count);
+        //   (0,0) on no-op. Takes the full execution_context (session/txn/tz/db_oid)
+        //   because the agent now owns the WAL write.
         unique_future<std::pair<uint64_t, uint64_t>>
-        storage_append_inner(components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::vector::data_chunk_t> data,
-                             components::table::transaction_data txn,
-                             core::date::timezone_offset_t session_tz);
+        storage_append_inner(execution_context_t ctx,
+                             components::catalog::oid_t table_oid,
+                             std::unique_ptr<components::vector::data_chunk_t> data);
 
         // storage_publish_commits_inner — MVCC visibility flip. Iterates
         //   `ranges` and calls commit_append per range against owned twins;

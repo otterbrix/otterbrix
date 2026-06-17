@@ -36,8 +36,8 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <core/executor.hpp>
 #include <condition_variable>
+#include <core/executor.hpp>
 #include <limits>
 #include <list>
 #include <mutex>
@@ -243,12 +243,11 @@ namespace services::disk {
             actor_zeta::behavior_t behavior{};
         };
 
-        manager_disk_t(
-            std::pmr::memory_resource*,
-            actor_zeta::scheduler_raw scheduler,
-            actor_zeta::scheduler_raw scheduler_disk,
-            configuration::config_disk config,
-            log_t& log);
+        manager_disk_t(std::pmr::memory_resource*,
+                       actor_zeta::scheduler_raw scheduler,
+                       actor_zeta::scheduler_raw scheduler_disk,
+                       configuration::config_disk config,
+                       log_t& log);
         ~manager_disk_t();
 
         // True if a storage entry is registered for `table_oid` (used by WAL replay to lazily
@@ -324,8 +323,7 @@ namespace services::disk {
         // row_ids. Single-threaded bootstrap only. Returns a default-constructed
         // unique_ptr when the oid is unknown or its storage is empty.
         std::unique_ptr<components::vector::data_chunk_t>
-        scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid,
-                                      std::pmr::memory_resource* resource) const;
+        scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid, std::pmr::memory_resource* resource) const;
 
         // Catalog scan returning (oid, delete_id) for every tombstoned pg_class
         // row. base_spaces calls it after WAL replay to rebuild the per-agent
@@ -627,12 +625,12 @@ namespace services::disk {
                                                     uint64_t count);
         // Batched MVCC swap. Each range carries its own table_oid.
         unique_future<void> storage_publish_commits(execution_context_t ctx,
-                                                   uint64_t commit_id,
-                                                   std::vector<components::pg_catalog_append_range_t> ranges);
+                                                    uint64_t commit_id,
+                                                    std::vector<components::pg_catalog_append_range_t> ranges);
 
         unique_future<void> storage_publish_deletes(execution_context_t ctx,
-                                                   uint64_t commit_id,
-                                                   std::set<components::catalog::oid_t> tables);
+                                                    uint64_t commit_id,
+                                                    std::set<components::catalog::oid_t> tables);
 
         unique_future<void> storage_revert_appends(execution_context_t ctx,
                                                    std::vector<components::pg_catalog_append_range_t> ranges);
@@ -736,11 +734,13 @@ namespace services::disk {
 
         // Hash-route by table_oid. Catalog tables (oid < FIRST_USER_OID) → agent 0;
         // user tables hash across agents_[1..N-1].
-        static constexpr std::size_t pool_idx_for_oid(components::catalog::oid_t oid,
-                                                      std::size_t pool_size) noexcept {
-            if (pool_size == 0) return 0;
-            if (static_cast<std::uint32_t>(oid) < components::catalog::FIRST_USER_OID) return 0;
-            if (pool_size == 1) return 0;
+        static constexpr std::size_t pool_idx_for_oid(components::catalog::oid_t oid, std::size_t pool_size) noexcept {
+            if (pool_size == 0)
+                return 0;
+            if (static_cast<std::uint32_t>(oid) < components::catalog::FIRST_USER_OID)
+                return 0;
+            if (pool_size == 1)
+                return 0;
             return 1 + (static_cast<std::size_t>(oid) % (pool_size - 1));
         }
     };

@@ -376,8 +376,8 @@ namespace components::operators {
             }
             if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
                 std::pmr::vector<components::catalog::oid_t> drop_oids{dropped_storage_oids.begin(),
-                                                                      dropped_storage_oids.end(),
-                                                                      resource_};
+                                                                       dropped_storage_oids.end(),
+                                                                       resource_};
                 auto [_d, df] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::drop_storage_many,
                                                  ctx->session,

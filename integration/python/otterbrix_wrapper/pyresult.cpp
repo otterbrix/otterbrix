@@ -6,9 +6,11 @@
 using namespace components;
 
 namespace otterbrix {
-    py_result_t::py_result_t(py_connection_t* env, components::cursor::cursor_t_ptr result_p,
-            const std::vector<components::table::column_definition_t>& defs)
-        : env(env), result(std::move(result_p)) {
+    py_result_t::py_result_t(py_connection_t* env,
+                             components::cursor::cursor_t_ptr result_p,
+                             const std::vector<components::table::column_definition_t>& defs)
+        : env(env)
+        , result(std::move(result_p)) {
         if (!result) {
             throw std::runtime_error("PyResult created without a result object");
         }
@@ -62,7 +64,6 @@ namespace otterbrix {
             res.append(fres);
         }
         return res;
-
     }
 
     py::list py_result_t::fetchall() {
@@ -76,7 +77,6 @@ namespace otterbrix {
         }
         return res;
     }
-
 
     pandas_data_frame_t py_result_t::fetch_df() {
         if (!result) {
@@ -98,17 +98,13 @@ namespace otterbrix {
             py::dict row = util::cursor_row_to_python_dict(result, static_cast<uint64_t>(row_idx), columns);
             df_param.append(row);
         }
-        pandas_data_frame_t df = py::cast<pandas_data_frame_t>(
-                py::module::import("pandas").attr("DataFrame")(df_param));
+        pandas_data_frame_t df =
+            py::cast<pandas_data_frame_t>(py::module::import("pandas").attr("DataFrame")(df_param));
         return df;
     }
 
-    void py_result_t::close() {
-        result = nullptr;
-    }
+    void py_result_t::close() { result = nullptr; }
 
-    bool py_result_t::is_closed() const {
-       return result == nullptr;
-    }
+    bool py_result_t::is_closed() const { return result == nullptr; }
 
 } // namespace otterbrix

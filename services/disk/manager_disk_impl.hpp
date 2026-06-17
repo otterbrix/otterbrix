@@ -3,8 +3,8 @@
 // Internal translation-unit header: included by every manager_disk_*.cpp split file.
 // Centralises includes and exposes the shared helpers that all TUs need.
 
-#include "manager_disk.hpp"
 #include "inline_scan.hpp" // services::disk::detail::inline_scan (shared with agent_disk)
+#include "manager_disk.hpp"
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>

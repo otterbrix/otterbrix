@@ -1020,14 +1020,13 @@ namespace services::dispatcher { namespace {
 
 namespace services::dispatcher {
 
-    actor_zeta::unique_future<core::error_t>
-    enrich_plan(std::pmr::memory_resource* resource,
-                components::logical_plan::node_ptr root,
-                actor_zeta::address_t disk_address,
-                components::execution_context_t ctx,
-                const services::catalog_resolve::plan_resolve_index_t* idx,
-                actor_zeta::address_t index_address,
-                services::context_storage_t* collections_ctx) {
+    actor_zeta::unique_future<core::error_t> enrich_plan(std::pmr::memory_resource* resource,
+                                                         components::logical_plan::node_ptr root,
+                                                         actor_zeta::address_t disk_address,
+                                                         components::execution_context_t ctx,
+                                                         const services::catalog_resolve::plan_resolve_index_t* idx,
+                                                         actor_zeta::address_t index_address,
+                                                         services::context_storage_t* collections_ctx) {
         (void) disk_address;
         if (!root)
             co_return core::error_t::no_error();
@@ -1056,10 +1055,8 @@ namespace services::dispatcher {
                 if (tbl_oid == components::catalog::INVALID_OID) {
                     continue;
                 }
-                auto [_ik, ikf] = actor_zeta::send(index_address,
-                                                   &index::manager_index_t::get_indexed_keys,
-                                                   ctx.session,
-                                                   tbl_oid);
+                auto [_ik, ikf] =
+                    actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, tbl_oid);
                 keys_futures.push_back(std::move(ikf));
                 auto [_id, idf] = actor_zeta::send(index_address,
                                                    &index::manager_index_t::get_indexed_descriptions,

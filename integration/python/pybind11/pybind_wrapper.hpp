@@ -1,20 +1,19 @@
 #pragma once
 
-#include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-
 
 #include <vector>
 
 namespace pybind11 {
 
-namespace detail {
+    namespace detail {
 
-} // namespace detail
+    } // namespace detail
 
-bool gil_check();
-void gil_assert();
+    bool gil_check();
+    void gil_assert();
 
 } // namespace pybind11
 
@@ -24,58 +23,58 @@ namespace otterbrix {
 #else
 #define PYBIND11_NAMESPACE pybind11
 #endif
-namespace py {
+    namespace py {
 
-// We include everything from pybind11
-using namespace pybind11;
+        // We include everything from pybind11
+        using namespace pybind11;
 
-// But we have the option to override certain functions
-template <typename T, detail::enable_if_t<std::is_base_of<object, T>::value, int> = 0>
-bool isinstance(handle obj) {
-	return T::check_(obj);
-}
+        // But we have the option to override certain functions
+        template<typename T, detail::enable_if_t<std::is_base_of<object, T>::value, int> = 0>
+        bool isinstance(handle obj) {
+            return T::check_(obj);
+        }
 
-template <typename T, detail::enable_if_t<!std::is_base_of<object, T>::value, int> = 0>
-bool isinstance(handle obj) {
-	return detail::isinstance_generic(obj, typeid(T));
-}
+        template<typename T, detail::enable_if_t<!std::is_base_of<object, T>::value, int> = 0>
+        bool isinstance(handle obj) {
+            return detail::isinstance_generic(obj, typeid(T));
+        }
 
-template <>
-inline bool isinstance<handle>(handle) = delete;
-template <>
-inline bool isinstance<object>(handle obj) {
-	return obj.ptr() != nullptr;
-}
+        template<>
+        inline bool isinstance<handle>(handle) = delete;
+        template<>
+        inline bool isinstance<object>(handle obj) {
+            return obj.ptr() != nullptr;
+        }
 
-inline bool isinstance(handle obj, handle type) {
-	if (type.ptr() == nullptr) {
-		// The type was not imported, just return false
-		return false;
-	}
-	const auto result = PyObject_IsInstance(obj.ptr(), type.ptr());
-	if (result == -1) {
-		throw error_already_set();
-	}
-	return result != 0;
-}
+        inline bool isinstance(handle obj, handle type) {
+            if (type.ptr() == nullptr) {
+                // The type was not imported, just return false
+                return false;
+            }
+            const auto result = PyObject_IsInstance(obj.ptr(), type.ptr());
+            if (result == -1) {
+                throw error_already_set();
+            }
+            return result != 0;
+        }
 
-template <class T>
-bool try_cast(const handle &object, T &result) {
-	try {
-		result = cast<T>(object);
-	} catch (pybind11::cast_error &) {
-		return false;
-	}
-	return true;
-}
+        template<class T>
+        bool try_cast(const handle& object, T& result) {
+            try {
+                result = cast<T>(object);
+            } catch (pybind11::cast_error&) {
+                return false;
+            }
+            return true;
+        }
 
-} // namespace py
+    } // namespace py
 
-template <class T, typename... ARGS>
-void define_method(std::vector<const char *> aliases, T &mod, ARGS &&... args) {
-	for (auto &alias : aliases) {
-		mod.def(alias, args...);
-	}
-}
+    template<class T, typename... ARGS>
+    void define_method(std::vector<const char*> aliases, T& mod, ARGS&&... args) {
+        for (auto& alias : aliases) {
+            mod.def(alias, args...);
+        }
+    }
 
 } // namespace otterbrix

@@ -55,14 +55,14 @@ namespace otterbrix {
     class python_table_arrow_array_stream_factory_t {
     public:
         explicit python_table_arrow_array_stream_factory_t(PyObject* arrow_table)
-            : arrow_object(arrow_table) {};
+            : arrow_object(arrow_table){};
 
         //! Produces an Arrow stream wrapper; called once when initializing scan state.
         static std::unique_ptr<components::vector::arrow::arrow_array_schema_wrapper_t> produce(uintptr_t factory);
 
         //! get the schema of the arrow object.
         static void get_schema_internal(py::handle arrow_object,
-                                      components::vector::arrow::arrow_schema_wrapper_t& schema);
+                                        components::vector::arrow::arrow_schema_wrapper_t& schema);
         static void get_schema(uintptr_t factory_ptr, components::vector::arrow::arrow_schema_wrapper_t& schema);
 
         //! Arrow Object (i.e., Scanner, Record Batch Reader, arrow_table_t, Dataset, or Arrow C stream capsule)
@@ -90,15 +90,13 @@ namespace otterbrix {
     };
 } // namespace otterbrix
 
-namespace pybind11 {
-    namespace detail {
-        template<>
-        struct handle_type_name<otterbrix::pyarrow::arrow_record_batch_reader_t> {
-            static constexpr auto name = _("pyarrow.lib.RecordBatchReader");
-        };
-        template<>
-        struct handle_type_name<otterbrix::pyarrow::arrow_table_t> {
-            static constexpr auto name = _("pyarrow.lib.Table");
-        };
-    } // namespace detail
-} // namespace pybind11
+namespace pybind11 { namespace detail {
+    template<>
+    struct handle_type_name<otterbrix::pyarrow::arrow_record_batch_reader_t> {
+        static constexpr auto name = _("pyarrow.lib.RecordBatchReader");
+    };
+    template<>
+    struct handle_type_name<otterbrix::pyarrow::arrow_table_t> {
+        static constexpr auto name = _("pyarrow.lib.Table");
+    };
+}} // namespace pybind11::detail

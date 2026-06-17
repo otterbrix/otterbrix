@@ -1,18 +1,17 @@
 #include <atomic>
 #include <catch2/catch.hpp>
 #include <charconv>
+#include <components/index/logical_value_binary_codec.hpp>
 #include <core/result_wrapper.hpp>
 #include <fstream>
 #include <limits>
 #include <memory_resource>
 #include <mutex>
 #include <random>
-#include <core/result_wrapper.hpp>
 #include <services/index/bitcask_hash_key_loader.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <services/index/disk_hash_table.hpp>
-#include <components/index/logical_value_binary_codec.hpp>
 #include <set>
 #include <thread>
 #include <unordered_set>
@@ -211,7 +210,8 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_datas
     }
 
     {
-        auto reopened = bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
+        auto reopened =
+            bitcask_index_disk_t(path, &resource, test_flush_threshold, 1000, std::pmr::set<std::uint64_t>{});
         for (int key : {1, 42, 872, 1500, 2499, 2500}) {
             auto rows = reopened.find(logical_value_t(&resource, int64_t(key)));
             REQUIRE(rows.size() == 1);
@@ -828,10 +828,10 @@ TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_trun
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    auto shared_table = boost::intrusive_ptr(new services::index::disk_hash_table_t(
-        path / "hash_index.bin",
-        services::index::disk_hash_table_t::default_bucket_count,
-        &resource));
+    auto shared_table = boost::intrusive_ptr(
+        new services::index::disk_hash_table_t(path / "hash_index.bin",
+                                               services::index::disk_hash_table_t::default_bucket_count,
+                                               &resource));
 
     bitcask_index_disk_t index(path,
                                &resource,
@@ -842,10 +842,11 @@ TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_trun
 
     const auto real_loader = services::index::make_bitcask_hash_key_loader(index);
     size_t loader_calls = 0;
-    shared_table->set_full_key_loader([&](uint32_t segment_id, uint64_t value_offset, std::string& out_key, bool lock_bitcask) {
-        ++loader_calls;
-        return real_loader(segment_id, value_offset, out_key, lock_bitcask);
-    });
+    shared_table->set_full_key_loader(
+        [&](uint32_t segment_id, uint64_t value_offset, std::string& out_key, bool lock_bitcask) {
+            ++loader_calls;
+            return real_loader(segment_id, value_offset, out_key, lock_bitcask);
+        });
 
     const std::string long_key(200, 'q');
     index.insert(logical_value_t(&resource, long_key), 4242);
@@ -1214,9 +1215,8 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    auto shared = boost::intrusive_ptr(new disk_hash_table_t(path / "hash_index.bin",
-                                                             disk_hash_table_t::default_bucket_count,
-                                                             &resource));
+    auto shared = boost::intrusive_ptr(
+        new disk_hash_table_t(path / "hash_index.bin", disk_hash_table_t::default_bucket_count, &resource));
     const auto* shared_ptr = shared.get();
 
     bitcask_index_disk_t index(path,
@@ -1227,9 +1227,8 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
                                std::move(shared));
 
     index.insert(logical_value_t(&resource, int64_t(987)), 986);
-    const auto encoded =
-        codec::encode_disk_hash_key(logical_value_t(&resource, int64_t(987))
-                                        .cast_as(complex_logical_type(logical_type::BIGINT), {}));
+    const auto encoded = codec::encode_disk_hash_key(
+        logical_value_t(&resource, int64_t(987)).cast_as(complex_logical_type(logical_type::BIGINT), {}));
     REQUIRE(shared_ptr->get(encoded, false).has_value());
 
     index.clear();

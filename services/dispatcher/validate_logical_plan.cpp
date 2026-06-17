@@ -500,9 +500,9 @@ namespace services::dispatcher {
                     auto id = std::get<core::parameter_id_t>(field);
                     auto param_it = parameters.parameters.find(id);
                     if (param_it == parameters.parameters.end()) {
-                        return core::error_t(core::error_code_t::invalid_parameter,
-                                             std::pmr::string{"unbound parameter referenced in function arguments",
-                                                              resource});
+                        return core::error_t(
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"unbound parameter referenced in function arguments", resource});
                     }
                     function_input_types.emplace_back(param_it->second.type());
                 }
@@ -1775,10 +1775,9 @@ namespace services::dispatcher {
                             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                                 auto ct_it = parameters.parameters.find(std::get<core::parameter_id_t>(param));
                                 if (ct_it == parameters.parameters.end()) {
-                                    compute_type_error =
-                                        core::error_t(core::error_code_t::invalid_parameter,
-                                                      std::pmr::string{"unbound parameter in scalar expression",
-                                                                       resource});
+                                    compute_type_error = core::error_t(
+                                        core::error_code_t::invalid_parameter,
+                                        std::pmr::string{"unbound parameter in scalar expression", resource});
                                     return complex_logical_type(logical_type::INVALID);
                                 }
                                 return ct_it->second.type();

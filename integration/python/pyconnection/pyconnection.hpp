@@ -1,15 +1,15 @@
 #pragma once
 
-#include <pybind11/pybind_wrapper.hpp>
-#include <pybind11/dataframe.hpp>
 #include <otterbrix_wrapper/pyrelation.hpp>
+#include <pybind11/dataframe.hpp>
+#include <pybind11/pybind_wrapper.hpp>
 
 #include <connection_environment/expression/expression_factory.hpp>
 #include <connection_environment/relation/relation_factory.hpp>
 
+#include <common/string_util/case_insensitive.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/logical_plan/node.hpp>
-#include <common/string_util/case_insensitive.hpp>
 #include <memory>
 
 #include <mutex>
@@ -32,10 +32,10 @@ namespace otterbrix {
         ~default_connection_holder_t();
 
     public:
-        default_connection_holder_t(const default_connection_holder_t &other) = delete;
-        default_connection_holder_t(default_connection_holder_t &&other) = delete;
-        default_connection_holder_t &operator=(const default_connection_holder_t &other) = delete;
-        default_connection_holder_t &operator=(default_connection_holder_t &&other) = delete;
+        default_connection_holder_t(const default_connection_holder_t& other) = delete;
+        default_connection_holder_t(default_connection_holder_t&& other) = delete;
+        default_connection_holder_t& operator=(const default_connection_holder_t& other) = delete;
+        default_connection_holder_t& operator=(default_connection_holder_t&& other) = delete;
 
     public:
         pyconnection_ptr get();
@@ -50,9 +50,11 @@ namespace otterbrix {
     public:
         cursors_t();
         ~cursors_t();
+
     public:
         void add_cursor(pycursor_ptr conn);
         void clear_cursors();
+
     private:
         std::mutex lock;
         std::vector<std::weak_ptr<py_connection_t>> cursors;
@@ -64,23 +66,24 @@ namespace otterbrix {
     class py_connection_t
         : public expression_factory_t
         , public relation_factory_t
-        , public std::enable_shared_from_this<py_connection_t>
-    {
+        , public std::enable_shared_from_this<py_connection_t> {
     private:
         cursors_t cursors;
         boost::intrusive_ptr<otterbrix_t> space;
+
     public:
         py_connection_t(const boost::intrusive_ptr<otterbrix_t>& space);
         py_connection_t(const py_connection_t& other);
-        static pyconnection_ptr connect(const py::object &database_p, bool read_only,
-                const py::dict &config_options);
+        static pyconnection_ptr connect(const py::object& database_p, bool read_only, const py::dict& config_options);
         ~py_connection_t();
         static void initialize(py::handle& m);
+
     private:
         static default_connection_holder_t default_connection_;
+
     public:
-	    static pyconnection_ptr default_connection();
-	    static void set_default_connection(pyconnection_ptr conn);
+        static pyconnection_ptr default_connection();
+        static void set_default_connection(pyconnection_ptr conn);
 
     public:
         static void cleanup();
@@ -98,8 +101,7 @@ namespace otterbrix {
         py::list list_tables();
 
         pyconnection_ptr enter();
-        void exit(const py::object& exc_type, const py::object& exc,
-                const py::object& traceback);
+        void exit(const py::object& exc_type, const py::object& exc, const py::object& traceback);
 
         void close();
 
@@ -109,6 +111,5 @@ namespace otterbrix {
     public:
         std::unique_ptr<py_relation_t> from_df(const py::object& value);
         std::unique_ptr<py_relation_t> from_object(const py::object& value);
-
     };
 } // namespace otterbrix

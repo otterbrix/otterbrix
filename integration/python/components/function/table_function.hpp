@@ -1,23 +1,23 @@
-#pragma once 
+#pragma once
 
 #include "function.hpp"
 
+#include <common/optional_ptr.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <common/optional_ptr.hpp>
 
 #include <common/external_dependencies.hpp>
 
 #include <memory>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace components::tableref {
     class table_ref_t;
 } // namespace components::tableref
 
 namespace components::function {
-    
+
     struct global_table_function_state_t {
     public:
         // value returned from max_threads when as many threads as possible should be used
@@ -26,33 +26,30 @@ namespace components::function {
     public:
         virtual ~global_table_function_state_t();
 
-        virtual uint64_t max_threads() const {
-            return 1;
-        }
+        virtual uint64_t max_threads() const { return 1; }
 
-        template <class TARGET>
-        TARGET &cast() {
-            return reinterpret_cast<TARGET &>(*this);
+        template<class TARGET>
+        TARGET& cast() {
+            return reinterpret_cast<TARGET&>(*this);
         }
-        template <class TARGET>
-        const TARGET &cast() const {
-            return reinterpret_cast<const TARGET &>(*this);
+        template<class TARGET>
+        const TARGET& cast() const {
+            return reinterpret_cast<const TARGET&>(*this);
         }
     };
 
     struct local_table_function_state_t {
         virtual ~local_table_function_state_t();
 
-        template <class TARGET>
-        TARGET &cast() {
-            return reinterpret_cast<TARGET &>(*this);
+        template<class TARGET>
+        TARGET& cast() {
+            return reinterpret_cast<TARGET&>(*this);
         }
-        template <class TARGET>
-        const TARGET &cast() const {
-            return reinterpret_cast<const TARGET &>(*this);
+        template<class TARGET>
+        const TARGET& cast() const {
+            return reinterpret_cast<const TARGET&>(*this);
         }
     };
-
 
     struct table_function_bind_input_t {
         table_function_bind_input_t(std::vector<types::logical_value_t>& inputs, tableref::table_ref_t& ref);
@@ -60,24 +57,23 @@ namespace components::function {
         tableref::table_ref_t& ref;
     };
 
-
-
-
     struct table_function_init_input_t {
-        table_function_init_input_t(otterbrix::optional_ptr<function_data_t> bind_data_p, 
-                const std::vector<uint64_t> &column_ids_p)
-            : bind_data(bind_data_p), column_ids(column_ids_p) {}
+        table_function_init_input_t(otterbrix::optional_ptr<function_data_t> bind_data_p,
+                                    const std::vector<uint64_t>& column_ids_p)
+            : bind_data(bind_data_p)
+            , column_ids(column_ids_p) {}
         otterbrix::optional_ptr<function_data_t> bind_data;
-        const std::vector<uint64_t> &column_ids;
+        const std::vector<uint64_t>& column_ids;
     };
 
     struct table_function_input_t {
     public:
         table_function_input_t(otterbrix::optional_ptr<function_data_t> bind_data_p,
-                        otterbrix::optional_ptr<local_table_function_state_t> local_state_p,
-                        otterbrix::optional_ptr<global_table_function_state_t> global_state_p)
-            : bind_data(bind_data_p), local_state(local_state_p), global_state(global_state_p) {
-        }   
+                               otterbrix::optional_ptr<local_table_function_state_t> local_state_p,
+                               otterbrix::optional_ptr<global_table_function_state_t> global_state_p)
+            : bind_data(bind_data_p)
+            , local_state(local_state_p)
+            , global_state(global_state_p) {}
 
     public:
         otterbrix::optional_ptr<function_data_t> bind_data;
@@ -85,24 +81,27 @@ namespace components::function {
         otterbrix::optional_ptr<global_table_function_state_t> global_state;
     };
 
+    typedef std::unique_ptr<function_data_t> (*table_function_bind_t)(
+        table_function_bind_input_t& input,
+        std::vector<types::complex_logical_type>& return_types,
+        std::vector<std::string>& names);
 
+    typedef std::unique_ptr<global_table_function_state_t> (*table_function_init_global_t)(
+        table_function_init_input_t& input);
 
-    typedef std::unique_ptr<function_data_t> (*table_function_bind_t)(table_function_bind_input_t &input,
-        std::vector<types::complex_logical_type> &return_types, 
-        std::vector<std::string> &names);
+    typedef std::unique_ptr<local_table_function_state_t> (
+        *table_function_init_local_t)(table_function_init_input_t& input, global_table_function_state_t* global_state);
 
-    typedef std::unique_ptr<global_table_function_state_t> (*table_function_init_global_t)(table_function_init_input_t &input);
-
-    typedef std::unique_ptr<local_table_function_state_t> (*table_function_init_local_t)(table_function_init_input_t &input,
-                                                                                    global_table_function_state_t *global_state);
-
-    typedef void (*table_function_ptr_t)(table_function_input_t &data, vector::data_chunk_t &output);
+    typedef void (*table_function_ptr_t)(table_function_input_t& data, vector::data_chunk_t& output);
 
     class table_function_t : public simple_named_parameter_function_t { // NOLINT: work-around bug in clang-tidy
     public:
-        table_function_t(std::string name, std::vector<types::complex_logical_type> arguments, table_function_ptr_t function,
-                    table_function_bind_t bind = nullptr, table_function_init_global_t init_global = nullptr, 
-                    table_function_init_local_t init_local = nullptr);
+        table_function_t(std::string name,
+                         std::vector<types::complex_logical_type> arguments,
+                         table_function_ptr_t function,
+                         table_function_bind_t bind = nullptr,
+                         table_function_init_global_t init_global = nullptr,
+                         table_function_init_local_t init_local = nullptr);
 
         //! bind function
         //! This function is used for determining the return type of a table producing function and returning bind data

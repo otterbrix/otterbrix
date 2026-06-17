@@ -28,8 +28,7 @@ static const core::dbname_t db{"db"};
 static const core::relname_t rel{"t"};
 
 // data node with all BIGINT columns
-static node_data_ptr make_data(std::pmr::memory_resource* r,
-                                std::initializer_list<const char*> col_names) {
+static node_data_ptr make_data(std::pmr::memory_resource* r, std::initializer_list<const char*> col_names) {
     std::pmr::vector<components::types::complex_logical_type> types(r);
     for (const char* name : col_names) {
         types.emplace_back(components::types::logical_type::BIGINT, name);
@@ -54,8 +53,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_identity_select") {
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "b")));
     inner->append_child(select);
 
-    auto cmp =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -82,8 +80,7 @@ TEST_CASE("logical_plan::pushdown_filter_skips_renamed_select_output") {
     select->append_expression(std::move(renamed));
     inner->append_child(select);
 
-    auto cmp =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "x", side_t::left), id_par{1});
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "x", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -108,8 +105,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_sort") {
     sort_exprs.emplace_back(make_sort_expression(key(&resource, "b"), sort_order::asc));
     inner->append_child(make_node_sort(&resource, db, rel, sort_exprs));
 
-    auto cmp =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -136,8 +132,7 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch") {
     join->append_child(left_data);
     join->append_child(right_data);
 
-    auto cmp =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -166,10 +161,8 @@ TEST_CASE("logical_plan::pushdown_filter_skips_join_predicate_on_both_sides") {
     join->append_child(left_data);
     join->append_child(right_data);
 
-    auto cmp = make_compare_expression(&resource,
-                                       compare_type::eq,
-                                       key(&resource, "a", side_t::left),
-                                       key(&resource, "c"));
+    auto cmp =
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "a", side_t::left), key(&resource, "c"));
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -203,8 +196,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_group_by_key") {
     inner->append_child(data);
     inner->append_child(group);
 
-    auto cmp =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -234,8 +226,7 @@ TEST_CASE("logical_plan::pushdown_filter_skips_group_by_aggregate_output") {
     inner->append_child(data);
     inner->append_child(group);
 
-    auto cmp =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "sum_b", side_t::left), id_par{1});
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "sum_b", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -263,10 +254,8 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_both_join_branc
     join->append_child(left_data);
     join->append_child(right_data);
 
-    auto cmp_a =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    auto cmp_c =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "c", side_t::left), id_par{2});
+    auto cmp_a = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp_c = make_compare_expression(&resource, compare_type::gt, key(&resource, "c", side_t::left), id_par{2});
     auto conj = make_compare_union_expression(&resource, compare_type::union_and);
     conj->append_child(cmp_a);
     conj->append_child(cmp_c);
@@ -304,12 +293,9 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_with_residual_join")
     join->append_child(left_data);
     join->append_child(right_data);
 
-    auto cmp_a =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    auto cmp_ac = make_compare_expression(&resource,
-                                          compare_type::eq,
-                                          key(&resource, "a", side_t::left),
-                                          key(&resource, "c"));
+    auto cmp_a = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp_ac =
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "a", side_t::left), key(&resource, "c"));
     auto conj = make_compare_union_expression(&resource, compare_type::union_and);
     conj->append_child(cmp_a);
     conj->append_child(cmp_ac);
@@ -344,14 +330,10 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_all_three_bucke
     join->append_child(left_data);
     join->append_child(right_data);
 
-    auto cmp_a =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    auto cmp_c =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "c", side_t::left), id_par{2});
-    auto cmp_ac = make_compare_expression(&resource,
-                                          compare_type::eq,
-                                          key(&resource, "a", side_t::left),
-                                          key(&resource, "c"));
+    auto cmp_a = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp_c = make_compare_expression(&resource, compare_type::gt, key(&resource, "c", side_t::left), id_par{2});
+    auto cmp_ac =
+        make_compare_expression(&resource, compare_type::eq, key(&resource, "a", side_t::left), key(&resource, "c"));
     auto conj = make_compare_union_expression(&resource, compare_type::union_and);
     conj->append_child(cmp_a);
     conj->append_child(cmp_c);
@@ -393,12 +375,9 @@ TEST_CASE("logical_plan::pushdown_filter_flattens_nested_conjunction") {
     join->append_child(left_data);
     join->append_child(right_data);
 
-    auto cmp_a =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
-    auto cmp_b =
-        make_compare_expression(&resource, compare_type::lt, key(&resource, "b", side_t::left), id_par{2});
-    auto cmp_c =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "c", side_t::left), id_par{3});
+    auto cmp_a = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp_b = make_compare_expression(&resource, compare_type::lt, key(&resource, "b", side_t::left), id_par{2});
+    auto cmp_c = make_compare_expression(&resource, compare_type::gt, key(&resource, "c", side_t::left), id_par{3});
     auto inner_conj = make_compare_union_expression(&resource, compare_type::union_and);
     inner_conj->append_child(cmp_b);
     inner_conj->append_child(cmp_c);
@@ -455,8 +434,7 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_through_group_by") {
     inner->append_child(data);
     inner->append_child(group);
 
-    auto cmp_key =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp_key = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
     auto cmp_agg =
         make_compare_expression(&resource, compare_type::gt, key(&resource, "sum_b", side_t::left), id_par{2});
     auto conj = make_compare_union_expression(&resource, compare_type::union_and);
@@ -493,8 +471,7 @@ TEST_CASE("logical_plan::pushdown_filter_vetoed_by_narrowing_projection") {
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "a")));
     inner->append_child(select);
 
-    auto cmp =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -520,8 +497,7 @@ TEST_CASE("logical_plan::pushdown_filter_allowed_through_non_narrowing_projectio
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "a")));
     inner->append_child(select);
 
-    auto cmp =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -548,8 +524,7 @@ TEST_CASE("logical_plan::pushdown_filter_allowed_when_projection_width_unknown")
     select->append_expression(make_scalar_expression(&resource, scalar_type::constant, key(&resource, "k")));
     inner->append_child(select);
 
-    auto cmp =
-        make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
@@ -593,7 +568,7 @@ TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {
     auto agg = make_node_aggregate(&resource, db, rel);
     agg->append_child(data);
     auto select = make_node_select(&resource, db, rel);
-    // project "c", "a" 
+    // project "c", "a"
     // reorder + drop "b"
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "c")));
     select->append_expression(make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "a")));

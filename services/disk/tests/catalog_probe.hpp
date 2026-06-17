@@ -92,8 +92,7 @@ namespace services::disk::test_probe {
     // carrier for read_chunks_by_key is built here. Column j carries values[j]'s own
     // type so the cell is written without a cast; cardinality is set to 1.
     inline components::vector::data_chunk_t
-    build_key_chunk(std::pmr::memory_resource* resource,
-                    std::pmr::vector<components::types::logical_value_t> values) {
+    build_key_chunk(std::pmr::memory_resource* resource, std::pmr::vector<components::types::logical_value_t> values) {
         std::pmr::vector<components::types::complex_logical_type> types(resource);
         types.reserve(values.size());
         for (const auto& v : values) {
@@ -127,11 +126,7 @@ namespace services::disk::test_probe {
         if (committed_scan) {
             ctx.txn = components::table::transaction_data{};
         }
-        return fx.invoke(&manager_disk_t::read_chunks_by_key,
-                         ctx,
-                         table_oid,
-                         std::move(key_cols),
-                         std::move(keys));
+        return fx.invoke(&manager_disk_t::read_chunks_by_key, ctx, table_oid, std::move(key_cols), std::move(keys));
     }
 
     // --- probe_table ---------------------------------------------------------
@@ -337,10 +332,8 @@ namespace services::disk::test_probe {
     // Composite fallback: pg_class (relkind='c') by (relnamespace, relname), then
     // pg_attribute fields by attrelid, encoded as a STRUCT type spec.
     template<typename Fx>
-    probe_type_result_t probe_type(Fx& fx,
-                                   components::execution_context_t ctx,
-                                   catalog::oid_t namespace_oid,
-                                   std::string name) {
+    probe_type_result_t
+    probe_type(Fx& fx, components::execution_context_t ctx, catalog::oid_t namespace_oid, std::string name) {
         probe_type_result_t out;
         out.namespace_oid = namespace_oid;
 
@@ -456,9 +449,8 @@ namespace services::disk::test_probe {
         child_types.reserve(fields.size());
         for (auto& f : fields) {
             components::types::complex_logical_type ft =
-                f.atttypspec.empty()
-                    ? components::types::complex_logical_type{catalog::oid_to_builtin_type(f.atttypid)}
-                    : catalog::decode_type_spec(&fx.resource, f.atttypspec);
+                f.atttypspec.empty() ? components::types::complex_logical_type{catalog::oid_to_builtin_type(f.atttypid)}
+                                     : catalog::decode_type_spec(&fx.resource, f.atttypspec);
             if (ft.type() == components::types::logical_type::UNKNOWN) {
                 std::string ref_name(ft.type_name());
                 if (!ref_name.empty()) {
@@ -483,10 +475,8 @@ namespace services::disk::test_probe {
     // pg_proc layout: oid(0), proname(1), pronamespace(2), pronargs(3), prouid(4),
     //   proargmatchers(5), prorettype(6).
     template<typename Fx>
-    probe_function_result_t probe_function(Fx& fx,
-                                           components::execution_context_t ctx,
-                                           catalog::oid_t namespace_oid,
-                                           std::string name) {
+    probe_function_result_t
+    probe_function(Fx& fx, components::execution_context_t ctx, catalog::oid_t namespace_oid, std::string name) {
         probe_function_result_t out;
         out.namespace_oid = namespace_oid;
 

@@ -213,12 +213,13 @@ namespace components::operators {
                 cc_keys.emplace_back("relid");
                 std::pmr::vector<types::logical_value_t> cc_vals(resource_);
                 cc_vals.emplace_back(toid_lv);
-                auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   cc_ctx,
-                                                   kPgComputedColumn,
-                                                   std::move(cc_keys),
-                                                   components::operators::make_key_chunk(resource_, std::move(cc_vals)));
+                auto [_cc, ccf] =
+                    actor_zeta::send(ctx->disk_address,
+                                     &services::disk::manager_disk_t::read_chunks_by_key,
+                                     cc_ctx,
+                                     kPgComputedColumn,
+                                     std::move(cc_keys),
+                                     components::operators::make_key_chunk(resource_, std::move(cc_vals)));
                 auto cc_batches = co_await std::move(ccf);
 
                 // Both GC passes below delete by (kPgComputedColumn, col 1=attoid)
@@ -318,12 +319,13 @@ namespace components::operators {
                     cc2_keys.emplace_back("relid");
                     std::pmr::vector<types::logical_value_t> cc2_vals(resource_);
                     cc2_vals.emplace_back(toid_lv2);
-                    auto [_cc2, ccf2] = actor_zeta::send(ctx->disk_address,
-                                                         &services::disk::manager_disk_t::read_chunks_by_key,
-                                                         cc_ctx,
-                                                         kPgComputedColumn,
-                                                         std::move(cc2_keys),
-                                                         components::operators::make_key_chunk(resource_, std::move(cc2_vals)));
+                    auto [_cc2, ccf2] =
+                        actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::read_chunks_by_key,
+                                         cc_ctx,
+                                         kPgComputedColumn,
+                                         std::move(cc2_keys),
+                                         components::operators::make_key_chunk(resource_, std::move(cc2_vals)));
                     auto live_cc = co_await std::move(ccf2);
 
                     std::set<std::string> live_attnames;

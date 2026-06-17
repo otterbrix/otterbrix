@@ -216,7 +216,6 @@ namespace components::operators {
         // on ctx->pg_catalog_delete_tables so operator_commit_transaction reverts/
         // publishes the MVCC tombstone for it. Bypasses the predicate-scan +
         // storage_delete_rows + WAL physical_delete + index path entirely.
-        // (Folded from operator_primitive_delete_t.)
         if (oid_col_idx_ >= 0) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
             auto [_c, cf] = actor_zeta::send(ctx->disk_address,

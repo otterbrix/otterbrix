@@ -58,12 +58,10 @@ namespace components::operators {
         // The returned range MUST land in ctx->pg_catalog_appends (NOT dml_*):
         // operator_commit_transaction publishes catalog rows via
         // storage_publish_commits keyed off that vector — pushing to dml_* would
-        // silently leave the row unpublished. (Folded from operator_primitive_write_t.)
+        // silently leave the row unpublished.
         //
-        // The chunk is one ready-made row per catalog_write_t / node_insert here
-        // (build_*_writes always emits 1-row chunks, one node per row), matching
-        // operator_primitive_write's per-node ×N shape — so the whole chunk is
-        // sent as a single catalog row.
+        // The chunk is one ready-made row (build_*_writes emits 1-row chunks, one
+        // node per row), so the whole chunk is sent as a single catalog row.
         if (components::catalog::is_catalog_table(table_oid_)) {
             data_chunk_t row(resource_, out_chunk.types(), out_chunk.size());
             out_chunk.copy(row, 0);

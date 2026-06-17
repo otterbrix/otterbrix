@@ -20,10 +20,8 @@ namespace components::logical_plan {
         index
     };
 
-    // Merged DROP node. Replaces the seven per-target drop nodes
-    // (drop_collection / drop_database / drop_index / drop_type /
-    // drop_sequence / drop_view / drop_macro) with a single flat node that
-    // carries the target kind plus the role-named OID fields each variant used.
+    // Flat DROP node carrying the target kind plus the role-named OID fields
+    // each variant uses.
     //
     // Field usage by kind:
     //   namespace_oid_ — collection, database, index
@@ -53,13 +51,12 @@ namespace components::logical_plan {
 
         // Runtime label for the index actor dispatch (manager_index_t keys
         // engine entries by (table_oid, name)). Stamped by enrich from the
-        // sibling catalog_resolve_table_t; never user-typed via the ctor.
+        // sibling catalog_resolve (kind=table) node; never user-typed via the ctor.
         const std::string& runtime_index_name() const noexcept { return runtime_index_name_; }
         void set_runtime_index_name(std::string name) { runtime_index_name_ = std::move(name); }
 
         // No setter — DROP is always-CASCADE; RESTRICT/CASCADE is not wired
-        // from the parser. Preserves the pre-merge behavior where behavior_
-        // was fixed at its default.
+        // from the parser, so behavior_ stays at its default.
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
 
     private:

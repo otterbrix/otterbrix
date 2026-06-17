@@ -10,11 +10,9 @@ namespace components::logical_plan {
         : node_t(resource, node_type::catalog_resolve_t)
         , kind_(kind) {}
 
-    // The five former per-target resolve nodes differed by node_type and so
-    // always landed in distinct buckets. Now that they share
-    // node_type::catalog_resolve_t, fold kind_ into hash_impl() to preserve the
-    // distinction. The pre-merge nodes all returned a constant 0 hash_impl, so
-    // no per-field payload is folded here.
+    // Fold kind_ into the hash so the per-target resolve variants land in
+    // distinct buckets of any node-keyed container (they all share
+    // node_type::catalog_resolve_t). No per-field payload is folded.
     hash_t node_catalog_resolve_t::hash_impl() const {
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(kind_));

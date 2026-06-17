@@ -189,10 +189,9 @@ namespace services::disk {
         //   it allocates the start_row WITHOUT materializing, writes the WAL records
         //   (PHYSICAL_ADD_COLUMN for any dynamic schema growth, then PHYSICAL_INSERT
         //   carrying the final start_row + count), and only THEN materializes the
-        //   append. Mirror of append_pg_catalog_row_inner's WAL-first ordering, so
-        //   user + catalog inserts share ONE write ordering. Returns (start_row, count);
-        //   (0,0) on no-op. Takes the full execution_context (session/txn/tz/db_oid)
-        //   because the agent now owns the WAL write.
+        //   append. User + catalog inserts share ONE write ordering. Returns
+        //   (start_row, count); (0,0) on no-op. Takes the full execution_context
+        //   (session/txn/tz/db_oid) because the agent owns the WAL write.
         unique_future<std::pair<uint64_t, uint64_t>>
         storage_append_inner(execution_context_t ctx,
                              components::catalog::oid_t table_oid,

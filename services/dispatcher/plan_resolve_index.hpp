@@ -67,8 +67,8 @@ namespace services::catalog_resolve {
         std::unordered_map<std::pmr::string, cte_schema_t> cte_schemas;
 
         bool empty() const noexcept {
-            // type_md_by_qname stands in for the former type_oid_by_qname slot
-            // (the live, read signal that resolve-type data is present).
+            // type_md_by_qname is the live read signal that resolve-type data is
+            // present; check it (not the oid map) so resolve-type isn't lost here.
             return ns_by_dbname.empty() && type_md_by_qname.empty() && outgoing_fks_by_oid.empty() &&
                    referencing_fks_by_oid.empty() && check_exprs_by_oid.empty();
         }

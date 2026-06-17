@@ -10,8 +10,8 @@ namespace components::planner::optimizer {
     // matched column indices and flips node_join_t::algo() to hash. The planner
     // (create_plan_join) reads the annotation and lowers it to operator_hash_join_t
     // (O(L+R)); any join the rule leaves as nested keeps the nested-loop
-    // operator_join_t. The equi-detection used to live in the planner
-    // (create_plan_join); it now lives here so the planner is a pure 1:1 lowering.
+    // operator_join_t. The equi-detection lives here, not in the planner, so the
+    // planner stays a pure 1:1 lowering.
     //
     // Must run AFTER validate_schema, which stamps key.side()/key.path() — the rule
     // reads those to identify the equi columns.

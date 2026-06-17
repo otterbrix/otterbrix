@@ -58,7 +58,7 @@ namespace components::logical_plan {
         std::string typdefspec;
     };
 
-    // Discriminator for the merged catalog-resolve leaf node. 'namespace' is a
+    // Discriminator for the catalog-resolve leaf node. 'namespace' is a
     // C++ keyword, hence namespace_.
     enum class resolve_kind : uint8_t
     {
@@ -80,13 +80,12 @@ namespace components::logical_plan {
         referencing
     };
 
-    // Merged catalog-dependency leaf node. Replaces the five per-target resolve
-    // nodes (node_catalog_resolve_{table,namespace,database,type,constraint}_t)
-    // with a single flat node carrying the resolve kind plus the role-named
-    // payload each variant used. Each is replaced by the corresponding
-    // operator_resolve_*_t during physical plan generation (create_plan switches
-    // on kind()); resolution still flows through the standard pipeline
-    // (logical_plan → planner → optimizer → physical_plan_generator → executor).
+    // Flat catalog-dependency leaf node carrying the resolve kind plus the
+    // role-named payload each kind uses. Each kind is lowered to the
+    // corresponding operator_resolve_*_t during physical plan generation
+    // (create_plan switches on kind()); resolution flows through the standard
+    // pipeline (logical_plan → planner → optimizer → physical_plan_generator
+    // → executor).
     //
     // The node carries no children/expressions and emits no tuples; it is a pure
     // resolved-dependency marker. The resolve operators stamp the resolved OID /

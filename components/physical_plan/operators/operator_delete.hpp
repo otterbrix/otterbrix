@@ -21,7 +21,6 @@ namespace components::operators {
         // Catalog-table delete (DDL pg_catalog row scrub): deletes every row in
         // `catalog_table_oid` where column[oid_col_idx] == target_oid via the
         // WAL-first delete_pg_catalog_rows path. No predicate scan, no children.
-        // (Folded from operator_primitive_delete_t.)
         operator_delete(std::pmr::memory_resource* resource,
                         log_t log,
                         components::catalog::oid_t catalog_table_oid,

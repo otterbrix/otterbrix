@@ -50,8 +50,7 @@ namespace components::logical_plan {
     hash_t node_join_t::hash_impl() const {
         // node_t::hash() combines type_ + hash_impl(); a hash-annotated join carries
         // the same node_type::join_t as a nested-loop one, so fold the annotation in
-        // here to keep them in distinct buckets — this mirrors how the former
-        // node_hash_join_t differed by node_type.
+        // here to keep them in distinct buckets.
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(algo_));
         boost::hash_combine(hash_value, left_col_);

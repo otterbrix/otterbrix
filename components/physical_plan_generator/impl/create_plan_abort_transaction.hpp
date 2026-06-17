@@ -6,7 +6,7 @@
 
 namespace services::planner::impl {
 
-    // Lower a node_abort_transaction_t into operator_abort_transaction_t.
+    // Lower a node_transaction_t(abort) into operator_abort_transaction_t.
     components::operators::operator_ptr create_plan_abort_transaction(const context_storage_t& context,
                                                                       const components::logical_plan::node_ptr& node);
 

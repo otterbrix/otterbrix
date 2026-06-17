@@ -10,11 +10,9 @@ namespace components::logical_plan {
         , kind_(kind) {}
 
     hash_t node_drop_t::hash_impl() const {
-        // node_t::hash() combines type_ + hash_impl(); the seven pre-merge nodes
-        // differed by node_type and so always landed in distinct buckets. Now
-        // that they share node_type::drop_t, fold kind_ into hash_impl() so the
-        // distinction is preserved. The OID payload per kind mirrors each old
-        // node's hash_impl exactly.
+        // node_t::hash() combines type_ + hash_impl(); fold kind_ (and the
+        // per-kind OID payload) here so the drop variants land in distinct
+        // buckets of any node-keyed container despite sharing node_type::drop_t.
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(kind_));
         switch (kind_) {

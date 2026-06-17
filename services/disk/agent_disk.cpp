@@ -493,7 +493,7 @@ namespace services::disk {
         // suspended on the WAL future — see cooperative_actor::resume_impl). So no other
         // same-oid append can interleave between the start_row read below and the
         // materializing s->append: the start_row computed pre-append is still valid at
-        // append time. This is the same WAL-first ordering as append_pg_catalog_row_inner.
+        // append time.
         //
         // Columns added by the dynamic-schema-growth stage (1b) are recorded here so a
         // PHYSICAL_ADD_COLUMN WAL record is emitted BEFORE the PHYSICAL_INSERT, keeping

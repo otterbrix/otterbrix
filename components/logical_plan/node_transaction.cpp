@@ -9,8 +9,7 @@ namespace components::logical_plan {
         , op_(op) {}
 
     // op_ is folded into the hash so begin/commit/abort land in distinct
-    // buckets of any node-keyed container (the three used to differ by node_type
-    // before the merge collapsed them onto transaction_t).
+    // buckets of any node-keyed container despite sharing node_type::transaction_t.
     hash_t node_transaction_t::hash_impl() const {
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(op_));

@@ -21,7 +21,6 @@ namespace services::planner::impl {
         // A catalog-write child is a node_insert_t targeting a pg_catalog table; its
         // single node_data_t child carries the ready-made row. Harvest (table_oid,
         // row) for folding into the specialized operator's catalog_write_t vector.
-        // Replaces the former node_primitive_write_t::catalog_table_oid()/row().
         components::vector::data_chunk_t&
         catalog_write_row(const components::logical_plan::node_ptr& insert_child) {
             using namespace components::logical_plan;

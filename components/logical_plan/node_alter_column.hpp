@@ -19,12 +19,9 @@ namespace components::logical_plan {
         drop
     };
 
-    // Merged ALTER-COLUMN primitive. Replaces the three per-clause planner
-    // leaves (node_alter_column_{add,rename,drop}_t) with a single flat node
-    // carrying the clause op() plus the role-named payload each clause used.
-    //
-    // node_alter_table_t (the parser-level multi-clause node) STAYS; this node
-    // is what rewrite_alter_table lowers each subcommand into.
+    // Flat ALTER-COLUMN primitive carrying the clause op() plus the role-named
+    // payload each clause uses. node_alter_table_t (the parser-level multi-clause
+    // node) STAYS; this node is what rewrite_alter_table lowers each subcommand into.
     //
     // Field usage by op:
     //   add    — column_
@@ -32,9 +29,8 @@ namespace components::logical_plan {
     //   drop   — namespace_oid_ / column_name_ / behavior_ / attoid_
     //   (base) — table_oid() set at construction time by the planner.
     //
-    // computed_ marks the relkind='g' (Mongo-style dynamic schema) variants
-    // that fold the former node_computed_field_{register,unregister}_t. When
-    // computed_==true:
+    // computed_ marks the relkind='g' (Mongo-style dynamic schema) variants.
+    // When computed_==true:
     //   op=add  — registered_cols_ carries the columns to (re)register in
     //             pg_computed_column (the data the INSERT chunk surfaced);
     //             create_plan routes to operator_computed_field_register_t.
@@ -70,7 +66,7 @@ namespace components::logical_plan {
         components::catalog::oid_t attoid() const noexcept { return attoid_; }
         void set_attoid(components::catalog::oid_t a) noexcept { attoid_ = a; }
 
-        // computed (relkind='g') fold
+        // computed (relkind='g')
         bool computed() const noexcept { return computed_; }
         void set_computed(bool v) noexcept { computed_ = v; }
         const std::pmr::vector<components::table::column_definition_t>& registered_cols() const noexcept {
@@ -96,7 +92,7 @@ namespace components::logical_plan {
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
         // rename + drop
         components::catalog::oid_t attoid_{components::catalog::INVALID_OID};
-        // computed fold
+        // computed (relkind='g')
         bool computed_{false};
         std::pmr::vector<components::table::column_definition_t> registered_cols_;
     };

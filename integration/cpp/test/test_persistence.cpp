@@ -394,17 +394,14 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // M7-W made user appends WAL-first: the PHYSICAL_INSERT carries the chunk AFTER
-        // the disk agent's default-expansion stage, so status='active'/count=0 are baked
-        // into the WAL record (not just the supplied 'name'). On restart the storage is
-        // synthesised from the WAL chunk's column types, so the defaulted columns and
-        // their values survive — contrary to the pre-M7-W expectation that they were lost.
+        // The PHYSICAL_INSERT carries the chunk AFTER the disk agent's default-expansion
+        // stage, so status='active'/count=0 are baked into the WAL record (not just the
+        // supplied 'name'). On restart the storage is synthesised from the WAL chunk's
+        // column types, so the defaulted columns and their values survive replay.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'bob';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
-        // Defaulted columns are now durable: their schema + default values were carried
-        // in the WAL chunk and reconstructed on replay.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 5);
     }
@@ -537,24 +534,23 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 200;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 300;", 1);
-        // M7-W: the WAL-first PHYSICAL_INSERT carries the default-expanded chunk, so the
-        // unsupplied 'tag' column (DEFAULT 'untagged') is durable across restart too.
+        // The PHYSICAL_INSERT carries the default-expanded chunk, so the unsupplied 'tag'
+        // column (DEFAULT 'untagged') is durable across restart too.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 3);
     }
 }
 
-// M7-W regression: dynamic-schema (relkind='g' / IN_MEMORY computing) tables grow
-// their column set per-INSERT (stage 1b in agent_disk::storage_append_inner). M7-W
-// made that growth durable by emitting a PHYSICAL_ADD_COLUMN WAL record (carrying the
-// new columns as a 0-row alias-tagged chunk) BEFORE the dependent PHYSICAL_INSERT, and
-// replaying it on restart (base_spaces replay loop -> direct_add_column_sync) so the
-// grown schema is reconstructed ahead of the rows that reference it.
+// Dynamic-schema (relkind='g' / IN_MEMORY computing) tables grow their column set
+// per-INSERT (stage 1b in agent_disk::storage_append_inner). That growth is made durable
+// by emitting a PHYSICAL_ADD_COLUMN WAL record (the new columns as a 0-row alias-tagged
+// chunk) BEFORE the dependent PHYSICAL_INSERT, and replaying it on restart (base_spaces
+// replay loop -> direct_add_column_sync) so the grown schema is reconstructed ahead of
+// the rows that reference it.
 //
-// This is the POSITIVE test for that replay path: a computing table is created with WAL
-// ON, a first INSERT introduces (id, name), a second INSERT introduces an ADDITIONAL new
-// column (value) — triggering stage-1b growth and a PHYSICAL_ADD_COLUMN record — then the
-// engine is restarted and ALL columns + rows must survive. Before M7-W the 'value' column
-// (and its schema) was lost across restart; now it is preserved.
+// Scenario: a computing table is created with WAL ON, a first INSERT introduces (id,
+// name), a second INSERT introduces an ADDITIONAL new column (value) — triggering stage-1b
+// growth and a PHYSICAL_ADD_COLUMN record — then the engine is restarted and ALL columns +
+// rows must survive.
 TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_schema_growth_wal");
     test_clear_directory(config);
@@ -616,8 +612,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
 
         // The dynamically-added 'value' column survives: its schema was reconstructed by
-        // replaying PHYSICAL_ADD_COLUMN ahead of the PHYSICAL_INSERT that filled it. Before
-        // M7-W this query would have failed (column lost) or returned 0.
+        // replaying PHYSICAL_ADD_COLUMN ahead of the PHYSICAL_INSERT that filled it.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");

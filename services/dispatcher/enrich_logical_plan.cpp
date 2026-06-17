@@ -341,7 +341,6 @@ namespace services::catalog_resolve {
                                 case drop_target_kind::view:
                                 case drop_target_kind::sequence:
                                 case drop_target_kind::macro: {
-                                    // Migrated from set_relation_oid → base set_table_oid.
                                     if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
                                         d->set_table_oid(rt->table_oid());
                                     }

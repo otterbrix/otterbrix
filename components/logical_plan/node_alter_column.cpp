@@ -12,11 +12,9 @@ namespace components::logical_plan {
         , column_("", components::types::complex_logical_type{components::types::logical_type::UNKNOWN})
         , registered_cols_(resource) {}
 
-    // The three former per-clause nodes (and the two computed_field nodes)
-    // differed by node_type and so always landed in distinct buckets. Now that
-    // they share node_type::alter_column_t, fold op_ and computed_ into
-    // hash_impl() to preserve the distinction. The pre-merge nodes all returned
-    // a constant 0 hash_impl, so no per-field payload is folded here.
+    // Fold op_ and computed_ into the hash so the add/rename/drop and computed
+    // variants land in distinct buckets of any node-keyed container (they all
+    // share node_type::alter_column_t). No per-field payload is folded.
     hash_t node_alter_column_t::hash_impl() const {
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(op_));

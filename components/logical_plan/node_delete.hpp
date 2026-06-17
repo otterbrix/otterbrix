@@ -23,7 +23,7 @@ namespace components::logical_plan {
         // equals target_oid() via the WAL-first delete_pg_catalog_rows path —
         // create_plan_delete / create_plan_sequence lower it to operator_delete's
         // catalog branch instead of a predicate scan. Default oid_col_idx_ == -1
-        // ("not a catalog delete"). (Folded from node_primitive_delete_t.)
+        // ("not a catalog delete").
         std::int64_t oid_col_idx() const noexcept { return oid_col_idx_; }
         components::catalog::oid_t target_oid() const noexcept { return target_oid_; }
         void set_catalog_delete(std::int64_t oid_col_idx, components::catalog::oid_t target_oid) noexcept {
@@ -67,8 +67,7 @@ namespace components::logical_plan {
     // Catalog-delete leaf (DDL pg_catalog row scrub): delete all rows in
     // `catalog_table_oid` where column[oid_col_idx] == target_oid. The empty
     // match/unlimited limit children exist only to satisfy the base shape; the
-    // catalog branch of operator_delete ignores them. (Folded from
-    // node_primitive_delete_t.)
+    // catalog branch of operator_delete ignores them.
     node_delete_ptr make_node_catalog_delete(std::pmr::memory_resource* resource,
                                              components::catalog::oid_t catalog_table_oid,
                                              std::int64_t oid_col_idx,

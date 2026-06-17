@@ -239,11 +239,10 @@ namespace otterbrix {
                             }
                             break;
                         case services::wal::wal_record_type::PHYSICAL_ADD_COLUMN:
-                            // Schema-growth record: re-apply the new columns to the
-                            // storage BEFORE the dependent PHYSICAL_INSERT (which has a
-                            // higher wal_id, so it replays after this within the bucket).
-                            // Ensure the storage exists first (load .otbx or synthesise
-                            // from the schema chunk's column types), then add columns.
+                            // Schema-growth record: add the new columns before the
+                            // dependent PHYSICAL_INSERT (higher wal_id, so replays after
+                            // this). Storage must exist first — load .otbx or synthesise
+                            // it from the schema chunk's column types.
                             if (r->physical_data) {
                                 if (!disk_ptr->has_storage(table_oid)) {
                                     disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);

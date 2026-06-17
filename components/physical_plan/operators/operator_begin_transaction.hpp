@@ -11,7 +11,7 @@ namespace components::operators {
     // reuses it — Postgres semantics). The mailbox round-trip means this operator
     // joins the pipeline's await chain like commit/abort. The executor commit
     // phase then reads is_explicit() to choose per-statement publish (implicit)
-    // vs accumulation for COMMIT-time drain (see node_begin_transaction.hpp).
+    // vs accumulation for COMMIT-time drain (see node_transaction.hpp).
     class operator_begin_transaction_t final : public read_write_operator_t {
     public:
         operator_begin_transaction_t(std::pmr::memory_resource* resource, log_t log);

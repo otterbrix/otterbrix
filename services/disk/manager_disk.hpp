@@ -740,15 +740,10 @@ namespace services::disk {
         auto agent() -> actor_zeta::address_t;
 
         // Single manager-side scan funnel over the owning agent's
-        // storage_scan_batched_inner. Routes `table_oid` to its agent
-        // (pool_idx_for_oid), sends one batched scan, schedules the agent if the
-        // send needs it, and awaits the chunk batches. `filter` may be null
-        // ("see all rows"); `projected_cols` empty means "all columns". Returns an
-        // empty (resource-backed) batch vector when there are no agents or the
-        // owning slot is null — identical to the prior inline behaviour. The
-        // catalog resolve_* readers funnel through this so there is ONE place that
-        // issues a catalog scan. txn defaults to transaction_data{} = "see all
-        // committed", which every catalog reader uses.
+        // storage_scan_batched_inner, so there is ONE place that issues a catalog
+        // scan. `filter` null = "see all rows"; `projected_cols` empty = "all
+        // columns"; returns an empty batch vector when there is no owning agent.
+        // txn defaults to transaction_data{} = "see all committed".
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         scan_table(components::catalog::oid_t table_oid,
                    std::unique_ptr<components::table::table_filter_t> filter,

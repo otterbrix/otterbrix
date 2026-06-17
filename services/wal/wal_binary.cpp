@@ -161,12 +161,10 @@ namespace services::wal {
     // -----------------------------------------------------------------------
     // encode_add_column
     //
-    // Schema-growth record (IN_MEMORY / computed dynamic add_column). The payload
-    // is a 0-row data_chunk whose columns ARE the new columns (each vector carries
-    // its column's alias-tagged complex_logical_type), serialized via the same
-    // data_chunk binary codec INSERT uses. row_count = number of new columns
-    // (informational); row_start = 0 (unused for schema records). Reusing the chunk
-    // codec means the types round-trip through the exact path the row data does.
+    // Schema-growth record. Payload is a 0-row data_chunk whose columns ARE the new
+    // columns (alias-tagged types), serialized via the same data_chunk codec INSERT
+    // uses so the types round-trip through the exact path the row data does.
+    // row_count = number of new columns; row_start = 0 (unused for schema records).
     // -----------------------------------------------------------------------
     crc32_t encode_add_column(buffer_t& buffer,
                               crc32_t last_crc32,

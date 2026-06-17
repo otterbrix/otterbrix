@@ -734,8 +734,7 @@ namespace services::collection::executor {
                     using components::logical_plan::drop_target_kind;
                     using components::logical_plan::node_drop_t;
                     const auto kind = static_cast<const node_drop_t*>(n)->kind();
-                    // DROP TYPE carried no (db, rel) name here pre-merge (it fell
-                    // through to the empty default).
+                    // DROP TYPE carries no (db, rel) name here.
                     if (kind == drop_target_kind::type) {
                         return {};
                     }
@@ -894,8 +893,6 @@ namespace services::collection::executor {
                 break;
             }
             case node_type::drop_t: {
-                // The seven former drop_* node types share node_type::drop_t now;
-                // the per-target existence check keys on the merged node's kind().
                 using components::logical_plan::drop_target_kind;
                 using components::logical_plan::node_drop_t;
                 const auto* drop_node = static_cast<const node_drop_t*>(
@@ -942,11 +939,11 @@ namespace services::collection::executor {
                     case drop_target_kind::sequence:
                     case drop_target_kind::view:
                     case drop_target_kind::macro:
-                        // No table schema to validate (was a no-op break pre-merge).
+                        // No table schema to validate.
                         break;
                     case drop_target_kind::index: {
-                        // DROP INDEX fell into the default branch pre-merge, which
-                        // runs validate_types + validate_schema; preserve that.
+                        // DROP INDEX is the one drop kind that still runs
+                        // validate_types + validate_schema (the others skip both).
                         auto vt_err = services::dispatcher::validate_types(resource(),
                                                                            &dispatcher_idx,
                                                                            plan.sub_queries.back().get(),
@@ -1214,12 +1211,10 @@ namespace services::collection::executor {
                         }
                     }
 
-                    // Fold of the former node_computed_field_register_t: a
                     // node_alter_column_t(op=add, computed=true) carrying the
-                    // INSERT-chunk columns in registered_cols. create_plan routes
-                    // it to operator_computed_field_register_t unchanged. dbname/
-                    // relname are dropped — the register operator only reads
-                    // table_oid + columns.
+                    // INSERT-chunk columns in registered_cols; create_plan routes
+                    // it to operator_computed_field_register_t. dbname/relname are
+                    // not set — the register operator only reads table_oid + columns.
                     auto register_node =
                         components::logical_plan::make_node_alter_column(resource(),
                                                                          components::logical_plan::alter_column_op::add);

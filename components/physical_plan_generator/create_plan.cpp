@@ -90,8 +90,7 @@ namespace services::planner {
                 return impl::create_plan_sequence(context, function_registry, node, params);
             case node_type::alter_column_t: {
                 const auto* ac = static_cast<const components::logical_plan::node_alter_column_t*>(node.get());
-                // computed_==true folds the former computed_field_{register,
-                // unregister} nodes: route to the kept operator_computed_field_*
+                // computed()==true: route to the operator_computed_field_*
                 // pipeline (relkind='g' pg_computed_column upkeep, dependency-free).
                 if (ac->computed()) {
                     switch (ac->op()) {

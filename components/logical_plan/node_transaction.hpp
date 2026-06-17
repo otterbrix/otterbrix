@@ -15,8 +15,8 @@ namespace components::logical_plan {
         abort
     };
 
-    // Unified transaction-control leaf node (BEGIN / COMMIT / ROLLBACK),
-    // selected by op(). The session id flows through pipeline::context_t::session;
+    // Transaction-control leaf node (BEGIN / COMMIT / ROLLBACK), selected by
+    // op(). The session id flows through pipeline::context_t::session;
     // operator-side resolution against the txn_manager happens at execution time.
     //
     // begin/abort carry no payload. commit optionally carries is_ddl_commit —
@@ -25,7 +25,7 @@ namespace components::logical_plan {
     // and database_oid carry the WAL coordinates for that prefix (ignored when
     // is_ddl_commit=false / RPC mode).
     //
-    // Lowered by create_plan (switch on op()) into the existing
+    // Lowered by create_plan (switch on op()) into
     // operator_{begin,commit,abort}_transaction_t.
     class node_transaction_t final : public node_t {
     public:

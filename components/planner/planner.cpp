@@ -39,7 +39,7 @@ namespace components::planner {
         // Build a catalog-write leaf: a node_insert_t whose table_oid is the
         // pg_catalog table and whose single data child carries the ready-made
         // row. create_plan lowers it to operator_insert's catalog branch
-        // (append_pg_catalog_row). Replaces node_primitive_write_t.
+        // (append_pg_catalog_row).
         node_ptr make_catalog_write(std::pmr::memory_resource* r, catalog::oid_t catalog_table_oid,
                                     vector::data_chunk_t&& row) {
             auto ins = logical_plan::make_node_insert(r, std::move(row));
@@ -472,8 +472,7 @@ namespace components::planner {
         //
         // If enrich could not resolve the index oid (DROP INDEX on a missing
         // index), the rewrite still emits the drop_index_t so the index actor
-        // call no-ops on a missing engine entry — matching the pre-migration
-        // executor behavior of returning silent success.
+        // call no-ops on a missing engine entry (silent success).
         node_ptr rewrite_drop_index(std::pmr::memory_resource* r, node_ptr node) {
             auto* di = static_cast<logical_plan::node_drop_t*>(node.get());
             const catalog::oid_t index_oid = di->index_oid();
@@ -494,21 +493,18 @@ namespace components::planner {
             return seq;
         }
 
-        // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → node_dynamic_cascade_delete_t.
+        // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → one
+        // node_dynamic_cascade_delete_t. The (classid, seed objid) pair is
+        // derived from the node's kind(); behavior() is forwarded.
         //
         // The dynamic cascade operator self-resolves the pg_depend closure at runtime
         // and performs catalog row deletes + (for pg_class regular/computed entries)
-        // storage drop + index unregister.
+        // storage drop + index unregister. INVALID_OID seeds become a runtime no-op
+        // inside the operator.
         //
-        // The seed (classid, objid) is enrich-resolved on the legacy drop_X node and
-        // simply forwarded here. INVALID_OID seeds become a runtime no-op inside the
-        // operator — matches the legacy `if (rns.found)` / `if (rt.found)` guards.
-        // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → one
-        // node_dynamic_cascade_delete_t. The (classid, seed objid) pair is
-        // derived from the merged node's kind(); behavior() is forwarded.
-        // DROP INDEX is NOT routed here — it keeps its own rewrite_drop_index
-        // path because the dynamic cascade operator never tears down the index
-        // actor for relkind 'i'.
+        // DROP INDEX is NOT routed here — it keeps its own rewrite_drop_index path
+        // because the dynamic cascade operator never tears down the index actor for
+        // relkind 'i'.
         node_ptr rewrite_drop(std::pmr::memory_resource* r, node_ptr node) {
             auto* d = static_cast<logical_plan::node_drop_t*>(node.get());
             catalog::oid_t classid = catalog::INVALID_OID;
@@ -526,7 +522,6 @@ namespace components::planner {
                 case logical_plan::drop_target_kind::sequence:
                 case logical_plan::drop_target_kind::view:
                 case logical_plan::drop_target_kind::macro:
-                    // sequence/view/macro seed migrated from relation_oid() → table_oid().
                     classid = catalog::well_known_oid::pg_class_table;
                     seed_objid = d->table_oid();
                     break;

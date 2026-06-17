@@ -15,11 +15,9 @@ namespace services::disk {
     // NAME→index resolution and the eq-AND filtered scan both run intra-agent in
     // read_chunks_by_key_inner.
 
-    // Single manager-side scan funnel: route to the owning agent, send one batched
-    // scan, schedule if needed, await the chunk batches. The three resolve_* readers
-    // below all flow through here so the send/enqueue/await boilerplate lives in ONE
-    // place. A null filter = "see all rows"; the C++-side row filtering stays in each
-    // caller (it differs per table: equality on name, name-match collect, enumerate).
+    // The three resolve_* readers below flow through this funnel; the C++-side row
+    // filtering stays in each caller (it differs per table: equality on name,
+    // name-match collect, enumerate).
     manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     manager_disk_t::scan_table(components::catalog::oid_t table_oid,
                                std::unique_ptr<components::table::table_filter_t> filter,

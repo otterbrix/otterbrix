@@ -95,6 +95,18 @@ namespace services::dispatcher { namespace {
         fill_not_null(*md, nn, /*include_with_defaults=*/false);
         node->set_not_null_cols(std::move(nn));
 
+        // A NOT NULL fixed-ARRAY column with no DEFAULT cannot pad a too-short value, so
+        // such values must error before the append (see node_insert_t::array_size_reqs).
+        std::vector<std::pair<std::string, uint64_t>> array_reqs;
+        for (const auto& col : md->columns) {
+            if (col.type.type() == components::types::logical_type::ARRAY && col.attnotnull && !col.atthasdefault) {
+                const auto size =
+                    static_cast<const components::types::array_logical_type_extension*>(col.type.extension())->size();
+                array_reqs.emplace_back(col.attname, size);
+            }
+        }
+        node->set_array_size_reqs(std::move(array_reqs));
+
         // Coerce literal chunk types to table column types.
         // The SQL transformer builds the INSERT chunk from VALUES literals,
         // so integer literals become BIGINT, float literals become FLOAT/DOUBLE,
@@ -144,6 +156,11 @@ namespace services::dispatcher { namespace {
                 // cast_as recurses into children. Scalars get the cheap
                 // identity check.
                 using LT = components::types::logical_type;
+                // A fixed ARRAY target reconciles both element width and length (truncate /
+                // pad from the column DEFAULT) at the storage append chokepoint, which holds
+                // the decoded default value this layer does not. Leave the literal as-is.
+                if (target_type->type() == LT::ARRAY)
+                    continue;
                 const bool is_composite = col.type().type() == LT::STRUCT || col.type().type() == LT::LIST ||
                                           col.type().type() == LT::ARRAY || col.type().type() == LT::MAP;
                 if (!is_composite && col.type() == *target_type)

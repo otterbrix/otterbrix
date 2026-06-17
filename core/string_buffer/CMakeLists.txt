@@ -1,7 +1,7 @@
-project(string_heap)
+project(string_buffer)
 
 set(source_${PROJECT_NAME}
-        string_heap.cpp
+        string_buffer.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

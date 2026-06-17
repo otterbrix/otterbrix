@@ -101,7 +101,9 @@ namespace components::operators {
                 if (inner_op == expressions::compare_type::invalid) {
                     inner_op = expressions::compare_type::eq;
                 }
-                const auto& col_type = types[indices[0]];
+                // For a subscript path (v[i]) the comparison is against the element
+                // type, not the ARRAY/LIST column type; type_from_path resolves it.
+                const auto& col_type = types::complex_logical_type::type_from_path(types, path);
                 const auto& arr = parameters->parameters.at(param_id).children();
                 const bool is_any = expression->type() == expressions::compare_type::any;
                 auto filter = is_any ? std::unique_ptr<table::conjunction_filter_t>(
@@ -144,7 +146,9 @@ namespace components::operators {
                 // Coerce STRING parameter to ENUM ordinal when the target column is an ENUM:
                 // compare semantics see int32 storage on both sides, so the literal must be
                 // resolved to its ordinal up-front (else the filter matches 0 rows).
-                const auto& col_type = types[indices[0]];
+                // For a subscript path (v[i]) this resolves to the element type, so the
+                // constant is coerced to what the per-element compare actually sees.
+                const auto& col_type = types::complex_logical_type::type_from_path(types, path);
                 const auto& param_value = it->second;
                 if (col_type.type() == types::logical_type::ENUM &&
                     param_value.type().type() == types::logical_type::STRING_LITERAL) {

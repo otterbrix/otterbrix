@@ -6,7 +6,7 @@
 #include <components/vector/indexing_vector.hpp>
 #include <components/vector/validation.hpp>
 #include <components/vector/vector.hpp>
-#include <core/string_heap/string_heap.hpp>
+#include <core/string_buffer/string_buffer.hpp>
 
 #include <cstring>
 #include <shared_mutex>
@@ -184,7 +184,10 @@ namespace components::table {
 
         void fetch_updates(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result);
         void fetch_committed(uint64_t vector_index, uint64_t result_offset, vector::vector_t& result);
-        void fetch_committed_range(int64_t start_row, uint64_t count, vector::vector_t& result);
+        void fetch_committed_range(int64_t start_row,
+                                   uint64_t count,
+                                   vector::vector_t& result,
+                                   uint64_t result_offset_base = 0);
         void update(uint64_t column_index,
                     vector::vector_t& update,
                     int64_t* ids,
@@ -196,7 +199,7 @@ namespace components::table {
 
         void cleanup_update(update_info_t& info);
 
-        core::string_heap_t& heap() noexcept;
+        core::string_buffer_t& heap() noexcept;
 
     private:
         void cleanup_update_internal(update_info_t& info);
@@ -302,7 +305,7 @@ namespace components::table {
         types::physical_type type_;
         std::unique_ptr<update_node_t> root_;
         uint64_t type_size_;
-        core::string_heap_t heap_;
+        core::string_buffer_t heap_;
         column_data_t* column_data_;
         std::shared_mutex m_;
     };

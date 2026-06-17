@@ -71,6 +71,10 @@ namespace components::table {
                                           uint64_t count,
                                           vector::vector_t& result);
         virtual uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count);
+        // Like scan_count, but tolerates and applies committed updates over the scanned
+        // range (scan_count itself asserts no updates). Used by LIST/ARRAY parents whose
+        // child elements may carry in-place updates after a row was updated.
+        uint64_t scan_count_with_updates(column_scan_state& state, vector::vector_t& result, uint64_t count);
 
         virtual void select(uint64_t vector_index,
                             column_scan_state& state,

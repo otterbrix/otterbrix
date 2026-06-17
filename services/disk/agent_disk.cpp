@@ -620,10 +620,35 @@ namespace services::disk {
                     if (src_vec.type().has_alias()) {
                         target_type.set_alias(src_vec.type().alias());
                     }
+                    const bool array_target = target_type.type() == components::types::logical_type::ARRAY;
+                    // A whole-column NULL literal arrives as an NA-typed source vector, which
+                    // carries no values (and no meaningful validity mask) — every row is null.
+                    const bool src_is_null_type = src_vec.type().type() == components::types::logical_type::NA;
                     components::vector::vector_t casted(resource(), target_type, data->size());
                     for (uint64_t row = 0; row < data->size(); row++) {
-                        if (src_vec.validity().row_is_valid(row)) {
-                            casted.set_value(row, src_vec.value(row).cast_as(target_type, session_tz));
+                        if (!src_is_null_type && src_vec.validity().row_is_valid(row)) {
+                            // A fixed ARRAY column reconciles a length mismatch against the
+                            // column DEFAULT (truncate / pad-with-default); other columns use
+                            // the plain value cast.
+                            auto reconciled = array_target
+                                                  ? components::table::reconcile_to_fixed_array(resource(),
+                                                                                                src_vec.value(row),
+                                                                                                table_columns[i],
+                                                                                                session_tz)
+                                                  : src_vec.value(row).cast_as(target_type, session_tz);
+                            // reconcile_to_fixed_array yields a NULL value only when a NOT NULL
+                            // fixed ARRAY column receives a too-short value with no default to
+                            // pad from. operator_check_constraint already rejects this with a
+                            // clean error before the append, so this is a defensive backstop.
+                            if (array_target && reconciled.is_null()) {
+                                trace(log_,
+                                      "agent_disk[{}]::storage_append_inner: NOT NULL fixed ARRAY column '{}' "
+                                      "cannot be padded from a too-short value",
+                                      pool_idx_,
+                                      table_columns[i].name());
+                                co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                            }
+                            casted.set_value(row, reconciled);
                         } else {
                             casted.validity().set_invalid(row);
                         }

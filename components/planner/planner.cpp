@@ -58,13 +58,14 @@ namespace components::planner {
                 cur = fk_node;
             }
 
-            if (!ins->not_null_cols().empty() || !ins->check_exprs().empty()) {
+            if (!ins->not_null_cols().empty() || !ins->check_exprs().empty() || !ins->array_size_reqs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::dbname_t{},
                     core::relname_t{},
                     std::vector<std::string>(ins->not_null_cols()),
-                    std::vector<std::pair<std::string, std::string>>(ins->check_exprs())));
+                    std::vector<std::pair<std::string, std::string>>(ins->check_exprs()),
+                    std::vector<std::pair<std::string, uint64_t>>(ins->array_size_reqs())));
                 cc->append_child(cur);
                 cur = cc;
             }

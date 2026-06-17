@@ -35,7 +35,7 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
         otterbrix::types
-        otterbrix::string_heap
+        otterbrix::string_buffer
         boost::boost
 )
 

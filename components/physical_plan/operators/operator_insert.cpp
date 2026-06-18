@@ -74,11 +74,10 @@ namespace components::operators {
             if (rng.count > 0) {
                 ctx->pg_catalog_appends.push_back(std::move(rng));
             }
-            // No RETURNING for catalog inserts; emit a cardinality-only chunk like
-            // the user no-RETURNING path so any downstream cursor sees the count.
-            data_chunk_t res_chunk(resource_, {}, out_chunk.size());
-            res_chunk.set_cardinality(out_chunk.size());
-            set_output(make_operator_data(resource_, std::move(res_chunk)));
+            // DDL is not row-returning: leave no output so the cursor reports 0
+            // affected rows (matching operator_create_collection and the former
+            // operator_primitive_write). pg_catalog_appends was pushed above.
+            set_output(nullptr);
             mark_executed();
             co_return;
         }

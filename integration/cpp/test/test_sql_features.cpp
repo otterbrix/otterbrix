@@ -4271,3 +4271,73 @@ TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_af
         }
     }
 }
+
+// Regression guard: DDL statements must return an EMPTY cursor (is_success() &&
+// size()==0). Catalog DDL is lowered to pg_catalog row inserts; before the fix
+// the catalog branch in operator_insert (now set_output(nullptr) when the target
+// is a pg_catalog table) leaked the inserted catalog row count back to the
+// caller, so DDL reported size 1 instead of 0. Each statement below covers a
+// distinct DDL kind that flows through the catalog-insert lowering.
+TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty cursor") {
+    auto config = test_create_config("/tmp/test_sql_features/ddl_empty_cursor");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("CREATE DATABASE returns an empty cursor") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE DdlEmptyDb;");
+        REQUIRE(cur->is_success());
+        REQUIRE_FALSE(cur->is_error());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("CREATE TYPE (composite) returns an empty cursor") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE TYPE ddl_point_t AS (px INT, py INT);");
+        REQUIRE(cur->is_success());
+        REQUIRE_FALSE(cur->is_error());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("CREATE SEQUENCE returns an empty cursor") {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "CREATE SEQUENCE DdlEmptyDb.ddl_seq START 10 INCREMENT 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE_FALSE(cur->is_error());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("CREATE FUNCTION (lowered to macro) returns an empty cursor") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "CREATE FUNCTION DdlEmptyDb.ddl_double(x INT) RETURNS INT AS 'x -> x * 2';");
+        REQUIRE(cur->is_success());
+        REQUIRE_FALSE(cur->is_error());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("CREATE VIEW returns an empty cursor") {
+        {
+            // The view needs a base table to reference.
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "CREATE TABLE DdlEmptyDb.ddl_base (col_a STRING, col_b BIGINT);");
+            REQUIRE(cur->is_success());
+            REQUIRE_FALSE(cur->is_error());
+            REQUIRE(cur->size() == 0);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE VIEW DdlEmptyDb.ddl_view AS "
+                                               "SELECT col_a FROM DdlEmptyDb.ddl_base WHERE col_b > 10;");
+            REQUIRE(cur->is_success());
+            REQUIRE_FALSE(cur->is_error());
+            REQUIRE(cur->size() == 0);
+        }
+    }
+}

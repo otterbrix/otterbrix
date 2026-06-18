@@ -1,0 +1,18 @@
+{
+  "name": "large_customers_tier_count",
+  "sql": "SELECT tier, COUNT(customer_id) AS customers FROM large_customers GROUP BY tier ORDER BY tier ASC",
+  "expected_rows": [
+    {
+      "tier": "bronze",
+      "customers": 67
+    },
+    {
+      "tier": "gold",
+      "customers": 66
+    },
+    {
+      "tier": "silver",
+      "customers": 67
+    }
+  ]
+}

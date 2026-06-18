@@ -31,8 +31,21 @@ namespace components::logical_plan {
                                  core::dbname_t dbname,
                                  core::relname_t relname,
                                  const std::vector<expressions::expression_ptr>& expressions) {
+        collection_full_name_t collection;
+        collection.database = static_cast<const std::string&>(dbname);
+        collection.collection = static_cast<const std::string&>(relname);
         auto node = new node_sort_t{resource, std::move(dbname), std::move(relname)};
+        node->set_collection_full_name(std::move(collection));
         node->append_expressions(expressions);
+        return node;
+    }
+
+    node_sort_ptr make_node_sort(std::pmr::memory_resource* resource,
+                                 const collection_full_name_t& collection,
+                                 const std::vector<expressions::expression_ptr>& expressions) {
+        auto node =
+            make_node_sort(resource, core::dbname_t{collection.database}, core::relname_t{collection.collection}, expressions);
+        node->set_collection_full_name(collection);
         return node;
     }
 
@@ -40,8 +53,21 @@ namespace components::logical_plan {
                                  core::dbname_t dbname,
                                  core::relname_t relname,
                                  const std::pmr::vector<expressions::expression_ptr>& expressions) {
+        collection_full_name_t collection;
+        collection.database = static_cast<const std::string&>(dbname);
+        collection.collection = static_cast<const std::string&>(relname);
         auto node = new node_sort_t{resource, std::move(dbname), std::move(relname)};
+        node->set_collection_full_name(std::move(collection));
         node->append_expressions(expressions);
+        return node;
+    }
+
+    node_sort_ptr make_node_sort(std::pmr::memory_resource* resource,
+                                 const collection_full_name_t& collection,
+                                 const std::pmr::vector<expressions::expression_ptr>& expressions) {
+        auto node =
+            make_node_sort(resource, core::dbname_t{collection.database}, core::relname_t{collection.collection}, expressions);
+        node->set_collection_full_name(collection);
         return node;
     }
 

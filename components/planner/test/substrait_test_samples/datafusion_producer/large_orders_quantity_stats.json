@@ -1,0 +1,32 @@
+{
+  "name": "large_orders_quantity_stats",
+  "sql": "SELECT quantity, COUNT(order_id) AS orders, SUM(amount) AS total_amount FROM large_orders GROUP BY quantity ORDER BY quantity ASC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "quantity": 1,
+      "orders": 1000,
+      "total_amount": 498500
+    },
+    {
+      "quantity": 2,
+      "orders": 1000,
+      "total_amount": 500500
+    },
+    {
+      "quantity": 3,
+      "orders": 1000,
+      "total_amount": 502500
+    },
+    {
+      "quantity": 4,
+      "orders": 1000,
+      "total_amount": 499500
+    },
+    {
+      "quantity": 5,
+      "orders": 1000,
+      "total_amount": 501500
+    }
+  ]
+}

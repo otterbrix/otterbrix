@@ -21,7 +21,19 @@ namespace components::logical_plan {
 
     node_create_database_ptr
     make_node_create_database(std::pmr::memory_resource* resource, core::dbname_t dbname, bool if_not_exists) {
-        return {new node_create_database_t{resource, std::move(dbname), if_not_exists}};
+        collection_full_name_t collection;
+        collection.database = static_cast<const std::string&>(dbname);
+        auto node = node_create_database_ptr{new node_create_database_t{resource, std::move(dbname), if_not_exists}};
+        node->set_collection_full_name(std::move(collection));
+        return node;
+    }
+
+    node_create_database_ptr make_node_create_database(std::pmr::memory_resource* resource,
+                                                       const collection_full_name_t& collection,
+                                                       bool if_not_exists) {
+        auto node = make_node_create_database(resource, core::dbname_t{collection.database}, if_not_exists);
+        node->set_collection_full_name(collection);
+        return node;
     }
 
 } // namespace components::logical_plan

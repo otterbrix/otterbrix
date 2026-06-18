@@ -53,4 +53,20 @@ namespace components::logical_plan {
         return {new node_create_index_t{resource, std::move(indexname), type}};
     }
 
+    node_create_index_ptr make_node_create_index(std::pmr::memory_resource* resource,
+                                                 const collection_full_name_t& collection,
+                                                 core::indexname_t indexname,
+                                                 index_type type) {
+        auto node = make_node_create_index(resource, std::move(indexname), type);
+        node->set_collection_full_name(collection);
+        return node;
+    }
+
+    node_create_index_ptr make_node_create_index(std::pmr::memory_resource* resource,
+                                                 const collection_full_name_t& collection,
+                                                 std::string indexname,
+                                                 index_type type) {
+        return make_node_create_index(resource, collection, core::indexname_t{std::move(indexname)}, type);
+    }
+
 } // namespace components::logical_plan

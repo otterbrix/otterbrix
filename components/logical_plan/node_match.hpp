@@ -25,5 +25,8 @@ namespace components::logical_plan {
                                    core::dbname_t dbname,
                                    core::relname_t relname,
                                    const expressions::expression_ptr& match);
+    node_match_ptr make_node_match(std::pmr::memory_resource* resource,
+                                   const collection_full_name_t& collection,
+                                   const expressions::expression_ptr& match);
 
 } // namespace components::logical_plan

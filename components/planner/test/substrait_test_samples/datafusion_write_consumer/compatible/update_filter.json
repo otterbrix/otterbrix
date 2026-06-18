@@ -1,0 +1,6 @@
+{
+  "name": "update_filter",
+  "expected_relation": "update",
+  "expected_table": ["db", "coll"],
+  "expected_updated_columns": ["id"]
+}

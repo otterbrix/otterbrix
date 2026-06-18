@@ -1,0 +1,12 @@
+{
+  "name": "filter_gt_project_sort",
+  "sql": "SELECT id + 10 AS id_plus_ten FROM coll WHERE id > 1 ORDER BY id_plus_ten ASC",
+  "expected_rows": [
+    {
+      "id_plus_ten": 12
+    },
+    {
+      "id_plus_ten": 13
+    }
+  ]
+}

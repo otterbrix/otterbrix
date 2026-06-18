@@ -1,0 +1,16 @@
+{
+  "name": "sort_single_field",
+  "sql": "SELECT id FROM coll ORDER BY id ASC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    },
+    {
+      "id": 3
+    }
+  ]
+}

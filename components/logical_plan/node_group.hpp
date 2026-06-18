@@ -39,16 +39,27 @@ namespace components::logical_plan {
                                    core::dbname_t dbname,
                                    core::relname_t relname,
                                    expression_ptr having = nullptr);
+    node_group_ptr make_node_group(std::pmr::memory_resource* resource,
+                                   const collection_full_name_t& collection,
+                                   expression_ptr having = nullptr);
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
                                    core::dbname_t dbname,
                                    core::relname_t relname,
                                    const std::vector<expression_ptr>& expressions,
                                    expression_ptr having = nullptr);
+    node_group_ptr make_node_group(std::pmr::memory_resource* resource,
+                                   const collection_full_name_t& collection,
+                                   const std::vector<expression_ptr>& expressions,
+                                   expression_ptr having = nullptr);
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
                                    core::dbname_t dbname,
                                    core::relname_t relname,
+                                   const std::pmr::vector<expression_ptr>& expressions,
+                                   expression_ptr having = nullptr);
+    node_group_ptr make_node_group(std::pmr::memory_resource* resource,
+                                   const collection_full_name_t& collection,
                                    const std::pmr::vector<expression_ptr>& expressions,
                                    expression_ptr having = nullptr);
 

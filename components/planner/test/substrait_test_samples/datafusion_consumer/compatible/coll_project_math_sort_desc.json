@@ -1,0 +1,21 @@
+{
+  "name": "coll_project_math_sort_desc",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "id": 3,
+      "id_plus_id": 6,
+      "id_times_id": 9
+    },
+    {
+      "id": 2,
+      "id_plus_id": 4,
+      "id_times_id": 4
+    },
+    {
+      "id": 1,
+      "id_plus_id": 2,
+      "id_times_id": 1
+    }
+  ]
+}

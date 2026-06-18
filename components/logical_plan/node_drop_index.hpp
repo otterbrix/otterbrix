@@ -23,6 +23,7 @@ namespace components::logical_plan {
         // sibling catalog_resolve_table_t; never user-typed via the ctor.
         const std::string& runtime_index_name() const noexcept { return runtime_index_name_; }
         void set_runtime_index_name(std::string name) { runtime_index_name_ = std::move(name); }
+        const std::string& name() const noexcept { return runtime_index_name_; }
 
     private:
         hash_t hash_impl() const override;
@@ -35,5 +36,8 @@ namespace components::logical_plan {
 
     using node_drop_index_ptr = boost::intrusive_ptr<node_drop_index_t>;
     node_drop_index_ptr make_node_drop_index(std::pmr::memory_resource* resource);
+    node_drop_index_ptr make_node_drop_index(std::pmr::memory_resource* resource,
+                                             const collection_full_name_t& collection,
+                                             std::string index_name);
 
 } // namespace components::logical_plan

@@ -46,6 +46,25 @@ namespace components::logical_plan {
         return {new node_update_t{resource, match, limit, updates, upsert}};
     }
 
+    node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
+                                          const collection_full_name_t& collection,
+                                          const node_match_ptr& match,
+                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                          bool upsert) {
+        auto limit = make_node_limit(resource, collection, limit_t::unlimit());
+        return make_node_update(resource, collection, match, limit, updates, upsert);
+    }
+
+    node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
+                                          const collection_full_name_t& collection,
+                                          const collection_full_name_t& collection_from,
+                                          const node_match_ptr& match,
+                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                          bool upsert) {
+        auto limit = make_node_limit(resource, collection, limit_t::unlimit());
+        return make_node_update(resource, collection, collection_from, match, limit, updates, upsert);
+    }
+
     node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
                                          const node_match_ptr& match,
                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
@@ -54,12 +73,44 @@ namespace components::logical_plan {
         return {new node_update_t{resource, match, limit, updates, upsert}};
     }
 
+    node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
+                                         const collection_full_name_t& collection,
+                                         const node_match_ptr& match,
+                                         const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                         bool upsert) {
+        auto limit = make_node_limit(resource, collection, limit_t::limit_one());
+        return make_node_update(resource, collection, match, limit, updates, upsert);
+    }
+
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,
                                      const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                      bool upsert) {
         return {new node_update_t{resource, match, limit, updates, upsert}};
+    }
+
+    node_update_ptr make_node_update(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     const node_match_ptr& match,
+                                     const node_limit_ptr& limit,
+                                     const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                     bool upsert) {
+        auto node = make_node_update(resource, match, limit, updates, upsert);
+        node->set_collection_full_name(collection);
+        return node;
+    }
+
+    node_update_ptr make_node_update(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     const collection_full_name_t& collection_from,
+                                     const node_match_ptr& match,
+                                     const node_limit_ptr& limit,
+                                     const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                     bool upsert) {
+        auto node = make_node_update(resource, collection, match, limit, updates, upsert);
+        node->set_collection_from(collection_from);
+        return node;
     }
 
 } // namespace components::logical_plan

@@ -572,6 +572,15 @@ namespace components::types {
                                     std::move(alias));
     }
 
+    complex_logical_type complex_logical_type::create_struct(std::string name,
+                                                             const std::vector<complex_logical_type>& fields,
+                                                             std::string alias) {
+        std::pmr::vector<complex_logical_type> pmr_fields(std::pmr::get_default_resource());
+        pmr_fields.reserve(fields.size());
+        pmr_fields.insert(pmr_fields.end(), fields.begin(), fields.end());
+        return create_struct(std::move(name), pmr_fields, std::move(alias));
+    }
+
     complex_logical_type complex_logical_type::create_union(std::pmr::vector<complex_logical_type> fields,
                                                             std::string alias) {
         // union types always have a hidden "tag" field in front

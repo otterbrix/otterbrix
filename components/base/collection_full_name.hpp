@@ -56,6 +56,8 @@ struct qualified_name_t {
     }
 };
 
+using collection_full_name_t = qualified_name_t;
+
 inline bool operator==(const qualified_name_t& c1, const qualified_name_t& c2) {
     return c1.unique_identifier == c2.unique_identifier && c1.database == c2.database && c1.schema == c2.schema &&
            c1.collection == c2.collection;

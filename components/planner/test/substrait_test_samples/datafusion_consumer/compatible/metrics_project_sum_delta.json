@@ -1,0 +1,25 @@
+{
+  "name": "metrics_project_sum_delta",
+  "expected_rows": [
+    {
+      "metric_id": 1,
+      "sum_xy": 13,
+      "delta_xy": 7
+    },
+    {
+      "metric_id": 2,
+      "sum_xy": 12,
+      "delta_xy": -2
+    },
+    {
+      "metric_id": 3,
+      "sum_xy": 16,
+      "delta_xy": 0
+    },
+    {
+      "metric_id": 4,
+      "sum_xy": 8,
+      "delta_xy": 4
+    }
+  ]
+}

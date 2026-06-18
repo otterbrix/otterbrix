@@ -1,0 +1,16 @@
+{
+  "name": "sales_filter_project_asc",
+  "sql": "SELECT category, amount, amount * 2 AS amount_double FROM sales WHERE amount >= 10 ORDER BY category ASC, amount ASC",
+  "expected_rows": [
+    {
+      "category": "a",
+      "amount": 10,
+      "amount_double": 20
+    },
+    {
+      "category": "a",
+      "amount": 20,
+      "amount_double": 40
+    }
+  ]
+}

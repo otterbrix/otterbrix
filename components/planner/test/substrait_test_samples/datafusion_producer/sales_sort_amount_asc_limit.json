@@ -1,0 +1,14 @@
+{
+  "name": "sales_sort_amount_asc_limit",
+  "sql": "SELECT category, amount FROM sales ORDER BY amount ASC LIMIT 2",
+  "expected_rows": [
+    {
+      "category": "b",
+      "amount": 5
+    },
+    {
+      "category": "a",
+      "amount": 10
+    }
+  ]
+}

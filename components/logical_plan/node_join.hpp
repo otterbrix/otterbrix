@@ -40,6 +40,9 @@ namespace components::logical_plan {
 
     node_join_ptr
     make_node_join(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname, join_type type);
+    node_join_ptr make_node_join(std::pmr::memory_resource* resource,
+                                 const collection_full_name_t& collection,
+                                 join_type type);
 
     // Optimizer-produced equi-join node (see node_type::hash_join_t). Same shape as
     // node_join_t (children = left/right inputs, expressions = the ON condition) but

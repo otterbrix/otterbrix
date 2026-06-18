@@ -1,0 +1,12 @@
+{
+  "name": "filter_between",
+  "sql": "SELECT id FROM coll WHERE id >= 1 AND id <= 2",
+  "expected_rows": [
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "sales_project_amount_math",
+  "expected_rows": [
+    {"category": "a", "amount_double": 20, "amount_squared": 100},
+    {"category": "a", "amount_double": 40, "amount_squared": 400},
+    {"category": "b", "amount_double": 10, "amount_squared": 25}
+  ]
+}

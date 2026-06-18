@@ -1,0 +1,31 @@
+{
+  "name": "large_join_customer_score",
+  "sql": "SELECT c.customer_id, o.order_id, o.amount + o.quantity AS score FROM large_orders o JOIN large_customers c ON o.customer_id = c.customer_id WHERE o.order_id < 20 ORDER BY score DESC LIMIT 5",
+  "expected_rows": [
+    {
+      "customer_id": 19,
+      "order_id": 19,
+      "score": 709
+    },
+    {
+      "customer_id": 18,
+      "order_id": 18,
+      "score": 671
+    },
+    {
+      "customer_id": 17,
+      "order_id": 17,
+      "score": 633
+    },
+    {
+      "customer_id": 16,
+      "order_id": 16,
+      "score": 595
+    },
+    {
+      "customer_id": 15,
+      "order_id": 15,
+      "score": 557
+    }
+  ]
+}

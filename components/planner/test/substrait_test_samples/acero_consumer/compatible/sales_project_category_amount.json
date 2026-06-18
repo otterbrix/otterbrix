@@ -1,0 +1,8 @@
+{
+  "name": "sales_project_category_amount",
+  "expected_rows": [
+    {"category": "a", "amount": 10},
+    {"category": "a", "amount": 20},
+    {"category": "b", "amount": 5}
+  ]
+}

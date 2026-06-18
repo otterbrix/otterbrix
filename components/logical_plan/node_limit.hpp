@@ -53,5 +53,7 @@ namespace components::logical_plan {
                                    core::dbname_t dbname,
                                    core::relname_t relname,
                                    const limit_t& limit);
+    node_limit_ptr
+    make_node_limit(std::pmr::memory_resource* resource, const collection_full_name_t& collection, const limit_t& limit);
 
 } // namespace components::logical_plan

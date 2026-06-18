@@ -29,6 +29,9 @@ namespace components::logical_plan {
         components::catalog::oid_t table_oid_from() const noexcept { return table_oid_from_; }
         void set_table_oid_from(components::catalog::oid_t oid) noexcept { table_oid_from_ = oid; }
 
+        const collection_full_name_t& collection_from() const noexcept { return collection_from_; }
+        void set_collection_from(collection_full_name_t collection) { collection_from_ = std::move(collection); }
+
         // Catalog metadata attached by the dispatcher's enrich pass.
         void set_not_null_cols(std::vector<std::string> v) { not_null_cols_ = std::move(v); }
         const std::vector<std::string>& not_null_cols() const { return not_null_cols_; }
@@ -41,6 +44,7 @@ namespace components::logical_plan {
         std::pmr::vector<expressions::expression_ptr> returning_;
         bool upsert_;
         components::catalog::oid_t table_oid_from_{components::catalog::INVALID_OID};
+        collection_full_name_t collection_from_;
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -55,13 +59,42 @@ namespace components::logical_plan {
                                           const node_match_ptr& match,
                                           const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                           bool upsert = false);
+    node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
+                                          const collection_full_name_t& collection,
+                                          const node_match_ptr& match,
+                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                          bool upsert = false);
+    node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
+                                          const collection_full_name_t& collection,
+                                          const collection_full_name_t& collection_from,
+                                          const node_match_ptr& match,
+                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                          bool upsert = false);
 
     node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
                                          const node_match_ptr& match,
                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
                                          bool upsert = false);
+    node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
+                                         const collection_full_name_t& collection,
+                                         const node_match_ptr& match,
+                                         const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                         bool upsert = false);
 
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
+                                     const node_match_ptr& match,
+                                     const node_limit_ptr& limit,
+                                     const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                     bool upsert = false);
+    node_update_ptr make_node_update(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     const node_match_ptr& match,
+                                     const node_limit_ptr& limit,
+                                     const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                     bool upsert = false);
+    node_update_ptr make_node_update(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     const collection_full_name_t& collection_from,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,
                                      const std::pmr::vector<expressions::update_expr_ptr>& updates,

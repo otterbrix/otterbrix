@@ -21,4 +21,13 @@ namespace components::logical_plan {
         return {new node_drop_index_t{resource}};
     }
 
+    node_drop_index_ptr make_node_drop_index(std::pmr::memory_resource* resource,
+                                             const collection_full_name_t& collection,
+                                             std::string index_name) {
+        auto node = make_node_drop_index(resource);
+        node->set_collection_full_name(collection);
+        node->set_runtime_index_name(std::move(index_name));
+        return node;
+    }
+
 } // namespace components::logical_plan

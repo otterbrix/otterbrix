@@ -1,0 +1,12 @@
+{
+  "name": "coll_limit_two_asc",
+  "sql": "SELECT id FROM coll ORDER BY id ASC LIMIT 2",
+  "expected_rows": [
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    }
+  ]
+}

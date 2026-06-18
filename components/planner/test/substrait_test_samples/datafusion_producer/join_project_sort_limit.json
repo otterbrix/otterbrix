@@ -1,0 +1,10 @@
+{
+  "name": "join_project_sort_limit",
+  "sql": "SELECT left_table.id + right_table.id AS pair_sum FROM left_table JOIN right_table ON left_table.id = right_table.id ORDER BY pair_sum DESC LIMIT 1",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "pair_sum": 4
+    }
+  ]
+}

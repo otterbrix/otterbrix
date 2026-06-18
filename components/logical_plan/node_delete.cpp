@@ -41,14 +41,55 @@ namespace components::logical_plan {
         return {new node_delete_t{resource, match, limit}};
     }
 
+    node_delete_ptr make_node_delete_many(std::pmr::memory_resource* resource,
+                                          const collection_full_name_t& collection,
+                                          const node_match_ptr& match) {
+        auto limit = make_node_limit(resource, collection, limit_t::unlimit());
+        return make_node_delete(resource, collection, match, limit);
+    }
+
+    node_delete_ptr make_node_delete_many(std::pmr::memory_resource* resource,
+                                          const collection_full_name_t& collection,
+                                          const collection_full_name_t& collection_from,
+                                          const node_match_ptr& match) {
+        auto limit = make_node_limit(resource, collection, limit_t::unlimit());
+        return make_node_delete(resource, collection, collection_from, match, limit);
+    }
+
     node_delete_ptr make_node_delete_one(std::pmr::memory_resource* resource, const node_match_ptr& match) {
         auto limit = make_node_limit(resource, core::dbname_t{}, core::relname_t{}, limit_t::limit_one());
         return {new node_delete_t{resource, match, limit}};
     }
 
+    node_delete_ptr make_node_delete_one(std::pmr::memory_resource* resource,
+                                         const collection_full_name_t& collection,
+                                         const node_match_ptr& match) {
+        auto limit = make_node_limit(resource, collection, limit_t::limit_one());
+        return make_node_delete(resource, collection, match, limit);
+    }
+
     node_delete_ptr
     make_node_delete(std::pmr::memory_resource* resource, const node_match_ptr& match, const node_limit_ptr& limit) {
         return {new node_delete_t{resource, match, limit}};
+    }
+
+    node_delete_ptr make_node_delete(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     const node_match_ptr& match,
+                                     const node_limit_ptr& limit) {
+        auto node = make_node_delete(resource, match, limit);
+        node->set_collection_full_name(collection);
+        return node;
+    }
+
+    node_delete_ptr make_node_delete(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     const collection_full_name_t& collection_from,
+                                     const node_match_ptr& match,
+                                     const node_limit_ptr& limit) {
+        auto node = make_node_delete(resource, collection, match, limit);
+        node->set_collection_from(collection_from);
+        return node;
     }
 
 } // namespace components::logical_plan

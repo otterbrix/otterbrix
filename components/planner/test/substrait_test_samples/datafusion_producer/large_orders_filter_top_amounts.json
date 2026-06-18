@@ -1,0 +1,39 @@
+{
+  "name": "large_orders_filter_top_amounts",
+  "sql": "SELECT order_id, amount FROM large_orders WHERE amount >= 995 ORDER BY amount DESC, order_id ASC LIMIT 8",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "order_id": 27,
+      "amount": 1000
+    },
+    {
+      "order_id": 1027,
+      "amount": 1000
+    },
+    {
+      "order_id": 2027,
+      "amount": 1000
+    },
+    {
+      "order_id": 3027,
+      "amount": 1000
+    },
+    {
+      "order_id": 4027,
+      "amount": 1000
+    },
+    {
+      "order_id": 54,
+      "amount": 999
+    },
+    {
+      "order_id": 1054,
+      "amount": 999
+    },
+    {
+      "order_id": 2054,
+      "amount": 999
+    }
+  ]
+}

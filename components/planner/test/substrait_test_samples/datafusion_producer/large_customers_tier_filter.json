@@ -1,0 +1,27 @@
+{
+  "name": "large_customers_tier_filter",
+  "sql": "SELECT customer_id, tier FROM large_customers WHERE tier = 'gold' ORDER BY customer_id ASC LIMIT 5",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "customer_id": 2,
+      "tier": "gold"
+    },
+    {
+      "customer_id": 5,
+      "tier": "gold"
+    },
+    {
+      "customer_id": 8,
+      "tier": "gold"
+    },
+    {
+      "customer_id": 11,
+      "tier": "gold"
+    },
+    {
+      "customer_id": 14,
+      "tier": "gold"
+    }
+  ]
+}

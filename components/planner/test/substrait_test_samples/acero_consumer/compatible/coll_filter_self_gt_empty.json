@@ -1,0 +1,4 @@
+{
+  "name": "coll_filter_self_gt_empty",
+  "expected_rows": []
+}

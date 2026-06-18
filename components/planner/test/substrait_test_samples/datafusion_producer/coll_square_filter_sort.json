@@ -1,0 +1,14 @@
+{
+  "name": "coll_square_filter_sort",
+  "sql": "SELECT id, id * id AS id_squared FROM coll WHERE id > 1 ORDER BY id_squared ASC",
+  "expected_rows": [
+    {
+      "id": 2,
+      "id_squared": 4
+    },
+    {
+      "id": 3,
+      "id_squared": 9
+    }
+  ]
+}

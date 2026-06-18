@@ -1,0 +1,9 @@
+{
+  "name": "large_orders_count",
+  "sql": "SELECT COUNT(order_id) AS orders FROM large_orders",
+  "expected_rows": [
+    {
+      "orders": 5000
+    }
+  ]
+}

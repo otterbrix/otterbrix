@@ -1,0 +1,66 @@
+{
+  "name": "large_customers_region_tier_count",
+  "sql": "SELECT region, tier, COUNT(customer_id) AS customers FROM large_customers GROUP BY region, tier ORDER BY region ASC, tier ASC",
+  "expected_rows": [
+    {
+      "region": "east",
+      "tier": "bronze",
+      "customers": 17
+    },
+    {
+      "region": "east",
+      "tier": "gold",
+      "customers": 17
+    },
+    {
+      "region": "east",
+      "tier": "silver",
+      "customers": 16
+    },
+    {
+      "region": "north",
+      "tier": "bronze",
+      "customers": 17
+    },
+    {
+      "region": "north",
+      "tier": "gold",
+      "customers": 16
+    },
+    {
+      "region": "north",
+      "tier": "silver",
+      "customers": 17
+    },
+    {
+      "region": "south",
+      "tier": "bronze",
+      "customers": 16
+    },
+    {
+      "region": "south",
+      "tier": "gold",
+      "customers": 17
+    },
+    {
+      "region": "south",
+      "tier": "silver",
+      "customers": 17
+    },
+    {
+      "region": "west",
+      "tier": "bronze",
+      "customers": 17
+    },
+    {
+      "region": "west",
+      "tier": "gold",
+      "customers": 16
+    },
+    {
+      "region": "west",
+      "tier": "silver",
+      "customers": 17
+    }
+  ]
+}

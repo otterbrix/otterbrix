@@ -1,0 +1,32 @@
+{
+  "name": "large_orders_customer_window_sample",
+  "sql": "SELECT customer_id, COUNT(order_id) AS orders, SUM(quantity) AS quantity_sum FROM large_orders WHERE customer_id < 5 GROUP BY customer_id ORDER BY customer_id ASC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "customer_id": 0,
+      "orders": 25,
+      "quantity_sum": 25
+    },
+    {
+      "customer_id": 1,
+      "orders": 25,
+      "quantity_sum": 50
+    },
+    {
+      "customer_id": 2,
+      "orders": 25,
+      "quantity_sum": 75
+    },
+    {
+      "customer_id": 3,
+      "orders": 25,
+      "quantity_sum": 100
+    },
+    {
+      "customer_id": 4,
+      "orders": 25,
+      "quantity_sum": 125
+    }
+  ]
+}

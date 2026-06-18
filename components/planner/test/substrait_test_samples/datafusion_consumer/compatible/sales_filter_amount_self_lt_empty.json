@@ -1,0 +1,4 @@
+{
+  "name": "sales_filter_amount_self_lt_empty",
+  "expected_rows": []
+}

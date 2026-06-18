@@ -40,10 +40,26 @@ namespace components::logical_plan {
         return res;
     }
 
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     const components::vector::data_chunk_t& chunk) {
+        auto node = make_node_insert(resource, chunk);
+        node->set_collection_full_name(collection);
+        return node;
+    }
+
     node_insert_ptr make_node_insert(std::pmr::memory_resource* resource, components::vector::data_chunk_t&& chunk) {
         auto res = make_node_insert(resource);
         res->append_child(make_node_raw_data(resource, std::move(chunk)));
         return res;
+    }
+
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     components::vector::data_chunk_t&& chunk) {
+        auto node = make_node_insert(resource, std::move(chunk));
+        node->set_collection_full_name(collection);
+        return node;
     }
 
     node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
@@ -53,6 +69,15 @@ namespace components::logical_plan {
         res->append_child(make_node_raw_data(resource, std::move(chunk)));
         res->key_translation() = std::move(key_translation);
         return res;
+    }
+
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     components::vector::data_chunk_t&& chunk,
+                                     std::pmr::vector<expressions::key_t>&& key_translation) {
+        auto node = make_node_insert(resource, std::move(chunk), std::move(key_translation));
+        node->set_collection_full_name(collection);
+        return node;
     }
 
 } // namespace components::logical_plan

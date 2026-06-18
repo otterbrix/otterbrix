@@ -1,0 +1,12 @@
+{
+  "name": "filter_lt_sort_id",
+  "sql": "SELECT id FROM coll WHERE id < 3 ORDER BY id ASC",
+  "expected_rows": [
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    }
+  ]
+}

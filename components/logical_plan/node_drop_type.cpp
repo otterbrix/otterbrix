@@ -19,4 +19,10 @@ namespace components::logical_plan {
         return {new node_drop_type_t{resource}};
     }
 
+    node_drop_type_ptr make_node_drop_type(std::pmr::memory_resource* resource, std::string type_name) {
+        auto node = make_node_drop_type(resource);
+        node->set_name(std::move(type_name));
+        return node;
+    }
+
 } // namespace components::logical_plan

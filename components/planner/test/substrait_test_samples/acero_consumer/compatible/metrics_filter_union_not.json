@@ -1,0 +1,17 @@
+{
+  "name": "metrics_filter_union_not",
+  "expected_rows": [
+    {
+      "metric_id": 2,
+      "bucket": "a",
+      "x": 5,
+      "y": 7
+    },
+    {
+      "metric_id": 3,
+      "bucket": "b",
+      "x": 8,
+      "y": 8
+    }
+  ]
+}

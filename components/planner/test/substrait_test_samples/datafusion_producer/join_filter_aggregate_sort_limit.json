@@ -1,0 +1,11 @@
+{
+  "name": "join_filter_aggregate_sort_limit",
+  "sql": "SELECT left_table.id AS left_id, COUNT(right_table.id) AS matches FROM left_table JOIN right_table ON left_table.id = right_table.id WHERE right_table.id >= 2 GROUP BY left_table.id ORDER BY matches DESC LIMIT 5",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "left_id": 2,
+      "matches": 1
+    }
+  ]
+}

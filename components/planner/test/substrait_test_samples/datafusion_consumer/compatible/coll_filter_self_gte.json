@@ -1,0 +1,14 @@
+{
+  "name": "coll_filter_self_gte",
+  "expected_rows": [
+    {
+      "id": 3
+    },
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    }
+  ]
+}

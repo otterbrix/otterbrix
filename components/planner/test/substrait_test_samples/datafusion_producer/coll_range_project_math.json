@@ -1,0 +1,21 @@
+{
+  "name": "coll_range_project_math",
+  "sql": "SELECT id, id + 1 AS plus_one, id * id AS sq FROM coll WHERE id >= 1 AND id <= 3 ORDER BY plus_one ASC",
+  "expected_rows": [
+    {
+      "id": 1,
+      "plus_one": 2,
+      "sq": 1
+    },
+    {
+      "id": 2,
+      "plus_one": 3,
+      "sq": 4
+    },
+    {
+      "id": 3,
+      "plus_one": 4,
+      "sq": 9
+    }
+  ]
+}

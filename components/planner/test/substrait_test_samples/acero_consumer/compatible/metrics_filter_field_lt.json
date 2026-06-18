@@ -1,0 +1,11 @@
+{
+  "name": "metrics_filter_field_lt",
+  "expected_rows": [
+    {
+      "metric_id": 2,
+      "bucket": "a",
+      "x": 5,
+      "y": 7
+    }
+  ]
+}

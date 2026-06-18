@@ -30,6 +30,7 @@ class OtterbrixConan(ConanFile):
         self.requires("bzip2/1.0.8@")
         self.requires("actor-zeta/1.2.0@")
         self.requires("fast_float/8.1.0@")
+        self.requires("protobuf/3.19.4@")
 
     def config_options(self):
         if self.settings.get_safe("compiler.cppstd") is None:

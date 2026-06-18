@@ -13,6 +13,8 @@ namespace components::logical_plan {
 
         components::catalog::oid_t type_oid() const noexcept { return type_oid_; }
         void set_type_oid(components::catalog::oid_t oid) noexcept { type_oid_ = oid; }
+        const std::string& name() const noexcept { return type_name_; }
+        void set_name(std::string name) { type_name_ = std::move(name); }
 
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
 
@@ -21,11 +23,13 @@ namespace components::logical_plan {
         std::string to_string_impl() const final;
 
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
+        std::string type_name_;
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
     };
 
     using node_drop_type_ptr = boost::intrusive_ptr<node_drop_type_t>;
 
     node_drop_type_ptr make_node_drop_type(std::pmr::memory_resource* resource);
+    node_drop_type_ptr make_node_drop_type(std::pmr::memory_resource* resource, std::string type_name);
 
 } // namespace components::logical_plan

@@ -52,7 +52,21 @@ namespace components::logical_plan {
                                  core::dbname_t dbname,
                                  core::relname_t relname,
                                  join_type type) {
-        return {new node_join_t{resource, std::move(dbname), std::move(relname), type}};
+        collection_full_name_t collection;
+        collection.database = static_cast<const std::string&>(dbname);
+        collection.collection = static_cast<const std::string&>(relname);
+        auto node = node_join_ptr{new node_join_t{resource, std::move(dbname), std::move(relname), type}};
+        node->set_collection_full_name(std::move(collection));
+        return node;
+    }
+
+    node_join_ptr make_node_join(std::pmr::memory_resource* resource,
+                                 const collection_full_name_t& collection,
+                                 join_type type) {
+        auto node =
+            make_node_join(resource, core::dbname_t{collection.database}, core::relname_t{collection.collection}, type);
+        node->set_collection_full_name(collection);
+        return node;
     }
 
     node_hash_join_t::node_hash_join_t(std::pmr::memory_resource* resource,

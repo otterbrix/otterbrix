@@ -1,0 +1,16 @@
+{
+  "name": "filter_and_sort_id",
+  "sql": "SELECT id FROM coll WHERE id >= 1 AND id <= 3 ORDER BY id DESC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "id": 3
+    },
+    {
+      "id": 2
+    },
+    {
+      "id": 1
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "metrics_project_sort_sum_desc",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "metric_id": 3,
+      "sum_xy": 16
+    },
+    {
+      "metric_id": 1,
+      "sum_xy": 13
+    },
+    {
+      "metric_id": 2,
+      "sum_xy": 12
+    },
+    {
+      "metric_id": 4,
+      "sum_xy": 8
+    }
+  ]
+}

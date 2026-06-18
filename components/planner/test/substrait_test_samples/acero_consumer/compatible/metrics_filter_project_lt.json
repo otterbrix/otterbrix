@@ -1,0 +1,10 @@
+{
+  "name": "metrics_filter_project_lt",
+  "expected_rows": [
+    {
+      "metric_id": 2,
+      "x": 5,
+      "y": 7
+    }
+  ]
+}

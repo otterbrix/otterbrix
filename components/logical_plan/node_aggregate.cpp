@@ -41,14 +41,34 @@ namespace components::logical_plan {
 
     node_aggregate_ptr
     make_node_aggregate(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname) {
-        return {new node_aggregate_t(resource, std::move(dbname), std::move(relname))};
+        collection_full_name_t collection;
+        collection.database = static_cast<const std::string&>(dbname);
+        collection.collection = static_cast<const std::string&>(relname);
+        auto node = node_aggregate_ptr{new node_aggregate_t(resource, std::move(dbname), std::move(relname))};
+        node->set_collection_full_name(std::move(collection));
+        return node;
+    }
+
+    node_aggregate_ptr make_node_aggregate(std::pmr::memory_resource* resource, const collection_full_name_t& collection) {
+        auto node = make_node_aggregate(resource,
+                                        core::uid_t{collection.unique_identifier},
+                                        core::dbname_t{collection.database},
+                                        core::relname_t{collection.collection});
+        node->set_collection_full_name(collection);
+        return node;
     }
 
     node_aggregate_ptr make_node_aggregate(std::pmr::memory_resource* resource,
                                            core::uid_t uid,
                                            core::dbname_t dbname,
                                            core::relname_t relname) {
-        return {new node_aggregate_t(resource, std::move(uid), std::move(dbname), std::move(relname))};
+        collection_full_name_t collection;
+        collection.unique_identifier = static_cast<const std::string&>(uid);
+        collection.database = static_cast<const std::string&>(dbname);
+        collection.collection = static_cast<const std::string&>(relname);
+        auto node = node_aggregate_ptr{new node_aggregate_t(resource, std::move(uid), std::move(dbname), std::move(relname))};
+        node->set_collection_full_name(std::move(collection));
+        return node;
     }
 
 } // namespace components::logical_plan

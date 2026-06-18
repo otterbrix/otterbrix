@@ -107,23 +107,25 @@ namespace core::date {
     // interval comparisons use total approximate microseconds (30 days/month),
     // so interval '1 month' == interval '30 days' is true, matching PostgreSQL.
 
-    inline auto operator<=>(date_t a, date_t b) noexcept { return a.value <=> b.value; }
+    inline auto operator<=>(date_t a, date_t b) noexcept { return a.value.count() <=> b.value.count(); }
     inline bool operator==(date_t a, date_t b) noexcept { return a.value == b.value; }
 
-    inline auto operator<=>(time_t a, time_t b) noexcept { return a.value <=> b.value; }
+    inline auto operator<=>(time_t a, time_t b) noexcept { return a.value.count() <=> b.value.count(); }
     inline bool operator==(time_t a, time_t b) noexcept { return a.value == b.value; }
 
-    inline auto operator<=>(timestamp_t a, timestamp_t b) noexcept { return a.value <=> b.value; }
+    inline auto operator<=>(timestamp_t a, timestamp_t b) noexcept { return a.value.count() <=> b.value.count(); }
     inline bool operator==(timestamp_t a, timestamp_t b) noexcept { return a.value == b.value; }
 
-    inline auto operator<=>(timestamptz_t a, timestamptz_t b) noexcept { return a.value <=> b.value; }
+    inline auto operator<=>(timestamptz_t a, timestamptz_t b) noexcept {
+        return a.value.count() <=> b.value.count();
+    }
     inline bool operator==(timestamptz_t a, timestamptz_t b) noexcept { return a.value == b.value; }
 
     // timetz: normalise to UTC before comparing  (utc = local - zone_east)
     inline auto operator<=>(timetz_t a, timetz_t b) noexcept {
         auto a_utc = a.time - std::chrono::duration_cast<microseconds>(a.zone);
         auto b_utc = b.time - std::chrono::duration_cast<microseconds>(b.zone);
-        return a_utc <=> b_utc;
+        return a_utc.count() <=> b_utc.count();
     }
     inline bool operator==(timetz_t a, timetz_t b) noexcept {
         auto a_utc = a.time - std::chrono::duration_cast<microseconds>(a.zone);
@@ -137,7 +139,7 @@ namespace core::date {
                std::chrono::duration_cast<microseconds>(i.month);
     }
     inline auto operator<=>(const interval_t& a, const interval_t& b) noexcept {
-        return interval_total(a) <=> interval_total(b);
+        return interval_total(a).count() <=> interval_total(b).count();
     }
     inline bool operator==(const interval_t& a, const interval_t& b) noexcept {
         return interval_total(a) == interval_total(b);

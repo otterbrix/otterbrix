@@ -1,0 +1,17 @@
+{
+  "name": "sales_aggregate_min_max_sort",
+  "sql": "SELECT category, MIN(amount) AS min_amount, MAX(amount) AS max_amount FROM sales GROUP BY category ORDER BY category ASC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "category": "a",
+      "min_amount": 10,
+      "max_amount": 20
+    },
+    {
+      "category": "b",
+      "min_amount": 5,
+      "max_amount": 5
+    }
+  ]
+}

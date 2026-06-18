@@ -65,5 +65,13 @@ namespace components::logical_plan {
     make_node_create_index(std::pmr::memory_resource* resource,
                            core::indexname_t indexname = core::indexname_t{std::string{"unnamed"}},
                            index_type type = index_type::single);
+    node_create_index_ptr make_node_create_index(std::pmr::memory_resource* resource,
+                                                 const collection_full_name_t& collection,
+                                                 core::indexname_t indexname,
+                                                 index_type type = index_type::single);
+    node_create_index_ptr make_node_create_index(std::pmr::memory_resource* resource,
+                                                 const collection_full_name_t& collection,
+                                                 std::string indexname,
+                                                 index_type type = index_type::single);
 
 } // namespace components::logical_plan

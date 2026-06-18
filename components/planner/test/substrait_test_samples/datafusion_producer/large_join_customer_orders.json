@@ -1,0 +1,32 @@
+{
+  "name": "large_join_customer_orders",
+  "sql": "SELECT c.customer_id, c.region, o.amount FROM large_orders o JOIN large_customers c ON o.customer_id = c.customer_id WHERE o.order_id < 5 ORDER BY o.order_id ASC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "customer_id": 0,
+      "region": "north",
+      "amount": 1
+    },
+    {
+      "customer_id": 1,
+      "region": "south",
+      "amount": 38
+    },
+    {
+      "customer_id": 2,
+      "region": "east",
+      "amount": 75
+    },
+    {
+      "customer_id": 3,
+      "region": "west",
+      "amount": 112
+    },
+    {
+      "customer_id": 4,
+      "region": "north",
+      "amount": 149
+    }
+  ]
+}

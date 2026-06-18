@@ -9,6 +9,7 @@
 #include <components/expressions/expression.hpp>
 #include <memory_resource>
 #include <unordered_set>
+#include <utility>
 
 namespace components::logical_plan {
 
@@ -67,6 +68,9 @@ namespace components::logical_plan {
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
 
+        const collection_full_name_t& collection_full_name() const noexcept { return collection_full_name_; }
+        void set_collection_full_name(collection_full_name_t collection) { collection_full_name_ = std::move(collection); }
+
         std::string to_string() const;
         std::pmr::memory_resource* resource() const noexcept;
 
@@ -78,6 +82,7 @@ namespace components::logical_plan {
         // See table_oid()/set_table_oid() above. Default INVALID_OID; enrich
         // is responsible for stamping the resolved oid before plan execution.
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
+        collection_full_name_t collection_full_name_;
 
         void table_oid_dependencies_(std::unordered_set<components::catalog::oid_t>& upper_dependencies);
 

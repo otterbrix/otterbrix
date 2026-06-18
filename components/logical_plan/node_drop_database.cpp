@@ -19,4 +19,11 @@ namespace components::logical_plan {
         return {new node_drop_database_t{resource}};
     }
 
+    node_drop_database_ptr
+    make_node_drop_database(std::pmr::memory_resource* resource, const collection_full_name_t& collection) {
+        auto node = make_node_drop_database(resource);
+        node->set_collection_full_name(collection);
+        return node;
+    }
+
 } // namespace components::logical_plan

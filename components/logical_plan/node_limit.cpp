@@ -46,7 +46,20 @@ namespace components::logical_plan {
                                    core::dbname_t dbname,
                                    core::relname_t relname,
                                    const limit_t& limit) {
-        return {new node_limit_t{resource, std::move(dbname), std::move(relname), limit}};
+        collection_full_name_t collection;
+        collection.database = static_cast<const std::string&>(dbname);
+        collection.collection = static_cast<const std::string&>(relname);
+        auto node = node_limit_ptr{new node_limit_t{resource, std::move(dbname), std::move(relname), limit}};
+        node->set_collection_full_name(std::move(collection));
+        return node;
+    }
+
+    node_limit_ptr
+    make_node_limit(std::pmr::memory_resource* resource, const collection_full_name_t& collection, const limit_t& limit) {
+        auto node = make_node_limit(
+            resource, core::dbname_t{collection.database}, core::relname_t{collection.collection}, limit);
+        node->set_collection_full_name(collection);
+        return node;
     }
 
 } // namespace components::logical_plan

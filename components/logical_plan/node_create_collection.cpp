@@ -55,7 +55,20 @@ namespace components::logical_plan {
 
     node_create_collection_ptr
     make_node_create_collection(std::pmr::memory_resource* resource, core::relname_t relname, bool if_not_exists) {
-        return {new node_create_collection_t{resource, std::move(relname), false, if_not_exists}};
+        collection_full_name_t collection;
+        collection.collection = static_cast<const std::string&>(relname);
+        auto node =
+            node_create_collection_ptr{new node_create_collection_t{resource, std::move(relname), false, if_not_exists}};
+        node->set_collection_full_name(std::move(collection));
+        return node;
+    }
+
+    node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,
+                                                           const collection_full_name_t& collection,
+                                                           bool if_not_exists) {
+        auto node = make_node_create_collection(resource, core::relname_t{collection.collection}, if_not_exists);
+        node->set_collection_full_name(collection);
+        return node;
     }
 
     node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,
@@ -64,12 +77,32 @@ namespace components::logical_plan {
                                                            std::vector<table::table_constraint_t> constraints,
                                                            bool disk_storage,
                                                            bool if_not_exists) {
-        return {new node_create_collection_t{resource,
-                                             std::move(relname),
-                                             std::move(column_definitions),
-                                             std::move(constraints),
-                                             disk_storage,
-                                             if_not_exists}};
+        collection_full_name_t collection;
+        collection.collection = static_cast<const std::string&>(relname);
+        auto node = node_create_collection_ptr{new node_create_collection_t{resource,
+                                                                            std::move(relname),
+                                                                            std::move(column_definitions),
+                                                                            std::move(constraints),
+                                                                            disk_storage,
+                                                                            if_not_exists}};
+        node->set_collection_full_name(std::move(collection));
+        return node;
+    }
+
+    node_create_collection_ptr make_node_create_collection(std::pmr::memory_resource* resource,
+                                                           const collection_full_name_t& collection,
+                                                           std::vector<table::column_definition_t> column_definitions,
+                                                           std::vector<table::table_constraint_t> constraints,
+                                                           bool disk_storage,
+                                                           bool if_not_exists) {
+        auto node = make_node_create_collection(resource,
+                                                core::relname_t{collection.collection},
+                                                std::move(column_definitions),
+                                                std::move(constraints),
+                                                disk_storage,
+                                                if_not_exists);
+        node->set_collection_full_name(collection);
+        return node;
     }
 
 } // namespace components::logical_plan

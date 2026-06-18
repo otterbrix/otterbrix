@@ -1,0 +1,13 @@
+{
+  "name": "aggregate_count",
+  "expected_rows": [
+    {
+      "category": "a",
+      "cnt": 2
+    },
+    {
+      "category": "b",
+      "cnt": 1
+    }
+  ]
+}

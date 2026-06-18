@@ -1,0 +1,15 @@
+{
+  "name": "coll_all_order_asc",
+  "sql": "SELECT id FROM coll ORDER BY id ASC",
+  "expected_rows": [
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    },
+    {
+      "id": 3
+    }
+  ]
+}

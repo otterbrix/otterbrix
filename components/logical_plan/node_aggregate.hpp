@@ -50,6 +50,7 @@ namespace components::logical_plan {
 
     node_aggregate_ptr
     make_node_aggregate(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
+    node_aggregate_ptr make_node_aggregate(std::pmr::memory_resource* resource, const collection_full_name_t& collection);
     node_aggregate_ptr make_node_aggregate(std::pmr::memory_resource* resource,
                                            core::uid_t uid,
                                            core::dbname_t dbname,

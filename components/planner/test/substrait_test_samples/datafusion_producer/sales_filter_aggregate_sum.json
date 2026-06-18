@@ -1,0 +1,10 @@
+{
+  "name": "sales_filter_aggregate_sum",
+  "sql": "SELECT category, SUM(amount) AS total FROM sales WHERE amount >= 10 GROUP BY category ORDER BY total DESC",
+  "expected_rows": [
+    {
+      "category": "a",
+      "total": 30
+    }
+  ]
+}

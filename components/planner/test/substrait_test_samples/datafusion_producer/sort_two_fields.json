@@ -1,0 +1,19 @@
+{
+  "name": "sort_two_fields",
+  "sql": "SELECT category, amount FROM sales ORDER BY category ASC, amount DESC",
+  "order_sensitive": true,
+  "expected_rows": [
+    {
+      "category": "a",
+      "amount": 20
+    },
+    {
+      "category": "a",
+      "amount": 10
+    },
+    {
+      "category": "b",
+      "amount": 5
+    }
+  ]
+}

@@ -439,6 +439,8 @@ namespace components::types {
                                                std::string alias = "");
         static complex_logical_type
         create_struct(std::string name, const std::pmr::vector<complex_logical_type>& fields, std::string alias = "");
+        static complex_logical_type
+        create_struct(std::string name, const std::vector<complex_logical_type>& fields, std::string alias = "");
         static complex_logical_type create_union(std::pmr::vector<complex_logical_type> fields, std::string alias = "");
         static complex_logical_type create_variant(std::pmr::memory_resource* resource, std::string alias = "");
         static complex_logical_type create_unknown(std::string type_name, std::string alias = "");

@@ -1,0 +1,14 @@
+{
+  "name": "read_named_table",
+  "expected_rows": [
+    {
+      "id": 3
+    },
+    {
+      "id": 1
+    },
+    {
+      "id": 2
+    }
+  ]
+}

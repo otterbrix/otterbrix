@@ -25,6 +25,9 @@ namespace components::logical_plan {
         components::catalog::oid_t table_oid_from() const noexcept { return table_oid_from_; }
         void set_table_oid_from(components::catalog::oid_t oid) noexcept { table_oid_from_ = oid; }
 
+        const collection_full_name_t& collection_from() const noexcept { return collection_from_; }
+        void set_collection_from(collection_full_name_t collection) { collection_from_ = std::move(collection); }
+
         // FK referencing metadata: FKs where this table is the parent.
         // Populated by enrich_plan when the table has referencing FK constraints.
         void set_referencing_fks(std::vector<catalog::fk_info_t> v) { referencing_fks_ = std::move(v); }
@@ -35,6 +38,7 @@ namespace components::logical_plan {
         std::string to_string_impl() const override;
 
         components::catalog::oid_t table_oid_from_{components::catalog::INVALID_OID};
+        collection_full_name_t collection_from_;
         std::vector<catalog::fk_info_t> referencing_fks_;
         std::pmr::vector<expressions::expression_ptr> returning_;
     };
@@ -42,10 +46,29 @@ namespace components::logical_plan {
     using node_delete_ptr = boost::intrusive_ptr<node_delete_t>;
 
     node_delete_ptr make_node_delete_many(std::pmr::memory_resource* resource, const node_match_ptr& match);
+    node_delete_ptr make_node_delete_many(std::pmr::memory_resource* resource,
+                                          const collection_full_name_t& collection,
+                                          const node_match_ptr& match);
+    node_delete_ptr make_node_delete_many(std::pmr::memory_resource* resource,
+                                          const collection_full_name_t& collection,
+                                          const collection_full_name_t& collection_from,
+                                          const node_match_ptr& match);
 
     node_delete_ptr make_node_delete_one(std::pmr::memory_resource* resource, const node_match_ptr& match);
+    node_delete_ptr make_node_delete_one(std::pmr::memory_resource* resource,
+                                         const collection_full_name_t& collection,
+                                         const node_match_ptr& match);
 
     node_delete_ptr
     make_node_delete(std::pmr::memory_resource* resource, const node_match_ptr& match, const node_limit_ptr& limit);
+    node_delete_ptr make_node_delete(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     const node_match_ptr& match,
+                                     const node_limit_ptr& limit);
+    node_delete_ptr make_node_delete(std::pmr::memory_resource* resource,
+                                     const collection_full_name_t& collection,
+                                     const collection_full_name_t& collection_from,
+                                     const node_match_ptr& match,
+                                     const node_limit_ptr& limit);
 
 } // namespace components::logical_plan

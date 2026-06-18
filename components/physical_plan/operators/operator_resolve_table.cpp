@@ -11,7 +11,6 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_buffer.hpp>
-#include <cstdio>
 #include <services/disk/manager_disk.hpp>
 
 #include <algorithm>
@@ -459,14 +458,6 @@ namespace components::operators {
         // operator output chunk; decoded type derived from atttypspec or
         // atttypid via the existing catalog helpers.
         if (target_node_) {
-            std::fprintf(stderr,
-                         "[RT] populate md table_oid=%u ns_oid=%u relkind='%c' rows=%zu relname='%s'\n",
-                         static_cast<unsigned>(table_oid_),
-                         static_cast<unsigned>(namespace_oid_),
-                         relkind_ ? relkind_ : '?',
-                         rows.size(),
-                         relname_.c_str());
-            std::fflush(stderr);
             components::logical_plan::resolved_table_metadata_t md;
             md.table_oid = table_oid_;
             md.namespace_oid = namespace_oid_;

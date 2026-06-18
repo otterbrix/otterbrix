@@ -1,7 +1,5 @@
 #include "planner.hpp"
 
-#include <cstdio>
-
 #include <catalog/catalog_codes.hpp>
 #include <catalog/catalog_oids.hpp>
 #include <catalog/ddl_metadata_builder.hpp>
@@ -395,10 +393,6 @@ namespace components::planner {
                                                             oid_batch,
                                                             catalog::relkind::composite_type);
                 auto spec = components::catalog::encode_type_spec(ct->type());
-                std::fprintf(stderr,
-                             "[PLN-CT2] name='%s' typdefspec='%s'\n",
-                             std::string(ct->type().type_name()).c_str(),
-                             spec.c_str());
                 auto type_writes = catalog::build_create_type_writes(r,
                                                                      std::string(ct->type().type_name()),
                                                                      target_ns,

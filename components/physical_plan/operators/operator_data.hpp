@@ -2,8 +2,8 @@
 
 #include <boost/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
-#include <memory_resource>
 #include <components/vector/data_chunk.hpp>
+#include <memory_resource>
 #include <vector>
 
 namespace components::operators {

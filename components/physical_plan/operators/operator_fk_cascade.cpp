@@ -180,8 +180,8 @@ namespace components::operators {
                         }
                     } else {
                         // SET DEFAULT: decode attdefspec; NULL default → same as SET NULL.
-                        const auto& spec = ci < fk_.child_col_default_specs.size() ? fk_.child_col_default_specs[ci]
-                                                                                   : std::string{};
+                        const auto& spec =
+                            ci < fk_.child_col_default_specs.size() ? fk_.child_col_default_specs[ci] : std::string{};
                         auto default_val =
                             spec.empty() ? std::nullopt : components::catalog::decode_default_spec(resource_, spec);
                         for (uint64_t r = 0; r < fetched->size(); ++r) {

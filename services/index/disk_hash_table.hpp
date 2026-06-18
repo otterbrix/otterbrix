@@ -35,10 +35,7 @@ namespace services::index {
                                    std::pmr::memory_resource* memory_resource = nullptr);
         ~disk_hash_table_t();
 
-        bool put(std::string_view key,
-                 int64_t value,
-                 uint32_t log_file_id,
-                 uint64_t log_offset) override;
+        bool put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) override;
         std::optional<value_ref_t> get(std::string_view key, bool lock_bitcask = true) const override;
         std::vector<value_ref_t> get_all(std::string_view key) const override;
         bool erase(std::string_view key, bool lock_bitcask = true) override;
@@ -122,20 +119,15 @@ namespace services::index {
         std::vector<value_ref_t> get_all(std::string_view key, bool lock_bitcask) const;
         bool erase(std::string_view key, std::optional<int64_t> expected_value, bool lock_bitcask);
 
-        bool try_insert_payload_in_page(byte_buffer_t& page,
-                                        uint32_t key_hash,
-                                        const byte_buffer_t& payload,
-                                        bool& changed);
+        bool
+        try_insert_payload_in_page(byte_buffer_t& page, uint32_t key_hash, const byte_buffer_t& payload, bool& changed);
         bool try_erase_in_page(byte_buffer_t& page,
                                std::string_view key,
                                uint32_t key_hash,
                                std::optional<int64_t> expected_value,
                                bool lock_bitcask,
                                bool& erased);
-        bool put_unlocked(std::string_view key,
-                          int64_t value,
-                          uint32_t log_file_id,
-                          uint64_t log_offset);
+        bool put_unlocked(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
         bool insert_payload_into_bucket_unlocked(uint32_t bucket_id, uint32_t key_hash, const byte_buffer_t& payload);
         uint64_t count_entries_unlocked() const;
         bool rehash_unlocked(uint32_t new_bucket_count);

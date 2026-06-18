@@ -36,8 +36,11 @@ namespace components::operators {
         vec.validity().set(row, true);
     }
 
-    inline void
-    set_str(vector::data_chunk_t& c, std::size_t col, std::size_t row, std::string_view v, std::pmr::memory_resource* r) {
+    inline void set_str(vector::data_chunk_t& c,
+                        std::size_t col,
+                        std::size_t row,
+                        std::string_view v,
+                        std::pmr::memory_resource* r) {
         auto& vec = c.data[col];
         if (!vec.auxiliary()) {
             vec.set_auxiliary(std::make_shared<vector::string_vector_buffer_t>(r));

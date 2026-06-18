@@ -137,12 +137,13 @@ namespace components::operators {
                     t_keys.emplace_back("typname");
                     std::pmr::vector<types::logical_value_t> t_vals(resource_);
                     t_vals.emplace_back(lookup_lv);
-                    auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::read_chunks_by_key,
-                                                     exec_ctx,
-                                                     pg_type,
-                                                     std::move(t_keys),
-                                                     components::operators::make_key_chunk(resource_, std::move(t_vals)));
+                    auto [_t, tf] =
+                        actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::read_chunks_by_key,
+                                         exec_ctx,
+                                         pg_type,
+                                         std::move(t_keys),
+                                         components::operators::make_key_chunk(resource_, std::move(t_vals)));
                     auto type_batches = co_await std::move(tf);
                     if (!type_batches.empty() && type_batches[0].size() != 0 && type_batches[0].column_count() > 0) {
                         auto typoid_v = type_batches[0].value(0, 0);

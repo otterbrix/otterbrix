@@ -6,7 +6,7 @@ add_subdirectory(assert)
 add_subdirectory(b_plus_tree)
 add_subdirectory(date)
 add_subdirectory(spinlock)
-add_subdirectory(string_heap)
+add_subdirectory(string_buffer)
 add_subdirectory(non_thread_scheduler)
 add_subdirectory(file)
 

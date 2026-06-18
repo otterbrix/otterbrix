@@ -1,9 +1,9 @@
 #include "agent_disk.hpp"
-#include "manager_disk.hpp"
 #include "inline_scan.hpp" // services::disk::detail::inline_scan (catalog DDL on the agent)
+#include "manager_disk.hpp"
 #include <components/vector/vector_operations.hpp>
-#include <services/dispatcher/dispatcher.hpp>
 #include <fstream>
+#include <services/dispatcher/dispatcher.hpp>
 #include <unordered_set>
 
 namespace services::disk {
@@ -49,8 +49,7 @@ namespace services::disk {
     }
 
     // Borrowed pointer — see header. nullptr when the OID isn't owned.
-    const collection_storage_entry_t*
-    agent_disk_t::storage_entry_sync(components::catalog::oid_t oid) const noexcept {
+    const collection_storage_entry_t* agent_disk_t::storage_entry_sync(components::catalog::oid_t oid) const noexcept {
         auto it = storages_.find(oid);
         if (it == storages_.end()) {
             return nullptr;
@@ -67,8 +66,8 @@ namespace services::disk {
     }
 
     bool agent_disk_t::bootstrap_disk_inner_sync(components::catalog::oid_t oid,
-                                                  const std::filesystem::path& otbx_path,
-                                                  wal::id_t sidecar_wal_id) noexcept {
+                                                 const std::filesystem::path& otbx_path,
+                                                 wal::id_t sidecar_wal_id) noexcept {
         // Probe BEFORE constructing the SFBM: on a duplicate key we must not even
         // open the .otbx, because open-then-close would release the live entry's
         // WRITE_LOCK (per-process posix lock).
@@ -94,10 +93,9 @@ namespace services::disk {
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    bool agent_disk_t::bootstrap_create_disk_inner_sync(
-        components::catalog::oid_t oid,
-        std::vector<components::table::column_definition_t> columns,
-        const std::filesystem::path& otbx_path) noexcept {
+    bool agent_disk_t::bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
+                                                        std::vector<components::table::column_definition_t> columns,
+                                                        const std::filesystem::path& otbx_path) noexcept {
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
                   "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] oid {} already in slice — drop "
@@ -622,10 +620,35 @@ namespace services::disk {
                     if (src_vec.type().has_alias()) {
                         target_type.set_alias(src_vec.type().alias());
                     }
+                    const bool array_target = target_type.type() == components::types::logical_type::ARRAY;
+                    // A whole-column NULL literal arrives as an NA-typed source vector, which
+                    // carries no values (and no meaningful validity mask) — every row is null.
+                    const bool src_is_null_type = src_vec.type().type() == components::types::logical_type::NA;
                     components::vector::vector_t casted(resource(), target_type, data->size());
                     for (uint64_t row = 0; row < data->size(); row++) {
-                        if (src_vec.validity().row_is_valid(row)) {
-                            casted.set_value(row, src_vec.value(row).cast_as(target_type, session_tz));
+                        if (!src_is_null_type && src_vec.validity().row_is_valid(row)) {
+                            // A fixed ARRAY column reconciles a length mismatch against the
+                            // column DEFAULT (truncate / pad-with-default); other columns use
+                            // the plain value cast.
+                            auto reconciled = array_target
+                                                  ? components::table::reconcile_to_fixed_array(resource(),
+                                                                                                src_vec.value(row),
+                                                                                                table_columns[i],
+                                                                                                session_tz)
+                                                  : src_vec.value(row).cast_as(target_type, session_tz);
+                            // reconcile_to_fixed_array yields a NULL value only when a NOT NULL
+                            // fixed ARRAY column receives a too-short value with no default to
+                            // pad from. operator_check_constraint already rejects this with a
+                            // clean error before the append, so this is a defensive backstop.
+                            if (array_target && reconciled.is_null()) {
+                                trace(log_,
+                                      "agent_disk[{}]::storage_append_inner: NOT NULL fixed ARRAY column '{}' "
+                                      "cannot be padded from a too-short value",
+                                      pool_idx_,
+                                      table_columns[i].name());
+                                co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                            }
+                            casted.set_value(row, reconciled);
                         } else {
                             casted.validity().set_invalid(row);
                         }
@@ -691,8 +714,7 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void>
-    agent_disk_t::storage_revert_deletes_inner(uint64_t txn_id,
-                                               std::pmr::vector<components::catalog::oid_t> tables) {
+    agent_disk_t::storage_revert_deletes_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> tables) {
         // Abort-path twin of storage_publish_deletes_inner: un-stamp this txn's
         // pending delete marks back to NOT_DELETED_ID instead of committing them.
         // txn_id==0 means no real transaction (legacy fast path) — short-circuit.
@@ -859,9 +881,7 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    agent_disk_t::storage_scan_segment_inner(components::catalog::oid_t table_oid,
-                                             int64_t start,
-                                             uint64_t count) {
+    agent_disk_t::storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -913,8 +933,7 @@ namespace services::disk {
         result.reserve(keys.size());
 
         auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr ||
-            key_col_names.empty()) {
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr || key_col_names.empty()) {
             // Not owned / record-only marker / no key columns: one empty row per key.
             for (std::size_t i = 0; i < keys.size(); ++i) {
                 result.emplace_back();
@@ -966,8 +985,8 @@ namespace services::disk {
                 idx_vec.push_back(key_col_indices[ki]);
                 filter->child_filters.push_back(
                     std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                          keys.value(ki, i),
-                                                                          std::move(idx_vec)));
+                                                                           keys.value(ki, i),
+                                                                           std::move(idx_vec)));
             }
             std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
             entry->storage->scan_batched(batches, filter.get(), int64_t{-1}, nullptr, txn);
@@ -991,8 +1010,8 @@ namespace services::disk {
         // scan_batched_local (D6: no self-send). Empty result on any degenerate input.
         std::pmr::vector<components::vector::data_chunk_t> empty{resource()};
         auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr ||
-            key_col_names.empty() || keys.size() == 0) {
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr || key_col_names.empty() ||
+            keys.size() == 0) {
             co_return std::move(empty);
         }
         auto& entry = it->second;
@@ -1025,8 +1044,8 @@ namespace services::disk {
             idx_vec.push_back(key_col_indices[ki]);
             filter->child_filters.push_back(
                 std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                      keys.value(ki, 0),
-                                                                      std::move(idx_vec)));
+                                                                       keys.value(ki, 0),
+                                                                       std::move(idx_vec)));
         }
 
         // All columns (projected = nullptr), no row limit (-1) — same as the prior
@@ -1046,8 +1065,7 @@ namespace services::disk {
         result.reserve(keys.size());
 
         auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr ||
-            key_col_names.empty()) {
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr || key_col_names.empty()) {
             // Not owned / record-only marker / no key columns: one empty entry per key.
             for (std::size_t i = 0; i < keys.size(); ++i) {
                 result.emplace_back();
@@ -1097,8 +1115,8 @@ namespace services::disk {
                 idx_vec.push_back(key_col_indices[ki]);
                 filter->child_filters.push_back(
                     std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                          keys.value(ki, i),
-                                                                          std::move(idx_vec)));
+                                                                           keys.value(ki, i),
+                                                                           std::move(idx_vec)));
             }
             // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
             result.emplace_back(scan_batched_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn));
@@ -1127,8 +1145,7 @@ namespace services::disk {
         co_return entry->storage->types();
     }
 
-    agent_disk_t::unique_future<uint64_t>
-    agent_disk_t::storage_total_rows_inner(components::catalog::oid_t table_oid) {
+    agent_disk_t::unique_future<uint64_t> agent_disk_t::storage_total_rows_inner(components::catalog::oid_t table_oid) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -1156,9 +1173,8 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<checkpoint_result_t> agent_disk_t::checkpoint_inner(session_id_t /*session*/,
-                                                                                     wal::id_t current_wal_id,
-                                                                                     uint64_t compact_watermark) {
+    agent_disk_t::unique_future<checkpoint_result_t>
+    agent_disk_t::checkpoint_inner(session_id_t /*session*/, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
         // Per DISK entry, crash-safe checkpoint sequence (order matters):
         //   compact (MVCC-gated), backup .otbx → .prev, checkpoint(wal_id), persist
@@ -1375,8 +1391,7 @@ namespace services::disk {
         // Once the slice drains, ack on_subscriber_empty so the dispatcher clears
         // disk_has_dropped_ and stops broadcasting. Gated on != empty_address() so
         // test fixtures without a dispatcher pass cleanly.
-        if (dropped_storages_.empty()
-            && manager_dispatcher_addr_ != actor_zeta::address_t::empty_address()) {
+        if (dropped_storages_.empty() && manager_dispatcher_addr_ != actor_zeta::address_t::empty_address()) {
             // DISK_KIND matches the dispatcher's subscriber-kind enum.
             constexpr uint8_t DISK_KIND = 1;
             [[maybe_unused]] auto _ = actor_zeta::send(manager_dispatcher_addr_,
@@ -1432,20 +1447,16 @@ namespace services::disk {
     }
 
     // See header. Bootstrap-only; after scheduler.start the address is read-only.
-    void agent_disk_t::set_manager_wal_sync(actor_zeta::address_t address) {
-        manager_wal_addr_ = std::move(address);
-    }
+    void agent_disk_t::set_manager_wal_sync(actor_zeta::address_t address) { manager_wal_addr_ = std::move(address); }
 
     // GC-slice push-back (see header). Called pre-scheduler-start by base_spaces
     // catalog rebuild and at runtime by mark_storage_dropped_many_inner.
     void agent_disk_t::register_dropped_storage_inner_sync(components::catalog::oid_t oid,
-                                                            uint64_t dropped_at_commit_id,
-                                                            std::filesystem::path path,
-                                                            std::pmr::vector<std::filesystem::path> sidecar_paths) {
-        dropped_storages_.push_back(dropped_storage_entry_t{oid,
-                                                             dropped_at_commit_id,
-                                                             std::move(path),
-                                                             std::move(sidecar_paths)});
+                                                           uint64_t dropped_at_commit_id,
+                                                           std::filesystem::path path,
+                                                           std::pmr::vector<std::filesystem::path> sidecar_paths) {
+        dropped_storages_.push_back(
+            dropped_storage_entry_t{oid, dropped_at_commit_id, std::move(path), std::move(sidecar_paths)});
     }
 
     // Canonical erase + .otbx removal (see header). Idempotent on a missing key;
@@ -1530,8 +1541,7 @@ namespace services::disk {
                                               components::catalog::oid_t table_oid,
                                               components::vector::data_chunk_t row) {
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
-            auto wal_chunk =
-                std::make_unique<components::vector::data_chunk_t>(resource(), row.types(), row.size());
+            auto wal_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), row.types(), row.size());
             wal_chunk->set_cardinality(row.size());
             for (uint64_t col = 0; col < row.column_count(); col++) {
                 for (uint64_t r = 0; r < row.size(); r++) {
@@ -1563,8 +1573,7 @@ namespace services::disk {
 
         // Append on this agent's own slice.
         auto it = storages_.find(table_oid);
-        if (it != storages_.end() && it->second != nullptr && it->second->storage != nullptr &&
-            row.size() != 0) {
+        if (it != storages_.end() && it->second != nullptr && it->second->storage != nullptr && row.size() != 0) {
             auto* s = it->second->storage.get();
 
             // rebuild onto this agent's resource (row arrives on the mailbox resource).
@@ -1611,8 +1620,7 @@ namespace services::disk {
                 for (size_t i = 0; i < table_columns.size() && i < local.column_count(); i++) {
                     auto src_type = local.data[i].type().type();
                     auto tgt_type = table_columns[i].type().type();
-                    if (src_type != tgt_type &&
-                        (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
+                    if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
                         (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
                         auto& src_vec = local.data[i];
                         auto target_type = table_columns[i].type();
@@ -1668,8 +1676,7 @@ namespace services::disk {
                                 auto v = chunk.value(static_cast<uint64_t>(oid_col_idx), i);
                                 if (v.is_null())
                                     return true;
-                                if (static_cast<components::catalog::oid_t>(v.value<std::uint32_t>()) ==
-                                    target_oid) {
+                                if (static_cast<components::catalog::oid_t>(v.value<std::uint32_t>()) == target_oid) {
                                     row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
                                 }
                                 return true;
@@ -1703,11 +1710,11 @@ namespace services::disk {
     // unconditionally), so a "patch one column" chunk would NULL out the others. We
     // read the full row, mutate the target field in the read-back chunk, and write the
     // whole chunk back.
-    agent_disk_t::unique_future<void> agent_disk_t::update_pg_attribute_commit_id_field_inner(
-        execution_context_t ctx,
-        components::catalog::oid_t attoid,
-        components::pg_attribute_commit_id_backfill_t::kind_t kind,
-        std::uint64_t commit_id) {
+    agent_disk_t::unique_future<void>
+    agent_disk_t::update_pg_attribute_commit_id_field_inner(execution_context_t ctx,
+                                                            components::catalog::oid_t attoid,
+                                                            components::pg_attribute_commit_id_backfill_t::kind_t kind,
+                                                            std::uint64_t commit_id) {
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
         auto it = storages_.find(pg_attr_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
@@ -1737,8 +1744,7 @@ namespace services::disk {
                                 auto v0 = chunk.value(0, i);
                                 if (v0.is_null())
                                     return true;
-                                if (static_cast<components::catalog::oid_t>(v0.value<std::uint32_t>()) !=
-                                    attoid)
+                                if (static_cast<components::catalog::oid_t>(v0.value<std::uint32_t>()) != attoid)
                                     return true;
                                 row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
                                 for (std::size_t c = 0; c < col_count; ++c) {
@@ -1900,10 +1906,7 @@ namespace services::disk {
         }
         // IN_MEMORY storages leave otbx_path/sidecars empty, but we still record a GC
         // entry so disk_has_dropped_ bookkeeping is uniform (sweep no-ops on empty path).
-        register_dropped_storage_inner_sync(table_oid,
-                                            dropped_at_commit_id,
-                                            std::move(otbx_path),
-                                            std::move(sidecars));
+        register_dropped_storage_inner_sync(table_oid, dropped_at_commit_id, std::move(otbx_path), std::move(sidecars));
     }
 
     // Batched DROP-mark: one message per agent carries that agent's whole oid slice

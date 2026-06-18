@@ -95,6 +95,18 @@ namespace services::dispatcher { namespace {
         fill_not_null(*md, nn, /*include_with_defaults=*/false);
         node->set_not_null_cols(std::move(nn));
 
+        // A NOT NULL fixed-ARRAY column with no DEFAULT cannot pad a too-short value, so
+        // such values must error before the append (see node_insert_t::array_size_reqs).
+        std::vector<std::pair<std::string, uint64_t>> array_reqs;
+        for (const auto& col : md->columns) {
+            if (col.type.type() == components::types::logical_type::ARRAY && col.attnotnull && !col.atthasdefault) {
+                const auto size =
+                    static_cast<const components::types::array_logical_type_extension*>(col.type.extension())->size();
+                array_reqs.emplace_back(col.attname, size);
+            }
+        }
+        node->set_array_size_reqs(std::move(array_reqs));
+
         // Coerce literal chunk types to table column types.
         // The SQL transformer builds the INSERT chunk from VALUES literals,
         // so integer literals become BIGINT, float literals become FLOAT/DOUBLE,
@@ -144,6 +156,11 @@ namespace services::dispatcher { namespace {
                 // cast_as recurses into children. Scalars get the cheap
                 // identity check.
                 using LT = components::types::logical_type;
+                // A fixed ARRAY target reconciles both element width and length (truncate /
+                // pad from the column DEFAULT) at the storage append chokepoint, which holds
+                // the decoded default value this layer does not. Leave the literal as-is.
+                if (target_type->type() == LT::ARRAY)
+                    continue;
                 const bool is_composite = col.type().type() == LT::STRUCT || col.type().type() == LT::LIST ||
                                           col.type().type() == LT::ARRAY || col.type().type() == LT::MAP;
                 if (!is_composite && col.type() == *target_type)
@@ -1020,14 +1037,13 @@ namespace services::dispatcher { namespace {
 
 namespace services::dispatcher {
 
-    actor_zeta::unique_future<core::error_t>
-    enrich_plan(std::pmr::memory_resource* resource,
-                components::logical_plan::node_ptr root,
-                actor_zeta::address_t disk_address,
-                components::execution_context_t ctx,
-                const services::catalog_resolve::plan_resolve_index_t* idx,
-                actor_zeta::address_t index_address,
-                services::context_storage_t* collections_ctx) {
+    actor_zeta::unique_future<core::error_t> enrich_plan(std::pmr::memory_resource* resource,
+                                                         components::logical_plan::node_ptr root,
+                                                         actor_zeta::address_t disk_address,
+                                                         components::execution_context_t ctx,
+                                                         const services::catalog_resolve::plan_resolve_index_t* idx,
+                                                         actor_zeta::address_t index_address,
+                                                         services::context_storage_t* collections_ctx) {
         (void) disk_address;
         if (!root)
             co_return core::error_t::no_error();
@@ -1056,10 +1072,8 @@ namespace services::dispatcher {
                 if (tbl_oid == components::catalog::INVALID_OID) {
                     continue;
                 }
-                auto [_ik, ikf] = actor_zeta::send(index_address,
-                                                   &index::manager_index_t::get_indexed_keys,
-                                                   ctx.session,
-                                                   tbl_oid);
+                auto [_ik, ikf] =
+                    actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, tbl_oid);
                 keys_futures.push_back(std::move(ikf));
                 auto [_id, idf] = actor_zeta::send(index_address,
                                                    &index::manager_index_t::get_indexed_descriptions,

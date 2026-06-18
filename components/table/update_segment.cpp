@@ -259,7 +259,10 @@ namespace components::table {
         fetch_committed(pin.update_info(), result_offset, result);
     }
 
-    void update_segment_t::fetch_committed_range(int64_t start_row, uint64_t count, vector::vector_t& result) {
+    void update_segment_t::fetch_committed_range(int64_t start_row,
+                                                 uint64_t count,
+                                                 vector::vector_t& result,
+                                                 uint64_t result_offset_base) {
         assert(count > 0);
         if (!root_) {
             return;
@@ -284,8 +287,8 @@ namespace components::table {
                                                               : vector::DEFAULT_VECTOR_CAPACITY;
             assert(start_in_vector < end_in_vector);
             assert(end_in_vector > 0 && end_in_vector <= vector::DEFAULT_VECTOR_CAPACITY);
-            uint64_t result_offset =
-                vector_idx * vector::DEFAULT_VECTOR_CAPACITY + start_in_vector - static_cast<uint64_t>(start_row);
+            uint64_t result_offset = vector_idx * vector::DEFAULT_VECTOR_CAPACITY + start_in_vector -
+                                     static_cast<uint64_t>(start_row) + result_offset_base;
             fetch_committed_range(pin.update_info(), start_in_vector, end_in_vector, result_offset, result);
         }
     }
@@ -435,7 +438,7 @@ namespace components::table {
         cleanup_update_internal(info);
     }
 
-    core::string_heap_t& update_segment_t::heap() noexcept { return heap_; }
+    core::string_buffer_t& update_segment_t::heap() noexcept { return heap_; }
 
     undo_buffer_pointer_t update_segment_t::update_node(uint64_t vector_idx) const {
         if (!root_) {

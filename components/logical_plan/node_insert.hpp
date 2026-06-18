@@ -28,6 +28,13 @@ namespace components::logical_plan {
         void set_check_exprs(std::vector<std::pair<std::string, std::string>> v) { check_exprs_ = std::move(v); }
         const std::vector<std::pair<std::string, std::string>>& check_exprs() const { return check_exprs_; }
 
+        // Fixed-ARRAY columns that are NOT NULL and have no DEFAULT: (column, declared size).
+        // A value shorter than the size cannot fill the array and has no default to pad
+        // from, so it must be rejected with an error before the append rather than silently
+        // dropped. Validated per column at execution time by operator_check_constraint.
+        void set_array_size_reqs(std::vector<std::pair<std::string, uint64_t>> v) { array_size_reqs_ = std::move(v); }
+        const std::vector<std::pair<std::string, uint64_t>>& array_size_reqs() const { return array_size_reqs_; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -37,7 +44,8 @@ namespace components::logical_plan {
 
         std::vector<std::string> not_null_cols_;
         std::vector<catalog::fk_info_t> outgoing_fks_;
-        std::vector<std::pair<std::string, std::string>> check_exprs_; // (name, expr)
+        std::vector<std::pair<std::string, std::string>> check_exprs_;  // (name, expr)
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

@@ -5,7 +5,7 @@
 
 #include "indexing_vector.hpp"
 #include <components/types/logical_value.hpp>
-#include <core/string_heap/string_heap.hpp>
+#include <core/string_buffer/string_buffer.hpp>
 
 namespace components::vector {
 
@@ -117,14 +117,14 @@ namespace components::vector {
         void add_heap_reference(std::unique_ptr<vector_buffer_t> heap);
 
     private:
-        core::string_heap_t string_heap_;
+        core::string_buffer_t string_buffer_;
         // used for overflow strings
         std::pmr::vector<std::shared_ptr<vector_buffer_t>> refs_; // TODO: turn into intrusive_ptr
     };
 
     template<typename T>
     void* string_vector_buffer_t::insert(T&& str_like) {
-        return string_heap_.insert(std::forward<T>(str_like));
+        return string_buffer_.insert(std::forward<T>(str_like));
     }
 
     class dictionary_vector_buffer_t : public vector_buffer_t {

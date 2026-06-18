@@ -106,9 +106,9 @@ namespace components::operators {
                     }
                     auto& operands = scalar_expr->params();
                     if (operands.size() < 2) {
-                        return core::error_t(core::error_code_t::arithmetics_failure,
-                                             std::pmr::string{"Arithmetic expression requires at least 2 operands",
-                                                              resource});
+                        return core::error_t(
+                            core::error_code_t::arithmetics_failure,
+                            std::pmr::string{"Arithmetic expression requires at least 2 operands", resource});
                     }
 
                     std::deque<vector::vector_t> sub_temps;
@@ -161,13 +161,12 @@ namespace components::operators {
             }
         }
 
-        core::result_wrapper_t<types::logical_value_t>
-        resolve_row_value(std::pmr::memory_resource* resource,
-                          const expressions::param_storage& param,
-                          const vector::data_chunk_t& chunk,
-                          const logical_plan::storage_parameters& params,
-                          size_t row_idx,
-                          core::date::timezone_offset_t session_tz) {
+        core::result_wrapper_t<types::logical_value_t> resolve_row_value(std::pmr::memory_resource* resource,
+                                                                         const expressions::param_storage& param,
+                                                                         const vector::data_chunk_t& chunk,
+                                                                         const logical_plan::storage_parameters& params,
+                                                                         size_t row_idx,
+                                                                         core::date::timezone_offset_t session_tz) {
             // L1: per-row CASE arithmetic still boxes operands into logical_value_t and uses
             // logical_value_t::sum/subtract/mult/divide/modulus below. No typed scalar arithmetic
             // path exists for a single logical_value_t pair, so left as-is.
@@ -203,7 +202,12 @@ namespace components::operators {
                                     return matched.convert_error<types::logical_value_t>();
                                 }
                                 if (matched.value()) {
-                                    return resolve_row_value(resource, ops[w * 2 + 1], chunk, params, row_idx, session_tz);
+                                    return resolve_row_value(resource,
+                                                             ops[w * 2 + 1],
+                                                             chunk,
+                                                             params,
+                                                             row_idx,
+                                                             session_tz);
                                 }
                             }
                         }

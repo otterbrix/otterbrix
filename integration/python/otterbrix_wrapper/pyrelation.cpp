@@ -5,8 +5,8 @@
 
 #include "pyexpression.hpp"
 
-#include <pyconnection/pyconnection.hpp>
 #include <connection_environment/relation/relation_factory.hpp>
+#include <pyconnection/pyconnection.hpp>
 
 #include <common/string_util/string_util.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -44,15 +44,18 @@ namespace otterbrix {
     } // namespace
 
     py_relation_t::py_relation_t(py_connection_t* env, built_relation_t rel)
-        : node_(std::move(rel.node)), schema_(std::move(rel.columns)), env(env) {
+        : node_(std::move(rel.node))
+        , schema_(std::move(rel.columns))
+        , env(env) {
         if (!node_) {
             throw std::runtime_error("PyRelation created without a relation");
         }
         this->executed = false;
     }
 
-    py_relation_t::py_relation_t(std::unique_ptr<py_result_t> result) :
-        node_(nullptr), result(std::move(result)) {
+    py_relation_t::py_relation_t(std::unique_ptr<py_result_t> result)
+        : node_(nullptr)
+        , result(std::move(result)) {
         if (!this->result) {
             throw std::runtime_error("PyRelation created without a result");
         }
@@ -65,8 +68,8 @@ namespace otterbrix {
         node_.reset();
     }
 
-    static cursor::cursor_t_ptr PyExecuteRelation(py_connection_t* env,
-            const logical_plan::node_ptr& node, bool optimize = false) {
+    static cursor::cursor_t_ptr
+    PyExecuteRelation(py_connection_t* env, const logical_plan::node_ptr& node, bool optimize = false) {
         assert(py::gil_check());
         py::gil_scoped_release release;
         return env->execute(node, optimize);
@@ -88,13 +91,14 @@ namespace otterbrix {
         return std::make_unique<py_relation_t>(env, env->select_relation({node_, schema_}, std::move(fields)));
     }
 
-    std::unique_ptr<py_relation_t> py_relation_t::filter(const py::object &condition) {
+    std::unique_ptr<py_relation_t> py_relation_t::filter(const py::object& condition) {
         if (py::isinstance<py::str>(condition)) {
             throw std::runtime_error("Implementation Error. Couldn\'t execute string expression");
         }
         pyexpr_ptr py_expr;
         if (!py::try_cast(condition, py_expr)) {
-            throw std::runtime_error("Invalid Input Exception. Please provide either a string or a PyExpression object to \'filter\'");
+            throw std::runtime_error(
+                "Invalid Input Exception. Please provide either a string or a PyExpression object to \'filter\'");
         }
 
         const auto& expr = py_expr->get_expression();
@@ -128,7 +132,6 @@ namespace otterbrix {
         return std::make_unique<py_relation_t>(env, env->sort_relation({node_, schema_}, std::move(order_nodes)));
     }
 
-
     std::unique_ptr<py_relation_t> py_relation_t::group(const py::args& args) {
         std::vector<expression_wrapper_t> fields;
         fields.reserve(args.size());
@@ -145,7 +148,8 @@ namespace otterbrix {
         return std::make_unique<py_relation_t>(env, env->group_relation({node_, schema_}, std::move(fields)));
     }
 
-    std::unique_ptr<py_relation_t> py_relation_t::join(const py_relation_t& other, const py::object& condition, const std::string& type) {
+    std::unique_ptr<py_relation_t>
+    py_relation_t::join(const py_relation_t& other, const py::object& condition, const std::string& type) {
         auto type_string = string_utils::lower(type);
 
         auto parse_result = parse_join_type(type_string);
@@ -155,31 +159,34 @@ namespace otterbrix {
         auto dtype = parse_result.value();
 
         if (py::isinstance<py::str>(condition)) {
-            throw std::runtime_error("OtterBrix couldn\'t parse condition. Please call join with an expression parameter");
+            throw std::runtime_error(
+                "OtterBrix couldn\'t parse condition. Please call join with an expression parameter");
         }
 
         std::vector<expression_wrapper_t> exprs;
         std::shared_ptr<py_expression_t> py_expr;
         if (!condition.is_none()) {
             if (!py::try_cast<std::shared_ptr<py_expression_t>>(condition, py_expr)) {
-                throw std::runtime_error("Please provide condition as an expression either in string form or as an Expression object");
+                throw std::runtime_error(
+                    "Please provide condition as an expression either in string form or as an Expression object");
             }
             const auto& expr = py_expr->get_expression();
             exprs.push_back(expr);
         } else {
             exprs.push_back(env->true_expression());
         }
-        return std::make_unique<py_relation_t>(env,
+        return std::make_unique<py_relation_t>(
+            env,
             env->join_relation({node_, schema_}, {other.node_, other.schema_}, exprs, dtype));
     }
-
 
     std::unique_ptr<py_relation_t> py_relation_t::cross(const py_relation_t& other) {
         return join(other, py::none(), "cross");
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::limit(int64_t count) {
-        if (!node_) return nullptr;
+        if (!node_)
+            return nullptr;
         return std::make_unique<py_relation_t>(env, env->limit_relation({node_, schema_}, count));
     }
 
@@ -191,7 +198,6 @@ namespace otterbrix {
         return PyExecuteRelation(env, node_, optimize_);
     }
 
-
     void py_relation_t::execute_or_throw(bool stream_result) {
         py::gil_scoped_acquire gil;
         result.reset();
@@ -202,7 +208,9 @@ namespace otterbrix {
         if (query_result->is_error()) {
             throw std::runtime_error(query_result->get_error().what.c_str());
         }
-        result = std::make_unique<py_result_t>(env, std::move(query_result),
+        result = std::make_unique<py_result_t>(
+            env,
+            std::move(query_result),
             std::vector<components::table::column_definition_t>(schema_.begin(), schema_.end()));
     }
 
@@ -284,9 +292,7 @@ namespace otterbrix {
     }
 
     // Internal functions (not exposed to Python)
-    expression_factory_t* py_relation_t::get_expression_factory() {
-        return static_cast<expression_factory_t*>(env);
-    }
+    expression_factory_t* py_relation_t::get_expression_factory() { return static_cast<expression_factory_t*>(env); }
 
     void py_relation_t::assert_relation() {
         if (!node_) {

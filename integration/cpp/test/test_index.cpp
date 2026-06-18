@@ -16,8 +16,8 @@
 #include <components/tests/generaty.hpp>
 #include <services/collection/context_storage.hpp>
 
-#include <catch2/catch.hpp>
 #include <array>
+#include <catch2/catch.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -97,10 +97,9 @@ constexpr int kDocuments = 100;
                                                                                       database_name,                   \
                                                                                       collection_name,                 \
                                                                                       node);                           \
-        auto res = dispatcher->execute_plan(session,                                                                   \
-                                            components::logical_plan::execution_plan_t{dispatcher->resource(),         \
-                                                                                       plan,                           \
-                                                                                       nullptr});                      \
+        auto res = dispatcher->execute_plan(                                                                           \
+            session,                                                                                                   \
+            components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});                        \
         REQUIRE(res->is_error() == true);                                                                              \
         /* DML operators self-contain their I/O; the executor wraps any */                                             \
         /* operator-level set_error into create_physical_plan_error with the */                                        \
@@ -131,12 +130,11 @@ constexpr int kDocuments = 100;
         auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),                              \
                                                                   core::dbname_t{database_name},                       \
                                                                   core::relname_t{collection_name});                   \
-        auto c = dispatcher->execute_plan(                                                                             \
-            session,                                                                                                   \
-            components::logical_plan::execution_plan_t{dispatcher->resource(),                                         \
-                                                       plan,                                                           \
-                                                       components::logical_plan::make_parameter_node(                  \
-                                                           dispatcher->resource())});                                  \
+        auto c = dispatcher->execute_plan(session,                                                                     \
+                                          components::logical_plan::execution_plan_t{                                  \
+                                              dispatcher->resource(),                                                  \
+                                              plan,                                                                    \
+                                              components::logical_plan::make_parameter_node(dispatcher->resource())}); \
         REQUIRE(c->size() == kDocuments);                                                                              \
     } while (false)
 
@@ -525,48 +523,48 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
 
 namespace {
 
-constexpr uint64_t kMinBitcaskBytesAfterCheckpoint = 10'000;
+    constexpr uint64_t kMinBitcaskBytesAfterCheckpoint = 10'000;
 
-std::filesystem::path find_hash_index_dir(const std::filesystem::path& disk_path, const std::string& index_name) {
-    if (!std::filesystem::exists(disk_path)) {
-        return {};
-    }
-    for (const auto& d : std::filesystem::directory_iterator(disk_path)) {
-        if (!d.is_directory()) {
-            continue;
+    std::filesystem::path find_hash_index_dir(const std::filesystem::path& disk_path, const std::string& index_name) {
+        if (!std::filesystem::exists(disk_path)) {
+            return {};
         }
-        try {
-            const auto oid = std::stoull(d.path().filename().string());
-            if (oid < 16384) {
+        for (const auto& d : std::filesystem::directory_iterator(disk_path)) {
+            if (!d.is_directory()) {
                 continue;
             }
-        } catch (...) {
-            continue;
+            try {
+                const auto oid = std::stoull(d.path().filename().string());
+                if (oid < 16384) {
+                    continue;
+                }
+            } catch (...) {
+                continue;
+            }
+            const auto candidate = d.path() / index_name;
+            if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {
+                return candidate;
+            }
         }
-        const auto candidate = d.path() / index_name;
-        if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {
-            return candidate;
-        }
+        return {};
     }
-    return {};
-}
 
-uint64_t bitcask_data_bytes(const std::filesystem::path& index_dir) {
-    uint64_t total = 0;
-    if (index_dir.empty()) {
-        return 0;
-    }
-    for (const auto& entry : std::filesystem::directory_iterator(index_dir)) {
-        if (!entry.is_regular_file()) {
-            continue;
+    uint64_t bitcask_data_bytes(const std::filesystem::path& index_dir) {
+        uint64_t total = 0;
+        if (index_dir.empty()) {
+            return 0;
         }
-        const auto name = entry.path().filename().string();
-        if (name.rfind("bitcask.", 0) == 0 && name.size() >= 5 && name.compare(name.size() - 5, 5, ".data") == 0) {
-            total += static_cast<uint64_t>(entry.file_size());
+        for (const auto& entry : std::filesystem::directory_iterator(index_dir)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            const auto name = entry.path().filename().string();
+            if (name.rfind("bitcask.", 0) == 0 && name.size() >= 5 && name.compare(name.size() - 5, 5, ".data") == 0) {
+                total += static_cast<uint64_t>(entry.file_size());
+            }
         }
+        return total;
     }
-    return total;
-}
 
 } // namespace
 
@@ -848,8 +846,7 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
 
     auto append_delete_leaves = [&](const lp::node_sequence_ptr& seq) {
         for (const auto& [catalog_oid, col] : delete_specs) {
-            seq->append_child(
-                boost::intrusive_ptr(new lp::node_primitive_delete_t(res, catalog_oid, col, index_oid)));
+            seq->append_child(boost::intrusive_ptr(new lp::node_primitive_delete_t(res, catalog_oid, col, index_oid)));
         }
     };
 

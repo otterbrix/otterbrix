@@ -4,10 +4,10 @@
 // manager_disk_impl.hpp so BOTH the manager TUs and agent_disk.cpp can use it
 // (agent-side catalog DDL handlers scan their own slice on the agent thread).
 
-#include <components/table/column_state.hpp>   // storage_index_t
-#include <components/table/data_table.hpp>     // data_table_t
-#include <components/table/table_state.hpp>    // table_scan_state
-#include <components/vector/data_chunk.hpp>    // data_chunk_t
+#include <components/table/column_state.hpp>     // storage_index_t
+#include <components/table/data_table.hpp>       // data_table_t
+#include <components/table/table_state.hpp>      // table_scan_state
+#include <components/vector/data_chunk.hpp>      // data_chunk_t
 #include <components/vector/indexing_vector.hpp> // DEFAULT_VECTOR_CAPACITY
 
 #include <initializer_list>
@@ -42,8 +42,7 @@ namespace services::disk::detail {
                 all_types.push_back(c.type());
             }
             std::vector<size_t> projected;
-            projected.reserve(
-                static_cast<std::size_t>(std::distance(std::begin(col_indices), std::end(col_indices))));
+            projected.reserve(static_cast<std::size_t>(std::distance(std::begin(col_indices), std::end(col_indices))));
             for (auto idx : col_indices) {
                 col_ids.emplace_back(static_cast<uint64_t>(idx));
                 projected.push_back(static_cast<std::size_t>(idx));
@@ -92,7 +91,9 @@ namespace services::disk::detail {
                      std::pmr::memory_resource* resource,
                      Fn&& fn) {
         detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
-                                        col_indices, resource, std::forward<Fn>(fn));
+                                        col_indices,
+                                        resource,
+                                        std::forward<Fn>(fn));
     }
 
     template<typename Fn>
@@ -101,7 +102,9 @@ namespace services::disk::detail {
                      std::pmr::memory_resource* resource,
                      Fn&& fn) {
         detail_impl_::inline_scan_range(const_cast<components::table::data_table_t&>(table),
-                                        col_indices, resource, std::forward<Fn>(fn));
+                                        col_indices,
+                                        resource,
+                                        std::forward<Fn>(fn));
     }
 
 } // namespace services::disk::detail

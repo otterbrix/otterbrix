@@ -860,10 +860,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         chunk->set_cardinality(1);
         chunk->set_value(0, 0, logical_value_t(&fx.resource, kval));
         chunk->set_value(1, 0, logical_value_t(&fx.resource, std::int64_t{kval * 10}));
-        components::execution_context_t append_ctx{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
-                                                   {},
-                                                   oid};
+        components::execution_context_t append_ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}, oid};
         fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, std::move(chunk));
     };
 
@@ -887,8 +884,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     // ONE batched drop for all N targets (survivor NOT in the oid list).
     {
         std::pmr::vector<catalog::oid_t> drop_oids{&fx.resource};
-        for (auto oid : targets)
-            drop_oids.push_back(oid);
+        for (auto oid : targets) drop_oids.push_back(oid);
         fx.invoke(&manager_disk_t::drop_storage_many, session_id_t{}, std::move(drop_oids));
     }
 
@@ -906,8 +902,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
                                 std::move(key_cols),
                                 test_probe::build_key_chunk(&fx.resource, std::move(vals)));
         std::uint64_t total = 0;
-        for (const auto& c : chunks)
-            total += c.size();
+        for (const auto& c : chunks) total += c.size();
         REQUIRE(total == 0);
     }
 
@@ -925,8 +920,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
                                 std::move(key_cols),
                                 test_probe::build_key_chunk(&fx.resource, std::move(vals)));
         std::uint64_t total = 0;
-        for (const auto& c : chunks)
-            total += c.size();
+        for (const auto& c : chunks) total += c.size();
         REQUIRE(total == 1);
     }
 }
@@ -972,13 +966,11 @@ TEST_CASE("services::disk::ddl::mark_storage_dropped_many_records_n_gc_entries")
         fx.invoke(&manager_disk_t::create_storage_disk, session_id_t{}, tbl, db_oid, std::move(cols));
     };
 
-    for (auto oid : targets)
-        make_disk_storage(oid);
+    for (auto oid : targets) make_disk_storage(oid);
     make_disk_storage(survivor);
 
     // Every DISK-backed storage materialised its .otbx on creation.
-    for (auto oid : targets)
-        REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
+    for (auto oid : targets) REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
     REQUIRE(std::filesystem::exists(otbx_path_for(survivor)));
 
     // ONE batched mark for all N targets at dropped_at_commit_id = D (survivor
@@ -986,26 +978,22 @@ TEST_CASE("services::disk::ddl::mark_storage_dropped_many_records_n_gc_entries")
     constexpr std::uint64_t D = 5000;
     {
         std::pmr::vector<catalog::oid_t> mark_oids{&fx.resource};
-        for (auto oid : targets)
-            mark_oids.push_back(oid);
+        for (auto oid : targets) mark_oids.push_back(oid);
         fx.invoke(&manager_disk_t::mark_storage_dropped_many, session_id_t{}, std::move(mark_oids), D);
     }
 
     // Marking alone leaves the .otbx files in place (GC is horizon-driven).
-    for (auto oid : targets)
-        REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
+    for (auto oid : targets) REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
 
     // A horizon advance that does NOT pass D (dropped_at_commit_id < new_horizon
     // is false for new_horizon <= D) reclaims nothing.
     fx.invoke(&manager_disk_t::on_horizon_advanced, D);
-    for (auto oid : targets)
-        REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
+    for (auto oid : targets) REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
 
     // Advancing the horizon PAST D fires the GC sweep: each recorded entry's
     // .otbx (and sidecars) is reclaimed.
     fx.invoke(&manager_disk_t::on_horizon_advanced, D + 1);
-    for (auto oid : targets)
-        REQUIRE_FALSE(std::filesystem::exists(otbx_path_for(oid)));
+    for (auto oid : targets) REQUIRE_FALSE(std::filesystem::exists(otbx_path_for(oid)));
 
     // The non-marked survivor's .otbx is untouched (no GC entry was recorded).
     REQUIRE(std::filesystem::exists(otbx_path_for(survivor)));

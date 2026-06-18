@@ -8,8 +8,8 @@
 // no_error(). manager_index_t commit_inserts/commit_deletes co_await these and
 // fold the first error into their returned core::error_t.
 
-#include "index_disk.hpp"
 #include "disk_hash_table.hpp"
+#include "index_disk.hpp"
 
 #include <core/result_wrapper.hpp>
 

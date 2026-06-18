@@ -232,9 +232,9 @@ namespace components::vector::arrow::scaner {
                 break;
             }
             default:
-                return core::error_t(core::error_code_t::unimplemented_yet,
-                                     std::pmr::string("run_end_encoded value type not supported yet",
-                                                      result.resource()));
+                return core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string("run_end_encoded value type not supported yet", result.resource()));
         }
         return core::error_t::no_error();
     }
@@ -285,8 +285,12 @@ namespace components::vector::arrow::scaner {
                          compressed_size,
                          static_cast<int64_t>(parent_offset),
                          nested_offset);
-            if (auto err =
-                    arrow_column_to_vector(values, values_array, chunk_offset, array_state, compressed_size, values_type);
+            if (auto err = arrow_column_to_vector(values,
+                                                  values_array,
+                                                  chunk_offset,
+                                                  array_state,
+                                                  compressed_size,
+                                                  values_type);
                 err.contains_error()) {
                 return err;
             }
@@ -327,9 +331,9 @@ namespace components::vector::arrow::scaner {
                 }
                 break;
             default:
-                return core::error_t(core::error_code_t::unimplemented_yet,
-                                     std::pmr::string("Type not implemented for array_state.run_end_encoding",
-                                                      vector.resource()));
+                return core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string("Type not implemented for array_state.run_end_encoding", vector.resource()));
         }
         return core::error_t::no_error();
     }
@@ -355,9 +359,9 @@ namespace components::vector::arrow::scaner {
             auto cptr = cdata + offsets[row_idx];
             auto str_len = offsets[row_idx + 1] - offsets[row_idx];
             if (str_len > std::numeric_limits<uint32_t>::max()) {
-                return core::error_t(core::error_code_t::conversion_failure,
-                                     std::pmr::string("OtterBrix does not support strings over 4 GB",
-                                                      vector.resource()));
+                return core::error_t(
+                    core::error_code_t::conversion_failure,
+                    std::pmr::string("OtterBrix does not support strings over 4 GB", vector.resource()));
             }
             strings[row_idx] = std::string_view(cptr, static_cast<uint32_t>(str_len));
         }
@@ -1443,8 +1447,7 @@ namespace components::vector::arrow::scaner {
 
                 default:
                     return core::error_t(core::error_code_t::unimplemented_yet,
-                                         std::pmr::string("(Arrow) Unsupported type for selection vectors",
-                                                          resource));
+                                         std::pmr::string("(Arrow) Unsupported type for selection vectors", resource));
             }
 
         } else {
@@ -1483,8 +1486,7 @@ namespace components::vector::arrow::scaner {
                     break;
                 default:
                     return core::error_t(core::error_code_t::unimplemented_yet,
-                                         std::pmr::string("(Arrow) Unsupported type for selection vectors",
-                                                          resource));
+                                         std::pmr::string("(Arrow) Unsupported type for selection vectors", resource));
             }
         }
         return core::error_t::no_error();
@@ -1563,9 +1565,9 @@ namespace components::vector::arrow::scaner {
                     }
                     break;
                 default:
-                    return core::error_t(core::error_code_t::unimplemented_yet,
-                                         std::pmr::string("arrow_array_physical_type not recognized",
-                                                          vector.resource()));
+                    return core::error_t(
+                        core::error_code_t::unimplemented_yet,
+                        std::pmr::string("arrow_array_physical_type not recognized", vector.resource()));
             };
             array_state.add_dictionary(std::move(base_vector), array.dictionary);
         }

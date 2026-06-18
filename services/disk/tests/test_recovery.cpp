@@ -168,9 +168,9 @@ TEST_CASE("test_recovery_ddl_then_dml") {
         // tracker in this test path; checkpoint_all is happy to skip the wal-id sidecar
         // when value is 0.
         auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all,
-                                    session_id_t{},
-                                    services::wal::id_t{0},
-                                    std::numeric_limits<uint64_t>::max());
+                                   session_id_t{},
+                                   services::wal::id_t{0},
+                                   std::numeric_limits<uint64_t>::max());
         (void) cp_future;
     }
 
@@ -269,9 +269,9 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         // Without checkpoint, pg_computed_column rows live only in WAL; we still
         // expect them back via the bootstrap-replay path on restart.
         auto cp_future = fx.invoke(&manager_disk_t::checkpoint_all,
-                                    session_id_t{},
-                                    services::wal::id_t{0},
-                                    std::numeric_limits<uint64_t>::max());
+                                   session_id_t{},
+                                   services::wal::id_t{0},
+                                   std::numeric_limits<uint64_t>::max());
         (void) cp_future;
     }
 
@@ -298,8 +298,7 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
                                         std::move(rk),
                                         test_probe::build_key_chunk(&fx_reopen.resource, std::move(rv)));
         std::uint64_t total = 0;
-        for (const auto& c : batches)
-            total += c.size();
+        for (const auto& c : batches) total += c.size();
         REQUIRE(total == 2);
         bool saw_a = false;
         bool saw_b = false;
@@ -308,8 +307,9 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                 // pg_computed_column layout: [0]=relid, [1]=attoid, [2]=attname,
                 // [3]=atttypid, [4]=atttypspec, [5]=attversion, [6]=attrefcount.
-                const auto attname =
-                    chunk.value(2, i).is_null() ? std::string{} : std::string(chunk.value(2, i).value<std::string_view>());
+                const auto attname = chunk.value(2, i).is_null()
+                                         ? std::string{}
+                                         : std::string(chunk.value(2, i).value<std::string_view>());
                 const auto atttypid =
                     chunk.value(3, i).is_null()
                         ? components::catalog::INVALID_OID

@@ -63,9 +63,11 @@ namespace components::table {
                                        vector::vector_t& result,
                                        uint64_t count) {
         size_t arr_size = array_size();
+        // Scan the array-level validity into the result first (mirrors struct/scan_count);
+        // without this a row stored as a whole-array NULL reads back as a non-null array.
+        validity.scan(vector_index, state.child_states[0], result, count);
         size_t remaining_count = arr_size * count;
         uint64_t remaining_vector_index = vector_index * arr_size;
-        state.child_states[0].result_offset = state.result_offset * arr_size;
         state.child_states[1].result_offset = state.result_offset * arr_size;
 
         while (remaining_count > 0) {

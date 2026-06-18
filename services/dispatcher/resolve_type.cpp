@@ -62,6 +62,18 @@ namespace services::dispatcher {
                         ct.set_alias(alias);
                 }
             }
+            if (ct.type() == components::types::logical_type::LIST) {
+                const auto* list_ext =
+                    static_cast<const components::types::list_logical_type_extension*>(ct.extension());
+                auto inner = list_ext->node();
+                if (inner.type() == components::types::logical_type::UNKNOWN) {
+                    resolve_one_type(inner, idx);
+                    std::string alias = ct.has_alias() ? ct.alias() : std::string{};
+                    ct = components::types::complex_logical_type::create_list(inner);
+                    if (!alias.empty())
+                        ct.set_alias(alias);
+                }
+            }
         }
     }
 

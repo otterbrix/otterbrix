@@ -35,6 +35,13 @@ namespace components::operators::predicates::impl {
                                        const vector::data_chunk_t&,
                                        size_t index_left,
                                        size_t) -> core::result_wrapper_t<types::logical_value_t> {
+                // Subscript / nested paths (e.g. v[i], struct.field) must be read
+                // through the element-aware accessor, which understands ARRAY stride
+                // and LIST (offset,length) layout; at() only resolves to the flat
+                // child vector and would index it by row number.
+                if (path.size() > 1) {
+                    return chunk_left.value(path, index_left);
+                }
                 auto* vec = chunk_left.at(path);
                 if (!vec->validity().row_is_valid(index_left)) {
                     return types::logical_value_t(chunk_left.resource(), nullptr);
@@ -46,6 +53,9 @@ namespace components::operators::predicates::impl {
                                        const vector::data_chunk_t& chunk_right,
                                        size_t,
                                        size_t index_right) -> core::result_wrapper_t<types::logical_value_t> {
+                if (path.size() > 1) {
+                    return chunk_right.value(path, index_right);
+                }
                 auto* vec = chunk_right.at(path);
                 if (!vec->validity().row_is_valid(index_right)) {
                     return types::logical_value_t(chunk_right.resource(), nullptr);

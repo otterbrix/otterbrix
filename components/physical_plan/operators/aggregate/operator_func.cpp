@@ -197,8 +197,7 @@ namespace components::operators::aggregate {
                 arg_chunks.push_back(std::move(c));
             }
             if (chunk.data.size() > base_column_count) {
-                chunk.data.erase(chunk.data.begin() + static_cast<std::ptrdiff_t>(base_column_count),
-                                 chunk.data.end());
+                chunk.data.erase(chunk.data.begin() + static_cast<std::ptrdiff_t>(base_column_count), chunk.data.end());
             }
         }
 

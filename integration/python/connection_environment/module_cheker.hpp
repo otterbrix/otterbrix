@@ -4,11 +4,10 @@
 
 namespace otterbrix {
 
-    template <typename T>
+    template<typename T>
     static bool module_is_loaded() {
-	    auto dict = pybind11::module_::import("sys").attr("modules");
-	    return dict.contains(py::str(T::name));
+        auto dict = pybind11::module_::import("sys").attr("modules");
+        return dict.contains(py::str(T::name));
     }
-
 
 } // namespace otterbrix

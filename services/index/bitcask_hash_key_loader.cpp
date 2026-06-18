@@ -13,7 +13,8 @@ namespace services::index {
         return bitcask_->load_hash_key_at(segment_id, value_offset, out_key);
     }
 
-    bool bitcask_hash_key_loader_t::load_unlocked(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const {
+    bool
+    bitcask_hash_key_loader_t::load_unlocked(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const {
         return bitcask_->load_hash_key_at_unlocked(segment_id, value_offset, out_key);
     }
 

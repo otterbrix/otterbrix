@@ -446,14 +446,38 @@ namespace components::types {
             }
 
             return create_struct(resource_, type, fields);
-        } else if (type_.type() == logical_type::ARRAY && type.type() == logical_type::ARRAY) {
+        } else if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
+                   type.type() == logical_type::ARRAY) {
+            // A fixed ARRAY value or a variable-length LIST is cast to a fixed ARRAY,
+            // casting each element to the target element type. The target has a declared
+            // size, so the source length is reconciled to it: an over-long value is
+            // truncated and a short one is padded with NULL. This is the schema-free
+            // fallback; the INSERT/append path reconciles short values against the
+            // column DEFAULT instead (see table::reconcile_to_fixed_array).
+            const auto& target_elem_type = type.child_type();
+            const auto target_size = static_cast<const array_logical_type_extension*>(type.extension())->size();
+            const auto& src = children();
+            std::vector<logical_value_t> elems;
+            elems.reserve(target_size);
+            for (uint64_t i = 0; i < target_size; ++i) {
+                if (i < src.size()) {
+                    elems.emplace_back(src[i].cast_as(target_elem_type, session_tz));
+                } else {
+                    elems.emplace_back(logical_value_t{resource_, complex_logical_type{logical_type::NA}});
+                }
+            }
+            return create_array(resource_, target_elem_type, elems);
+        } else if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
+                   type.type() == logical_type::LIST) {
+            // A fixed ARRAY value (e.g. the ARRAY[...] literal) or another LIST is cast
+            // to a variable-length LIST by casting each element to the target element type.
             const auto& target_elem_type = type.child_type();
             std::vector<logical_value_t> elems;
             elems.reserve(children().size());
             for (const auto& child : children()) {
                 elems.emplace_back(child.cast_as(target_elem_type, session_tz));
             }
-            return create_array(resource_, target_elem_type, elems);
+            return create_list(resource_, target_elem_type, elems);
         } else if (type.type() == logical_type::ENUM) {
             if (type_.type() == logical_type::STRING_LITERAL) {
                 auto string_val = value<std::string_view>();

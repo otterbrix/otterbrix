@@ -289,6 +289,26 @@ namespace components::table {
         return scan_vector(state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
     }
 
+    uint64_t
+    column_data_t::scan_count_with_updates(column_scan_state& state, vector::vector_t& result, uint64_t count) {
+        if (count == 0) {
+            return 0;
+        }
+        // Capture the write base and the column-relative range start before scanning:
+        // scan_vector writes flat values starting at state.result_offset and advances
+        // state.row_index. The committed-update overlay is then applied over the same
+        // span at the same positions.
+        const uint64_t result_offset = state.result_offset;
+        const int64_t range_start = state.row_index - start_;
+        auto scanned = scan_vector(state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
+        std::lock_guard update_guard(update_lock_);
+        if (updates_ && scanned > 0) {
+            result.flatten(result_offset + scanned);
+            updates_->fetch_committed_range(range_start, scanned, result, result_offset);
+        }
+        return scanned;
+    }
+
     void column_data_t::select(uint64_t vector_index,
                                column_scan_state& state,
                                vector::vector_t& result,
@@ -428,12 +448,21 @@ namespace components::table {
             }
         }
         // STRUCT columns store child data in sub_columns, not in data_ segments — fetch the full value
-        if (type_.to_physical_type() == types::physical_type::STRUCT) {
+        // STRUCT/ARRAY/LIST columns store their payload in child columns, not in the
+        // data_ segments, so a whole-value predicate (e.g. WHERE v = ARRAY[...]) must
+        // materialize the full row value via fetch_row and compare it — the segment path
+        // below would call the unimplemented array/list fetch().
+        if (type_.to_physical_type() == types::physical_type::STRUCT ||
+            type_.to_physical_type() == types::physical_type::ARRAY ||
+            type_.to_physical_type() == types::physical_type::LIST) {
             column_fetch_state fetch_state;
             vector::vector_t result(resource_, type_, 1);
             fetch_row(fetch_state, row_id, result, 0);
             if (!result.validity().row_is_valid(0)) {
                 return false;
+            }
+            if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
+                return set->contains(result.value(0));
             }
             return filter->cast<constant_filter_t>().compare(result.value(0));
         }

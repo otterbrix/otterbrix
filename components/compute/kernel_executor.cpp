@@ -211,9 +211,8 @@ namespace components::compute::detail {
             }
 
             // resize to expected count — kernel may have written fewer or more
-            agg_ctx_->batch_results.resize(
-                inputs.size(),
-                types::logical_value_t(exec_ctx().resource(), types::logical_type::NA));
+            agg_ctx_->batch_results.resize(inputs.size(),
+                                           types::logical_value_t(exec_ctx().resource(), types::logical_type::NA));
             return agg_ctx_->batch_results;
         }
 

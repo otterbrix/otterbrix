@@ -165,20 +165,19 @@ namespace components::vector::arrow {
                 return ec == std::errc{};
             };
             if (!parse_u64(parameters[0], width) || !parse_u64(parameters[1], scale)) {
-                return core::error_t(core::error_code_t::conversion_failure,
-                                     std::pmr::string("Decimal format of Arrow object has invalid width or scale",
-                                                      resource));
+                return core::error_t(
+                    core::error_code_t::conversion_failure,
+                    std::pmr::string("Decimal format of Arrow object has invalid width or scale", resource));
             }
             if (parameters.size() == 3 && !parse_u64(parameters[2], bitwidth)) {
                 // We have a bit-width defined
-                return core::error_t(core::error_code_t::conversion_failure,
-                                     std::pmr::string("Decimal format of Arrow object has invalid bit-width",
-                                                      resource));
+                return core::error_t(
+                    core::error_code_t::conversion_failure,
+                    std::pmr::string("Decimal format of Arrow object has invalid bit-width", resource));
             }
             if (width > 38 || bitwidth > 128) {
                 return core::error_t(core::error_code_t::unimplemented_yet,
-                                     std::pmr::string("Unsupported Internal Arrow Type for Decimal",
-                                                      resource));
+                                     std::pmr::string("Unsupported Internal Arrow Type for Decimal", resource));
             }
             switch (bitwidth) {
                 case 32:
@@ -202,9 +201,9 @@ namespace components::vector::arrow {
                                                                     static_cast<uint8_t>(scale)),
                         std::make_unique<arrow_decimal_info>(decimal_bit_width::DECIMAL_256));
                 default:
-                    return core::error_t(core::error_code_t::unimplemented_yet,
-                                         std::pmr::string("Unsupported bit-width value for Arrow Decimal type",
-                                                          resource));
+                    return core::error_t(
+                        core::error_code_t::unimplemented_yet,
+                        std::pmr::string("Unsupported bit-width value for Arrow Decimal type", resource));
             }
         } else if (format == "u") {
             return std::make_unique<arrow_type>(types::logical_type::STRING_LITERAL,
@@ -278,8 +277,7 @@ namespace components::vector::arrow {
             auto [p, ec] = std::from_chars(parameters.data(), parameters.data() + parameters.size(), fixed_size_raw);
             if (ec != std::errc{}) {
                 return core::error_t(core::error_code_t::conversion_failure,
-                                     std::pmr::string("Arrow fixed-size binary format has invalid size",
-                                                      resource));
+                                     std::pmr::string("Arrow fixed-size binary format has invalid size", resource));
             }
             auto fixed_size = static_cast<size_t>(fixed_size_raw);
             auto type_info = std::make_unique<arrow_string_info>(fixed_size);
@@ -302,8 +300,7 @@ namespace components::vector::arrow {
                 default:
                     return core::error_t(
                         core::error_code_t::unimplemented_yet,
-                        std::pmr::string("Unknown timestamp precision in Arrow format: " + format,
-                                         resource));
+                        std::pmr::string("Unknown timestamp precision in Arrow format: " + format, resource));
             }
             // "tsX:" with empty timezone → TIMESTAMP; "tsX:UTC" or similar → TIMESTAMP_TZ
             bool has_tz = format.size() > 4 && format[3] == ':' && !format.substr(4).empty();

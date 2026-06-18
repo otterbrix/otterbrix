@@ -31,8 +31,7 @@ namespace {
 // Control cases: safe behavior that must keep working.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("validity_mask_t: pointer-constructed mask reads and writes the external buffer",
-          "[validity-mask]") {
+TEST_CASE("validity_mask_t: pointer-constructed mask reads and writes the external buffer", "[validity-mask]") {
     // This is exactly the column_segment.cpp usage pattern: wrap a pinned
     // buffer and operate on bits in place. validity_mask_ is non-null, so the
     // lazy resize/allocation paths are never taken and resource_ is unused.
@@ -66,8 +65,7 @@ TEST_CASE("validity_mask_t: pointer-constructed mask reads and writes the extern
     REQUIRE(mask.count_valid(test_capacity) == test_capacity);
 }
 
-TEST_CASE("validity_mask_t: copy and move of all-valid / pointer-constructed masks stay safe",
-          "[validity-mask]") {
+TEST_CASE("validity_mask_t: copy and move of all-valid / pointer-constructed masks stay safe", "[validity-mask]") {
     // A pointer-constructed mask over nullptr is all_valid(); copying it takes
     // the non-allocating branch and never touches resource_.
     auto resource = std::pmr::synchronized_pool_resource();
@@ -123,8 +121,7 @@ TEST_CASE("validity_mask_t: copy-constructing from a pointer-constructed mask wi
     REQUIRE(source.data() == buffer);
 }
 
-TEST_CASE("validity_mask_t: copy-assigning between two pointer-constructed masks",
-          "[validity-null-resource]") {
+TEST_CASE("validity_mask_t: copy-assigning between two pointer-constructed masks", "[validity-null-resource]") {
     // copy operator= (validation.cpp) requires matching resources
     // (assert(resource_ == other.resource_)), then allocates a private copy
     // of the source bits — the target's external buffer is left untouched.
@@ -149,8 +146,7 @@ TEST_CASE("validity_mask_t: copy-assigning between two pointer-constructed masks
     REQUIRE(dst_buffer[0] == components::vector::validity_data_t::MAX_ENTRY);
 }
 
-TEST_CASE("validity_mask_t: combine() on a pointer-constructed mask",
-          "[validity-null-resource]") {
+TEST_CASE("validity_mask_t: combine() on a pointer-constructed mask", "[validity-null-resource]") {
     // combine (validation.cpp): this is not all_valid() (pointer set) and the
     // masks differ, so it copies its own bits into a private allocation and
     // ANDs the other mask in. The external buffer stays untouched.
@@ -173,8 +169,7 @@ TEST_CASE("validity_mask_t: combine() on a pointer-constructed mask",
     REQUIRE(buffer[0] == components::vector::validity_data_t::MAX_ENTRY);
 }
 
-TEST_CASE("validity_mask_t: slice() at non-zero offset on a pointer-constructed mask",
-          "[validity-null-resource]") {
+TEST_CASE("validity_mask_t: slice() at non-zero offset on a pointer-constructed mask", "[validity-null-resource]") {
     // slice (validation.cpp): other is not all_valid() and offset != 0, so it
     // builds a fresh validity_mask_t(resource(), count) and shifts the source
     // bits into it: target bit i == source bit (offset + i).

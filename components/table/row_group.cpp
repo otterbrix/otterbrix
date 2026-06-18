@@ -179,6 +179,35 @@ namespace components::table {
         }
     }
 
+    // A trailing subscript index into an ARRAY/LIST column (e.g. WHERE v[k] = x)
+    // addresses an element, not a STRUCT sub-column. Materialize the row's list
+    // value and compare the addressed (0-based) element against the filter. A
+    // NULL list, an out-of-range index, or a NULL element does not match.
+    static bool check_array_element_predicate(column_data_t& column,
+                                              int64_t row_id,
+                                              uint64_t element_index,
+                                              const table_filter_t* filter) {
+        column_fetch_state fetch_state;
+        vector::vector_t result(column.resource(), column.type(), 1);
+        column.fetch_row(fetch_state, row_id, result, 0);
+        if (!result.validity().row_is_valid(0)) {
+            return false;
+        }
+        auto list_value = result.value(0);
+        const auto& elements = list_value.children();
+        if (element_index >= elements.size()) {
+            return false;
+        }
+        const auto& element_value = elements[element_index];
+        if (element_value.is_null()) {
+            return false;
+        }
+        if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
+            return set->contains(element_value);
+        }
+        return filter->cast<constant_filter_t>().compare(element_value);
+    }
+
     bool row_group_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
         switch (filter->filter_type) {
             case expressions::compare_type::union_or: {
@@ -228,6 +257,10 @@ namespace components::table {
                 const auto& indices = table_filter_table_indices(filter);
                 column_data_t* column = &get_column(indices.front());
                 for (size_t i = 1; i < indices.size(); i++) {
+                    if (column->type().type() == types::logical_type::ARRAY ||
+                        column->type().type() == types::logical_type::LIST) {
+                        return check_array_element_predicate(*column, row_id, indices[i], filter);
+                    }
                     column = static_cast<struct_column_data_t*>(column)->sub_columns[indices[i]].get();
                 }
                 return column->check_predicate(row_id, filter);

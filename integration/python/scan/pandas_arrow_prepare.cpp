@@ -12,7 +12,7 @@ namespace otterbrix {
     namespace {
 
         //! First cell of the series that is a python dict, or py::none() if there is none.
-        py::object first_dict_cell(const py::object &series) {
+        py::object first_dict_cell(const py::object& series) {
             for (auto item : series) {
                 py::object cell = py::reinterpret_borrow<py::object>(item);
                 if (py::isinstance<py::dict>(cell)) {
@@ -22,7 +22,7 @@ namespace otterbrix {
             return py::none();
         }
 
-        bool is_map_format(const py::object &cell) {
+        bool is_map_format(const py::object& cell) {
             py_dictionary_t dict(cell);
             return dictionary_has_map_format(dict);
         }
@@ -30,7 +30,7 @@ namespace otterbrix {
         //! Build a pyarrow MAP array from a series whose cells are {"key": [...], "value": [...]} dicts.
         //! Non-dict holes (None / NaN) become null map entries. Throws py::error_already_set on failure;
         //! the caller falls back to the generic object-column handling.
-        py::object build_map_array(const py::module_ &pa, const py::object &series) {
+        py::object build_map_array(const py::module_& pa, const py::object& series) {
             py::object zip = py::module_::import("builtins").attr("zip");
 
             py::list rows;
@@ -62,12 +62,12 @@ namespace otterbrix {
             py::object value_type;
             try {
                 key_type = pa.attr("array")(all_keys).attr("type");
-            } catch (const py::error_already_set &) {
+            } catch (const py::error_already_set&) {
                 key_type = pa.attr("string")();
             }
             try {
                 value_type = pa.attr("array")(all_values).attr("type");
-            } catch (const py::error_already_set &) {
+            } catch (const py::error_already_set&) {
                 value_type = pa.attr("string")();
             }
             py::object map_type = pa.attr("map_")(key_type, value_type);
@@ -76,7 +76,7 @@ namespace otterbrix {
 
     } // namespace
 
-    py::object prepare_dataframe_for_arrow(const py::object &df_in) {
+    py::object prepare_dataframe_for_arrow(const py::object& df_in) {
         py::object df = df_in.attr("copy")(py::arg("deep") = false);
 
         // 0. Drop the pandas index so it is never exported as a column. The Arrow
@@ -114,7 +114,8 @@ namespace otterbrix {
                 // Expand the categorical to its underlying values so it ingests as a plain column.
                 // (The old numpy scanner rejected categoricals outright, so this is an improvement;
                 // it also sidesteps the core arrow dictionary-decode path.)
-                df.attr("__setitem__")(name, series.attr("astype")(series.attr("cat").attr("categories").attr("dtype")));
+                df.attr("__setitem__")(name,
+                                       series.attr("astype")(series.attr("cat").attr("categories").attr("dtype")));
                 continue;
             }
             // numpy 'object' dtype prints as "object"; extension/ArrowDtype/datetime dtypes do not
@@ -129,7 +130,7 @@ namespace otterbrix {
                     py::object map_array = build_map_array(pa, series);
                     df.attr("__setitem__")(name, pandas.attr("arrays").attr("ArrowExtensionArray")(map_array));
                     continue;
-                } catch (const py::error_already_set &) {
+                } catch (const py::error_already_set&) {
                     // fall through to the generic handling below
                 }
             }
@@ -141,7 +142,7 @@ namespace otterbrix {
             // stringify (the lenient STRING fallback the old analyzer applied).
             try {
                 pa.attr("array")(series, py::arg("from_pandas") = true);
-            } catch (const py::error_already_set &) {
+            } catch (const py::error_already_set&) {
                 df.attr("__setitem__")(name, series.attr("astype")(py::str("str")));
             }
         }

@@ -234,8 +234,7 @@ namespace components::operators {
                                                kPgClass,
                                                std::move(pc_keys),
                                                components::operators::make_keys_chunk(resource_, probe_key_rows));
-            std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> pc_results =
-                co_await std::move(pcf);
+            std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> pc_results = co_await std::move(pcf);
 
             for (std::size_t k = 0; k < probe_oids.size() && k < pc_results.size(); ++k) {
                 const auto& pc_batches = pc_results[k];

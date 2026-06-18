@@ -16,6 +16,6 @@ namespace otterbrix {
     //!
     //! All other columns (numeric/bool/datetime/nullable/categorical/list/struct) pass straight
     //! through pandas' from_pandas export unchanged. Must be called with the GIL held.
-    py::object prepare_dataframe_for_arrow(const py::object &df);
+    py::object prepare_dataframe_for_arrow(const py::object& df);
 
 } // namespace otterbrix

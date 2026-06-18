@@ -55,6 +55,10 @@ namespace components::table {
 
     private:
         uint64_t fetch_list_offset(int64_t row_idx);
+        std::pmr::vector<int64_t> gather_child_update(vector::vector_t& update_vector,
+                                                      int64_t* row_ids,
+                                                      uint64_t update_count,
+                                                      vector::vector_t& child_update_out);
     };
 
 } // namespace components::table

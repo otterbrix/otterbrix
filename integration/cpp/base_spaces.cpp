@@ -490,10 +490,10 @@ namespace otterbrix {
                 const auto base = disk_config.path / std::to_string(static_cast<unsigned>(row.table_oid)) / index_name;
                 std::filesystem::create_directories(base);
                 try {
-                    shared_hash_storage = boost::intrusive_ptr(new services::index::disk_hash_table_t(
-                        base / "hash_index.bin",
-                        services::index::disk_hash_table_t::default_bucket_count,
-                        &resource));
+                    shared_hash_storage = boost::intrusive_ptr(
+                        new services::index::disk_hash_table_t(base / "hash_index.bin",
+                                                               services::index::disk_hash_table_t::default_bucket_count,
+                                                               &resource));
                 } catch (const std::exception& e) {
                     trace(log_,
                           "bootstrap_indexes_sync: disk hash storage init failed for {}: {}",
@@ -511,27 +511,27 @@ namespace otterbrix {
                                                              committed_txn_ids.end(),
                                                              &resource);
 
-            auto agent = actor_zeta::spawn<services::index::index_agent_disk_t>(
-                &resource,
-                disk_config.path,
-                row.table_oid,
-                index_name,
-                row.type,
-                disk_config.bitcask_flush_threshold,
-                disk_config.bitcask_segment_record_limit,
-                disk_config.btree_flush_threshold,
-                log_,
-                std::move(committed_for_agent),
-                shared_hash_storage);
+            auto agent =
+                actor_zeta::spawn<services::index::index_agent_disk_t>(&resource,
+                                                                       disk_config.path,
+                                                                       row.table_oid,
+                                                                       index_name,
+                                                                       row.type,
+                                                                       disk_config.bitcask_flush_threshold,
+                                                                       disk_config.bitcask_segment_record_limit,
+                                                                       disk_config.btree_flush_threshold,
+                                                                       log_,
+                                                                       std::move(committed_for_agent),
+                                                                       shared_hash_storage);
             auto agent_addr = agent->address();
 
             manager_index_->bootstrap_index_sync(row.table_oid,
-                                                  std::move(row.name),
-                                                  row.type,
-                                                  std::move(row.keys),
-                                                  agent_addr,
-                                                  std::move(agent),
-                                                  std::move(shared_hash_storage));
+                                                 std::move(row.name),
+                                                 row.type,
+                                                 std::move(row.keys),
+                                                 agent_addr,
+                                                 std::move(agent),
+                                                 std::move(shared_hash_storage));
             ++indexes_wired;
         }
 

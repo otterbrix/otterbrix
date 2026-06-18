@@ -1,17 +1,17 @@
 #include "pyconnection.hpp"
-#include <memory>
-#include <connection_environment/connection_environment.hpp>
-#include <connection_environment/relation/relation_factory.hpp>
-#include <otterbrix_wrapper/pyresult.hpp>
-#include <otterbrix_wrapper/pyrelation.hpp>
 #include <common/string_util/string_util.hpp>
-#include <scan/python_replacement_scan.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <connection_environment/connection_environment.hpp>
+#include <connection_environment/relation/relation_factory.hpp>
+#include <memory>
+#include <otterbrix_wrapper/pyrelation.hpp>
+#include <otterbrix_wrapper/pyresult.hpp>
+#include <scan/python_replacement_scan.hpp>
 #include <string>
 #include <vector>
 
@@ -25,7 +25,6 @@ namespace otterbrix {
     pyconnection_ptr default_connection_holder_t::get() {
         std::lock_guard<std::mutex> guard(l);
         if (!connection) {
-
             auto default_path = std::filesystem::absolute(connection_environment_t::DEFAULT_FOLDER);
             auto space = connection_environment_t::make_space(default_path);
             connection = std::make_shared<py_connection_t>(space);
@@ -48,7 +47,7 @@ namespace otterbrix {
         // Clean up previously created cursors
         std::vector<std::weak_ptr<py_connection_t>> compacted_cursors;
         bool needs_compaction = false;
-        for (auto &cur_p : cursors) {
+        for (auto& cur_p : cursors) {
             auto cur = cur_p.lock();
             if (!cur) {
                 needs_compaction = true;
@@ -66,7 +65,7 @@ namespace otterbrix {
     void cursors_t::clear_cursors() {
         std::lock_guard<std::mutex> l(lock);
 
-        for (auto &cur : cursors) {
+        for (auto& cur : cursors) {
             auto cursor = cur.lock();
             if (!cursor) {
                 // The cursor has already been closed
@@ -81,12 +80,9 @@ namespace otterbrix {
         cursors.clear();
     }
 
-
     default_connection_holder_t py_connection_t::default_connection_;
 
-    pyconnection_ptr py_connection_t::default_connection() {
-        return default_connection_.get();
-    }
+    pyconnection_ptr py_connection_t::default_connection() { return default_connection_.get(); }
 
     void py_connection_t::set_default_connection(pyconnection_ptr conn) {
         return default_connection_.set(std::move(conn));
@@ -106,8 +102,8 @@ namespace otterbrix {
         , std::enable_shared_from_this<py_connection_t>(other)
         , space(other.space) {}
 
-    pyconnection_ptr py_connection_t::connect(const py::object &database_p, bool /*read_only*/,
-            const py::dict & /*config_options*/) {
+    pyconnection_ptr
+    py_connection_t::connect(const py::object& database_p, bool /*read_only*/, const py::dict& /*config_options*/) {
         std::string db_str;
         if (py::isinstance<py::str>(database_p)) {
             db_str = py::str(database_p);
@@ -125,15 +121,12 @@ namespace otterbrix {
         } else {
             auto space = connection_environment_t::make_space(path);
             con = std::make_shared<py_connection_t>(space);
-
         }
 
         return con;
     }
 
-    py_connection_t::~py_connection_t() {
-        py::gil_scoped_release gil;
-    }
+    py_connection_t::~py_connection_t() { py::gil_scoped_release gil; }
 
     void py_connection_t::cleanup() {
         default_connection_.set(nullptr);
@@ -179,16 +172,16 @@ namespace otterbrix {
         }
         return space->dispatcher()->execute_plan(
             session,
-            components::logical_plan::execution_plan_t{
-                node->resource(), node, expression_factory_t::get_params()});
+            components::logical_plan::execution_plan_t{node->resource(), node, expression_factory_t::get_params()});
     }
 
-    cursor::cursor_t_ptr py_connection_t::query_relation(const components::logical_plan::node_ptr &rel) {
+    cursor::cursor_t_ptr py_connection_t::query_relation(const components::logical_plan::node_ptr& rel) {
         auto session = otterbrix::session_id_t();
         return space->dispatcher()->execute_plan(
             session,
-            components::logical_plan::execution_plan_t{
-                space->dispatcher()->resource(), rel, expression_factory_t::get_params()});
+            components::logical_plan::execution_plan_t{space->dispatcher()->resource(),
+                                                       rel,
+                                                       expression_factory_t::get_params()});
     }
 
     py::list py_connection_t::list_tables() {
@@ -228,8 +221,7 @@ namespace otterbrix {
         while (cursor->has_next()) {
             cursor->advance();
             auto oid_cell = cursor->value(static_cast<uint64_t>(oid_col));
-            if (oid_cell.is_null() ||
-                oid_cell.value<std::uint32_t>() < components::catalog::FIRST_USER_OID) {
+            if (oid_cell.is_null() || oid_cell.value<std::uint32_t>() < components::catalog::FIRST_USER_OID) {
                 continue; // system catalog object
             }
             auto relkind_cell = cursor->value(static_cast<uint64_t>(relkind_col));
@@ -249,12 +241,9 @@ namespace otterbrix {
         return res;
     }
 
-    pyconnection_ptr py_connection_t::enter() {
-        return shared_from_this();
-    }
+    pyconnection_ptr py_connection_t::enter() { return shared_from_this(); }
 
-    void py_connection_t::exit(const py::object& exc_type, const py::object& exc,
-            const py::object& /*traceback*/) {
+    void py_connection_t::exit(const py::object& exc_type, const py::object& exc, const py::object& /*traceback*/) {
         this->close();
         if (exc_type.ptr() != Py_None) {
             // Propagate the exception if any occurred
@@ -282,15 +271,13 @@ namespace otterbrix {
             execute_internal(std::string(py::str(query)));
         }
         return shared_from_this();
-
     }
 
     std::unique_ptr<py_relation_t> py_connection_t::from_df(const py::object& value) {
         std::string name = "df_no_idea";
         auto tableref = scan_t::replacement_object(value, name);
 
-        return std::make_unique<py_relation_t>(this,
-            relation_factory_t::create_df_relation(std::move(tableref)));
+        return std::make_unique<py_relation_t>(this, relation_factory_t::create_df_relation(std::move(tableref)));
     }
 
     std::unique_ptr<py_relation_t> py_connection_t::from_object(const py::object& value) {
@@ -298,8 +285,7 @@ namespace otterbrix {
         auto tableref = scan_t::try_replacement_object(value, name);
         assert(tableref);
 
-        return std::make_unique<py_relation_t>(this,
-            relation_factory_t::create_df_relation(std::move(tableref)));
+        return std::make_unique<py_relation_t>(this, relation_factory_t::create_df_relation(std::move(tableref)));
     }
 
 } // namespace otterbrix

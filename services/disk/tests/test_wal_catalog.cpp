@@ -462,10 +462,10 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
         // (1) append a pg_depend row (objid is column index 1 in
         //     [classid, objid, refclassid, refobjid, deptype]).
         auto dep_row = catalog::build_pg_depend_row(&fx.resource,
-                                                    pg_index,   // classid
-                                                    dep_objid,  // objid
-                                                    pg_index,   // refclassid
-                                                    idx_oid,    // refobjid
+                                                    pg_index,  // classid
+                                                    dep_objid, // objid
+                                                    pg_index,  // refclassid
+                                                    idx_oid,   // refobjid
                                                     'n');
         appends_local.push_back(
             fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_depend, std::move(dep_row)));
@@ -531,13 +531,13 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
         keys.emplace_back("indexrelid");
         std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
         vals.emplace_back(&fx.resource, idx_oid);
-        auto batches = services::disk::test_probe::probe_read(fx, auto_ctx(), pg_index, std::move(keys), std::move(vals));
+        auto batches =
+            services::disk::test_probe::probe_read(fx, auto_ctx(), pg_index, std::move(keys), std::move(vals));
         std::size_t found = 0;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                 auto oid_v = chunk.value(0, i);
-                if (!oid_v.is_null() &&
-                    static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>()) == idx_oid)
+                if (!oid_v.is_null() && static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>()) == idx_oid)
                     ++found;
             }
         }

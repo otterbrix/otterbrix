@@ -1,16 +1,16 @@
 #include "python_replacement_scan.hpp"
 
+#include "pandas_arrow_prepare.hpp"
 #include <arrow/arrow_array_stream.hpp>
 #include <arrow/arrow_scan_function.hpp>
-#include <connection_environment/framework_object_detection.hpp>
-#include <connection_environment/connection_environment.hpp>
-#include "pandas_arrow_prepare.hpp"
+#include <common/string_util/string_util.hpp>
+#include <common/typedefs.hpp>
 #include <components/tableref/tableref.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <connection_environment/connection_environment.hpp>
+#include <connection_environment/framework_object_detection.hpp>
 #include <memory>
-#include <common/string_util/string_util.hpp>
-#include <common/typedefs.hpp>
 
 #include <stdexcept>
 #include <string>
@@ -21,32 +21,29 @@ using namespace components;
 
 namespace otterbrix {
 
-    void throw_scan_failure_error(const py::object &entry, const std::string &name) {
+    void throw_scan_failure_error(const py::object& entry, const std::string& name) {
         auto py_object_type = std::string(py::str(entry.get_type().attr("__name__")));
-        std::string error =
-           "Python object " + name + " of type " + py_object_type;
-       error += " not suitable for replacement scans. ";
-       throw std::runtime_error(error);
+        std::string error = "Python object " + name + " of type " + py_object_type;
+        error += " not suitable for replacement scans. ";
+        throw std::runtime_error(error);
     }
 
     namespace {
         //! Does this python object (or a pyarrow-backed pandas data_frame) expose the Arrow C-stream
         //! PyCapsule interface that core data_chunk_from_arrow can consume?
-        bool has_arrow_c_stream(const py::object &entry) {
-            return py::hasattr(entry, "__arrow_c_stream__");
-        }
+        bool has_arrow_c_stream(const py::object& entry) { return py::hasattr(entry, "__arrow_c_stream__"); }
 
         //! Build a table_ref_t that routes `arrow_source` through the core arrow path via arrow_scan_function_t.
         //! `arrow_source` must be either an arrow object understood by get_arrow_type (arrow_table_t / Dataset /
         //! Scanner / arrow_record_batch_reader_t / PyCapsule) or expose __arrow_c_stream__.
-        std::unique_ptr<components::tableref::table_ref_t> build_arrow_table_ref(const py::object &arrow_source) {
+        std::unique_ptr<components::tableref::table_ref_t> build_arrow_table_ref(const py::object& arrow_source) {
             auto table_function = std::make_unique<components::tableref::table_ref_t>();
             auto dependency = std::make_shared<external_dependency_t>();
             auto factory_dep = std::make_unique<arrow_stream_factory_dependency_t>(arrow_source);
-            auto *factory_ptr = factory_dep->get();
+            auto* factory_ptr = factory_dep->get();
 
             std::vector<components::types::logical_value_t> children;
-            children.emplace_back(std::pmr::get_default_resource(), static_cast<void *>(factory_ptr));
+            children.emplace_back(std::pmr::get_default_resource(), static_cast<void*>(factory_ptr));
 
             table_function->function = std::make_unique<arrow_scan_function_t>();
             table_function->children = std::move(children);
@@ -57,8 +54,8 @@ namespace otterbrix {
         }
     } // namespace
 
-    std::unique_ptr<components::tableref::table_ref_t>
-        scan_t::try_replacement_object(const py::object &entry, const std::string & /*name*/) {
+    std::unique_ptr<components::tableref::table_ref_t> scan_t::try_replacement_object(const py::object& entry,
+                                                                                      const std::string& /*name*/) {
         if (framework_object_detection_t::is_polars_dataframe(entry)) {
             // Polars exposes the Arrow C-stream PyCapsule interface; route through the core arrow path.
             return build_arrow_table_ref(entry);
@@ -81,26 +78,26 @@ namespace otterbrix {
             py::dict data;
             idx_t idx = 0;
             switch (numpy_type) {
-            case numpy_object_type_t::NDARRAY1D:
-                data["column0"] = entry;
-                break;
-            case numpy_object_type_t::NDARRAY2D:
-                for (auto item : py::cast<py::array>(entry)) {
-                    data[("column" + std::to_string(idx)).c_str()] = item;
-                    idx++;
-                }
-                break;
-            case numpy_object_type_t::LIST:
-                for (auto item : py::cast<py::list>(entry)) {
-                    data[("column" + std::to_string(idx)).c_str()] = item;
-                    idx++;
-                }
-                break;
-            case numpy_object_type_t::DICT:
-                data = py::cast<py::dict>(entry);
-                break;
-            default:
-                throw std::runtime_error("Unsupported Numpy object");
+                case numpy_object_type_t::NDARRAY1D:
+                    data["column0"] = entry;
+                    break;
+                case numpy_object_type_t::NDARRAY2D:
+                    for (auto item : py::cast<py::array>(entry)) {
+                        data[("column" + std::to_string(idx)).c_str()] = item;
+                        idx++;
+                    }
+                    break;
+                case numpy_object_type_t::LIST:
+                    for (auto item : py::cast<py::list>(entry)) {
+                        data[("column" + std::to_string(idx)).c_str()] = item;
+                        idx++;
+                    }
+                    break;
+                case numpy_object_type_t::DICT:
+                    data = py::cast<py::dict>(entry);
+                    break;
+                default:
+                    throw std::runtime_error("Unsupported Numpy object");
             }
             py::object df = connection_environment_t::import_cache().pandas.data_frame()(data);
             return build_arrow_table_ref(prepare_dataframe_for_arrow(df));
@@ -109,19 +106,18 @@ namespace otterbrix {
         return nullptr;
     }
 
-
-    std::unique_ptr<components::tableref::table_ref_t> 
-        scan_t::replacement_object(const py::object &entry, const std::string &name) {
-            auto ref = try_replacement_object(entry, name);
-            if (!ref) {
-                throw_scan_failure_error(entry, name);
-            }
-            return ref;
+    std::unique_ptr<components::tableref::table_ref_t> scan_t::replacement_object(const py::object& entry,
+                                                                                  const std::string& name) {
+        auto ref = try_replacement_object(entry, name);
+        if (!ref) {
+            throw_scan_failure_error(entry, name);
+        }
+        return ref;
     }
 
-
     std::pair<logical_plan::node_data_ptr, std::unique_ptr<std::vector<components::table::column_definition_t>>>
-            scan_t::fetch_object_data(std::pmr::memory_resource* resource, std::unique_ptr<components::tableref::table_ref_t> ref) {
+    scan_t::fetch_object_data(std::pmr::memory_resource* resource,
+                              std::unique_ptr<components::tableref::table_ref_t> ref) {
         function::table_function_bind_input_t bind_input(ref->children, *ref);
         std::vector<types::complex_logical_type> return_types;
         std::vector<std::string> names;
@@ -137,17 +133,17 @@ namespace otterbrix {
             column_ids.push_back(i);
         }
         function::table_function_init_input_t init_input(
-                otterbrix::optional_ptr<function::function_data_t>(function_data), column_ids);
+            otterbrix::optional_ptr<function::function_data_t>(function_data),
+            column_ids);
 
         py::gil_scoped_release release;
         auto global_state = ref->function->init_global(init_input);
         auto local_state = ref->function->init_local(init_input, global_state.get());
 
         function::table_function_input_t input{
-                otterbrix::optional_ptr<function::function_data_t>(function_data),
-                otterbrix::optional_ptr<function::local_table_function_state_t>(local_state),
-                otterbrix::optional_ptr<function::global_table_function_state_t>(global_state)};
-
+            otterbrix::optional_ptr<function::function_data_t>(function_data),
+            otterbrix::optional_ptr<function::local_table_function_state_t>(local_state),
+            otterbrix::optional_ptr<function::global_table_function_state_t>(global_state)};
 
         // One merged data_chunk on PMR into the plan (previously: ToDocuments and a vector of document_ptr).
         std::pmr::vector<types::complex_logical_type> pmr_types(resource);
@@ -176,8 +172,7 @@ namespace otterbrix {
             total_rows += c.size();
         }
 
-        components::vector::data_chunk_t result_chunk(resource, pmr_types,
-                                                      total_rows > 0 ? total_rows : 1);
+        components::vector::data_chunk_t result_chunk(resource, pmr_types, total_rows > 0 ? total_rows : 1);
         result_chunk.set_cardinality(total_rows);
         uint64_t row_offset = 0;
         for (auto& c : chunks) {
@@ -190,10 +185,7 @@ namespace otterbrix {
         }
 
         return {logical_plan::make_node_raw_data(resource, std::move(result_chunk)),
-            std::make_unique<std::vector<components::table::column_definition_t>>(std::move(col_defs))};
+                std::make_unique<std::vector<components::table::column_definition_t>>(std::move(col_defs))};
     }
-
-
-    
 
 } // namespace otterbrix

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <pyconnection/pyconnection.hpp>
 #include <pybind11/pybind_wrapper.hpp>
+#include <pyconnection/pyconnection.hpp>
 
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -10,7 +10,6 @@
 
 #include <memory>
 #include <string>
-
 
 namespace otterbrix {
 
@@ -30,19 +29,18 @@ namespace otterbrix {
         py_expression_t(expression_wrapper_t expr, expression_factory_t* factory);
 
         ~py_expression_t();
-        static void initialize(py::module_ &m);
+        static void initialize(py::module_& m);
 
-        static pyexpr_ptr column_expression(const std::string& column_name, py_connection_t& conn, const std::string& side = "");
+        static pyexpr_ptr
+        column_expression(const std::string& column_name, py_connection_t& conn, const std::string& side = "");
 
         static pyexpr_ptr constant_expression(const py::object& value, py_connection_t& conn);
-        
+
         static pyexpr_ptr count_expression(py_connection_t& conn);
 
-
     public:
-
         std::string to_string() const;
-        void print() const;        
+        void print() const;
 
         // Aggregation operations
         pyexpr_ptr count();
@@ -58,59 +56,61 @@ namespace otterbrix {
         pyexpr_ptr abs();
         pyexpr_ptr negate();
 
-        pyexpr_ptr add(const py_expression_t &other);
-        pyexpr_ptr subtract(const py_expression_t &other);
-        pyexpr_ptr multiply(const py_expression_t &other);
-        pyexpr_ptr division(const py_expression_t &other);
-        pyexpr_ptr modulo(const py_expression_t &other);
-        pyexpr_ptr power(const py_expression_t &other);
+        pyexpr_ptr add(const py_expression_t& other);
+        pyexpr_ptr subtract(const py_expression_t& other);
+        pyexpr_ptr multiply(const py_expression_t& other);
+        pyexpr_ptr division(const py_expression_t& other);
+        pyexpr_ptr modulo(const py_expression_t& other);
+        pyexpr_ptr power(const py_expression_t& other);
 
         // equality operations
-        pyexpr_ptr equality(const py_expression_t &other);
-        pyexpr_ptr inequality(const py_expression_t &other);
-        pyexpr_ptr greater_than(const py_expression_t &other);
-        pyexpr_ptr greater_than_or_equal(const py_expression_t &other);
-        pyexpr_ptr less_than(const py_expression_t &other);
-        pyexpr_ptr less_than_or_equal(const py_expression_t &other);
+        pyexpr_ptr equality(const py_expression_t& other);
+        pyexpr_ptr inequality(const py_expression_t& other);
+        pyexpr_ptr greater_than(const py_expression_t& other);
+        pyexpr_ptr greater_than_or_equal(const py_expression_t& other);
+        pyexpr_ptr less_than(const py_expression_t& other);
+        pyexpr_ptr less_than_or_equal(const py_expression_t& other);
 
-        pyexpr_ptr regex(const py_expression_t &other);
+        pyexpr_ptr regex(const py_expression_t& other);
 
         pyexpr_ptr set_alias(const std::string& alias);
-    
+
         // AND, OR and NOT
 
         pyexpr_ptr not_();
-        pyexpr_ptr and_(const py_expression_t &other);
-        pyexpr_ptr or_(const py_expression_t &other);
+        pyexpr_ptr and_(const py_expression_t& other);
+        pyexpr_ptr or_(const py_expression_t& other);
 
         pyexpr_ptr ascending();
         pyexpr_ptr descending();
 
     public:
-	    // Internal functions (not exposed to Python)
-        
+        // Internal functions (not exposed to Python)
+
         const expression_wrapper_t& get_expression();
 
-        static pyexpr_ptr aggregation_expression(const std::string& function_name,
-            const py_expression_t& expr);
+        static pyexpr_ptr aggregation_expression(const std::string& function_name, const py_expression_t& expr);
 
-        static pyexpr_ptr scalar_binary_expression(components::expressions::scalar_type type, 
-            const py_expression_t& left, const py_expression_t& right);
+        static pyexpr_ptr scalar_binary_expression(components::expressions::scalar_type type,
+                                                   const py_expression_t& left,
+                                                   const py_expression_t& right);
 
-        static pyexpr_ptr scalar_unary_expression(components::expressions::scalar_type type, 
-            const py_expression_t& expr);
+        static pyexpr_ptr scalar_unary_expression(components::expressions::scalar_type type,
+                                                  const py_expression_t& expr);
 
-        static pyexpr_ptr comparison_expression(components::expressions::compare_type type, 
-            const py_expression_t& left, const py_expression_t& right);
+        static pyexpr_ptr comparison_expression(components::expressions::compare_type type,
+                                                const py_expression_t& left,
+                                                const py_expression_t& right);
 
-        static pyexpr_ptr comparison_union_expression(components::expressions::compare_type type, 
-            const py_expression_t& left, const py_expression_t& right);
+        static pyexpr_ptr comparison_union_expression(components::expressions::compare_type type,
+                                                      const py_expression_t& left,
+                                                      const py_expression_t& right);
 
         static pyexpr_ptr sort_expression(components::expressions::sort_order type, const py_expression_t& expr);
+
     private:
         expression_wrapper_t expr;
         expression_factory_t* factory;
     };
-
 
 } // namespace otterbrix

@@ -8,9 +8,9 @@
 
 #include <otterbrix_wrapper/pyexpression.hpp>
 #include <otterbrix_wrapper/pyrelation.hpp>
-#include <otterbrix_wrapper/typing.hpp>
 #include <otterbrix_wrapper/pytype.hpp>
 #include <otterbrix_wrapper/type_creation.hpp>
+#include <otterbrix_wrapper/typing.hpp>
 #include <pyconnection/pyconnection.hpp>
 
 PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
@@ -22,28 +22,28 @@ PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 using namespace otterbrix;
 
 PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
-
     otterbrix_py_typing_t::initialize(m);
     type_creation::initialize(m);
     py_expression_t::initialize(m);
     py_relation_t::initialize(m);
     py_connection_t::initialize(m);
 
-    m.def("connect", &py_connection_t::connect,
+    m.def("connect",
+          &py_connection_t::connect,
           "Create a OtterBrix database instance. Can take a database file name to read/write persistent data and a "
           "read_only flag if no changes are desired",
-          pybind11::arg("database") = "default", pybind11::arg("read_only") = false,
+          pybind11::arg("database") = "default",
+          pybind11::arg("read_only") = false,
           pybind11::arg_v("config", pybind11::dict(), "None"));
 
     // https://pybind11.readthedocs.io/en/stable/advanced/misc.html#module-destructors
-    auto clean_default_connection = []() {
-        py_connection_t::cleanup();
-    };
+    auto clean_default_connection = []() { py_connection_t::cleanup(); };
     m.add_object("_clean_default_connection", pybind11::capsule(clean_default_connection));
 
     pybind11::class_<wrapper_client>(m, "Client")
         .def(pybind11::init([]() { return new wrapper_client(spaces::get_instance()); }))
-        .def(pybind11::init([](const pybind11::str& s) { return new wrapper_client(spaces::get_instance(std::string(s))); }))
+        .def(pybind11::init(
+            [](const pybind11::str& s) { return new wrapper_client(spaces::get_instance(std::string(s))); }))
         .def("execute", &wrapper_client::execute, pybind11::arg("query"));
 
     pybind11::class_<wrapper_connection>(m, "Connection")

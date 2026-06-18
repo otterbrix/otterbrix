@@ -310,7 +310,12 @@ namespace components::sql::transform {
 
         if (list_length(type->arrayBounds)) {
             auto size = pg_ptr_assert_cast<Value>(linitial(type->arrayBounds), T_Integer);
-            column = types::complex_logical_type::create_array(column, intVal(size));
+            // Variadic array, encoded as -1 by the grammar
+            if (intVal(size) < 0) {
+                column = types::complex_logical_type::create_list(column);
+            } else {
+                column = types::complex_logical_type::create_array(column, intVal(size));
+            }
         }
 
         return std::move(column);
@@ -452,7 +457,14 @@ namespace components::sql::transform {
                 values.emplace_back(std::move(res.value()));
             }
         }
-        assert(!values.empty());
+        if (values.empty()) {
+            // Empty array literal (ARRAY[]): the element type is indeterminate at parse
+            // time. Use UNKNOWN as a placeholder; it is resolved against the target column's
+            // element type when the value is cast/reconciled on the INSERT path.
+            return types::logical_value_t::create_array(resource,
+                                                        types::complex_logical_type{types::logical_type::UNKNOWN},
+                                                        std::move(values));
+        }
         auto fist_type = values.front().type();
         for (auto it = ++values.begin(); it != values.end(); ++it) {
             if (fist_type != it->type()) {

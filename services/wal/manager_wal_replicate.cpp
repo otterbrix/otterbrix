@@ -528,9 +528,9 @@ namespace services::wal {
         // and the affected per-table checkpoints are then skipped this round.
         uint64_t compact_watermark = 0;
         if (manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
-            auto [_wm, wm_fut] = actor_zeta::send(
-                manager_dispatcher_,
-                &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
+            auto [_wm, wm_fut] =
+                actor_zeta::send(manager_dispatcher_,
+                                 &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
             compact_watermark = co_await std::move(wm_fut);
         }
 

@@ -8,12 +8,14 @@ namespace components::logical_plan {
                                                      core::dbname_t dbname,
                                                      core::relname_t relname,
                                                      std::vector<std::string> not_null_columns,
-                                                     std::vector<std::pair<std::string, std::string>> check_exprs)
+                                                     std::vector<std::pair<std::string, std::string>> check_exprs,
+                                                     std::vector<std::pair<std::string, uint64_t>> array_size_reqs)
         : node_t(resource, node_type::check_constraint_t)
         , dbname_(std::move(static_cast<std::string&>(dbname)))
         , relname_(std::move(static_cast<std::string&>(relname)))
         , not_null_columns_(std::move(not_null_columns))
-        , check_exprs_(std::move(check_exprs)) {}
+        , check_exprs_(std::move(check_exprs))
+        , array_size_reqs_(std::move(array_size_reqs)) {}
 
     hash_t node_check_constraint_t::hash_impl() const { return 0; }
 

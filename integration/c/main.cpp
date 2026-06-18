@@ -237,9 +237,9 @@ extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t databas
                                                                   core::relname_t{collection},
                                                                   {},
                                                                   {}));
-        auto cursor = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        auto cursor =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);

@@ -1,11 +1,11 @@
 #pragma once
 
 #include "predicates/predicate.hpp"
+#include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <components/expressions/compare_expression.hpp>
 
 namespace components::operators {
 

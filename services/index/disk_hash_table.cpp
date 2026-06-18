@@ -49,9 +49,7 @@ namespace services::index {
             return v != nullptr && std::strcmp(v, stage) == 0;
         }
 #else
-        bool split_crash_failpoint(const char*) {
-            return false;
-        }
+        bool split_crash_failpoint(const char*) { return false; }
 #endif
     } // namespace
 
@@ -83,18 +81,13 @@ namespace services::index {
         }
     }
 
-    bool disk_hash_table_t::put(std::string_view key,
-                                int64_t value,
-                                uint32_t log_file_id,
-                                uint64_t log_offset) {
+    bool disk_hash_table_t::put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) {
         std::unique_lock lock(mutex_);
         return put_unlocked(key, value, log_file_id, log_offset);
     }
 
-    bool disk_hash_table_t::put_unlocked(std::string_view key,
-                                         int64_t value,
-                                         uint32_t log_file_id,
-                                         uint64_t log_offset) {
+    bool
+    disk_hash_table_t::put_unlocked(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) {
         const uint32_t key_hash = hash_key(key);
         const uint32_t bucket_id = bucket_id_for_hash(key_hash);
         auto payload = make_entry_payload(key, value, log_file_id, log_offset);
@@ -182,9 +175,7 @@ namespace services::index {
         return get_all(key, true);
     }
 
-    bool disk_hash_table_t::erase(std::string_view key,
-                                  std::optional<int64_t> expected_value,
-                                  bool lock_bitcask) {
+    bool disk_hash_table_t::erase(std::string_view key, std::optional<int64_t> expected_value, bool lock_bitcask) {
         std::unique_lock lock(mutex_);
         const uint32_t key_hash = hash_key(key);
         uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
@@ -388,8 +379,7 @@ namespace services::index {
         // Target load factor slightly below threshold to avoid immediate re-trigger.
         const double target_lf = max_load_factor_ * 0.6;
         const uint32_t target_buckets = static_cast<uint32_t>(
-            std::min(static_cast<double>(UINT32_MAX),
-                     static_cast<double>(entry_count_) / target_lf));
+            std::min(static_cast<double>(UINT32_MAX), static_cast<double>(entry_count_) / target_lf));
         while (header_.bucket_count_value < target_buckets && header_.bucket_count_value < UINT32_MAX) {
             // Auto-rehash path batches split durability barriers to avoid one fsync pair
             // per split. Crash safety is preserved because source buckets are never
@@ -463,8 +453,7 @@ namespace services::index {
                               file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                               file_lock_type::NO_LOCK);
         if (!ovf_file_) {
-            throw std::runtime_error("disk_hash_table: failed to open overflow file " +
-                                     overflow_file_path_.string());
+            throw std::runtime_error("disk_hash_table: failed to open overflow file " + overflow_file_path_.string());
         }
     }
 
@@ -498,14 +487,11 @@ namespace services::index {
         header_.level_value = codec::read_le_ptr<uint32_t>(hdr.data() + 28);
         header_.split_bucket_value = codec::read_le_ptr<uint32_t>(hdr.data() + 32);
         header_.hash_seed_value = hdr.size() >= 40 ? codec::read_le_ptr<uint32_t>(hdr.data() + 36) : 0;
-        if (header_.page_size_value != page_size ||
-            header_.bucket_count_value == 0) {
+        if (header_.page_size_value != page_size || header_.bucket_count_value == 0) {
             throw std::runtime_error("disk_hash_table: incompatible header");
         }
         const uint32_t base = header_.level_value > 31 ? 0 : (1U << header_.level_value);
-        if (base == 0 ||
-            base > header_.bucket_count_value ||
-            header_.split_bucket_value > base ||
+        if (base == 0 || base > header_.bucket_count_value || header_.split_bucket_value > base ||
             (base + header_.split_bucket_value) != header_.bucket_count_value) {
             initialize_linear_state_from_bucket_count();
         }
@@ -516,13 +502,9 @@ namespace services::index {
         }
     }
 
-    bool disk_hash_table_t::is_overflow_page_id(uint64_t page_id) {
-        return page_id >= overflow_page_id_base;
-    }
+    bool disk_hash_table_t::is_overflow_page_id(uint64_t page_id) { return page_id >= overflow_page_id_base; }
 
-    uint64_t disk_hash_table_t::main_page_count() const {
-        return file_ ? (file_->file_size() / page_size) : 0;
-    }
+    uint64_t disk_hash_table_t::main_page_count() const { return file_ ? (file_->file_size() / page_size) : 0; }
 
     uint64_t disk_hash_table_t::overflow_page_count() const {
         return ovf_file_ ? (ovf_file_->file_size() / page_size) : 0;
@@ -705,9 +687,8 @@ namespace services::index {
         return e;
     }
 
-    bool disk_hash_table_t::keys_equal(std::string_view query_key,
-                                       const decoded_entry_t& entry,
-                                       bool lock_bitcask) const {
+    bool
+    disk_hash_table_t::keys_equal(std::string_view query_key, const decoded_entry_t& entry, bool lock_bitcask) const {
         if ((entry.entry_flags & entry_flag_truncated) == 0) {
             return query_key.size() == entry.full_key_len && query_key == entry.stored_key;
         }

@@ -1,7 +1,7 @@
 #include "bitcask_index_disk.hpp"
 
-#include "bitcask_hash_key_loader.hpp"
 #include "absl/crc/crc32c.h"
+#include "bitcask_hash_key_loader.hpp"
 #include <components/index/logical_value_binary_codec.hpp>
 
 #include <algorithm>
@@ -179,8 +179,7 @@ namespace services::index {
         [[nodiscard]] bool publish_replacement_file(core::filesystem::local_file_system_t& fs,
                                                     const std::filesystem::path& temp_path,
                                                     const std::filesystem::path& target_path) {
-            auto temp_file =
-                open_file(fs, temp_path, file_flags::READ | file_flags::WRITE, file_lock_type::NO_LOCK);
+            auto temp_file = open_file(fs, temp_path, file_flags::READ | file_flags::WRITE, file_lock_type::NO_LOCK);
             if (!temp_file || !temp_file->sync()) {
                 return false;
             }
@@ -290,9 +289,8 @@ namespace services::index {
         if (shared_hash_index) {
             hash_index_ = std::move(shared_hash_index);
         } else {
-            hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
-                                                                     disk_hash_table_t::default_bucket_count,
-                                                                     resource_));
+            hash_index_ = boost::intrusive_ptr(
+                new disk_hash_table_t(hash_index_file_path_, disk_hash_table_t::default_bucket_count, resource_));
         }
         install_hash_key_loader();
         load_from_disk();
@@ -346,9 +344,8 @@ namespace services::index {
         , task_executor_(std::make_unique<bitcask_task_executor_t>())
         , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
         initialize_storage();
-        hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
-                                                                 disk_hash_table_t::default_bucket_count,
-                                                                 resource_));
+        hash_index_ = boost::intrusive_ptr(
+            new disk_hash_table_t(hash_index_file_path_, disk_hash_table_t::default_bucket_count, resource_));
         install_hash_key_loader();
         // Caller (factory) is responsible for load_from_disk +
         // open_active_segment + recover_txn_log_unlocked.
@@ -381,9 +378,8 @@ namespace services::index {
         return true;
     }
 
-    bool bitcask_index_disk_t::load_hash_key_at(uint32_t segment_id,
-                                                uint64_t value_offset,
-                                                std::string& out_key) const {
+    bool
+    bitcask_index_disk_t::load_hash_key_at(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const {
         std::shared_lock lock(mutex_);
         return load_hash_key_at_unlocked(segment_id, value_offset, out_key);
     }
@@ -1233,15 +1229,11 @@ namespace services::index {
             if (!current.has_value()) {
                 continue;
             }
-            if (current->log_file_id != old_log_file_id ||
-                current->log_offset  != old_log_offset) {
+            if (current->log_file_id != old_log_file_id || current->log_offset != old_log_offset) {
                 continue;
             }
             erase_all_refs_for_key(key_bytes);
-            hash_index_->put(key_bytes,
-                             row_value,
-                             static_cast<uint32_t>(merged_segment_id),
-                             new_log_offset);
+            hash_index_->put(key_bytes, row_value, static_cast<uint32_t>(merged_segment_id), new_log_offset);
         }
         meta_file.reset();
         remove_file(fs_, meta_temp_path);
@@ -1307,9 +1299,8 @@ namespace services::index {
             hash_index_->clear();
         } else {
             remove_file(fs_, hash_index_file_path_);
-            hash_index_ = boost::intrusive_ptr(new disk_hash_table_t(hash_index_file_path_,
-                                                                     disk_hash_table_t::default_bucket_count,
-                                                                     resource_));
+            hash_index_ = boost::intrusive_ptr(
+                new disk_hash_table_t(hash_index_file_path_, disk_hash_table_t::default_bucket_count, resource_));
         }
         install_hash_key_loader();
         load_from_disk();

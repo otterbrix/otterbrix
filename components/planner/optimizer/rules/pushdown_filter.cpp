@@ -26,7 +26,7 @@ namespace components::planner::optimizer {
         using namespace components::expressions;
         using namespace components::logical_plan;
 
-        // db identity of a node. 
+        // db identity of a node.
         // match_t and aggregate_t carry a table name;
         // joins, functions and sub-aggregates return empty identifiers
         std::pair<core::dbname_t, core::relname_t> node_cfn(const node_ptr& n) {
@@ -142,8 +142,7 @@ namespace components::planner::optimizer {
                         ok_for_col = true;
                         break;
                     }
-                    if (sc->params().size() == 1 &&
-                        std::holds_alternative<key_t>(sc->params().front())) {
+                    if (sc->params().size() == 1 && std::holds_alternative<key_t>(sc->params().front())) {
                         const auto& in_key = std::get<key_t>(sc->params().front());
                         if (in_key.as_string() == col) {
                             ok_for_col = true;
@@ -211,9 +210,7 @@ namespace components::planner::optimizer {
             return conj;
         }
 
-        size_t type_width(const components::types::complex_logical_type& t) {
-            return t.size();
-        }
+        size_t type_width(const components::types::complex_logical_type& t) { return t.size(); }
 
         const node_data_t* find_data_node(const node_ptr& node) {
             if (!node) {
@@ -401,8 +398,10 @@ namespace components::planner::optimizer {
 
                     if (is_projection && !match_child->expressions().empty()) {
                         auto filter_cols = collect_referenced_columns(match_child->expressions()[0]);
-                        bool subset = std::includes(output_cols.begin(), output_cols.end(),
-                                                    filter_cols.begin(), filter_cols.end());
+                        bool subset = std::includes(output_cols.begin(),
+                                                    output_cols.end(),
+                                                    filter_cols.begin(),
+                                                    filter_cols.end());
                         if (subset) {
                             source_agg->append_child(match_child);
                             return pushdown_filter_impl(resource, source);
@@ -433,8 +432,7 @@ namespace components::planner::optimizer {
                         for (const auto& conj : conjuncts) {
                             auto cols = collect_referenced_columns(conj);
                             if (!cols.empty() &&
-                                std::includes(group_keys.begin(), group_keys.end(),
-                                              cols.begin(), cols.end())) {
+                                std::includes(group_keys.begin(), group_keys.end(), cols.begin(), cols.end())) {
                                 pushable.push_back(conj);
                             } else {
                                 residual.push_back(conj);
@@ -442,9 +440,8 @@ namespace components::planner::optimizer {
                         }
                         if (!pushable.empty()) {
                             auto [m_db, m_rel] = node_cfn(match_child);
-                            source_agg->append_child(make_node_match(
-                                resource, m_db, m_rel,
-                                rebuild_conjunction(resource, pushable)));
+                            source_agg->append_child(
+                                make_node_match(resource, m_db, m_rel, rebuild_conjunction(resource, pushable)));
                             auto residual_expr = rebuild_conjunction(resource, residual);
                             if (!residual_expr) {
                                 return pushdown_filter_impl(resource, source);
@@ -478,11 +475,9 @@ namespace components::planner::optimizer {
                     for (const auto& conj : conjuncts) {
                         auto cols = collect_referenced_columns(conj);
                         bool in_left = !cols.empty() &&
-                            std::includes(left_cols.begin(), left_cols.end(),
-                                          cols.begin(), cols.end());
+                                       std::includes(left_cols.begin(), left_cols.end(), cols.begin(), cols.end());
                         bool in_right = !cols.empty() &&
-                            std::includes(right_cols.begin(), right_cols.end(),
-                                          cols.begin(), cols.end());
+                                        std::includes(right_cols.begin(), right_cols.end(), cols.begin(), cols.end());
                         if (in_left && !in_right && can_push_left) {
                             left_bucket.push_back(conj);
                         } else if (in_right && !in_left && can_push_right) {
@@ -498,18 +493,16 @@ namespace components::planner::optimizer {
                             auto [l_db, l_rel] = node_cfn(join->children()[0]);
                             auto new_agg = make_node_aggregate(resource, l_db, l_rel);
                             new_agg->append_child(join->children()[0]);
-                            new_agg->append_child(make_node_match(
-                                resource, m_db, m_rel,
-                                rebuild_conjunction(resource, left_bucket)));
+                            new_agg->append_child(
+                                make_node_match(resource, m_db, m_rel, rebuild_conjunction(resource, left_bucket)));
                             join->children()[0] = boost::static_pointer_cast<node_t>(new_agg);
                         }
                         if (!right_bucket.empty()) {
                             auto [r_db, r_rel] = node_cfn(join->children()[1]);
                             auto new_agg = make_node_aggregate(resource, r_db, r_rel);
                             new_agg->append_child(join->children()[1]);
-                            new_agg->append_child(make_node_match(
-                                resource, m_db, m_rel,
-                                rebuild_conjunction(resource, right_bucket)));
+                            new_agg->append_child(
+                                make_node_match(resource, m_db, m_rel, rebuild_conjunction(resource, right_bucket)));
                             join->children()[1] = boost::static_pointer_cast<node_t>(new_agg);
                         }
                         auto residual_expr = rebuild_conjunction(resource, residual);
@@ -528,8 +521,7 @@ namespace components::planner::optimizer {
 
     } // anonymous namespace
 
-    logical_plan::node_ptr pushdown_filter(std::pmr::memory_resource* resource,
-                                           logical_plan::node_ptr node) {
+    logical_plan::node_ptr pushdown_filter(std::pmr::memory_resource* resource, logical_plan::node_ptr node) {
         return pushdown_filter_impl(resource, std::move(node));
     }
 

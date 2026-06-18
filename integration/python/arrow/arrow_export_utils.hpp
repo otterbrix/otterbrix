@@ -2,11 +2,10 @@
 
 #include <pybind11/pybind_wrapper.hpp>
 
-#include <components/vector/arrow/arrow.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/arrow/arrow.hpp>
 #include <string>
 #include <vector>
-
 
 namespace otterbrix {
 
@@ -15,8 +14,8 @@ namespace otterbrix {
     namespace pyarrow {
 
         py::object to_arrow_table(const std::vector<components::types::complex_logical_type>& types,
-                                const std::vector<std::string>& names,
-                                const py::list& batches);
+                                  const std::vector<std::string>& names,
+                                  const py::list& batches);
 
     } // namespace pyarrow
 

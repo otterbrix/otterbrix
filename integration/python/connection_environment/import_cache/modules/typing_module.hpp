@@ -4,18 +4,17 @@
 
 namespace otterbrix {
 
-struct typing_cache_item_t : public python_import_cache_item_t {
+    struct typing_cache_item_t : public python_import_cache_item_t {
+    public:
+        static constexpr const char* name = "typing";
 
-public:
-	static constexpr const char *name = "typing";
+    public:
+        typing_cache_item_t()
+            : python_import_cache_item_t("typing")
+            , _UnionGenericAlias("_UnionGenericAlias", this) {}
+        ~typing_cache_item_t() override {}
 
-public:
-	typing_cache_item_t() : python_import_cache_item_t("typing"), _UnionGenericAlias("_UnionGenericAlias", this) {
-	}
-	~typing_cache_item_t() override {
-	}
-
-	python_import_cache_item_t _UnionGenericAlias;
-};
+        python_import_cache_item_t _UnionGenericAlias;
+    };
 
 } // namespace otterbrix

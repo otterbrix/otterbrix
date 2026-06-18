@@ -122,12 +122,13 @@ namespace components::operators {
                 key_cols.emplace_back("relnamespace");
                 key_vals.emplace_back(resource_, static_cast<std::uint32_t>(input_namespace_oid_));
             }
-            auto [_lookup, lookup_f] = actor_zeta::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::read_chunks_by_key,
-                                                        exec_ctx,
-                                                        kPgClass,
-                                                        std::move(key_cols),
-                                                        components::operators::make_key_chunk(resource_, std::move(key_vals)));
+            auto [_lookup, lookup_f] =
+                actor_zeta::send(ctx->disk_address,
+                                 &services::disk::manager_disk_t::read_chunks_by_key,
+                                 exec_ctx,
+                                 kPgClass,
+                                 std::move(key_cols),
+                                 components::operators::make_key_chunk(resource_, std::move(key_vals)));
             auto lookup_batches = co_await std::move(lookup_f);
             if (lookup_batches.empty() || lookup_batches[0].size() == 0 || lookup_batches[0].column_count() == 0 ||
                 lookup_batches[0].value(0, 0).is_null()) {

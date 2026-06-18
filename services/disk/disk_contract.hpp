@@ -81,8 +81,8 @@ namespace services::disk {
 
         // Batched WAL-safe delete: loops the singular delete_pg_catalog_rows logic
         // per spec, emitting the same WAL records as N singular calls.
-        actor_zeta::unique_future<void>
-        delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
+        actor_zeta::unique_future<void> delete_pg_catalog_rows_many(execution_context_t ctx,
+                                                                    std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
         // Patches each backfill's pg_attribute row with the shared `commit_id` written
         // into the added_at or dropped_at column (selected by the marker's kind).
@@ -200,11 +200,11 @@ namespace services::disk {
         // Batched MVCC swap. Each range carries its own table_oid.
         actor_zeta::unique_future<void>
         storage_publish_commits(execution_context_t ctx,
-                               uint64_t commit_id,
-                               std::vector<components::pg_catalog_append_range_t> ranges);
+                                uint64_t commit_id,
+                                std::vector<components::pg_catalog_append_range_t> ranges);
         actor_zeta::unique_future<void> storage_publish_deletes(execution_context_t ctx,
-                                                               uint64_t commit_id,
-                                                               std::set<components::catalog::oid_t> tables);
+                                                                uint64_t commit_id,
+                                                                std::set<components::catalog::oid_t> tables);
         actor_zeta::unique_future<void>
         storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
 
@@ -213,8 +213,8 @@ namespace services::disk {
         // owning agent un-stamps them back to NOT_DELETED_ID via
         // data_table_t::revert_all_deletes(ctx.txn.transaction_id), restoring row
         // visibility for an aborted DELETE. Routed per owning agent by oid.
-        actor_zeta::unique_future<void>
-        storage_revert_deletes(execution_context_t ctx, std::vector<components::catalog::oid_t> tables);
+        actor_zeta::unique_future<void> storage_revert_deletes(execution_context_t ctx,
+                                                               std::vector<components::catalog::oid_t> tables);
 
         // Event-driven GC subscriber. Walks per-agent dropped_storages_
         // slices and physically removes entries whose
@@ -243,9 +243,8 @@ namespace services::disk {
         // entry's dropped_at_commit_id from the TXN-ID placeholder to the real
         // commit_id, putting it in the same value space the on_horizon_advanced
         // sweep compares against.
-        actor_zeta::unique_future<void> storage_dropped_committed(session_id_t session,
-                                                                  uint64_t txn_id,
-                                                                  uint64_t commit_id);
+        actor_zeta::unique_future<void>
+        storage_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
         // DROP-rollback un-mark. The mirror of storage_dropped_committed for the
         // abort path: a DROP TABLE inside a transaction records its GC entry with

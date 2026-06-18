@@ -447,10 +447,9 @@ namespace services::index {
             }
             case components::logical_plan::index_type::hashed: {
                 if (path_db_.empty()) {
-                    id_index =
-                        components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                      index_name,
-                                                                                                      keys);
+                    id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                           index_name,
+                                                                                                           keys);
                 } else if (shared_hash_storage) {
                     id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
                         engine,
@@ -465,9 +464,10 @@ namespace services::index {
                             engine,
                             index_name,
                             keys,
-                            boost::intrusive_ptr(new services::index::disk_hash_table_t(base / "hash_index.bin",
-                                                                                        services::index::disk_hash_table_t::default_bucket_count,
-                                                                                        resource_)));
+                            boost::intrusive_ptr(new services::index::disk_hash_table_t(
+                                base / "hash_index.bin",
+                                services::index::disk_hash_table_t::default_bucket_count,
+                                resource_)));
                     } catch (const std::exception& e) {
                         trace(log_,
                               "manager_index_t::bootstrap_index_sync: disk hash storage init failed, "
@@ -1223,9 +1223,7 @@ namespace services::index {
             agent_addr_map_t insert_addrs;
             engine_after->for_each_pending_disk_insert(
                 0,
-                [&](const actor_zeta::address_t& agent_addr,
-                    const components::index::value_t& key,
-                    int64_t row_index) {
+                [&](const actor_zeta::address_t& agent_addr, const components::index::value_t& key, int64_t row_index) {
                     auto id = reinterpret_cast<uintptr_t>(agent_addr.get());
                     insert_addrs.try_emplace(id, agent_addr);
                     insert_batches[id].emplace_back(value_t(resource_, key), static_cast<size_t>(row_index));
@@ -1236,10 +1234,10 @@ namespace services::index {
             for (auto& [id, batch] : insert_batches) {
                 auto& addr = insert_addrs.at(id);
                 auto [needs_sched, f] = actor_zeta::otterbrix::send(addr,
-                                                                   &index_agent_disk_t::insert_many,
-                                                                   session,
-                                                                   uint64_t{0},
-                                                                   std::move(batch));
+                                                                    &index_agent_disk_t::insert_many,
+                                                                    session,
+                                                                    uint64_t{0},
+                                                                    std::move(batch));
                 schedule_agent(addr, needs_sched);
                 futures.emplace_back(std::move(f));
             }
@@ -1378,8 +1376,7 @@ namespace services::index {
                 continue;
             }
             auto addr = agent->address();
-            auto [needs_sched, fut] =
-                actor_zeta::otterbrix::send(addr, &index_agent_disk_t::force_flush, session);
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(addr, &index_agent_disk_t::force_flush, session);
             schedule_agent(addr, needs_sched);
             futures.emplace_back(std::move(fut));
         }

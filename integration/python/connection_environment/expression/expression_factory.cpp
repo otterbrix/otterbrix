@@ -1,9 +1,9 @@
 #include "expression_factory.hpp"
 
-#include <integration/cpp/otterbrix.hpp>
-#include <components/expressions/sort_expression.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/expressions/sort_expression.hpp>
+#include <integration/cpp/otterbrix.hpp>
 
 #include <util/util.hpp>
 
@@ -15,15 +15,13 @@ using namespace components::expressions;
 
 namespace otterbrix {
 
-
     expression_factory_t::expression_factory_t(const boost::intrusive_ptr<otterbrix_t>& space)
-        : counter(0), space(space) {}
+        : counter(0)
+        , space(space) {}
 
     expression_factory_t::~expression_factory_t() = default;
 
-    void expression_factory_t::set_null_space() {
-        space = nullptr;
-    }
+    void expression_factory_t::set_null_space() { space = nullptr; }
 
     expression_wrapper_t expression_factory_t::make_constant(components::types::logical_value_t&& value) {
         return expression_wrapper_t(add_value(std::move(value)));
@@ -47,7 +45,8 @@ namespace otterbrix {
         }
     } // namespace
 
-    core::result_wrapper_t<expression_wrapper_t> expression_factory_t::sort_expression(const expression_wrapper_t& arg, sort_order order) {
+    core::result_wrapper_t<expression_wrapper_t> expression_factory_t::sort_expression(const expression_wrapper_t& arg,
+                                                                                       sort_order order) {
         auto* resource = space->dispatcher()->resource();
         if (arg.is_key()) {
             return expression_wrapper_t(make_sort_expression(arg.key(), order));
@@ -66,8 +65,9 @@ namespace otterbrix {
             "Invalid argument for sort expression. OtterBrix doesn't support this type of expression");
     }
 
-    core::result_wrapper_t<expression_wrapper_t> expression_factory_t::aggregation_unary_expression(const std::string& function_name,
-        const expression_wrapper_t& expr) {
+    core::result_wrapper_t<expression_wrapper_t>
+    expression_factory_t::aggregation_unary_expression(const std::string& function_name,
+                                                       const expression_wrapper_t& expr) {
         auto* resource = space->dispatcher()->resource();
         if (!expr.is_key()) {
             return invalid_argument(
@@ -103,7 +103,7 @@ namespace otterbrix {
     }
 
     expression_wrapper_t expression_factory_t::scalar_unary_expression(components::expressions::scalar_type type,
-        const expression_wrapper_t& expr) {
+                                                                       const expression_wrapper_t& expr) {
         auto* resource = space->dispatcher()->resource();
         auto scalar_expr = expressions::make_scalar_expression(resource, type);
         if (expr.is_key()) {
@@ -130,8 +130,10 @@ namespace otterbrix {
         }
     } // namespace
 
-    core::result_wrapper_t<expression_wrapper_t> expression_factory_t::scalar_binary_expression(components::expressions::scalar_type type,
-        const expression_wrapper_t& left, const expression_wrapper_t& right) {
+    core::result_wrapper_t<expression_wrapper_t>
+    expression_factory_t::scalar_binary_expression(components::expressions::scalar_type type,
+                                                   const expression_wrapper_t& left,
+                                                   const expression_wrapper_t& right) {
         auto* resource = space->dispatcher()->resource();
         expressions::scalar_expression_ptr scalar_expr = expressions::make_scalar_expression(resource, type);
         append_expression(scalar_expr, left);
@@ -139,14 +141,15 @@ namespace otterbrix {
         return expression_wrapper_t(boost::static_pointer_cast<expressions::expression_i>(scalar_expr));
     }
 
-    core::result_wrapper_t<expression_wrapper_t> expression_factory_t::comparison_expression(expressions::compare_type type,
-        const expression_wrapper_t& left, const expression_wrapper_t& right) {
+    core::result_wrapper_t<expression_wrapper_t>
+    expression_factory_t::comparison_expression(expressions::compare_type type,
+                                                const expression_wrapper_t& left,
+                                                const expression_wrapper_t& right) {
         auto* resource = space->dispatcher()->resource();
         if (left.is_key() && (right.is_key() || right.is_parameter())) {
             expressions::compare_expression_ptr compare_expression =
-                right.is_key()
-                    ? expressions::make_compare_expression(resource, type, left.key(), right.key())
-                    : expressions::make_compare_expression(resource, type, left.key(), right.parameter());
+                right.is_key() ? expressions::make_compare_expression(resource, type, left.key(), right.key())
+                               : expressions::make_compare_expression(resource, type, left.key(), right.parameter());
             return expression_wrapper_t(boost::static_pointer_cast<expressions::expression_i>(compare_expression));
         }
         return invalid_argument(
@@ -154,19 +157,22 @@ namespace otterbrix {
             "Incorrect arguments for the compare expression. OtteBrix doesn't implement 'not field' comp_op 'expr'");
     }
 
-    core::result_wrapper_t<expression_wrapper_t> expression_factory_t::expression_with_alias(const expression_wrapper_t& expr, const std::string& alias) {
+    core::result_wrapper_t<expression_wrapper_t>
+    expression_factory_t::expression_with_alias(const expression_wrapper_t& expr, const std::string& alias) {
         auto* resource = space->dispatcher()->resource();
         if (expr.is_key()) {
             expressions::scalar_expression_ptr scalar_expr =
                 expressions::make_scalar_expression(resource,
-                    expressions::scalar_type::get_field, expressions::key_t(resource, alias));
+                                                    expressions::scalar_type::get_field,
+                                                    expressions::key_t(resource, alias));
             scalar_expr->append_param(expr.key());
             return expression_wrapper_t(boost::static_pointer_cast<expressions::expression_i>(scalar_expr));
         }
         if (expr.is_expression()) {
             if (expr.expression()->group() == expression_group::aggregate) {
                 const auto& agg = boost::static_pointer_cast<expressions::aggregate_expression_t>(expr.expression());
-                auto alias_expr = make_aggregate_expression(resource, agg->function_name(), expressions::key_t(resource, alias));
+                auto alias_expr =
+                    make_aggregate_expression(resource, agg->function_name(), expressions::key_t(resource, alias));
                 for (const auto& param : agg->params()) {
                     alias_expr->append_param(param);
                 }
@@ -181,8 +187,10 @@ namespace otterbrix {
             "Incorrect argument for the alias expression. OtteBrix doesn't implement naming of 'not field'");
     }
 
-    core::result_wrapper_t<expression_wrapper_t> expression_factory_t::comparison_not_expression(const expression_wrapper_t& expr) {
-        auto not_expr = make_compare_union_expression(space->dispatcher()->resource(), expressions::compare_type::union_not);
+    core::result_wrapper_t<expression_wrapper_t>
+    expression_factory_t::comparison_not_expression(const expression_wrapper_t& expr) {
+        auto not_expr =
+            make_compare_union_expression(space->dispatcher()->resource(), expressions::compare_type::union_not);
         auto child = union_expression_to_expression_ptr(expr);
         if (child.has_error()) {
             return child.error();
@@ -191,8 +199,10 @@ namespace otterbrix {
         return expression_wrapper_t(boost::static_pointer_cast<expressions::expression_i>(not_expr));
     }
 
-    core::result_wrapper_t<expression_wrapper_t> expression_factory_t::comparison_union_expression(expressions::compare_type type,
-        const expression_wrapper_t& left, const expression_wrapper_t& right) {
+    core::result_wrapper_t<expression_wrapper_t>
+    expression_factory_t::comparison_union_expression(expressions::compare_type type,
+                                                      const expression_wrapper_t& left,
+                                                      const expression_wrapper_t& right) {
         auto union_expr = make_compare_union_expression(space->dispatcher()->resource(), type);
         auto left_child = union_expression_to_expression_ptr(left);
         if (left_child.has_error()) {
@@ -217,12 +227,9 @@ namespace otterbrix {
         if (expr.is_expression() && expr.expression()->group() == expressions::expression_group::compare) {
             return boost::static_pointer_cast<expressions::compare_expression_t>(expr.expression());
         }
-        return invalid_argument(
-            resource,
-            "Incorrect arguments for the compare union expression. Should be bool expression");
+        return invalid_argument(resource,
+                                "Incorrect arguments for the compare union expression. Should be bool expression");
     }
-
-
 
     core::result_wrapper_t<std::string> expression_factory_t::convert_to_string(const expression_wrapper_t& expr) {
         if (expr.is_key()) {
@@ -291,6 +298,5 @@ namespace otterbrix {
             }
         }
         return params;
-
     }
 } // namespace otterbrix

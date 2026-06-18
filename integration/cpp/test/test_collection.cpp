@@ -82,12 +82,12 @@ TEST_CASE("integration::cpp::test_collection") {
             auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
                                                                       core::dbname_t{database_name},
                                                                       core::relname_t{collection_name});
-            auto cur = dispatcher->execute_plan(
-                session,
-                components::logical_plan::execution_plan_t{dispatcher->resource(),
-                                                           plan,
-                                                           components::logical_plan::make_parameter_node(
-                                                               dispatcher->resource())});
+            auto cur =
+                dispatcher->execute_plan(session,
+                                         components::logical_plan::execution_plan_t{
+                                             dispatcher->resource(),
+                                             plan,
+                                             components::logical_plan::make_parameter_node(dispatcher->resource())});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
         }
@@ -214,12 +214,11 @@ TEST_CASE("integration::cpp::test_collection") {
         auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
                                                                   core::dbname_t{database_name},
                                                                   core::relname_t{collection_name});
-        auto cur = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{dispatcher->resource(),
-                                                       plan,
-                                                       components::logical_plan::make_parameter_node(
-                                                           dispatcher->resource())});
+        auto cur = dispatcher->execute_plan(session,
+                                            components::logical_plan::execution_plan_t{
+                                                dispatcher->resource(),
+                                                plan,
+                                                components::logical_plan::make_parameter_node(dispatcher->resource())});
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 100);
     }

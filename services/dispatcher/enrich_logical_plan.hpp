@@ -14,10 +14,10 @@
 #include <components/catalog/fk_info.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/cursor/cursor.hpp>
-#include <core/result_wrapper.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <core/result_wrapper.hpp>
 #include <memory_resource>
 #include <services/collection/context_storage.hpp>
 #include <span>

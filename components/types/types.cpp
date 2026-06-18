@@ -40,6 +40,7 @@ namespace components::types {
             t[uint8_t(logical_type::VARIANT)] = physical_type::STRUCT;
             t[uint8_t(logical_type::LIST)] = physical_type::LIST;
             t[uint8_t(logical_type::MAP)] = physical_type::LIST; // MAP is stored as a list of key/value structs
+            t[uint8_t(logical_type::UNKNOWN)] = physical_type::UNKNOWN;
             return t;
         }
 
@@ -244,6 +245,7 @@ namespace components::types {
             case physical_type::ARRAY:
             case physical_type::STRUCT:
             case physical_type::UNION:
+            case physical_type::UNKNOWN:
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
@@ -285,6 +287,7 @@ namespace components::types {
             case physical_type::ARRAY:
             case physical_type::STRUCT:
             case physical_type::UNION:
+            case physical_type::UNKNOWN:
                 return 0; // no own payload
             default:
                 assert(false && "complex_logical_type::object_size: reached unsupported type");
@@ -440,6 +443,13 @@ namespace components::types {
             return true;
         }
 
+        // A NULL value (NA) converts to an ARRAY/LIST as a null of that type. Without this
+        // an all-NULL array column stays NA-typed and reaches the ARRAY storage append
+        // untyped, which dereferences a non-existent array child.
+        if (type_ == logical_type::NA && (other.type_ == logical_type::ARRAY || other.type_ == logical_type::LIST)) {
+            return true;
+        }
+
         if (is_numeric(type_) && (is_numeric(other.type_) || other.type_ == logical_type::STRING_LITERAL ||
                                   other.type_ == logical_type::DECIMAL)) {
             return true;
@@ -450,25 +460,49 @@ namespace components::types {
         if (is_duration(type_) && is_duration(other.type_)) {
             return true;
         }
+        // An empty ARRAY[] literal carries an UNKNOWN element type: it has no elements to
+        // convert, so its element type is convertable to any target element type.
+        auto element_convertable = [](const complex_logical_type& src, const complex_logical_type& dst) {
+            return src.type() == logical_type::UNKNOWN || src.is_convertable_to(dst);
+        };
         if (type_ == logical_type::LIST && other.type_ == logical_type::LIST) {
             const auto* list_ext = static_cast<const list_logical_type_extension*>(extension_.get());
-            const auto* other_list_ext = static_cast<const list_logical_type_extension*>(extension_.get());
+            const auto* other_list_ext = static_cast<const list_logical_type_extension*>(other.extension_.get());
 
-            return list_ext->node().is_convertable_to(other_list_ext->node());
+            return element_convertable(list_ext->node(), other_list_ext->node());
         }
         if (type_ == logical_type::ARRAY && other.type_ == logical_type::ARRAY) {
             const auto* arr_ext = static_cast<const array_logical_type_extension*>(extension_.get());
-            const auto* other_arr_ext = static_cast<const array_logical_type_extension*>(extension_.get());
+            const auto* other_arr_ext = static_cast<const array_logical_type_extension*>(other.extension_.get());
 
-            return arr_ext->size() == other_arr_ext->size() &&
-                   arr_ext->internal_type().is_convertable_to(other_arr_ext->internal_type());
+            // Sizes may differ: a length mismatch is reconciled at cast time (truncate an
+            // over-long value, pad a short one from the column default), so convertability
+            // only requires the element type to be convertable.
+            return element_convertable(arr_ext->internal_type(), other_arr_ext->internal_type());
+        }
+        // A fixed ARRAY literal (e.g. ARRAY[1,2,3]) is convertable to a variable-length
+        // LIST column when their element types are convertable.
+        if (type_ == logical_type::ARRAY && other.type_ == logical_type::LIST) {
+            const auto* arr_ext = static_cast<const array_logical_type_extension*>(extension_.get());
+            const auto* other_list_ext = static_cast<const list_logical_type_extension*>(other.extension_.get());
+
+            return element_convertable(arr_ext->internal_type(), other_list_ext->node());
+        }
+        // A variable-length LIST is convertable to a fixed ARRAY column when their element
+        // types are convertable; a length mismatch is reconciled at cast time per row by
+        // truncating an over-long list or padding a short one with element defaults.
+        if (type_ == logical_type::LIST && other.type_ == logical_type::ARRAY) {
+            const auto* list_ext = static_cast<const list_logical_type_extension*>(extension_.get());
+            const auto* other_arr_ext = static_cast<const array_logical_type_extension*>(other.extension_.get());
+
+            return element_convertable(list_ext->node(), other_arr_ext->internal_type());
         }
         if (type_ == logical_type::STRING_LITERAL && other.type_ == logical_type::ENUM) {
             return true;
         }
         if (type_ == logical_type::STRUCT && other.type_ == logical_type::STRUCT) {
             const auto* struct_ext = static_cast<const struct_logical_type_extension*>(extension_.get());
-            const auto* other_struct_ext = static_cast<const struct_logical_type_extension*>(extension_.get());
+            const auto* other_struct_ext = static_cast<const struct_logical_type_extension*>(other.extension_.get());
 
             if (struct_ext->child_types().size() != other_struct_ext->child_types().size()) {
                 return false;

@@ -15,10 +15,12 @@ namespace components::logical_plan {
                                          core::dbname_t dbname,
                                          core::relname_t relname,
                                          std::vector<std::string> not_null_columns,
-                                         std::vector<std::pair<std::string, std::string>> check_exprs = {});
+                                         std::vector<std::pair<std::string, std::string>> check_exprs = {},
+                                         std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {});
 
         const std::vector<std::string>& not_null_columns() const { return not_null_columns_; }
         const std::vector<std::pair<std::string, std::string>>& check_exprs() const { return check_exprs_; }
+        const std::vector<std::pair<std::string, uint64_t>>& array_size_reqs() const { return array_size_reqs_; }
 
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
@@ -30,7 +32,8 @@ namespace components::logical_plan {
         std::string dbname_;
         std::string relname_;
         std::vector<std::string> not_null_columns_;
-        std::vector<std::pair<std::string, std::string>> check_exprs_; // (name, expr)
+        std::vector<std::pair<std::string, std::string>> check_exprs_;  // (name, expr)
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
     };
 
     using node_check_constraint_ptr = boost::intrusive_ptr<node_check_constraint_t>;

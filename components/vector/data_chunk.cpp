@@ -92,6 +92,15 @@ namespace components::vector {
                     auto stride =
                         static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
                     return sub_column->entry().value(index * stride + *it);
+                } else if (sub_column->type().type() == types::logical_type::LIST) {
+                    // LIST elements live in a single flat child vector addressed by a
+                    // per-row (offset,length) entry; *it is the 0-based element index.
+                    const auto& offlen = sub_column->data<types::list_entry_t>()[index];
+                    if (*it >= offlen.length) {
+                        return types::logical_value_t{sub_column->resource(),
+                                                      types::complex_logical_type{types::logical_type::NA}};
+                    }
+                    return sub_column->entry().value(offlen.offset + *it);
                 } else {
                     return sub_column->entries()[*it]->value(index);
                 }
@@ -116,6 +125,15 @@ namespace components::vector {
                     auto stride =
                         static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
                     return sub_column->entry().set_value(index * stride + *it, val);
+                } else if (sub_column->type().type() == types::logical_type::LIST) {
+                    // Mutate element *it of row `index` in place through the row's
+                    // (offset,length) entry; out-of-range indices are a no-op (LIST
+                    // has no fixed width to grow into here).
+                    const auto& offlen = sub_column->data<types::list_entry_t>()[index];
+                    if (*it >= offlen.length) {
+                        return;
+                    }
+                    return sub_column->entry().set_value(offlen.offset + *it, val);
                 } else {
                     return sub_column->entries()[*it]->set_value(index, val);
                 }
@@ -129,7 +147,8 @@ namespace components::vector {
     vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) {
         vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            if (sub_column->type().type() == types::logical_type::ARRAY) {
+            if (sub_column->type().type() == types::logical_type::ARRAY ||
+                sub_column->type().type() == types::logical_type::LIST) {
                 sub_column = &sub_column->entry();
             } else {
                 sub_column = sub_column->entries()[*it].get();
@@ -141,7 +160,8 @@ namespace components::vector {
     const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) const {
         const vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            if (sub_column->type().type() == types::logical_type::ARRAY) {
+            if (sub_column->type().type() == types::logical_type::ARRAY ||
+                sub_column->type().type() == types::logical_type::LIST) {
                 sub_column = &sub_column->entry();
             } else {
                 sub_column = sub_column->entries()[*it].get();

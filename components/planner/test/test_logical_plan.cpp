@@ -8,8 +8,7 @@
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_drop_collection.hpp>
-#include <components/logical_plan/node_drop_database.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_limit.hpp>
@@ -37,7 +36,7 @@ TEST_CASE("components::planner::create_database") {
 
 TEST_CASE("components::planner::drop_database") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto plan = make_node_drop_database(&resource);
+    auto plan = make_node_drop(&resource, drop_target_kind::database);
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
     // drop nodes carry only OIDs; enrich is not run in this unit test
@@ -55,7 +54,7 @@ TEST_CASE("components::planner::create_collection") {
 
 TEST_CASE("components::planner::drop_collection") {
     auto resource = std::pmr::synchronized_pool_resource();
-    auto plan = make_node_drop_collection(&resource);
+    auto plan = make_node_drop(&resource, drop_target_kind::collection);
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
     // drop nodes carry only OIDs; enrich is not run in this unit test

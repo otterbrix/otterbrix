@@ -81,9 +81,8 @@ namespace components::sql::transform {
         // RENAME COLUMN comes through T_RenameStmt with renameType=OBJECT_COLUMN.
         // Routes here from the top-level transform() switch.
         logical_plan::node_ptr transform_rename(RenameStmt& node);
-        // BEGIN / COMMIT / ROLLBACK. Lowers to node_commit_transaction_t /
-        // node_abort_transaction_t respectively; BEGIN returns nullptr (see
-        // impl for rationale).
+        // BEGIN / COMMIT / ROLLBACK; unsupported variants (SAVEPOINT / 2PC)
+        // return nullptr (see impl).
         logical_plan::node_ptr transform_transaction(TransactionStmt& node);
         logical_plan::node_ptr transform_set_timezone(VariableSetStmt& node);
 

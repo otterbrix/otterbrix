@@ -390,17 +390,20 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
     }
 
-    INFO("phase 2: restart — WAL replay with consistent 1-column records") {
+    INFO("phase 2: restart — WAL replay with the full post-default chunk") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Name column survives WAL replay (it's the only column in WAL records).
-        // After restart, computing table schema is derived from WAL chunk (1 column).
-        // Defaulted columns (status, count) are NOT preserved — their schema is lost.
+        // The PHYSICAL_INSERT carries the chunk AFTER the disk agent's default-expansion
+        // stage, so status='active'/count=0 are baked into the WAL record (not just the
+        // supplied 'name'). On restart the storage is synthesised from the WAL chunk's
+        // column types, so the defaulted columns and their values survive replay.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'bob';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 5);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 5);
     }
 }
 
@@ -531,6 +534,98 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 200;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 300;", 1);
+        // The PHYSICAL_INSERT carries the default-expanded chunk, so the unsupplied 'tag'
+        // column (DEFAULT 'untagged') is durable across restart too.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 3);
+    }
+}
+
+// Dynamic-schema (relkind='g' / IN_MEMORY computing) tables grow their column set
+// per-INSERT (stage 1b in agent_disk::storage_append_inner). That growth is made durable
+// by emitting a PHYSICAL_ADD_COLUMN WAL record (the new columns as a 0-row alias-tagged
+// chunk) BEFORE the dependent PHYSICAL_INSERT, and replaying it on restart (base_spaces
+// replay loop -> direct_add_column_sync) so the grown schema is reconstructed ahead of
+// the rows that reference it.
+//
+// Scenario: a computing table is created with WAL ON, a first INSERT introduces (id,
+// name), a second INSERT introduces an ADDITIONAL new column (value) — triggering stage-1b
+// growth and a PHYSICAL_ADD_COLUMN record — then the engine is restarted and ALL columns +
+// rows must survive.
+TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_schema_growth_wal");
+    test_clear_directory(config);
+
+    INFO("phase 1: computing table, two INSERTs growing the schema, WAL ON") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+
+        // CREATE TABLE with no columns => relkind='g' (computed / IN_MEMORY dynamic schema).
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection ();");
+            REQUIRE(cur->is_success());
+        }
+
+        // First INSERT: introduces columns (id bigint, name string). Schema adopted.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (id, name) VALUES "
+                                               "(1, 'alice'), (2, 'bob');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+
+        // Second INSERT: introduces an ADDITIONAL new column 'value' alongside the
+        // existing (id, name). This is stage-1b schema growth and emits a
+        // PHYSICAL_ADD_COLUMN WAL record before the PHYSICAL_INSERT.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (id, name, value) VALUES "
+                                               "(3, 'charlie', 100);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        // In-session sanity: 3 rows, 3 columns (id, name, value); rows 1-2 NULL for value.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->chunk_data().column_count() == 3);
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 100;", 1);
+    }
+
+    INFO("phase 2: restart — PHYSICAL_ADD_COLUMN replay reconstructs the grown schema") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // All three rows survive WAL replay.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
+
+        // The dynamically-added 'value' column survives: its schema was reconstructed by
+        // replaying PHYSICAL_ADD_COLUMN ahead of the PHYSICAL_INSERT that filled it.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->chunk_data().column_count() == 3);
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 100;", 1);
+
+        // The first-INSERT columns are still queryable and bind to the right rows.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'charlie';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 3;", 1);
     }
 }
 

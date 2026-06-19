@@ -14,9 +14,9 @@ namespace components {
     // commit batches, vacuum, register_udf, DDL operators that resolve their
     // own oid from the node).
     //
-    // database_oid is populated by catalog_resolve_database_t /
+    // database_oid is populated by node_catalog_resolve_t (resolve_kind::database) /
     // operator_resolve_database_t. WAL routes by this oid — until
-    // catalog_resolve_database fires, callers may still pass main_database
+    // the database resolve fires, callers may still pass main_database
     // explicitly (operator_insert/delete/update do so today). INVALID_OID is
     // also tolerated and routed to main_database by manager_wal_replicate's
     // get_or_create_worker.

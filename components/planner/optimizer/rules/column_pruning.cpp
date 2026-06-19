@@ -10,7 +10,7 @@
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -43,11 +43,13 @@ namespace components::planner::optimizer {
                 stack.pop_back();
                 if (!n)
                     continue;
-                if (n->type() == logical_plan::node_type::catalog_resolve_table_t) {
-                    const auto* rt = static_cast<const logical_plan::node_catalog_resolve_table_t*>(n);
-                    const auto& md_opt = rt->resolved_metadata();
-                    if (md_opt && md_opt->table_oid != components::catalog::INVALID_OID) {
-                        out[md_opt->table_oid] = md_opt->columns.size();
+                if (n->type() == logical_plan::node_type::catalog_resolve_t) {
+                    const auto* rt = static_cast<const logical_plan::node_catalog_resolve_t*>(n);
+                    if (rt->kind() == logical_plan::resolve_kind::table) {
+                        const auto& md_opt = rt->resolved_metadata();
+                        if (md_opt && md_opt->table_oid != components::catalog::INVALID_OID) {
+                            out[md_opt->table_oid] = md_opt->columns.size();
+                        }
                     }
                 }
                 for (const auto& c : n->children()) {

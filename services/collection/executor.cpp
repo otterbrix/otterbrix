@@ -10,11 +10,8 @@
 
 #include <components/logical_plan/forward.hpp>
 #include <components/logical_plan/node_allocate_oids.hpp>
-#include <components/logical_plan/node_catalog_resolve_function.hpp>
-#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
-#include <components/logical_plan/node_catalog_resolve_type.hpp>
-#include <components/logical_plan/node_computed_field_register.hpp>
+#include <components/logical_plan/node_alter_column.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_constraint.hpp>
 #include <components/logical_plan/node_create_index.hpp>
@@ -24,6 +21,7 @@
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -38,7 +36,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_commit_transaction.hpp>
+#include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -176,11 +174,7 @@ namespace services::collection::executor {
         if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
             // Find first non-resolve child as the limit-carrying consumer.
             auto is_catalog_resolve = [](components::logical_plan::node_type t) {
-                return t == components::logical_plan::node_type::catalog_resolve_namespace_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_table_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_type_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_function_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_constraint_t;
+                return t == components::logical_plan::node_type::catalog_resolve_t;
             };
             for (const auto& c : limit_lookup_node->children()) {
                 if (c && !is_catalog_resolve(c->type())) {
@@ -251,8 +245,8 @@ namespace services::collection::executor {
         // its txn_*_msg mailbox handlers.
         using node_type = components::logical_plan::node_type;
         using components::logical_plan::node_aggregate_t;
-        using components::logical_plan::node_catalog_resolve_namespace_t;
-        using components::logical_plan::node_catalog_resolve_table_t;
+        using components::logical_plan::node_catalog_resolve_t;
+        using components::logical_plan::resolve_kind;
         using components::logical_plan::node_create_database_t;
         using components::logical_plan::node_join_t;
         using components::logical_plan::node_match_t;
@@ -367,11 +361,12 @@ namespace services::collection::executor {
                 for (const auto& c : plan.sub_queries.back()->children()) {
                     if (!c)
                         continue;
-                    if (c->type() == node_type::catalog_resolve_namespace_t) {
-                        auto* r = static_cast<const node_catalog_resolve_namespace_t*>(c.get());
+                    if (c->type() != node_type::catalog_resolve_t)
+                        continue;
+                    auto* r = static_cast<const node_catalog_resolve_t*>(c.get());
+                    if (r->kind() == resolve_kind::namespace_) {
                         existing_dbs.insert(r->dbname());
-                    } else if (c->type() == node_type::catalog_resolve_table_t) {
-                        auto* r = static_cast<const node_catalog_resolve_table_t*>(c.get());
+                    } else if (r->kind() == resolve_kind::table) {
                         existing_tbls.insert({r->dbname(), r->relname()});
                         existing_dbs.insert(r->dbname());
                     }
@@ -468,11 +463,7 @@ namespace services::collection::executor {
                     // stamp_oids_from_resolves picks the FIRST resolve_table
                     // as the DML target — preserving original-target priority
                     // means walker-added scan resolves don't shadow it.
-                    auto is_resolve_local = [](node_type t) {
-                        return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
-                               t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
-                               t == node_type::catalog_resolve_constraint_t;
-                    };
+                    auto is_resolve_local = [](node_type t) { return t == node_type::catalog_resolve_t; };
                     auto& kids = plan.sub_queries.back()->children();
                     std::vector<node_ptr> merged;
                     merged.reserve(kids.size() + new_resolves.size());
@@ -508,10 +499,7 @@ namespace services::collection::executor {
             original_type == node_type::create_collection_t || original_type == node_type::create_constraint_t ||
             original_type == node_type::create_sequence_t || original_type == node_type::create_view_t ||
             original_type == node_type::create_macro_t || original_type == node_type::create_type_t ||
-            original_type == node_type::create_index_t || original_type == node_type::drop_index_t ||
-            original_type == node_type::drop_database_t || original_type == node_type::drop_collection_t ||
-            original_type == node_type::drop_type_t || original_type == node_type::drop_sequence_t ||
-            original_type == node_type::drop_view_t || original_type == node_type::drop_macro_t ||
+            original_type == node_type::create_index_t || original_type == node_type::drop_t ||
             original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
             original_type == node_type::create_matview_t;
         const bool needs_dml_txn = original_type == node_type::insert_t || original_type == node_type::update_t ||
@@ -565,11 +553,7 @@ namespace services::collection::executor {
             plan.sub_queries.back()->type() == components::logical_plan::node_type::sequence_t) {
             auto& kids = plan.sub_queries.back()->children();
             auto is_resolve = [](components::logical_plan::node_type t) {
-                return t == components::logical_plan::node_type::catalog_resolve_namespace_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_table_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_type_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_function_t ||
-                       t == components::logical_plan::node_type::catalog_resolve_constraint_t;
+                return t == components::logical_plan::node_type::catalog_resolve_t;
             };
             std::size_t resolve_count = 0;
             while (resolve_count < kids.size() && kids[resolve_count] && is_resolve(kids[resolve_count]->type())) {
@@ -700,9 +684,7 @@ namespace services::collection::executor {
                     return qualified_name_t{static_cast<const std::string&>(d->dbname()),
                                             static_cast<const std::string&>(d->relname())};
                 }
-                case node_type::alter_column_add_t:
-                case node_type::alter_column_drop_t:
-                case node_type::alter_column_rename_t:
+                case node_type::alter_column_t:
                 case node_type::alter_table_t: {
                     auto names = services::catalog_resolve::drop_target_names_from_resolves(plan_root_for_drop_names);
                     return qualified_name_t{names.first, names.second};
@@ -742,18 +724,24 @@ namespace services::collection::executor {
                 }
                 case node_type::delete_t:
                 case node_type::insert_t:
-                case node_type::update_t:
-                case node_type::drop_collection_t:
-                case node_type::drop_index_t:
-                case node_type::drop_macro_t:
-                case node_type::drop_sequence_t:
-                case node_type::drop_view_t: {
+                case node_type::update_t: {
                     auto names = services::catalog_resolve::drop_target_names_from_resolves(plan_root_for_drop_names);
                     return qualified_name_t{names.first, names.second};
                 }
-                case node_type::drop_database_t: {
+                case node_type::drop_t: {
+                    using components::logical_plan::drop_target_kind;
+                    using components::logical_plan::node_drop_t;
+                    const auto kind = static_cast<const node_drop_t*>(n)->kind();
+                    // DROP TYPE carries no (db, rel) name here.
+                    if (kind == drop_target_kind::type) {
+                        return {};
+                    }
                     auto names = services::catalog_resolve::drop_target_names_from_resolves(plan_root_for_drop_names);
-                    return qualified_name_t{names.first, std::string{}};
+                    // DROP DATABASE keys only on the namespace; no relation name.
+                    if (kind == drop_target_kind::database) {
+                        return qualified_name_t{names.first, std::string{}};
+                    }
+                    return qualified_name_t{names.first, names.second};
                 }
                 case node_type::match_t: {
                     auto* d = static_cast<const node_match_t*>(n);
@@ -784,12 +772,6 @@ namespace services::collection::executor {
                                             core::error_t{core::error_code_t::database_already_exists,
                                                           std::pmr::string{"database already exists", resource()}});
                     }
-                }
-                break;
-            case node_type::drop_database_t:
-                if (auto err = services::dispatcher::check_namespace_exists(resource(), &dispatcher_idx, id);
-                    err.contains_error()) {
-                    error = make_cursor(resource(), err);
                 }
                 break;
             case node_type::create_collection_t: {
@@ -847,14 +829,6 @@ namespace services::collection::executor {
                             }
                         }
                     }
-                }
-                break;
-            }
-            case node_type::drop_collection_t: {
-                // Authoritative existence check via the plan-tree resolve idx.
-                if (auto err = services::dispatcher::check_collection_exists(resource(), &dispatcher_idx, id);
-                    err.contains_error()) {
-                    error = make_cursor(resource(), err);
                 }
                 break;
             }
@@ -916,24 +890,75 @@ namespace services::collection::executor {
                 n->set_namespace_oid(target_ns);
                 break;
             }
-            case node_type::drop_type_t: {
-                std::string type_name;
-                if (plan.sub_queries.back()->type() == node_type::sequence_t) {
-                    for (const auto& c : plan.sub_queries.back()->children()) {
-                        if (c && c->type() == node_type::catalog_resolve_type_t) {
-                            type_name =
-                                static_cast<const components::logical_plan::node_catalog_resolve_type_t*>(c.get())
-                                    ->type_name();
-                            break;
+            case node_type::drop_t: {
+                using components::logical_plan::drop_target_kind;
+                using components::logical_plan::node_drop_t;
+                const auto* drop_node = static_cast<const node_drop_t*>(
+                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                switch (drop_node->kind()) {
+                    case drop_target_kind::database:
+                        if (auto err = services::dispatcher::check_namespace_exists(resource(), &dispatcher_idx, id);
+                            err.contains_error()) {
+                            error = make_cursor(resource(), err);
                         }
+                        break;
+                    case drop_target_kind::collection:
+                        // Authoritative existence check via the plan-tree resolve idx.
+                        if (auto err = services::dispatcher::check_collection_exists(resource(), &dispatcher_idx, id);
+                            err.contains_error()) {
+                            error = make_cursor(resource(), err);
+                        }
+                        break;
+                    case drop_target_kind::type: {
+                        std::string type_name;
+                        if (plan.sub_queries.back()->type() == node_type::sequence_t) {
+                            for (const auto& c : plan.sub_queries.back()->children()) {
+                                if (c && c->type() == node_type::catalog_resolve_t) {
+                                    const auto* rc =
+                                        static_cast<const components::logical_plan::node_catalog_resolve_t*>(c.get());
+                                    if (rc->kind() == resolve_kind::type) {
+                                        type_name = rc->type_name();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        const std::string default_path[] = {"public", "pg_catalog"};
+                        std::span<const std::string> str_path(default_path);
+                        if (auto err = services::dispatcher::check_type_exists(resource(),
+                                                                               &dispatcher_idx,
+                                                                               type_name,
+                                                                               str_path);
+                            err.contains_error()) {
+                            error = make_cursor(resource(), err);
+                        }
+                        break;
                     }
-                }
-                const std::string default_path[] = {"public", "pg_catalog"};
-                std::span<const std::string> str_path(default_path);
-                if (auto err =
-                        services::dispatcher::check_type_exists(resource(), &dispatcher_idx, type_name, str_path);
-                    err.contains_error()) {
-                    error = make_cursor(resource(), err);
+                    case drop_target_kind::sequence:
+                    case drop_target_kind::view:
+                    case drop_target_kind::macro:
+                        // No table schema to validate.
+                        break;
+                    case drop_target_kind::index: {
+                        // DROP INDEX is the one drop kind that still runs
+                        // validate_types + validate_schema (the others skip both).
+                        auto vt_err = services::dispatcher::validate_types(resource(),
+                                                                           &dispatcher_idx,
+                                                                           plan.sub_queries.back().get(),
+                                                                           context_storage.session_timezone);
+                        if (vt_err.contains_error()) {
+                            error = make_cursor(resource(), vt_err);
+                        } else {
+                            auto schema_res = services::dispatcher::validate_schema(resource(),
+                                                                                    &dispatcher_idx,
+                                                                                    plan.sub_queries.back().get(),
+                                                                                    plan.parameters->parameters());
+                            if (schema_res.has_error()) {
+                                error = make_cursor(resource(), schema_res.error());
+                            }
+                        }
+                        break;
+                    }
                 }
                 break;
             }
@@ -941,18 +966,13 @@ namespace services::collection::executor {
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
             // SQL BEGIN/COMMIT/ROLLBACK are leaf control nodes exactly like
-            // checkpoint/vacuum: no table schema to validate. Without these
-            // cases they fall into the default branch and validate_schema's
+            // checkpoint/vacuum: no table schema to validate. Without this
+            // case it falls into the default branch and validate_schema's
             // default arm assert(false)s on the unknown node type.
-            case node_type::begin_transaction_t:
-            case node_type::commit_transaction_t:
-            case node_type::abort_transaction_t:
+            case node_type::transaction_t:
             case node_type::create_sequence_t:
-            case node_type::drop_sequence_t:
             case node_type::create_view_t:
-            case node_type::drop_view_t:
             case node_type::create_macro_t:
-            case node_type::drop_macro_t:
                 break;
             case node_type::alter_table_t:
                 break;
@@ -1169,7 +1189,7 @@ namespace services::collection::executor {
                 }
 
                 if (is_computing) {
-                    std::vector<components::table::column_definition_t> registered_cols;
+                    std::pmr::vector<components::table::column_definition_t> registered_cols(resource());
                     auto* effective_insert =
                         services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
                     if (effective_insert) {
@@ -1189,15 +1209,16 @@ namespace services::collection::executor {
                         }
                     }
 
-                    auto insert_names =
-                        services::catalog_resolve::drop_target_names_from_resolves(plan.sub_queries.back().get());
+                    // node_alter_column_t(op=add, computed=true) carrying the
+                    // INSERT-chunk columns in registered_cols; create_plan routes
+                    // it to operator_computed_field_register_t. dbname/relname are
+                    // not set — the register operator only reads table_oid + columns.
                     auto register_node =
-                        boost::intrusive_ptr(new components::logical_plan::node_computed_field_register_t(
-                            resource(),
-                            core::dbname_t{insert_names.first},
-                            core::relname_t{insert_names.second},
-                            resolved_tbl_oid,
-                            std::move(registered_cols)));
+                        components::logical_plan::make_node_alter_column(resource(),
+                                                                         components::logical_plan::alter_column_op::add);
+                    register_node->set_computed(true);
+                    register_node->set_table_oid(resolved_tbl_oid);
+                    register_node->set_registered_cols(std::move(registered_cols));
 
                     auto seq = boost::intrusive_ptr(new node_sequence_t(resource()));
                     seq->append_child(plan.sub_queries.back());
@@ -1222,14 +1243,8 @@ namespace services::collection::executor {
                     case node_type::create_macro_t:
                     case node_type::create_matview_t:
                     case node_type::create_index_t:
-                    case node_type::drop_index_t:
+                    case node_type::drop_t:
                     case node_type::alter_table_t:
-                    case node_type::drop_database_t:
-                    case node_type::drop_collection_t:
-                    case node_type::drop_type_t:
-                    case node_type::drop_sequence_t:
-                    case node_type::drop_view_t:
-                    case node_type::drop_macro_t:
                     case node_type::create_constraint_t:
                         return true;
                     default:
@@ -1239,7 +1254,15 @@ namespace services::collection::executor {
             // DROP INDEX rewrites even without a disk actor; every other DDL kind
             // needs disk (OID alloc + catalog writes route through disk_address_).
             const bool has_disk = disk_address_ != actor_zeta::address_t::empty_address();
-            if (is_ddl_oid_rewrite(original_type) && (original_type == node_type::drop_index_t || has_disk)) {
+            const bool is_drop_index = [&] {
+                if (original_type != node_type::drop_t) {
+                    return false;
+                }
+                const auto* dn = static_cast<const components::logical_plan::node_drop_t*>(
+                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                return dn && dn->kind() == components::logical_plan::drop_target_kind::index;
+            }();
+            if (is_ddl_oid_rewrite(original_type) && (is_drop_index || has_disk)) {
                 auto* eff = services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
 
                 // CREATE CONSTRAINT: reject an empty/invalid CHECK before allocating an OID.
@@ -1695,9 +1718,7 @@ namespace services::collection::executor {
         //     writes were accumulated and committed by the DML tail above, so
         //     aborting here would discard the very rows they persisted.
         const bool releases_resolve_txn = !needs_ddl_txn && !needs_dml_txn && !needs_commit_txn &&
-                                          !session_ctx.is_explicit && original_type != node_type::begin_transaction_t &&
-                                          original_type != node_type::commit_transaction_t &&
-                                          original_type != node_type::abort_transaction_t;
+                                          !session_ctx.is_explicit && original_type != node_type::transaction_t;
         if (releases_resolve_txn) {
             auto [_rl, rlf] =
                 actor_zeta::send(parent_address_, &services::dispatcher::manager_dispatcher_t::txn_abort_msg, session);
@@ -1993,7 +2014,9 @@ namespace services::collection::executor {
         // dispatcher-owned transaction_t (txn_commit_drain_msg), batch-
         // publishes storage, commits the index mirrors per table, writes the
         // WAL marker and crosses the ProcArray barrier (txn_publish_msg).
-        auto commit_node = boost::intrusive_ptr(new components::logical_plan::node_commit_transaction_t(resource()));
+        auto commit_node = components::logical_plan::make_node_transaction(
+            resource(),
+            components::logical_plan::transaction_op::commit);
         if (ddl_mode) {
             // DDL mode prepends the flush durability barrier + WAL(cid=0)
             // record inside the operator.

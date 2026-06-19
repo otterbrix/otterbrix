@@ -1,5 +1,4 @@
 #include <components/logical_plan/node_create_view.hpp>
-#include <components/logical_plan/node_drop_view.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 

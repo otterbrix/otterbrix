@@ -108,6 +108,18 @@ namespace services::disk {
         }
     }
 
+    void manager_disk_t::direct_add_column_sync(catalog::oid_t table_oid,
+                                                const components::vector::data_chunk_t& schema_chunk) {
+        // Bootstrap / WAL-replay only; routes the schema-growth record to the owning
+        // agent so the new columns exist before the dependent PHYSICAL_INSERT replays.
+        if (!agents_.empty()) {
+            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+            if (agents_[pool_idx] != nullptr) {
+                agents_[pool_idx]->direct_add_column_sync(table_oid, schema_chunk);
+            }
+        }
+    }
+
     // --- Storage management ---
     // Every site routes through agents_[pool_idx_for_oid(oid)] (storage_entry_sync
     // borrow or storage_*_inner mailbox handler). No manager-side storage_t* survives.
@@ -403,11 +415,10 @@ namespace services::disk {
             auto& agent = agents_[idx];
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_append_inner,
-                                                                      table_oid,
-                                                                      std::move(data),
-                                                                      ctx.txn,
-                                                                      ctx.session_tz);
+                                                                       &agent_disk_t::storage_append_inner,
+                                                                       ctx,
+                                                                       table_oid,
+                                                                       std::move(data));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }

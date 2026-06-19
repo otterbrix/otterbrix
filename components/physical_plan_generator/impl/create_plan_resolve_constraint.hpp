@@ -6,7 +6,7 @@
 
 namespace services::planner::impl {
 
-    // Bridge node_catalog_resolve_constraint_t → operator_resolve_constraint_t.
+    // Bridge node_catalog_resolve_t (resolve_kind::constraint) → operator_resolve_constraint_t.
     // The operator reads the parent table_oid from the back-pointed
     // resolve_table node (filled by an earlier Pass 1 resolve_table
     // operator), so this generator just forwards the back-pointer.

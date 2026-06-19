@@ -6,12 +6,11 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_buffer.hpp>
-#include <cstdio>
 #include <services/disk/manager_disk.hpp>
 
 #include <algorithm>
@@ -68,7 +67,7 @@ namespace components::operators {
         log_t log,
         catalog::oid_t namespace_oid,
         std::string relname,
-        components::logical_plan::node_catalog_resolve_table_t* target_node)
+        components::logical_plan::node_catalog_resolve_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
         , table_oid_(catalog::INVALID_OID)
         , input_namespace_oid_(namespace_oid)
@@ -459,14 +458,6 @@ namespace components::operators {
         // operator output chunk; decoded type derived from atttypspec or
         // atttypid via the existing catalog helpers.
         if (target_node_) {
-            std::fprintf(stderr,
-                         "[RT] populate md table_oid=%u ns_oid=%u relkind='%c' rows=%zu relname='%s'\n",
-                         static_cast<unsigned>(table_oid_),
-                         static_cast<unsigned>(namespace_oid_),
-                         relkind_ ? relkind_ : '?',
-                         rows.size(),
-                         relname_.c_str());
-            std::fflush(stderr);
             components::logical_plan::resolved_table_metadata_t md;
             md.table_oid = table_oid_;
             md.namespace_oid = namespace_oid_;

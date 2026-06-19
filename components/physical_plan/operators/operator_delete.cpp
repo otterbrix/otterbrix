@@ -21,6 +21,17 @@ namespace components::operators {
         , expression_(std::move(expr))
         , returning_(std::move(returning)) {}
 
+    operator_delete::operator_delete(std::pmr::memory_resource* resource,
+                                     log_t log,
+                                     components::catalog::oid_t catalog_table_oid,
+                                     std::int64_t oid_col_idx,
+                                     components::catalog::oid_t target_oid)
+        : read_write_operator_t(resource, log, operator_type::remove)
+        , table_oid_(catalog_table_oid)
+        , returning_(resource)
+        , oid_col_idx_(oid_col_idx)
+        , target_oid_(target_oid) {}
+
     void operator_delete::accept_resolved_metadata(resolved_table_metadata_t metadata) {
         // See operator_insert for the contract.
         if (table_oid_ == components::catalog::INVALID_OID && metadata.table_oid != components::catalog::INVALID_OID) {
@@ -30,6 +41,13 @@ namespace components::operators {
     }
 
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
+        // Catalog-delete mode: no predicate scan / no children — the (oid_col_idx,
+        // target_oid) spec is shipped straight to delete_pg_catalog_rows in
+        // await_async_and_resume.
+        if (oid_col_idx_ >= 0) {
+            async_wait();
+            return;
+        }
         // RETURNING: record the scan positions of matched rows into a separate
         // indexing vector as we match (ids stays row-id/dict-index for the
         // storage delete). After matching, gather those rows from returning_source
@@ -193,6 +211,27 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
+        // Catalog-delete mode: delete pg_catalog rows by (oid_col_idx, target_oid)
+        // via the WAL-first delete_pg_catalog_rows, then record the catalog table
+        // on ctx->pg_catalog_delete_tables so operator_commit_transaction reverts/
+        // publishes the MVCC tombstone for it. Bypasses the predicate-scan +
+        // storage_delete_rows + WAL physical_delete + index path entirely.
+        if (oid_col_idx_ >= 0) {
+            components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+            auto [_c, cf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                             exec_ctx,
+                                             table_oid_,
+                                             oid_col_idx_,
+                                             target_oid_);
+            co_await std::move(cf);
+            if (ctx->txn.transaction_id != 0) {
+                ctx->pg_catalog_delete_tables.insert(table_oid_);
+            }
+            mark_executed();
+            co_return;
+        }
+
         if (!modified_ || modified_->size() == 0) {
             mark_executed();
             co_return;
@@ -222,27 +261,19 @@ namespace components::operators {
             }
         }
 
-        // 1. Capture WAL row IDs.
+        // 1. Capture WAL row IDs. The row_ids come from the upstream scan, so they
+        //    are fully known before any storage mutation — unlike INSERT (whose final
+        //    count depends on dedup), DELETE has no post-op dependency. This lets the
+        //    user delete adopt the SAME WAL-first ordering as the catalog delete
+        //    (delete_pg_catalog_rows_inner: WAL physical_delete, then the storage mark).
         std::pmr::vector<int64_t> wal_row_ids(resource_);
         wal_row_ids.reserve(modified_size);
         for (size_t i = 0; i < modified_size; i++) {
             wal_row_ids.push_back(static_cast<int64_t>(ids[i]));
         }
 
-        // 2. storage_delete_rows.
-        vector_t row_ids(resource_, types::logical_type::BIGINT, modified_size);
-        for (size_t i = 0; i < modified_size; i++) {
-            row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
-        }
-        auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_delete_rows,
-                                         exec_ctx,
-                                         table_oid_,
-                                         std::move(row_ids),
-                                         static_cast<uint64_t>(modified_size));
-        co_await std::move(df);
-
-        // 3. WAL physical_delete.
+        // 2. WAL-FIRST: physical_delete BEFORE the storage mark, so a crash between
+        //    the two replays the delete (uncommitted deletes are filtered by replay).
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
             auto count = static_cast<uint64_t>(wal_row_ids.size());
             // See operator_insert comment on db_oid temporary hardcode.
@@ -260,6 +291,19 @@ namespace components::operators {
                 actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);
             ctx->add_pending_disk_future(std::move(dff));
         }
+
+        // 3. storage_delete_rows — mark the rows deleted under this txn (MVCC).
+        vector_t row_ids(resource_, types::logical_type::BIGINT, modified_size);
+        for (size_t i = 0; i < modified_size; i++) {
+            row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
+        }
+        auto [_d, df] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_delete_rows,
+                                         exec_ctx,
+                                         table_oid_,
+                                         std::move(row_ids),
+                                         static_cast<uint64_t>(modified_size));
+        co_await std::move(df);
 
         // 4. Mirror to index (uses scan output for old data).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {

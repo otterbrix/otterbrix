@@ -31,6 +31,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_returning.cpp
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
+        test_parameterized_queries.cpp
         test_list_array.cpp
 )
 

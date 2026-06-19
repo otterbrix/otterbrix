@@ -6,8 +6,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/logical_plan/forward.hpp>
-#include <components/logical_plan/node_catalog_resolve_constraint.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -27,7 +26,7 @@ namespace components::operators {
     operator_resolve_constraint_t::operator_resolve_constraint_t(
         std::pmr::memory_resource* resource,
         log_t log,
-        components::logical_plan::node_catalog_resolve_constraint_t* target_node)
+        components::logical_plan::node_catalog_resolve_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_constraint)
         , target_node_(target_node)
         , output_schema_(resource) {
@@ -71,7 +70,7 @@ namespace components::operators {
         }
         const catalog::oid_t table_oid = md_opt->table_oid;
         const auto direction = target_node_->direction();
-        using direction_t = components::logical_plan::node_catalog_resolve_constraint_t::direction_t;
+        using direction_t = components::logical_plan::resolve_direction;
 
         const std::string key_col =
             (direction == direction_t::outgoing) ? std::string{"conrelid"} : std::string{"confrelid"};

@@ -1,6 +1,6 @@
 #include <algorithm>
 #include <catch2/catch.hpp>
-#include <components/logical_plan/node_catalog_resolve_database.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <memory_resource>
 
@@ -160,7 +160,7 @@ namespace components::table::test_block_e {
     }
 
     TEST_CASE("Block E db_oid resolve via catalog_resolve_database", "[block_e][b14c]") {
-        // Exercise node_catalog_resolve_database_t's set/get in isolation;
+        // Exercise node_catalog_resolve_t (resolve_kind::database) set/get in isolation;
         // operator_resolve_database stamps the resolved oid via set_database_oid.
         using namespace components::logical_plan;
         using namespace components::catalog;

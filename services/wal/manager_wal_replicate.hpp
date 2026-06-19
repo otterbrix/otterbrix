@@ -111,6 +111,14 @@ namespace services::wal {
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid);
 
+        unique_future<wal::id_t>
+        write_physical_add_column(session_id_t session,
+                                  components::catalog::oid_t table_oid,
+                                  std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
+                                  uint64_t column_count,
+                                  uint64_t txn_id,
+                                  components::catalog::oid_t database_oid);
+
         // Mailbox twins of the _sync helpers for callers that run inside an
         // actor (e.g. operator_create_index_backfill in the executor) and so
         // cannot make sync inter-actor calls. Same active_build_start_positions_ set.
@@ -126,6 +134,7 @@ namespace services::wal {
                                                        &manager_wal_replicate_t::write_physical_insert,
                                                        &manager_wal_replicate_t::write_physical_delete,
                                                        &manager_wal_replicate_t::write_physical_update,
+                                                       &manager_wal_replicate_t::write_physical_add_column,
                                                        &manager_wal_replicate_t::register_active_build,
                                                        &manager_wal_replicate_t::unregister_active_build>;
 

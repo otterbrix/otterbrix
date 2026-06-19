@@ -7,7 +7,7 @@
 #include <memory_resource>
 
 namespace components::logical_plan {
-    class node_catalog_resolve_constraint_t;
+    class node_catalog_resolve_t;
 } // namespace components::logical_plan
 
 namespace components::operators {
@@ -37,13 +37,13 @@ namespace components::operators {
     public:
         operator_resolve_constraint_t(std::pmr::memory_resource* resource,
                                       log_t log,
-                                      components::logical_plan::node_catalog_resolve_constraint_t* target_node);
+                                      components::logical_plan::node_catalog_resolve_t* target_node);
 
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        components::logical_plan::node_catalog_resolve_constraint_t* target_node_{nullptr};
+        components::logical_plan::node_catalog_resolve_t* target_node_{nullptr};
         // Static placeholder output schema, built once in the constructor (TASK C10).
         std::pmr::vector<components::types::complex_logical_type> output_schema_;
     };

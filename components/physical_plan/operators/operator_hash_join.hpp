@@ -7,10 +7,10 @@
 
 namespace components::operators {
 
-    // Equi-join fast path. create_plan_join substitutes this for operator_join_t
-    // when the ON condition is a single eq(left.key, right.key); the matching
-    // columns (`left_col`/`right_col`, into the respective input chunks) are
-    // detected at plan time and passed in.
+    // Equi-join fast path: substituted for operator_join_t only when the ON
+    // condition is a single eq(left.key, right.key); the matching columns
+    // (`left_col`/`right_col`, into the respective input chunks) are detected at
+    // plan time and passed in.
     //
     // Builds a hash table over the right side once and probes it with the left,
     // turning the nested-loop O(L·R) join into O(L + R). Output layout, NULL

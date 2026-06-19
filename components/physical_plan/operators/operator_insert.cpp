@@ -49,6 +49,39 @@ namespace components::operators {
         auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 
+        // Catalog-table insert (DDL pg_catalog row): delegate to the WAL-first
+        // append_pg_catalog_row instead of the user append-first path. The row is
+        // a ready-made pg_catalog tuple built by ddl_metadata_builder (atttypid /
+        // attoid already allocated), so the user preprocess — _id dedup, NOT-NULL
+        // checks, DEFAULT fill, type promotion, RETURNING readback — is skipped;
+        // append_pg_catalog_row runs the lighter catalog preprocess on the agent.
+        // The returned range MUST land in ctx->pg_catalog_appends (NOT dml_*):
+        // operator_commit_transaction publishes catalog rows via
+        // storage_publish_commits keyed off that vector — pushing to dml_* would
+        // silently leave the row unpublished.
+        //
+        // The chunk is one ready-made row (build_*_writes emits 1-row chunks, one
+        // node per row), so the whole chunk is sent as a single catalog row.
+        if (components::catalog::is_catalog_table(table_oid_)) {
+            data_chunk_t row(resource_, out_chunk.types(), out_chunk.size());
+            out_chunk.copy(row, 0);
+            auto [_c, cf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::append_pg_catalog_row,
+                                             exec_ctx,
+                                             table_oid_,
+                                             std::move(row));
+            auto rng = co_await std::move(cf);
+            if (rng.count > 0) {
+                ctx->pg_catalog_appends.push_back(std::move(rng));
+            }
+            // DDL is not row-returning: leave no output so the cursor reports 0
+            // affected rows (matching operator_create_collection and the former
+            // operator_primitive_write). pg_catalog_appends was pushed above.
+            set_output(nullptr);
+            mark_executed();
+            co_return;
+        }
+
         // When a resolver sibling supplied catalog metadata, compute a
         // chunk_position -> table_position translation via alias matching.
         // The disk-actor's storage_append already aligns by alias (with
@@ -67,11 +100,16 @@ namespace components::operators {
             }
         }
 
-        // 1. Capture WAL data BEFORE storage_append moves the chunk.
-        auto wal_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-        out_chunk.copy(*wal_data, 0);
-
-        // 2. storage_append (handles schema adoption, _id dedup).
+        // 1. storage_append — WAL-FIRST canonical append. The disk agent now owns
+        //    the WAL write: it preprocesses (schema adoption/growth, _id dedup,
+        //    NOT NULL, defaults, type promotion), allocates the start_row, writes the
+        //    WAL (PHYSICAL_ADD_COLUMN for any dynamic schema growth, then
+        //    PHYSICAL_INSERT carrying the final start_row + post-dedup count), and only
+        //    THEN materializes — all in one mailbox-atomic handler. This unifies user
+        //    inserts onto the SAME WAL-first ordering as catalog inserts
+        //    (append_pg_catalog_row), so the operator no longer issues its own WAL
+        //    record here. db_oid selection now lives in the agent (it reads
+        //    ctx.database_oid, falling back to main_database).
         auto data_copy = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
         out_chunk.copy(*data_copy, 0);
         auto [_a, af] = actor_zeta::send(ctx->disk_address,
@@ -82,33 +120,14 @@ namespace components::operators {
         auto [start_row, actual_count] = co_await std::move(af);
 
         if (actual_count == 0) {
-            // Nothing inserted (e.g. duplicate _id). Clear output and drop WAL.
+            // Nothing inserted (e.g. duplicate _id). The agent wrote no WAL for a
+            // no-op append, so there is nothing to drop. Clear output and finish.
             set_output(nullptr);
             mark_executed();
             co_return;
         }
 
-        // 3. WAL physical_insert (synchronous; flush is fire-and-forget).
-        if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            // database_oid selects the WAL worker. Hardcoded to main_database
-            // until catalog_resolve_database_t populates ctx->database_oid.
-            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-            auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                             &services::wal::manager_wal_replicate_t::write_physical_insert,
-                                             ctx->session,
-                                             table_oid_,
-                                             std::move(wal_data),
-                                             static_cast<uint64_t>(start_row),
-                                             actual_count,
-                                             ctx->txn.transaction_id,
-                                             db_oid);
-            auto wal_id = co_await std::move(wf);
-            auto [_d, df] =
-                actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);
-            ctx->add_pending_disk_future(std::move(df));
-        }
-
-        // 4. Mirror to index (txn-aware).
+        // 2. Mirror to index (txn-aware).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto idx_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
             out_chunk.copy(*idx_data, 0);
@@ -122,12 +141,12 @@ namespace components::operators {
             co_await std::move(ixf);
         }
 
-        // 5. Record swap-info on context for executor's commit-side block.
+        // 3. Record swap-info on context for executor's commit-side block.
         ctx->dml_append_row_start = static_cast<int64_t>(start_row);
         ctx->dml_append_row_count = actual_count;
         ctx->dml_table_oid = table_oid_;
 
-        // 6. Build the result chunk.
+        // 4. Build the result chunk.
         if (returning_.empty()) {
             // No RETURNING: emit a column-less chunk whose cardinality carries
             // the affected-row count for the cursor.

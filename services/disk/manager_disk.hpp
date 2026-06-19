@@ -365,8 +365,7 @@ namespace services::disk {
         // Cross-namespace function lookup: returns ALL pg_proc rows whose proname matches
         // `name`, regardless of pronamespace. Used by the UDF admin paths (#41 Path 2/4):
         // register_udf needs to detect cross-namespace conflicts; drop_udf needs to purge
-        // every row sharing the name. The single-namespace resolve_function above is the
-        // hot-path query API; this one is admin-scope and may return an empty vector.
+        // every row sharing the name. Admin-scope (register/drop UDF); may return an empty vector.
         unique_future<std::pmr::vector<resolve_function_result_t>>
         resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
 
@@ -471,6 +470,12 @@ namespace services::disk {
         void direct_update_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 components::vector::data_chunk_t& new_data);
+        // WAL-replay of a PHYSICAL_ADD_COLUMN record: re-apply each schema column to
+        // the owned storage ahead of the dependent PHYSICAL_INSERT. `schema_chunk` is
+        // a 0-row chunk whose columns ARE the new columns (alias-tagged types).
+        // Idempotent: columns already present (by name) are skipped.
+        void direct_add_column_sync(components::catalog::oid_t table_oid,
+                                    const components::vector::data_chunk_t& schema_chunk);
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }
@@ -731,6 +736,17 @@ namespace services::disk {
         // access goes through agent storage_*_inner mailbox handlers.
         void create_agent(int count_agents);
         auto agent() -> actor_zeta::address_t;
+
+        // Single manager-side scan funnel over the owning agent's
+        // storage_scan_batched_inner, so there is ONE place that issues a catalog
+        // scan. `filter` null = "see all rows"; `projected_cols` empty = "all
+        // columns"; returns an empty batch vector when there is no owning agent.
+        // txn defaults to transaction_data{} = "see all committed".
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        scan_table(components::catalog::oid_t table_oid,
+                   std::unique_ptr<components::table::table_filter_t> filter,
+                   std::vector<std::size_t> projected_cols,
+                   components::table::transaction_data txn = components::table::transaction_data{});
 
         // Hash-route by table_oid. Catalog tables (oid < FIRST_USER_OID) → agent 0;
         // user tables hash across agents_[1..N-1].

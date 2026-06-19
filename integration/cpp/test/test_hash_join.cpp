@@ -27,10 +27,10 @@ using logical_plan::join_type;
 using operators::operator_type;
 
 // ----------------------------------------------------------------------------
-// Part 1 — substitution: the optimizer's rewrite_hash_joins must turn a JOIN into
-// a node_hash_join_t (lowered to operator_hash_join_t) exactly when the condition
-// is a single eq(left.key, right.key) on an inner/left/right/full join, and leave
-// it a node_join_t (lowered to operator_join_t) otherwise.
+// Part 1 — substitution: the optimizer's rewrite_hash_joins must stamp a node_join_t
+// with algo()==hash (lowered to operator_hash_join_t by create_plan_join) exactly
+// when the condition is a single eq(left.key, right.key) on an inner/left/right/full
+// join, and leave it algo()==nested (lowered to operator_join_t) otherwise.
 //
 // We hand-build a logical join node whose ON-condition keys already carry
 // side()+path() — the exact post-validate state the real SQL→logical pipeline

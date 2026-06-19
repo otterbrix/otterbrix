@@ -8,7 +8,7 @@
 #include <string>
 
 namespace components::logical_plan {
-    class node_catalog_resolve_table_t;
+    class node_catalog_resolve_t;
 } // namespace components::logical_plan
 
 namespace components::operators {
@@ -59,7 +59,7 @@ namespace components::operators {
                                  log_t log,
                                  components::catalog::oid_t namespace_oid,
                                  std::string relname,
-                                 components::logical_plan::node_catalog_resolve_table_t* target_node);
+                                 components::logical_plan::node_catalog_resolve_t* target_node);
 
         // Accessors for downstream callers. resolved_found() is false when
         // pg_class has no row matching the inputs; the other accessors hold
@@ -83,7 +83,7 @@ namespace components::operators {
         bool found_{false};
         char relkind_{0};
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
-        components::logical_plan::node_catalog_resolve_table_t* target_node_{nullptr};
+        components::logical_plan::node_catalog_resolve_t* target_node_{nullptr};
         // Static output chunk schema, built once in the constructor (TASK C10).
         std::pmr::vector<components::types::complex_logical_type> output_schema_;
     };

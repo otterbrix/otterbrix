@@ -13,6 +13,12 @@ namespace services::wal {
         PHYSICAL_INSERT = 10,
         PHYSICAL_DELETE = 11,
         PHYSICAL_UPDATE = 12,
+        // Dynamic-schema growth for IN_MEMORY / computed tables. Written BEFORE the
+        // PHYSICAL_INSERT that depends on the new columns so WAL-first replay re-applies
+        // the schema change first. Payload is a 0-row data_chunk whose columns ARE the
+        // new columns (alias-tagged types). Idempotent on replay (already-present
+        // columns are skipped).
+        PHYSICAL_ADD_COLUMN = 13,
     };
 
     struct record_t final {
@@ -42,7 +48,8 @@ namespace services::wal {
         bool is_commit_marker() const { return record_type == wal_record_type::COMMIT; }
         bool is_physical() const {
             return record_type == wal_record_type::PHYSICAL_INSERT || record_type == wal_record_type::PHYSICAL_DELETE ||
-                   record_type == wal_record_type::PHYSICAL_UPDATE;
+                   record_type == wal_record_type::PHYSICAL_UPDATE ||
+                   record_type == wal_record_type::PHYSICAL_ADD_COLUMN;
         }
     };
 

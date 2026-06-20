@@ -117,7 +117,16 @@ namespace components::operators {
                                          exec_ctx,
                                          table_oid_,
                                          std::move(data_copy));
-        auto [start_row, actual_count] = co_await std::move(af);
+        // The append reply carries any write_conflict / out_of_memory the table-layer append
+        // chain surfaced; surface it as a clean error cursor (the executor turns has_error()
+        // into an error cursor) so the txn aborts gracefully.
+        auto append_result = co_await std::move(af);
+        if (append_result.has_error()) {
+            set_error(append_result.error());
+            mark_failed();
+            co_return;
+        }
+        auto [start_row, actual_count] = append_result.value();
 
         if (actual_count == 0) {
             // Nothing inserted (e.g. duplicate _id). The agent wrote no WAL for a

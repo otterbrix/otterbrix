@@ -181,19 +181,24 @@ namespace components::table::storage {
         }
     }
 
-    void buffer_pool_t::set_limit(uint64_t limit) {
+    core::result_wrapper_t<bool> buffer_pool_t::set_limit(uint64_t limit) {
         std::lock_guard l_lock(limit_lock);
         if (!evict_blocks(memory_tag::EXTENSION, 0, limit).success) {
-            throw std::runtime_error("Failed to change memory limit to " + std::to_string(limit) +
-                                     ": could not free up enough memory for the new limit");
+            return core::error_t(core::error_code_t::out_of_memory,
+                                 std::pmr::string{"Failed to change memory limit to " + std::to_string(limit) +
+                                                      ": could not free up enough memory for the new limit",
+                                                  resource});
         }
         uint64_t old_limit = maximum_memory;
         maximum_memory = limit;
         if (!evict_blocks(memory_tag::EXTENSION, 0, limit).success) {
             maximum_memory = old_limit;
-            throw std::runtime_error("Failed to change memory limit to " + std::to_string(limit) +
-                                     ": could not free up enough memory for the new limit");
+            return core::error_t(core::error_code_t::out_of_memory,
+                                 std::pmr::string{"Failed to change memory limit to " + std::to_string(limit) +
+                                                      ": could not free up enough memory for the new limit",
+                                                  resource});
         }
+        return true;
     }
 
     void buffer_pool_t::set_allocator_bulk_dealloc_flush_threashold(uint64_t threshold) {
@@ -222,8 +227,12 @@ namespace components::table::storage {
                 return block_result;
             }
         }
-        throw std::runtime_error(
-            "Exited buffer_pool_t::evict_blocks_internal without obtaining buffer_pool_t::eviction_result");
+        // Unreachable: the loop above always returns on the last queue (`queue.get() == queues.back().get()`),
+        // and `queues` is non-empty (the ctor pushes one queue per file_buffer_type). Programming invariant,
+        // not a runtime error -- assert instead of throwing.
+        assert(false &&
+               "Exited buffer_pool_t::evict_blocks_internal without obtaining buffer_pool_t::eviction_result");
+        return evict_blocks_internal(*queues.back(), tag, extra_memory, memory_limit, buffer);
     }
 
     buffer_pool_t::eviction_result buffer_pool_t::evict_blocks_internal(eviction_queue_t& queue,

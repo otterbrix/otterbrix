@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include "collection.hpp"
 #include "storage/metadata_reader.hpp"
 #include "storage/metadata_writer.hpp"
@@ -51,17 +53,23 @@ namespace components::table {
 
         std::unique_ptr<table_update_state>
         initialize_update(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
-        void update(table_update_state& state,
-                    vector::vector_t& row_ids,
-                    // const std::vector<uint64_t>& column_ids,
-                    vector::data_chunk_t& data);
-        void update_column(vector::vector_t& row_ids,
-                           const std::vector<uint64_t>& column_path,
-                           vector::data_chunk_t& updates);
+        // Returns write_conflict / out_of_memory. On success the pair is
+        // {0, affected-row count}; the caller's update reply carries it.
+        core::result_wrapper_t<std::pair<int64_t, uint64_t>> update(table_update_state& state,
+                                                                    vector::vector_t& row_ids,
+                                                                    // const std::vector<uint64_t>& column_ids,
+                                                                    vector::data_chunk_t& data);
+        core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
+                                                   const std::vector<uint64_t>& column_path,
+                                                   vector::data_chunk_t& updates);
 
-        void append_lock(table_append_state& state);
-        void initialize_append(table_append_state& state);
-        void append(vector::data_chunk_t& chunk, table_append_state& state);
+        // append_lock returns write_conflict when concurrent DDL altered the table
+        // (the table is no longer root); true on success.
+        core::result_wrapper_t<bool> append_lock(table_append_state& state);
+        // The append chain returns out_of_memory when a row group / column segment
+        // allocation fails; true on success.
+        core::result_wrapper_t<bool> initialize_append(table_append_state& state);
+        core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
         void revert_append(int64_t row_start, uint64_t count);
@@ -109,10 +117,16 @@ namespace components::table {
                                  table_scan_state& local_state,
                                  vector::data_chunk_t& result);
 
-        void checkpoint(storage::metadata_writer_t& writer);
-        static std::unique_ptr<data_table_t> load_from_disk(std::pmr::memory_resource* resource,
-                                                            storage::block_manager_t& block_manager,
-                                                            storage::metadata_reader_t& reader);
+        // The checkpoint chain returns out_of_memory when a column flush pin fails;
+        // true on success.
+        core::result_wrapper_t<bool> checkpoint(storage::metadata_writer_t& writer);
+        // Returns data_corruption when the on-disk metadata chain is truncated/corrupt (the reader records
+        // a sticky error during deserialize, checked here at the boundary) instead of throwing on the
+        // load path. The caller (bootstrap/load) maps the error onto its .prev recovery flow.
+        static core::result_wrapper_t<std::unique_ptr<data_table_t>>
+        load_from_disk(std::pmr::memory_resource* resource,
+                       storage::block_manager_t& block_manager,
+                       storage::metadata_reader_t& reader);
 
     private:
         void initialize_scan_with_offset(table_scan_state& state,

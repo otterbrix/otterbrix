@@ -50,11 +50,14 @@ namespace components::table {
         return pos;
     }
 
-    static void check_for_conflicts(undo_buffer_pointer_t next_ptr,
-                                    int64_t* ids,
-                                    const vector::indexing_vector_t& indexing,
-                                    uint64_t count,
-                                    int64_t offset) {
+    // Returns a write_conflict error_t when an MVCC write-write conflict is detected;
+    // no_error() otherwise.
+    static core::error_t check_for_conflicts(undo_buffer_pointer_t next_ptr,
+                                             int64_t* ids,
+                                             const vector::indexing_vector_t& indexing,
+                                             uint64_t count,
+                                             int64_t offset,
+                                             std::pmr::memory_resource* resource) {
         while (next_ptr.is_set()) {
             auto pin = next_ptr.pin();
             auto& info = pin.update_info();
@@ -63,7 +66,8 @@ namespace components::table {
             while (true) {
                 auto id = ids[indexing.get_index(i)] - offset;
                 if (id == tuples[j]) {
-                    throw std::logic_error("Conflict on update!");
+                    return core::error_t(core::error_code_t::write_conflict,
+                                         std::pmr::string{"Conflict on update!", resource});
                 } else if (id < tuples[j]) {
                     i++;
                     if (i == count) {
@@ -78,6 +82,7 @@ namespace components::table {
             }
             next_ptr = info.next;
         }
+        return core::error_t::no_error();
     }
 
     update_info_t* create_empty_update_info(uint64_t type_size, uint64_t, std::unique_ptr<std::byte[]>& data) {
@@ -119,10 +124,19 @@ namespace components::table {
 
     undo_buffer_reference undo_buffer_pointer_t::pin() const {
         assert(entry->capacity >= position);
-        return undo_buffer_reference(*entry, entry->buffer_manager.pin(entry->block), position);
+        // entry->block is a TRANSACTION block already allocated by undo_buffer_allocator_t::
+        // allocate(); it is resident, so re-pinning it cannot OOM. The genuine OOM site is
+        // allocate() (which returns a result_wrapper). Assert here and, on the (impossible)
+        // error path, return an empty handle rather than throwing.
+        auto pinned = entry->buffer_manager.pin(entry->block);
+        assert(!pinned.has_error() && "undo_buffer_pointer_t::pin: resident TRANSACTION block must not OOM");
+        if (pinned.has_error()) {
+            return undo_buffer_reference(*entry, storage::buffer_handle_t{}, position);
+        }
+        return undo_buffer_reference(*entry, std::move(pinned.value()), position);
     }
 
-    undo_buffer_reference undo_buffer_allocator_t::allocate(uint64_t alloc_len) {
+    core::result_wrapper_t<undo_buffer_reference> undo_buffer_allocator_t::allocate(uint64_t alloc_len) {
         assert(!head || head->position <= head->capacity);
         storage::buffer_handle_t handle;
         if (!head || head->position + alloc_len > head->capacity) {
@@ -138,10 +152,23 @@ namespace components::table {
             }
             auto entry = std::make_unique<undo_buffer_entry_t>(buffer_manager);
             if (capacity < block_size) {
-                entry->block = buffer_manager.register_small_memory(storage::memory_tag::TRANSACTION, capacity);
-                handle = buffer_manager.pin(entry->block);
+                // Genuine fresh transaction-memory allocation — the OOM-able site.
+                auto registered = buffer_manager.register_small_memory(storage::memory_tag::TRANSACTION, capacity);
+                if (registered.has_error()) {
+                    return registered.convert_error<undo_buffer_reference>();
+                }
+                entry->block = std::move(registered.value());
+                auto pinned = buffer_manager.pin(entry->block);
+                if (pinned.has_error()) {
+                    return pinned.convert_error<undo_buffer_reference>();
+                }
+                handle = std::move(pinned.value());
             } else {
-                handle = buffer_manager.allocate(storage::memory_tag::TRANSACTION, capacity, false);
+                auto allocated = buffer_manager.allocate(storage::memory_tag::TRANSACTION, capacity, false);
+                if (allocated.has_error()) {
+                    return allocated.convert_error<undo_buffer_reference>();
+                }
+                handle = std::move(allocated.value());
                 entry->block = handle.block_handle()->shared_from_this();
             }
             entry->capacity = capacity;
@@ -154,7 +181,11 @@ namespace components::table {
             }
             head = std::move(entry);
         } else {
-            handle = buffer_manager.pin(head->block);
+            auto pinned = buffer_manager.pin(head->block);
+            if (pinned.has_error()) {
+                return pinned.convert_error<undo_buffer_reference>();
+            }
+            handle = std::move(pinned.value());
         }
         uint64_t current_position = head->position;
         head->position += alloc_len;
@@ -293,17 +324,17 @@ namespace components::table {
         }
     }
 
-    void update_segment_t::update(uint64_t column_index,
-                                  vector::vector_t& update,
-                                  int64_t* ids,
-                                  uint64_t count,
-                                  vector::vector_t& base_data) {
+    core::result_wrapper_t<bool> update_segment_t::update(uint64_t column_index,
+                                                         vector::vector_t& update,
+                                                         int64_t* ids,
+                                                         uint64_t count,
+                                                         vector::vector_t& base_data) {
         auto write_lock = std::unique_lock(m_);
 
         update.flatten(count);
 
         if (count == 0) {
-            return;
+            return true;
         }
 
         vector::indexing_vector_t indexing(update.resource(), 0, count);
@@ -325,7 +356,15 @@ namespace components::table {
             auto& base_info = root_pin.update_info();
 
             undo_buffer_reference node_ref;
-            check_for_conflicts(base_info.next, ids, indexing, count, static_cast<int64_t>(vector_offset));
+            auto conflict = check_for_conflicts(base_info.next,
+                                                ids,
+                                                indexing,
+                                                count,
+                                                static_cast<int64_t>(vector_offset),
+                                                column_data_->resource());
+            if (conflict.contains_error()) {
+                return conflict; // write_conflict
+            }
 
             std::unique_ptr<std::byte[]> update_info_data;
             update_info_t* node;
@@ -347,7 +386,11 @@ namespace components::table {
             merge_update(base_info, base_data, *node, update, ids, count, indexing);
         } else {
             uint64_t alloc_size = update_info_t::allocation_size(type_size_);
-            auto handle = root_->buffer_allocator.allocate(alloc_size);
+            auto allocated = root_->buffer_allocator.allocate(alloc_size);
+            if (allocated.has_error()) {
+                return allocated.convert_error<bool>(); // out_of_memory
+            }
+            auto& handle = allocated.value();
             auto& update_info = handle.update_info();
             update_info.initialize();
             update_info.column_index = column_index;
@@ -370,6 +413,7 @@ namespace components::table {
 
             root_->info[vector_index] = handle.buffer_pointer();
         }
+        return true;
     }
 
     void update_segment_t::fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx) {

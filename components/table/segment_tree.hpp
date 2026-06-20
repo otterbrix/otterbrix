@@ -167,6 +167,33 @@ namespace components::table {
             nodes_ = std::move(other.nodes_);
         }
 
+        // Swap the backing of a SINGLE node in place (write-through re-point): the new node must
+        // carry the SAME row range (start/count/row_start) as the one it replaces -- only its block backing
+        // differs (managed in-memory -> disk-backed). Preserves index/row_start and FIXES the intrusive list:
+        //   * the new node inherits the old node's index, start and next link,
+        //   * the PREVIOUS node's next link is re-pointed at the new node,
+        //   * (the new node's own next already pointed at by the next node's link is unchanged -- that link
+        //     lives on the *next* node and still references position index+1, which is untouched).
+        // Caller must hold the tree lock. The old node (and its managed block_handle) is released on return.
+        void replace_segment_at_index(std::unique_lock<std::mutex>& l, uint64_t index, std::unique_ptr<T> new_node) {
+            load_all_segments(l);
+            assert(index < nodes_.size());
+            assert(new_node);
+            auto& entry = nodes_[index];
+            assert(new_node->start == entry.node->start);
+            assert(new_node->count.load() == entry.node->count.load());
+            // Inherit the old node's intrusive-list position.
+            new_node->index = index;
+            new_node->next = entry.node->next;
+            // Re-point the previous node's forward link at the new node so iteration stays intact.
+            if (index > 0) {
+                nodes_[index - 1].node->next = new_node.get();
+            }
+            // row_start is unchanged (same start); swap the backing.
+            entry.row_start = new_node->start;
+            entry.node = std::move(new_node);
+        }
+
         void erase_segments(std::unique_lock<std::mutex>& l, uint64_t segment_start) {
             load_all_segments(l);
             if (segment_start >= nodes_.size() - 1) {

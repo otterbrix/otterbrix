@@ -4,6 +4,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <queue>
 
+#include "column_data.hpp"
 #include "row_group.hpp"
 #include "row_version_manager.hpp"
 
@@ -203,7 +204,7 @@ namespace components::table {
 
     bool collection_t::is_empty(std::unique_lock<std::mutex>& l) const { return row_groups_->is_empty(l); }
 
-    void collection_t::initialize_append(table_append_state& state) {
+    core::result_wrapper_t<bool> collection_t::initialize_append(table_append_state& state) {
         state.row_start = static_cast<int64_t>(total_rows_.load());
         state.current_row = state.row_start;
         state.total_append_count = 0;
@@ -215,10 +216,10 @@ namespace components::table {
         state.start_row_group = row_groups_->last_segment(l);
         assert(row_start_ + static_cast<int64_t>(total_rows_.load()) ==
                state.start_row_group->start + static_cast<int64_t>(state.start_row_group->count));
-        state.start_row_group->initialize_append(state.append_state);
+        return state.start_row_group->initialize_append(state.append_state); // out_of_memory
     }
 
-    bool collection_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
+    core::result_wrapper_t<bool> collection_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
         const uint64_t prev_row_group_size = row_group_size_;
         assert(chunk.column_count() == types_.size());
 
@@ -232,8 +233,11 @@ namespace components::table {
                 std::min<uint64_t>(remaining, prev_row_group_size - state.append_state.offset_in_row_group);
             if (append_count > 0) {
                 auto previous_allocation_size = current_row_group->allocation_size();
-                current_row_group->append(state.append_state, chunk, append_count);
+                auto appended = current_row_group->append(state.append_state, chunk, append_count);
                 allocation_size_ += current_row_group->allocation_size() - previous_allocation_size;
+                if (appended.has_error()) {
+                    return appended; // out_of_memory
+                }
             }
             remaining -= append_count;
             if (remaining == 0) {
@@ -249,7 +253,18 @@ namespace components::table {
             auto l = row_groups_->lock();
             append_row_group(l, next_start);
             auto last_row_group = row_groups_->last_segment(l);
-            last_row_group->initialize_append(state.append_state);
+            auto init = last_row_group->initialize_append(state.append_state);
+            if (init.has_error()) {
+                return init; // out_of_memory
+            }
+            // Write-through: the row group we just closed is now COMPLETE (its column segments are final
+            // and the append state has moved to the new row group). Re-point its managed segments to disk so the
+            // pool can evict+reload them -> bounded memory at any table size. No-op for in-memory tables; a
+            // write/alloc failure surfaces as io_error/out_of_memory, never a throw.
+            auto transitioned = current_row_group->transition_to_disk();
+            if (transitioned.has_error()) {
+                return transitioned;
+            }
         }
         state.current_row += int64_t(total_append_count);
         return new_row_group;
@@ -350,7 +365,8 @@ namespace components::table {
         return delete_count;
     }
 
-    void collection_t::update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates) {
+    core::result_wrapper_t<bool>
+    collection_t::update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates) {
         uint64_t pos = 0;
         do {
             uint64_t start = pos;
@@ -369,13 +385,17 @@ namespace components::table {
                     break;
                 }
             }
-            row_group->update(updates, ids, start, pos - start, column_ids);
+            auto updated = row_group->update(updates, ids, start, pos - start, column_ids);
+            if (updated.has_error()) {
+                return updated; // write_conflict / out_of_memory
+            }
         } while (pos < updates.size());
+        return true;
     }
 
-    void collection_t::update_column(vector::vector_t& row_ids,
-                                     const std::vector<uint64_t>& column_path,
-                                     vector::data_chunk_t& updates) {
+    core::result_wrapper_t<bool> collection_t::update_column(vector::vector_t& row_ids,
+                                                           const std::vector<uint64_t>& column_path,
+                                                           vector::data_chunk_t& updates) {
         uint64_t pos = 0;
         do {
             uint64_t start = pos;
@@ -394,8 +414,12 @@ namespace components::table {
                     break;
                 }
             }
-            row_group->update(updates, row_ids.data<int64_t>(), start, pos - start, column_path);
+            auto updated = row_group->update(updates, row_ids.data<int64_t>(), start, pos - start, column_path);
+            if (updated.has_error()) {
+                return updated;
+            }
         } while (pos < updates.size());
+        return true;
     }
 
     std::vector<column_segment_info> collection_t::get_column_segment_info() {
@@ -404,6 +428,12 @@ namespace components::table {
             row_group.get_column_segment_info(row_group.index, result);
         }
         return result;
+    }
+
+    void collection_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) {
+        for (auto& row_group : row_groups_->segments()) {
+            row_group.collect_disk_block_ids(out);
+        }
     }
 
     std::shared_ptr<collection_t> collection_t::add_column(column_definition_t& new_column) {
@@ -445,7 +475,7 @@ namespace components::table {
         return result;
     }
 
-    std::vector<storage::row_group_pointer_t>
+    core::result_wrapper_t<std::vector<storage::row_group_pointer_t>>
     collection_t::checkpoint(storage::partial_block_manager_t& partial_block_manager) {
         std::vector<storage::row_group_pointer_t> pointers;
 
@@ -453,7 +483,10 @@ namespace components::table {
         auto& segments = row_groups_->reference_segments(l);
         for (const auto& segment : segments) {
             auto pointer = segment.node->write_to_disk(partial_block_manager);
-            pointers.push_back(std::move(pointer));
+            if (pointer.has_error()) {
+                return pointer.convert_error<std::vector<storage::row_group_pointer_t>>(); // out_of_memory
+            }
+            pointers.push_back(std::move(pointer.value()));
         }
 
         partial_block_manager.flush_partial_blocks();

@@ -33,21 +33,21 @@ namespace components::table {
 
         void skip(column_scan_state& state, uint64_t count = vector::DEFAULT_VECTOR_CAPACITY) override;
 
-        void initialize_append(column_append_state& state) override;
-        void append(column_append_state& state, vector::vector_t& vector, uint64_t count) override;
+        core::result_wrapper_t<bool> initialize_append(column_append_state& state) override;
+        core::result_wrapper_t<bool> append(column_append_state& state, vector::vector_t& vector, uint64_t count) override;
         void revert_append(int64_t start_row) override;
         uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) override;
         void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) override;
-        void update(uint64_t column_index,
-                    vector::vector_t& update_vector,
-                    int64_t* row_ids,
-                    uint64_t update_count) override;
-        void update_column(const std::vector<uint64_t>& column_path,
-                           vector::vector_t& update_vector,
-                           int64_t* row_ids,
-                           uint64_t update_count,
-                           uint64_t depth) override;
+        core::result_wrapper_t<bool> update(uint64_t column_index,
+                                            vector::vector_t& update_vector,
+                                            int64_t* row_ids,
+                                            uint64_t update_count) override;
+        core::result_wrapper_t<bool> update_column(const std::vector<uint64_t>& column_path,
+                                                   vector::vector_t& update_vector,
+                                                   int64_t* row_ids,
+                                                   uint64_t update_count,
+                                                   uint64_t depth) override;
 
         void get_column_segment_info(uint64_t row_group_index,
                                      std::vector<uint64_t> col_path,

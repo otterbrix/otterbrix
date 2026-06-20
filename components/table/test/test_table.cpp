@@ -188,9 +188,9 @@ TEST_CASE("components::table::data_table") {
         }
 
         table_append_state state(&resource);
-        data_table->append_lock(state);
-        data_table->initialize_append(state);
-        data_table->append(chunk, state);
+        REQUIRE_FALSE(data_table->append_lock(state).has_error());
+        REQUIRE_FALSE(data_table->initialize_append(state).has_error());
+        REQUIRE_FALSE(data_table->append(chunk, state).has_error());
         data_table->finalize_append(state, transaction_data{0, 0});
     }
     INFO("Fetch") {

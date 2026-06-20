@@ -188,7 +188,10 @@ namespace services::disk {
         //   append. User + catalog inserts share ONE write ordering. Returns
         //   (start_row, count); (0,0) on no-op. Takes the full execution_context
         //   (session/txn/tz/db_oid) because the agent owns the WAL write.
-        unique_future<std::pair<uint64_t, uint64_t>>
+        // Reply wraps the pair so a buffer-pool OOM or write_conflict surfaced by the
+        // table-layer append chain travels back to operator_insert as a value (no throw
+        // across the mailbox).
+        unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append_inner(execution_context_t ctx,
                              components::catalog::oid_t table_oid,
                              std::unique_ptr<components::vector::data_chunk_t> data);
@@ -222,9 +225,10 @@ namespace services::disk {
         storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges);
 
         // storage_update_inner — single-OID UPDATE mutation against the
-        //   agent twin. Returns storage_t::update's (updated, appended)
-        //   pair; (0, 0) on no-op.
-        unique_future<std::pair<int64_t, uint64_t>>
+        //   agent twin. Reply wraps storage_t::update's (updated, appended) pair so a
+        //   write_conflict / out_of_memory travels back to operator_update as a value;
+        //   (0, 0) on no-op.
+        unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update_inner(components::catalog::oid_t table_oid,
                              components::vector::vector_t row_ids,
                              std::unique_ptr<components::vector::data_chunk_t> data,
@@ -245,9 +249,11 @@ namespace services::disk {
         // Read-path handlers (scan_batched / scan_segment / types / total_rows).
         // Not-owned OIDs return an empty/zero sentinel.
         //
-        // storage_scan_batched_inner — batched + projected scan; returns a PMR vector
-        //   of data_chunk_t batches (≤ DEFAULT_VECTOR_CAPACITY rows each).
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        // storage_scan_batched_inner — batched + projected scan; the reply wraps a PMR vector
+        //   of data_chunk_t batches (≤ DEFAULT_VECTOR_CAPACITY rows each), carrying any
+        //   buffer-pool OOM / data_corruption the table-layer scan left in scan_error as a
+        //   value (no throw across the mailbox).
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_scan_batched_inner(components::catalog::oid_t table_oid,
                                    std::unique_ptr<components::table::table_filter_t> filter,
                                    int64_t limit,
@@ -494,10 +500,11 @@ namespace services::disk {
     private:
         // Non-mailbox committed-scan over an OWNED slice entry (D6: callers on the agent
         // thread — storage_scan_batched_inner and read_chunks_by_keys_inner — read their own
-        // slice directly here, never by self-sending a mailbox message). Returns empty when
-        // the oid isn't owned or is a record-only marker. `filter` may be nullptr;
-        // `projected_cols` may be nullptr for all columns.
-        std::pmr::vector<components::vector::data_chunk_t>
+        // slice directly here, never by self-sending a mailbox message). Returns empty batches
+        // when the oid isn't owned or is a record-only marker. `filter` may be nullptr;
+        // `projected_cols` may be nullptr for all columns. The wrapper carries any buffer-pool
+        // OOM / data_corruption surfaced by the table-layer scan as a value.
+        core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
         scan_batched_local(components::catalog::oid_t table_oid,
                            components::table::table_filter_t* filter,
                            int64_t limit,

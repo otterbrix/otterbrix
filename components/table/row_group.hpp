@@ -57,7 +57,8 @@ namespace components::table {
         void scan(collection_scan_state& state, vector::data_chunk_t& result);
         void scan_committed(collection_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 
-        bool check_predicate(int64_t row_id, const table_filter_t* filter);
+        // `error` carries an out_of_memory error_t when a pin fails mid-check.
+        bool check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error);
 
         void fetch_row(column_fetch_state& state,
                        const std::vector<storage_index_t>& column_ids,
@@ -81,22 +82,38 @@ namespace components::table {
         // (pending txn id or commit id newer than the visible-to-all horizon).
         bool has_version_above(uint64_t watermark);
 
-        void initialize_append(row_group_append_state& append_state);
-        void append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
+        // The append chain returns out_of_memory when a column segment allocation fails;
+        // true on success.
+        core::result_wrapper_t<bool> initialize_append(row_group_append_state& append_state);
+        core::result_wrapper_t<bool>
+        append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
 
-        void update(vector::data_chunk_t& updates,
-                    int64_t* ids,
-                    uint64_t offset,
-                    uint64_t count,
-                    const std::vector<uint64_t>& column_ids);
-        void update_column(vector::data_chunk_t& updates,
-                           vector::vector_t& row_ids,
-                           const std::vector<uint64_t>& column_path);
+        // Update path returns write_conflict / out_of_memory; true on success.
+        core::result_wrapper_t<bool> update(vector::data_chunk_t& updates,
+                                            int64_t* ids,
+                                            uint64_t offset,
+                                            uint64_t count,
+                                            const std::vector<uint64_t>& column_ids);
+        core::result_wrapper_t<bool> update_column(vector::data_chunk_t& updates,
+                                                   vector::vector_t& row_ids,
+                                                   const std::vector<uint64_t>& column_path);
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);
 
-        storage::row_group_pointer_t write_to_disk(storage::partial_block_manager_t& partial_block_manager);
+        // Append the ids of disk blocks exclusively owned by this row group's columns (and their
+        // sub-columns) to `out`, so a compacting caller can free them after swapping the collection.
+        void collect_disk_block_ids(std::pmr::vector<uint64_t>& out);
+
+        // The checkpoint chain returns out_of_memory when a column flush pin fails;
+        // the row group pointer on success.
+        core::result_wrapper_t<storage::row_group_pointer_t>
+        write_to_disk(storage::partial_block_manager_t& partial_block_manager);
         void create_from_pointer(const storage::row_group_pointer_t& pointer);
+
+        // Write-through: re-point every COMPLETE managed column segment of this row group to a
+        // disk-backed segment (call once the row group is closed -> its segments are final). No-op for
+        // in-memory tables. Returns io_error/out_of_memory on failure; true on success.
+        core::result_wrapper_t<bool> transition_to_disk();
 
         uint64_t allocation_size() const { return allocation_size_; }
 
@@ -125,7 +142,8 @@ namespace components::table {
                              uint64_t vector_index,
                              vector::indexing_vector_t& indexing,
                              const table_filter_t* filter,
-                             uint64_t& approved_tuple_count);
+                             uint64_t& approved_tuple_count,
+                             core::error_t& error);
 
         template<table_scan_type TYPE>
         void templated_scan(collection_scan_state& state, vector::data_chunk_t& result);

@@ -2,9 +2,12 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <components/table/column_definition.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/table_state.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <core/result_wrapper.hpp>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <unistd.h>
@@ -183,6 +186,58 @@ TEST_CASE("services::disk::torn::load_falls_back_to_prev_on_corrupt_otbx") {
     REQUIRE(ts.table().calculate_size() == 1);
     REQUIRE(std::filesystem::exists(broken));
     REQUIRE_FALSE(std::filesystem::exists(prev));
+
+    cleanup_torn_dir();
+}
+
+// Corrupt .otbx with NO .prev -> error surfaced as a VALUE (construction_error),
+// not a throw/terminate. The DISK reopen ctor of table_storage_t runs
+// load_existing_database(); on a bad-magic main header it returns data_corruption,
+// which the ctor records in construction_error_ (instead of throwing, since it can
+// run on the noexcept agent thread). We build a valid .otbx, flip the main_header
+// magic (file offset 0) so it fails validate(), leave no .prev, then reopen and
+// assert construction_failed() with data_corruption and NO throw.
+TEST_CASE("services::disk::torn::reopen_corrupt_otbx_no_prev_surfaces_error_value") {
+    cleanup_torn_dir();
+    auto db_dir = std::filesystem::path(torn_test_dir()) / "db3" / "main" / "coll3";
+    std::filesystem::create_directories(db_dir);
+    std::pmr::synchronized_pool_resource resource;
+
+    auto otbx = db_dir / "table.otbx";
+
+    // Build a valid otbx via the create + checkpoint path.
+    {
+        std::vector<column_definition_t> cols;
+        cols.emplace_back("value", logical_type::BIGINT);
+        table_storage_t ts(&resource, std::move(cols), otbx);
+        REQUIRE_FALSE(ts.construction_failed());
+        append_one_int(ts.table(), &resource, 5);
+        ts.checkpoint();
+    }
+    REQUIRE(std::filesystem::exists(otbx));
+    REQUIRE_FALSE(std::filesystem::exists(std::filesystem::path(otbx.string() + ".prev")));
+
+    // main_header_t::magic is the first 4 bytes of the file. Overwrite it with a
+    // value that is not MAGIC_NUMBER so load_existing_database() reports data_corruption.
+    {
+        std::fstream f(otbx, std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(f.is_open());
+        uint32_t bad_magic = 0x0BADBEEF;
+        REQUIRE(bad_magic != components::table::storage::main_header_t::MAGIC_NUMBER);
+        f.seekp(0);
+        f.write(reinterpret_cast<const char*>(&bad_magic), sizeof(bad_magic));
+        f.flush();
+        REQUIRE(f.good());
+    }
+
+    // Reopen the corrupt file: ctor must NOT throw and must record the error as a VALUE.
+    {
+        table_storage_t ts(&resource, otbx);
+        REQUIRE(ts.construction_failed());
+        REQUIRE(ts.construction_error().type == core::error_code_t::data_corruption);
+    }
+    // The ctor itself is the unit under test for "no throw"; build it inside REQUIRE_NOTHROW too.
+    REQUIRE_NOTHROW([&] { table_storage_t probe(&resource, otbx); }());
 
     cleanup_torn_dir();
 }

@@ -46,9 +46,9 @@ namespace {
                 chunk.set_value(0, i, logical_value_t{resource, static_cast<int64_t>(offset + i)});
             }
             table_append_state state(resource);
-            table.append_lock(state);
-            table.initialize_append(state);
-            table.append(chunk, state);
+            REQUIRE_FALSE(table.append_lock(state).has_error());
+            REQUIRE_FALSE(table.initialize_append(state).has_error());
+            REQUIRE_FALSE(table.append(chunk, state).has_error());
             table.finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
@@ -71,9 +71,9 @@ namespace {
                 chunk.set_value(0, i, logical_value_t{resource, value_fn(offset + i)});
             }
             table_append_state state(resource);
-            table.append_lock(state);
-            table.initialize_append(state);
-            table.append(chunk, state);
+            REQUIRE_FALSE(table.append_lock(state).has_error());
+            REQUIRE_FALSE(table.initialize_append(state).has_error());
+            REQUIRE_FALSE(table.append(chunk, state).has_error());
             table.finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
@@ -97,9 +97,9 @@ namespace {
                 chunk.set_value(0, i, logical_value_t{resource, value_fn(offset + i)});
             }
             table_append_state state(resource);
-            table.append_lock(state);
-            table.initialize_append(state);
-            table.append(chunk, state);
+            REQUIRE_FALSE(table.append_lock(state).has_error());
+            REQUIRE_FALSE(table.initialize_append(state).has_error());
+            REQUIRE_FALSE(table.append(chunk, state).has_error());
             table.finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
@@ -121,7 +121,7 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
     // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
@@ -132,7 +132,7 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -143,11 +143,13 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
     // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         REQUIRE(loaded->table_name() == "test_table");
         REQUIRE(loaded->column_count() == 1);
@@ -182,7 +184,7 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
     // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
@@ -203,9 +205,9 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
                 chunk.set_value(2, i, logical_value_t{&env.resource, static_cast<double>(row) * 1.5});
             }
             table_append_state state(&env.resource);
-            table->append_lock(state);
-            table->initialize_append(state);
-            table->append(chunk, state);
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            REQUIRE_FALSE(table->append(chunk, state).has_error());
             table->finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
@@ -214,7 +216,7 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -225,11 +227,13 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
     // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         REQUIRE(loaded->table_name() == "multi_col");
         REQUIRE(loaded->column_count() == 3);
@@ -271,7 +275,7 @@ TEST_CASE("checkpoint_load: empty table") {
     // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
@@ -281,7 +285,7 @@ TEST_CASE("checkpoint_load: empty table") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -292,11 +296,13 @@ TEST_CASE("checkpoint_load: empty table") {
     // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         REQUIRE(loaded->table_name() == "empty_table");
         REQUIRE(loaded->column_count() == 1);
@@ -323,7 +329,7 @@ TEST_CASE("checkpoint_load: multiple row groups") {
     // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
@@ -334,7 +340,7 @@ TEST_CASE("checkpoint_load: multiple row groups") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -345,11 +351,13 @@ TEST_CASE("checkpoint_load: multiple row groups") {
     // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         REQUIRE(loaded->table_name() == "big_table");
         REQUIRE(loaded->column_count() == 1);
@@ -383,7 +391,7 @@ TEST_CASE("checkpoint_load: CONSTANT compression — all identical values") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
@@ -394,7 +402,7 @@ TEST_CASE("checkpoint_load: CONSTANT compression — all identical values") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -404,11 +412,13 @@ TEST_CASE("checkpoint_load: CONSTANT compression — all identical values") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         REQUIRE(loaded->table_name() == "const_table");
         uint64_t scanned = 0;
@@ -438,7 +448,7 @@ TEST_CASE("checkpoint_load: RLE compression — sorted runs") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
@@ -452,7 +462,7 @@ TEST_CASE("checkpoint_load: RLE compression — sorted runs") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -462,11 +472,13 @@ TEST_CASE("checkpoint_load: RLE compression — sorted runs") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
@@ -497,7 +509,7 @@ TEST_CASE("checkpoint_load: DICTIONARY compression — low cardinality cycling")
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
@@ -511,7 +523,7 @@ TEST_CASE("checkpoint_load: DICTIONARY compression — low cardinality cycling")
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -521,11 +533,13 @@ TEST_CASE("checkpoint_load: DICTIONARY compression — low cardinality cycling")
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
@@ -556,7 +570,7 @@ TEST_CASE("checkpoint_load: UNCOMPRESSED fallback — high cardinality") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
@@ -568,7 +582,7 @@ TEST_CASE("checkpoint_load: UNCOMPRESSED fallback — high cardinality") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -578,11 +592,13 @@ TEST_CASE("checkpoint_load: UNCOMPRESSED fallback — high cardinality") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
@@ -614,7 +630,7 @@ TEST_CASE("checkpoint_load: mixed row groups — constant + varied") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
@@ -629,7 +645,7 @@ TEST_CASE("checkpoint_load: mixed row groups — constant + varied") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -639,11 +655,13 @@ TEST_CASE("checkpoint_load: mixed row groups — constant + varied") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, TOTAL_ROWS, [&](data_chunk_t& chunk) {
@@ -680,7 +698,7 @@ TEST_CASE("checkpoint_load: DOUBLE column — constant compression") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("score", logical_type::DOUBLE);
@@ -691,7 +709,7 @@ TEST_CASE("checkpoint_load: DOUBLE column — constant compression") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -701,11 +719,13 @@ TEST_CASE("checkpoint_load: DOUBLE column — constant compression") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
@@ -735,7 +755,7 @@ TEST_CASE("checkpoint_load: small segment — 2 rows edge case") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
@@ -746,7 +766,7 @@ TEST_CASE("checkpoint_load: small segment — 2 rows edge case") {
 
         metadata_manager_t meta_mgr(bm);
         metadata_writer_t writer(meta_mgr);
-        table->checkpoint(writer);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
         database_header_t header;
@@ -756,11 +776,13 @@ TEST_CASE("checkpoint_load: small segment — 2 rows edge case") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         metadata_manager_t meta_mgr(bm);
         metadata_reader_t reader(meta_mgr, table_pointer);
-        auto loaded = data_table_t::load_from_disk(&env.resource, bm, reader);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
 
         REQUIRE(loaded->table_name() == "tiny_table");
         uint64_t scanned = 0;
@@ -771,6 +793,209 @@ TEST_CASE("checkpoint_load: small segment — 2 rows edge case") {
             scanned += chunk.size();
         });
         REQUIRE(scanned == NUM_ROWS);
+    }
+
+    cleanup_test_file();
+}
+
+// ---------------------------------------------------------------------------
+// REGRESSION: shared partial block corruption on REOPEN after table GROWS.
+//
+// The catalog table pg_attribute packs ~8 narrow, low-cardinality columns into
+// ONE shared partial block at distinct offsets (col0 @0, the rest at increasing
+// non-zero offsets). On REOPEN after the table GROWS and re-checkpoints, the
+// shared block's in-memory buffer was clobbered at the packed (non-zero-offset)
+// columns, so reads returned garbage.
+//
+// This mimics pg_attribute: 8 BIGINT columns, each very low cardinality so the
+// checkpointer DICTIONARY/RLE/CONSTANT-compresses every segment to a few bytes,
+// and the shared partial_block_manager packs all of them into one block. Then:
+//   checkpoint #1 -> reopen #1 -> GROW (append rows) -> checkpoint #2 ->
+//   reopen #2 -> scan and assert EVERY column reads back EXACTLY.
+namespace {
+    // Replicate the agent-level checkpoint sequence (manager_disk.cpp): flush the
+    // table metadata, set the meta block, serialize the free list, and persist the
+    // header WITH the free list. Persisting the free list across reopen is what
+    // makes the block-recycling corruption deterministic.
+    components::table::storage::meta_block_pointer_t
+    full_checkpoint(components::table::data_table_t& table,
+                    components::table::storage::single_file_block_manager_t& bm) {
+        using namespace components::table::storage;
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        REQUIRE_FALSE(table.checkpoint(writer).has_error());
+        writer.flush();
+        auto table_pointer = writer.get_block_pointer();
+
+        bm.set_meta_block(table_pointer.block_pointer);
+        auto free_list_ptr = bm.serialize_free_list();
+        bm.file_sync();
+        database_header_t header;
+        header.initialize();
+        header.free_list = free_list_ptr.block_pointer;
+        bm.write_header(header);
+        bm.file_sync();
+        return table_pointer;
+    }
+
+    // pg_attribute-like value generator: column c at row r. Low cardinality per
+    // column so the checkpointer compresses each segment; distinct per-column
+    // patterns so a cross-column clobber is detectable.
+    int64_t pg_attr_value(uint64_t col, uint64_t row) {
+        switch (col) {
+            case 0: return static_cast<int64_t>(row);          // attrelid-like, RLE-ish runs
+            case 1: return static_cast<int64_t>(20 + row % 3); // atttypid: {20,21,22}
+            case 2: return static_cast<int64_t>(row % 8 + 1);  // attnum: 1..8 cycling (DICTIONARY)
+            case 3: return 1;                                  // attnotnull: CONSTANT
+            case 4: return 0;                                  // atthasdefault: CONSTANT
+            case 5: return 0;                                  // attisdropped: CONSTANT 0 (the SSB symptom)
+            case 6: return 1000;                               // added_at_commit_id: CONSTANT
+            case 7: return 0;                                  // dropped_at_commit_id: CONSTANT 0
+            default: return static_cast<int64_t>(col * 100 + row % 4);
+        }
+    }
+
+    void append_pg_attr_rows(components::table::data_table_t& table,
+                             std::pmr::memory_resource* resource,
+                             uint64_t num_cols,
+                             uint64_t row_start,
+                             uint64_t count) {
+        using namespace components::types;
+        using namespace components::vector;
+        using namespace components::table;
+        auto types = table.copy_types();
+        uint64_t offset = 0;
+        while (offset < count) {
+            uint64_t batch = std::min(count - offset, uint64_t(DEFAULT_VECTOR_CAPACITY));
+            data_chunk_t chunk(resource, types, batch);
+            chunk.set_cardinality(batch);
+            for (uint64_t i = 0; i < batch; i++) {
+                uint64_t r = row_start + offset + i;
+                for (uint64_t c = 0; c < num_cols; c++) {
+                    chunk.set_value(c, i, logical_value_t{resource, pg_attr_value(c, r)});
+                }
+            }
+            table_append_state state(resource);
+            REQUIRE_FALSE(table.append_lock(state).has_error());
+            REQUIRE_FALSE(table.initialize_append(state).has_error());
+            REQUIRE_FALSE(table.append(chunk, state).has_error());
+            table.finalize_append(state, transaction_data{0, 0});
+            offset += batch;
+        }
+    }
+
+    void scan_and_verify_pg_attr(components::table::data_table_t& table,
+                                 uint64_t num_cols,
+                                 uint64_t total_rows) {
+        using namespace components::vector;
+        uint64_t scanned = 0;
+        table.scan_table_segment(0, total_rows, [&](data_chunk_t& chunk) {
+            for (uint64_t i = 0; i < chunk.size(); i++) {
+                uint64_t r = scanned + i;
+                for (uint64_t c = 0; c < num_cols; c++) {
+                    auto v = chunk.data[c].value(i);
+                    INFO("col=" << c << " row=" << r);
+                    REQUIRE(v.value<int64_t>() == pg_attr_value(c, r));
+                }
+            }
+            scanned += chunk.size();
+        });
+        REQUIRE(scanned == total_rows);
+    }
+
+    // Pool large enough to hold the (tiny) working set resident: the corruption is an
+    // append-into-loaded-segment bug independent of eviction pressure, so the large
+    // pool keeps this guard focused on the data corruption, not pool exhaustion.
+    struct small_pool_env_t {
+        std::pmr::synchronized_pool_resource resource;
+        core::filesystem::local_file_system_t fs;
+        components::table::storage::buffer_pool_t buffer_pool;
+        components::table::storage::standard_buffer_manager_t buffer_manager;
+        small_pool_env_t()
+            : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+            , buffer_manager(&resource, fs, buffer_pool) {}
+    };
+} // namespace
+
+TEST_CASE("checkpoint_load: shared partial block survives reopen after table grows") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    cleanup_test_file();
+
+    small_pool_env_t env;
+    constexpr uint64_t NUM_COLS = 8;
+    constexpr uint64_t INITIAL_ROWS = 200; // small -> compressed segments pack into one block
+    constexpr uint64_t GROW_ROWS = 200;
+    constexpr uint64_t TOTAL_ROWS = INITIAL_ROWS + GROW_ROWS;
+
+    auto make_columns = []() {
+        std::vector<column_definition_t> cols;
+        const char* names[NUM_COLS] = {"attrelid",
+                                       "atttypid",
+                                       "attnum",
+                                       "attnotnull",
+                                       "atthasdefault",
+                                       "attisdropped",
+                                       "added_at_commit_id",
+                                       "dropped_at_commit_id"};
+        for (uint64_t c = 0; c < NUM_COLS; c++) {
+            cols.emplace_back(names[c], logical_type::BIGINT);
+        }
+        return cols;
+    };
+
+    meta_block_pointer_t table_pointer;
+
+    // Phase 1: create, append, checkpoint #1.
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+        auto table = std::make_unique<data_table_t>(&env.resource, bm, make_columns(), "pg_attribute");
+        append_pg_attr_rows(*table, &env.resource, NUM_COLS, 0, INITIAL_ROWS);
+        REQUIRE(table->calculate_size() == INITIAL_ROWS);
+        table_pointer = full_checkpoint(*table, bm);
+    }
+
+    // Phase 2: REOPEN #1, verify, then GROW + checkpoint #2.
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.load_existing_database().has_error());
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
+        REQUIRE(loaded->column_count() == NUM_COLS);
+
+        // After reopen the loaded data still reads correctly.
+        scan_and_verify_pg_attr(*loaded, NUM_COLS, INITIAL_ROWS);
+
+        // GROW the table: append more rows, then re-checkpoint. This is where the
+        // shared partial block gets freed/recycled and its packed (non-zero-offset)
+        // columns clobbered.
+        append_pg_attr_rows(*loaded, &env.resource, NUM_COLS, INITIAL_ROWS, GROW_ROWS);
+        REQUIRE(loaded->calculate_size() == TOTAL_ROWS);
+        table_pointer = full_checkpoint(*loaded, bm);
+    }
+
+    // Phase 3: REOPEN #2, scan EVERY column. The packed columns at non-zero
+    // offsets (atttypid, attnum, attnotnull, atthasdefault, attisdropped,
+    // added_at_commit_id, dropped_at_commit_id) must read back EXACTLY. On the
+    // buggy code attisdropped/added_at_commit_id come back garbage (the SSB
+    // symptom).
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.load_existing_database().has_error());
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
+        REQUIRE(loaded->column_count() == NUM_COLS);
+
+        scan_and_verify_pg_attr(*loaded, NUM_COLS, TOTAL_ROWS);
     }
 
     cleanup_test_file();

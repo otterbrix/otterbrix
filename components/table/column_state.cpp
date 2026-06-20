@@ -125,17 +125,21 @@ namespace components::table {
         }
     }
 
-    storage::buffer_handle_t& column_fetch_state::get_or_insert_handle(column_segment_t& segment) {
+    storage::buffer_handle_t* column_fetch_state::get_or_insert_handle(column_segment_t& segment) {
         auto primary_id = segment.block->block_id();
 
         auto entry = handles.find(primary_id);
         if (entry == handles.end()) {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto handle = buffer_manager.pin(segment.block);
-            auto pinned_entry = handles.insert({primary_id, std::move(handle)});
-            return pinned_entry.first->second;
+            auto pinned = buffer_manager.pin(segment.block);
+            if (pinned.has_error()) {
+                fetch_error = pinned.error();
+                return nullptr;
+            }
+            auto pinned_entry = handles.insert({primary_id, std::move(pinned.value())});
+            return &pinned_entry.first->second;
         } else {
-            return entry->second;
+            return &entry->second;
         }
     }
 

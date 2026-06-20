@@ -167,6 +167,13 @@ namespace components::table {
         vector::indexing_vector_t valid_indexing;
         transaction_data txn{0, 0};
 
+        // Aggregated buffer-pool OOM raised during the scan. row_group_t copies each column's
+        // column_scan_state::scan_error here; the scan loops stop on it. data_table_t::scan /
+        // scan_batched keep their void shape and LEAVE the error here for the caller to read
+        // via has_error().
+        core::error_t scan_error{core::error_t::no_error()};
+        bool has_error() const { return scan_error.contains_error(); }
+
         std::random_device random;
 
         void initialize(const std::pmr::vector<types::complex_logical_type>& types);

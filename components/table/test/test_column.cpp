@@ -73,8 +73,8 @@ TEST_CASE("components::table::column") {
             }
 
             column_append_state state;
-            column->initialize_append(state);
-            column->append(state, v, test_size);
+            REQUIRE_FALSE(column->initialize_append(state).has_error());
+            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
         // Fetch
         {
@@ -147,8 +147,8 @@ TEST_CASE("components::table::column") {
             }
 
             column_append_state state;
-            column->initialize_append(state);
-            column->append(state, v, test_size);
+            REQUIRE_FALSE(column->initialize_append(state).has_error());
+            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
         // Fetch
         {
@@ -234,8 +234,8 @@ TEST_CASE("components::table::column") {
             }
 
             column_append_state state;
-            column->initialize_append(state);
-            column->append(state, v, test_size);
+            REQUIRE_FALSE(column->initialize_append(state).has_error());
+            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
         // Fetch
         {
@@ -333,8 +333,8 @@ TEST_CASE("components::table::column") {
             }
 
             column_append_state state;
-            column->initialize_append(state);
-            column->append(state, v, test_size);
+            REQUIRE_FALSE(column->initialize_append(state).has_error());
+            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
         // Fetch
         {
@@ -440,8 +440,8 @@ TEST_CASE("components::table::column") {
             }
 
             column_append_state state;
-            column->initialize_append(state);
-            column->append(state, v, test_size);
+            REQUIRE_FALSE(column->initialize_append(state).has_error());
+            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
         // Fetch
         {
@@ -543,8 +543,8 @@ TEST_CASE("components::table::column") {
             }
 
             column_append_state state;
-            column->initialize_append(state);
-            column->append(state, v, test_size);
+            REQUIRE_FALSE(column->initialize_append(state).has_error());
+            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
         // Fetch
         {
@@ -667,8 +667,8 @@ TEST_CASE("components::table::column") {
             }
 
             column_append_state state;
-            column->initialize_append(state);
-            column->append(state, v, test_size);
+            REQUIRE_FALSE(column->initialize_append(state).has_error());
+            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
         }
         // Fetch
         {

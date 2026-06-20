@@ -1121,6 +1121,14 @@ namespace components::vector {
                                        const vector_t& left,
                                        const vector_t& right,
                                        uint64_t count) {
+        // Empty input: produce an empty result without dereferencing operand
+        // vectors. On a 0-row chunk the operands may not be resolvable at all
+        // (e.g. a degenerate 0-column batch chunk yields out-of-bounds operand
+        // pointers), so reading left.type()/right.type() here would deref a
+        // dangling vector. A 0-row arithmetic result carries no values.
+        if (count == 0) {
+            return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+        }
         if (types::is_duration(left.type().type()) || types::is_duration(right.type().type())) {
             return compute_temporal_binary(resource, op, left, right, count);
         }
@@ -1159,6 +1167,12 @@ namespace components::vector {
                                               const vector_t& vec,
                                               const types::logical_value_t& scalar,
                                               uint64_t count) {
+        // Empty input: see compute_binary_arithmetic. The vec operand may be a
+        // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
+        // type here.
+        if (count == 0) {
+            return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+        }
         if (types::is_duration(vec.type().type()) || types::is_duration(scalar.type().type())) {
             return compute_temporal_vec_scalar(resource, op, vec, scalar, count);
         }
@@ -1197,6 +1211,12 @@ namespace components::vector {
                                               const types::logical_value_t& scalar,
                                               const vector_t& vec,
                                               uint64_t count) {
+        // Empty input: see compute_binary_arithmetic. The vec operand may be a
+        // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
+        // type here.
+        if (count == 0) {
+            return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+        }
         if (types::is_duration(scalar.type().type()) || types::is_duration(vec.type().type())) {
             return compute_temporal_scalar_vec(resource, op, scalar, vec, count);
         }
@@ -1231,6 +1251,12 @@ namespace components::vector {
     }
 
     vector_t compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count) {
+        // Empty input: see compute_binary_arithmetic. The vec operand may be a
+        // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
+        // type here.
+        if (count == 0) {
+            return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+        }
         vector_t output(resource, vec.type(), count);
         types::simple_physical_type_switch<unary_neg_wrapper::callback>(vec.type().to_physical_type(),
                                                                         vec,

@@ -87,6 +87,18 @@ namespace services::disk {
               otbx_path.string(),
               static_cast<uint64_t>(sidecar_wal_id));
         auto entry = std::make_unique<collection_storage_entry_t>(resource(), otbx_path);
+        // The DISK load ctor records io_error/data_corruption instead of throwing (this helper is noexcept
+        // and reachable on the agent thread). Drop a failed-construction entry so we never emplace a
+        // half-loaded storage; the manager-side probe drives .prev corrupt-recovery before this.
+        if (entry->table_storage.construction_failed()) {
+            warn(log_,
+                 "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] load oid={} path={} failed: {}",
+                 pool_idx_,
+                 static_cast<unsigned>(oid),
+                 otbx_path.string(),
+                 entry->table_storage.construction_error().what.c_str());
+            return false;
+        }
         if (sidecar_wal_id > wal::id_t{0}) {
             entry->table_storage.set_checkpoint_wal_id(sidecar_wal_id);
         }
@@ -111,6 +123,18 @@ namespace services::disk {
               static_cast<unsigned>(oid),
               otbx_path.string());
         auto entry = std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path);
+        // The DISK create ctor records io_error instead of throwing (this helper is noexcept and runs on
+        // the agent thread via create_storage_disk_inner). Drop a failed-construction entry rather than
+        // emplacing a storage with a null table_/block_manager_.
+        if (entry->table_storage.construction_failed()) {
+            warn(log_,
+                 "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] create oid={} path={} failed: {}",
+                 pool_idx_,
+                 static_cast<unsigned>(oid),
+                 otbx_path.string(),
+                 entry->table_storage.construction_error().what.c_str());
+            return false;
+        }
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
@@ -457,7 +481,7 @@ namespace services::disk {
     // Mutation fanout targets. The manager router pre-validates, but the agent
     // re-checks (not-owned / null no-op) because it owns its slice independently.
 
-    agent_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
     agent_disk_t::storage_append_inner(execution_context_t ctx,
                                        components::catalog::oid_t table_oid,
                                        std::unique_ptr<components::vector::data_chunk_t> data) {
@@ -807,9 +831,24 @@ namespace services::disk {
         }
 
         // 5b. Materialize — the canonical write. Lands at total_rows() == start_row.
+        //     The txn path can surface a write_conflict (concurrent DDL re-rooted the
+        //     table) or out_of_memory (row-group/segment alloc) as a value; this is a plain
+        //     synchronous local call (no co_await), so reading the wrapper adds NO second
+        //     cross-actor await — the single co_await above (PHYSICAL_INSERT) stays this
+        //     handler's only one (a second sequential cross-actor await would risk a
+        //     lost-wakeup hang). The WAL record was already written; on a materialize failure
+        //     the txn aborts and storage_revert_appends unwinds it.
         uint64_t materialized_start;
         if (txn.transaction_id != 0) {
-            materialized_start = s->append(*data, txn);
+            auto append_r = s->append(*data, txn);
+            if (append_r.has_error()) {
+                trace(log_,
+                      "agent_disk[{}]::storage_append_inner: materialize failed for oid={} — surfacing error",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid));
+                co_return append_r.convert_error<std::pair<uint64_t, uint64_t>>();
+            }
+            materialized_start = append_r.value();
         } else {
             materialized_start = s->append(*data);
         }
@@ -904,7 +943,7 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<std::pair<int64_t, uint64_t>>
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
     agent_disk_t::storage_update_inner(components::catalog::oid_t table_oid,
                                        components::vector::vector_t row_ids,
                                        std::unique_ptr<components::vector::data_chunk_t> data,
@@ -929,7 +968,8 @@ namespace services::disk {
             co_return std::pair<int64_t, uint64_t>{0, 0};
         }
         // No preprocessing here: the manager body already aligned `data` with the
-        // canonical schema (the twin shares column defs via bootstrap_inner_sync).
+        // canonical schema (the twin shares column defs via bootstrap_inner_sync). The
+        // wrapper carries any write_conflict / out_of_memory as a value.
         co_return entry->storage->update(row_ids, *data, txn);
     }
 
@@ -990,7 +1030,7 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    std::pmr::vector<components::vector::data_chunk_t>
+    core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
     agent_disk_t::scan_batched_local(components::catalog::oid_t table_oid,
                                      components::table::table_filter_t* filter,
                                      int64_t limit,
@@ -1013,13 +1053,19 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid));
             return batches;
         }
-        entry->storage->scan_batched(batches, filter, limit, projected_cols, txn);
-        return batches;
+        // The adapter surfaces any buffer-pool OOM / data_corruption the table-layer scan left
+        // in state.table_state.scan_error; propagate it up the wrapper.
+        auto scan_r = entry->storage->scan_batched(batches, filter, limit, projected_cols, txn);
+        if (scan_r.has_error()) {
+            return scan_r.convert_error<std::pmr::vector<components::vector::data_chunk_t>>();
+        }
+        return std::move(batches);
     }
 
     // Thin mailbox wrapper over scan_batched_local (D6: same-actor callers use the local
-    // helper directly; this exists for the manager→agent mailbox route).
-    agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    // helper directly; this exists for the manager→agent mailbox route). The reply carries the
+    // scan_error; the manager funnel / operators read has_error() before .value().
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_scan_batched_inner(components::catalog::oid_t table_oid,
                                              std::unique_ptr<components::table::table_filter_t> filter,
                                              int64_t limit,
@@ -1138,10 +1184,14 @@ namespace services::disk {
                                                                            std::move(idx_vec)));
             }
             std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
-            entry->storage->scan_batched(batches, filter.get(), int64_t{-1}, nullptr, txn);
-            for (auto& chunk : batches) {
-                for (uint64_t r = 0; r < chunk.size(); ++r) {
-                    row_ids.push_back(chunk.row_ids.data<std::int64_t>()[r]);
+            // Keyed catalog read: a scan_error leaves this key's match set empty
+            // (mirrors the not-owned fallback above); callers tolerate empty per-key entries.
+            auto scan_r = entry->storage->scan_batched(batches, filter.get(), int64_t{-1}, nullptr, txn);
+            if (!scan_r.has_error()) {
+                for (auto& chunk : batches) {
+                    for (uint64_t r = 0; r < chunk.size(); ++r) {
+                        row_ids.push_back(chunk.row_ids.data<std::int64_t>()[r]);
+                    }
                 }
             }
             result.emplace_back(std::move(row_ids));
@@ -1197,9 +1247,14 @@ namespace services::disk {
                                                                        std::move(idx_vec)));
         }
 
-        // All columns (projected = nullptr), no row limit (-1) — same as the prior
-        // manager-side storage_scan_batched_inner call (it passed an empty projected list).
-        co_return scan_batched_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
+        // All columns (projected = nullptr), no row limit (-1). Catalog-read path: a scan_error
+        // degrades to an empty result, matching the not-owned/record-only fallback (resolve
+        // callers handle empty).
+        auto scan_r = scan_batched_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
+        if (scan_r.has_error()) {
+            co_return std::move(empty);
+        }
+        co_return std::move(scan_r.value());
     }
 
     agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
@@ -1268,7 +1323,14 @@ namespace services::disk {
                                                                            std::move(idx_vec)));
             }
             // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
-            result.emplace_back(scan_batched_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn));
+            // Catalog-read path: a scan_error degrades this key's entry to empty, matching the
+            // not-owned/record-only fallback (callers handle empty entries).
+            auto scan_r = scan_batched_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
+            if (scan_r.has_error()) {
+                result.emplace_back();
+            } else {
+                result.emplace_back(std::move(scan_r.value()));
+            }
         }
         co_return std::move(result);
     }
@@ -1393,7 +1455,30 @@ namespace services::disk {
                 }
             }
 
-            entry->table_storage.checkpoint(current_wal_id);
+            // checkpoint(wal_id) returns out_of_memory on a column flush pin failure; it
+            // aborts BEFORE the header swap and leaves the wal_id fields unchanged. On error,
+            // defer this entry to a later round (same as the MVCC-gate skip above): restore
+            // the .prev backup over any partial write, do NOT persist the sidecar or delete
+            // the backup, and feed the unchanged prev_checkpoint_wal_id into the min() so the
+            // WAL keeps this table's replay records.
+            auto cp_r = entry->table_storage.checkpoint(current_wal_id);
+            if (cp_r.has_error()) {
+                warn(log_,
+                     "agent_disk[{}]::checkpoint_inner oid={} checkpoint failed (rules 2/9) — deferring this round",
+                     pool_idx_,
+                     static_cast<unsigned>(tbl_oid));
+                if (std::filesystem::exists(prev_path)) {
+                    std::error_code restore_error;
+                    std::filesystem::copy_file(prev_path,
+                                               otbx_path,
+                                               std::filesystem::copy_options::overwrite_existing,
+                                               restore_error);
+                    std::error_code remove_error;
+                    std::filesystem::remove(prev_path, remove_error);
+                }
+                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                continue;
+            }
 
             // Persist sidecar wal_id atomically (tmp + rename).
             {
@@ -1789,7 +1874,19 @@ namespace services::disk {
                 }
             }
 
-            start_row = s->append(local, ctx.txn);
+            // The append chain can surface write_conflict / out_of_memory.
+            // append_pg_catalog_row_inner returns a pg_catalog_append_range_t with no error
+            // channel; on a failure leave start_row/count at 0 (no rows materialized) and
+            // log — the caller treats a zero-count range as a no-op append.
+            auto append_r = s->append(local, ctx.txn);
+            if (append_r.has_error()) {
+                warn(log_,
+                     "agent_disk[{}]::append_pg_catalog_row_inner: materialize failed for oid={} — no rows appended",
+                     pool_idx_,
+                     static_cast<unsigned>(table_oid));
+                co_return components::pg_catalog_append_range_t{table_oid, int64_t{0}, 0};
+            }
+            start_row = append_r.value();
         } else {
             trace(log_,
                   "agent_disk[{}]::append_pg_catalog_row_inner: oid {} not owned/empty — no storage append",

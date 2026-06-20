@@ -1,6 +1,7 @@
 #pragma once
 
 #include "block_manager.hpp"
+#include "buffer_manager.hpp" // complete buffer_manager_t so read() can use its resource() (no null/default resource)
 
 namespace components::table::storage {
 
@@ -38,7 +39,14 @@ namespace components::table::storage {
         uint64_t meta_block() override {
             throw std::logic_error("Cannot perform IO in in-memory database - meta_block!");
         }
-        void read(block_t&) override { throw std::logic_error("Cannot perform IO in in-memory database - read!"); }
+        // Unreachable for in-memory blocks (block_id >= MAXIMUM_BLOCK are never disk-reloaded; block_handle_t::load
+        // returns {} for them without calling read()). Returns io_error rather than throwing, to keep the virtual
+        // signature uniform with the disk manager. The message string uses the buffer manager's own resource.
+        core::result_wrapper_t<bool> read(block_t&) override {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"in-memory block manager cannot perform disk read",
+                                                  buffer_manager.resource()});
+        }
         void read_blocks(file_buffer_t&, uint64_t, uint64_t) override {
             throw std::logic_error("Cannot perform IO in in-memory database - read_blocks!");
         }

@@ -116,30 +116,44 @@ namespace components::table {
         child_column->skip(state.child_states[1], count * size);
     }
 
-    void array_column_data_t::initialize_append(column_append_state& state) {
+    core::result_wrapper_t<bool> array_column_data_t::initialize_append(column_append_state& state) {
         column_append_state validity_append;
-        validity.initialize_append(validity_append);
+        auto v = validity.initialize_append(validity_append);
+        if (v.has_error()) {
+            return v; // out_of_memory (rules 2/9)
+        }
         state.child_appends.push_back(std::move(validity_append));
 
         column_append_state child_append;
-        child_column->initialize_append(child_append);
+        auto child = child_column->initialize_append(child_append);
+        if (child.has_error()) {
+            return child;
+        }
         state.child_appends.push_back(std::move(child_append));
+        return true;
     }
 
-    void array_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
+    core::result_wrapper_t<bool>
+    array_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
         if (vector.get_vector_type() != vector::vector_type::FLAT) {
             vector::vector_t append_vector(vector);
             append_vector.flatten(count);
-            append(state, append_vector, count);
-            return;
+            return append(state, append_vector, count);
         }
 
-        validity.append(state.child_appends[0], vector, count);
+        auto v = validity.append(state.child_appends[0], vector, count);
+        if (v.has_error()) {
+            return v; // out_of_memory (rules 2/9)
+        }
         auto& child_vec = vector.entry();
         auto size = array_size();
-        child_column->append(state.child_appends[1], child_vec, count * size);
+        auto child = child_column->append(state.child_appends[1], child_vec, count * size);
+        if (child.has_error()) {
+            return child;
+        }
 
         count_ += count;
+        return true;
     }
 
     void array_column_data_t::revert_append(int64_t start_row) {
@@ -154,10 +168,10 @@ namespace components::table {
         throw std::logic_error("Function is not implemented: Array fetch");
     }
 
-    void array_column_data_t::update(uint64_t column_index,
-                                     vector::vector_t& update_vector,
-                                     int64_t* row_ids,
-                                     uint64_t update_count) {
+    core::result_wrapper_t<bool> array_column_data_t::update(uint64_t column_index,
+                                                           vector::vector_t& update_vector,
+                                                           int64_t* row_ids,
+                                                           uint64_t update_count) {
         size_t arr_size = array_size();
         size_t remaining_count = arr_size * update_count;
         std::pmr::vector<int64_t> sub_column_ids(resource_);
@@ -173,28 +187,31 @@ namespace components::table {
         uint64_t remaining_column_index = column_index;
         while (remaining_count > 0) {
             if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
-                child_column->update(remaining_column_index,
-                                     update_vector.entry(),
-                                     remaining_sub_column_ids,
-                                     vector::DEFAULT_VECTOR_CAPACITY);
+                auto child = child_column->update(remaining_column_index,
+                                                  update_vector.entry(),
+                                                  remaining_sub_column_ids,
+                                                  vector::DEFAULT_VECTOR_CAPACITY);
+                if (child.has_error()) {
+                    return child;
+                }
                 remaining_sub_column_ids += vector::DEFAULT_VECTOR_CAPACITY;
                 remaining_count -= vector::DEFAULT_VECTOR_CAPACITY;
                 remaining_column_index++;
             } else {
-                child_column->update(remaining_column_index,
-                                     update_vector.entry(),
-                                     remaining_sub_column_ids,
-                                     remaining_count);
-                break;
+                return child_column->update(remaining_column_index,
+                                            update_vector.entry(),
+                                            remaining_sub_column_ids,
+                                            remaining_count);
             }
         }
+        return true;
     }
 
-    void array_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                            vector::vector_t& update_vector,
-                                            int64_t* row_ids,
-                                            uint64_t update_count,
-                                            uint64_t depth) {
+    core::result_wrapper_t<bool> array_column_data_t::update_column(const std::vector<uint64_t>& column_path,
+                                                                 vector::vector_t& update_vector,
+                                                                 int64_t* row_ids,
+                                                                 uint64_t update_count,
+                                                                 uint64_t depth) {
         size_t arr_size = array_size();
         size_t remaining_count = arr_size * update_count;
         std::pmr::vector<int64_t> sub_column_ids(resource_);
@@ -209,27 +226,33 @@ namespace components::table {
         int64_t* remaining_sub_column_ids = sub_column_ids.data();
         while (remaining_count > 0) {
             if (remaining_count >= vector::DEFAULT_VECTOR_CAPACITY) {
-                child_column->update_column(column_path,
-                                            update_vector.entry(),
-                                            remaining_sub_column_ids,
-                                            vector::DEFAULT_VECTOR_CAPACITY,
-                                            depth);
+                auto child = child_column->update_column(column_path,
+                                                         update_vector.entry(),
+                                                         remaining_sub_column_ids,
+                                                         vector::DEFAULT_VECTOR_CAPACITY,
+                                                         depth);
+                if (child.has_error()) {
+                    return child;
+                }
                 remaining_sub_column_ids += vector::DEFAULT_VECTOR_CAPACITY;
                 remaining_count -= vector::DEFAULT_VECTOR_CAPACITY;
             } else {
-                child_column->update_column(column_path,
-                                            update_vector.entry(),
-                                            remaining_sub_column_ids,
-                                            remaining_count,
-                                            depth);
+                auto child = child_column->update_column(column_path,
+                                                         update_vector.entry(),
+                                                         remaining_sub_column_ids,
+                                                         remaining_count,
+                                                         depth);
+                if (child.has_error()) {
+                    return child;
+                }
                 break;
             }
         }
-        child_column->update_column(column_path,
-                                    update_vector.entry(),
-                                    sub_column_ids.data(),
-                                    update_count * arr_size,
-                                    depth);
+        return child_column->update_column(column_path,
+                                           update_vector.entry(),
+                                           sub_column_ids.data(),
+                                           update_count * arr_size,
+                                           depth);
     }
 
     void array_column_data_t::fetch_row(column_fetch_state& state,

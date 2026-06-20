@@ -29,7 +29,7 @@ namespace components::table::storage {
 
     // --- Database lifecycle ---
 
-    void single_file_block_manager_t::create_new_database() {
+    core::result_wrapper_t<bool> single_file_block_manager_t::create_new_database() {
         using namespace core::filesystem;
 
         handle_ = open_file(fs_,
@@ -37,7 +37,9 @@ namespace components::table::storage {
                             file_flags::WRITE | file_flags::READ | file_flags::FILE_CREATE_NEW,
                             file_lock_type::WRITE_LOCK);
         if (!handle_) {
-            throw std::runtime_error("Failed to create database file: " + path_);
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"Failed to create database file: " + path_,
+                                                  buffer_manager.resource()});
         }
 
         main_header_t main_header;
@@ -55,9 +57,10 @@ namespace components::table::storage {
         iteration_ = 0;
         max_block_ = 0;
         meta_block_ = INVALID_INDEX;
+        return true;
     }
 
-    void single_file_block_manager_t::load_existing_database() {
+    core::result_wrapper_t<bool> single_file_block_manager_t::load_existing_database() {
         using namespace core::filesystem;
 
         handle_ = open_file(fs_,
@@ -65,23 +68,29 @@ namespace components::table::storage {
                             file_flags::WRITE | file_flags::READ | file_flags::FILE_CREATE,
                             file_lock_type::WRITE_LOCK);
         if (!handle_) {
-            throw std::runtime_error("Failed to open database file: " + path_);
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"Failed to open database file: " + path_, buffer_manager.resource()});
         }
 
         main_header_t main_header;
         if (!handle_->read(&main_header, sizeof(main_header), 0)) {
-            throw std::runtime_error("Failed to read main header");
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"Failed to read main header", buffer_manager.resource()});
         }
         if (!main_header.validate()) {
-            throw std::runtime_error("Invalid database file: bad magic or version");
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"Invalid database file: bad magic or version",
+                                                  buffer_manager.resource()});
         }
 
         database_header_t header1, header2;
         if (!handle_->read(&header1, sizeof(header1), SECTOR_SIZE)) {
-            throw std::runtime_error("Failed to read database header 1");
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"Failed to read database header 1", buffer_manager.resource()});
         }
         if (!handle_->read(&header2, sizeof(header2), 2 * SECTOR_SIZE)) {
-            throw std::runtime_error("Failed to read database header 2");
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"Failed to read database header 2", buffer_manager.resource()});
         }
 
         const database_header_t& active = (header1.iteration >= header2.iteration) ? header1 : header2;
@@ -95,19 +104,23 @@ namespace components::table::storage {
         }
 
         if (active.free_list != INVALID_INDEX) {
-            deserialize_free_list(meta_block_pointer_t{active.free_list, 0});
+            return deserialize_free_list(meta_block_pointer_t{active.free_list, 0});
         }
+        return true;
     }
 
     // --- Block I/O ---
 
-    void single_file_block_manager_t::read(block_t& block) {
+    core::result_wrapper_t<bool> single_file_block_manager_t::read(block_t& block) {
         auto location = block_location(block.id);
         block.read(*handle_, location);
 
         if (!verify_checksum(block)) {
-            throw std::runtime_error("Block checksum mismatch for block " + std::to_string(block.id));
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"Block checksum mismatch for block " + std::to_string(block.id),
+                                                  buffer_manager.resource()});
         }
+        return true;
     }
 
     void single_file_block_manager_t::read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t /*count*/) {
@@ -278,9 +291,9 @@ namespace components::table::storage {
         return writer.get_block_pointer();
     }
 
-    void single_file_block_manager_t::deserialize_free_list(meta_block_pointer_t pointer) {
+    core::result_wrapper_t<bool> single_file_block_manager_t::deserialize_free_list(meta_block_pointer_t pointer) {
         if (!pointer.is_valid()) {
-            return;
+            return true;
         }
         metadata_manager_t meta_mgr(*this);
         metadata_reader_t reader(meta_mgr, pointer);
@@ -288,6 +301,12 @@ namespace components::table::storage {
         for (uint64_t i = 0; i < count && !reader.finished(); ++i) {
             free_list_.insert(reader.read<uint64_t>());
         }
+        // Corrupt free-list chain (read past end) -> data_corruption, surfaced at the load boundary
+        // instead of throwing.
+        if (reader.has_error()) {
+            return core::error_t(reader.error());
+        }
+        return true;
     }
 
 } // namespace components::table::storage

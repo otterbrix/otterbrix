@@ -11,13 +11,18 @@ namespace components::table {
         : column_data_(column_data)
         , partial_block_manager_(partial_block_manager) {}
 
-    persistent_column_data_t column_data_checkpointer_t::checkpoint() {
+    core::result_wrapper_t<persistent_column_data_t> column_data_checkpointer_t::checkpoint() {
         column_checkpoint_state_t state(column_data_, partial_block_manager_);
 
         // Collect per-segment stats while flushing
         std::vector<base_statistics_t> seg_stats;
         for (auto& segment : column_data_.data_.segments()) {
-            state.flush_segment(segment, static_cast<uint64_t>(segment.start), segment.count);
+            // flush_segment returns out_of_memory when pinning the segment buffer fails;
+            // propagate it up the checkpoint chain to the agent_disk boundary.
+            auto flushed = state.flush_segment(segment, static_cast<uint64_t>(segment.start), segment.count);
+            if (flushed.has_error()) {
+                return flushed.convert_error<persistent_column_data_t>();
+            }
             seg_stats.push_back(segment.segment_statistics());
         }
 

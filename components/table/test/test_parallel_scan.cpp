@@ -41,9 +41,9 @@ namespace {
         chunk.set_cardinality(count);
 
         table_append_state state(&env.resource);
-        table.append_lock(state);
-        table.initialize_append(state);
-        table.append(chunk, state);
+        REQUIRE_FALSE(table.append_lock(state).has_error());
+        REQUIRE_FALSE(table.initialize_append(state).has_error());
+        REQUIRE_FALSE(table.append(chunk, state).has_error());
         table.finalize_append(state, transaction_data{0, 0});
     }
 

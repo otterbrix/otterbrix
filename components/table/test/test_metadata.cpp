@@ -7,9 +7,11 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <cstring>
 #include <unistd.h>
+#include <vector>
 
 namespace {
     std::string test_db_path() {
@@ -37,7 +39,7 @@ TEST_CASE("metadata: write and read small data") {
 
     test_env_t env;
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-    bm.create_new_database();
+    REQUIRE(!bm.create_new_database().has_error());
 
     metadata_manager_t manager(bm);
 
@@ -72,7 +74,7 @@ TEST_CASE("metadata: write and read typed data") {
 
     test_env_t env;
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-    bm.create_new_database();
+    REQUIRE(!bm.create_new_database().has_error());
 
     metadata_manager_t manager(bm);
 
@@ -104,7 +106,7 @@ TEST_CASE("metadata: multiple independent chains") {
 
     test_env_t env;
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-    bm.create_new_database();
+    REQUIRE(!bm.create_new_database().has_error());
 
     metadata_manager_t manager(bm);
 
@@ -141,6 +143,57 @@ TEST_CASE("metadata: multiple independent chains") {
         metadata_reader_t reader3(manager, ptr3);
         REQUIRE(reader3.read<uint64_t>() == 333);
     }
+
+    cleanup_test_file();
+}
+
+// Metadata chain-overflow -> sticky data_corruption.
+// A read past the end of the chain records a sticky core::error_t with
+// error_code_t::data_corruption ("attempted to read past end of chain") and turns
+// every subsequent read into a no-op, rather than throwing. We write a SMALL stream
+// (one sub-block, whose header next_ptr == INVALID_INDEX marks the end of the chain)
+// and then read MORE bytes than the whole chain holds, so the read provably runs off
+// the end and trips the sticky error. No throw.
+TEST_CASE("metadata_reader: read past end of chain -> sticky data_corruption (error value)") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    metadata_manager_t manager(bm);
+
+    // Write a small payload into a single sub-block, then flush so a reader can
+    // walk the (one-sub-block) chain.
+    meta_block_pointer_t pointer;
+    {
+        metadata_writer_t writer(manager);
+        writer.write<uint64_t>(0xABCDEF0123456789ULL);
+        pointer = writer.get_block_pointer();
+        writer.flush();
+    }
+
+    // A single sub-block holds (sub_block_size - SUB_BLOCK_HEADER_SIZE) readable
+    // bytes; ask for far more than that so the read provably runs off the end.
+    const uint64_t over_read = manager.sub_block_size() * 3;
+    REQUIRE(over_read > manager.sub_block_size());
+
+    metadata_reader_t reader(manager, pointer);
+    REQUIRE_FALSE(reader.has_error());
+
+    std::vector<std::byte> sink(over_read, std::byte{0});
+    REQUIRE_NOTHROW(reader.read_data(sink.data(), over_read));
+
+    // Sticky corrupt-stream flag set; the error is data_corruption.
+    REQUIRE(reader.has_error()); // would be a false pass if the read stayed in-bounds
+    REQUIRE(reader.error().type == core::error_code_t::data_corruption);
+
+    // Sticky: a further read remains a no-op and the error type is unchanged.
+    uint64_t after = 0xFFFFFFFFFFFFFFFFULL;
+    REQUIRE_NOTHROW(reader.read_data(reinterpret_cast<std::byte*>(&after), sizeof(after)));
+    REQUIRE(reader.has_error());
+    REQUIRE(reader.error().type == core::error_code_t::data_corruption);
 
     cleanup_test_file();
 }

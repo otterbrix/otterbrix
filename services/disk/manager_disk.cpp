@@ -131,7 +131,14 @@ namespace services::disk {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
-        bm->create_new_database();
+        // create_new_database reports failure as io_error rather than throwing. This DISK ctor can run on
+        // the agent thread (via bootstrap_create_disk_inner_sync, noexcept), where a throw would
+        // std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
+        // construction_failed().
+        if (auto r = bm->create_new_database(); r.has_error()) {
+            construction_error_ = r.error();
+            return;
+        }
         block_manager_ = std::move(bm);
         table_ = std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns));
     }
@@ -143,7 +150,14 @@ namespace services::disk {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
-        bm->load_existing_database();
+        // load_existing_database + load_from_disk report io_error / data_corruption rather than throwing.
+        // This DISK ctor can run on the agent thread (bootstrap_disk_inner_sync is noexcept), where a throw
+        // would std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
+        // construction_failed() and maps it onto .prev corrupt-recovery.
+        if (auto r = bm->load_existing_database(); r.has_error()) {
+            construction_error_ = r.error();
+            return;
+        }
         block_manager_ = std::move(bm);
 
         components::table::storage::metadata_manager_t meta_mgr(*block_manager_);
@@ -151,17 +165,28 @@ namespace services::disk {
         components::table::storage::meta_block_pointer_t meta_ptr;
         meta_ptr.block_pointer = meta_block;
         components::table::storage::metadata_reader_t reader(meta_mgr, meta_ptr);
-        table_ = components::table::data_table_t::load_from_disk(resource, *block_manager_, reader);
+        auto loaded = components::table::data_table_t::load_from_disk(resource, *block_manager_, reader);
+        if (loaded.has_error()) {
+            construction_error_ = loaded.error();
+            return;
+        }
+        table_ = std::move(loaded.value());
     }
 
-    void table_storage_t::checkpoint() {
+    core::result_wrapper_t<bool> table_storage_t::checkpoint() {
         if (mode_ != storage_mode_t::DISK) {
-            return;
+            return true;
         }
 
         components::table::storage::metadata_manager_t meta_mgr(*block_manager_);
         components::table::storage::metadata_writer_t writer(meta_mgr);
-        table_->checkpoint(writer);
+        // data_table_t::checkpoint reports out_of_memory on a column flush pin failure; abort the
+        // checkpoint BEFORE the header swap so a partial write never becomes the durable state, and
+        // surface the error.
+        auto cp_r = table_->checkpoint(writer);
+        if (cp_r.has_error()) {
+            return cp_r;
+        }
         writer.flush();
 
         auto* disk_bm = static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
@@ -179,16 +204,22 @@ namespace services::disk {
         disk_bm->write_header(header);
         // 2nd fsync: commit the new header — this is the atomic point of the checkpoint.
         disk_bm->file_sync();
+        return true;
     }
 
-    void table_storage_t::checkpoint(wal::id_t new_wal_id) {
+    core::result_wrapper_t<bool> table_storage_t::checkpoint(wal::id_t new_wal_id) {
         if (mode_ != storage_mode_t::DISK) {
-            return;
+            return true;
         }
-        // First persist the data; if checkpoint() throws, fields stay unchanged.
-        checkpoint();
+        // First persist the data; on a checkpoint() error the wal_id fields stay unchanged and the
+        // error is surfaced so the caller skips this entry's seal.
+        auto cp_r = checkpoint();
+        if (cp_r.has_error()) {
+            return cp_r;
+        }
         prev_checkpoint_wal_id_ = checkpoint_wal_id_;
         checkpoint_wal_id_ = new_wal_id;
+        return true;
     }
 
     void table_storage_t::add_column(components::table::column_definition_t& col) {

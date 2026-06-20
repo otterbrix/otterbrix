@@ -165,7 +165,11 @@ namespace components::table {
 
         {
             table_append_state append_state(resource_);
-            new_collection->initialize_append(append_state);
+            // compact is best-effort maintenance: an out_of_memory during the rebuild append
+            // leaves the original collection untouched and returns false.
+            if (new_collection->initialize_append(append_state).has_error()) {
+                return false;
+            }
 
             // Scan committed non-deleted rows from old collection
             std::vector<storage_index_t> column_ids;
@@ -183,7 +187,9 @@ namespace components::table {
                 if (chunk.size() == 0) {
                     break;
                 }
-                new_collection->append(chunk, append_state);
+                if (new_collection->append(chunk, append_state).has_error()) {
+                    return false;
+                }
                 chunk.reset();
             }
 
@@ -191,8 +197,30 @@ namespace components::table {
         }
         // scan state and buffer handles destroyed before swapping collection
 
+        // Keep a reference to the outgoing collection so its disk blocks can be reclaimed AFTER the
+        // atomic swap. The swap itself (row_groups_ = move(new_collection)) is the MVCC all-or-nothing
+        // guard and stays intact; the old collection becomes unreferenced once `old_collection` drops.
+        auto old_collection = row_groups_;
+
         // Swap old collection with compacted one
         row_groups_ = std::move(new_collection);
+
+        // Return the OLD (now-replaced) collection's disk blocks to the block manager's free list so the
+        // NEXT compact reuses them instead of bumping total_blocks() unbounded. No-op for in-memory tables
+        // (no backing store). The new collection's write-through already allocated FRESH ids (free list was
+        // empty / disjoint), so the old ids it frees are not referenced by row_groups_. The persisted free
+        // list survives checkpoint, so reclaimed space is durable. mark_as_free under the block manager's
+        // allocation lock; no live segment references the freed blocks (the old collection is being torn down).
+        if (old_collection) {
+            auto& block_manager = old_collection->block_manager();
+            if (!block_manager.in_memory()) {
+                std::pmr::vector<uint64_t> reclaimable{resource_};
+                old_collection->collect_disk_block_ids(reclaimable);
+                for (uint64_t block_id : reclaimable) {
+                    block_manager.mark_as_free(block_id);
+                }
+            }
+        }
         return true;
     }
 
@@ -227,31 +255,35 @@ namespace components::table {
         return std::make_unique<constraint_state>(bound_constraints);
     }
 
-    void data_table_t::append_lock(table_append_state& state) {
+    core::result_wrapper_t<bool> data_table_t::append_lock(table_append_state& state) {
         state.append_lock = std::unique_lock(append_lock_);
-        // Concurrent DDL altered the table. abort() rather than throw: under
-        // -fno-exceptions a throw inside an actor-zeta coroutine is silently
-        // swallowed (UB). TODO: return core::error_t for a graceful txn abort.
-        assert(is_root_ && "Transaction conflict: adding entries to a table that has been altered!");
+        // Concurrent DDL altered the table (no longer root). Report a write_conflict up to the
+        // append boundary for a graceful txn abort, instead of aborting: under -fno-exceptions a
+        // throw inside an actor-zeta coroutine is silently swallowed.
         if (!is_root_) {
-            std::abort();
+            return core::error_t(core::error_code_t::write_conflict,
+                                 std::pmr::string("Transaction conflict: adding entries to a table that has "
+                                                  "been altered!",
+                                                  resource_));
         }
         state.row_start = static_cast<int64_t>(row_groups_->total_rows());
         state.current_row = state.row_start;
+        return true;
     }
 
-    void data_table_t::initialize_append(table_append_state& state) {
+    core::result_wrapper_t<bool> data_table_t::initialize_append(table_append_state& state) {
         assert(state.append_lock &&
                "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_lock) {
-            std::abort();
+            return core::error_t(core::error_code_t::other_error,
+                                 std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
         }
-        row_groups_->initialize_append(state);
+        return row_groups_->initialize_append(state); // out_of_memory
     }
 
-    void data_table_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
+    core::result_wrapper_t<bool> data_table_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
         assert(is_root_);
-        row_groups_->append(chunk, state);
+        return row_groups_->append(chunk, state); // out_of_memory
     }
 
     void data_table_t::finalize_append(table_append_state& state, transaction_data txn) {
@@ -412,15 +444,15 @@ namespace components::table {
         return result;
     }
 
-    void data_table_t::update(table_update_state&,
-                              vector::vector_t& row_ids,
-                              // const std::vector<uint64_t>& column_ids,
-                              vector::data_chunk_t& data) {
+    core::result_wrapper_t<std::pair<int64_t, uint64_t>> data_table_t::update(table_update_state&,
+                                                                             vector::vector_t& row_ids,
+                                                                             // const std::vector<uint64_t>& column_ids,
+                                                                             vector::data_chunk_t& data) {
         assert(row_ids.type().to_physical_type() == types::physical_type::INT64);
 
         uint64_t count = data.size();
         if (count == 0) {
-            return;
+            return std::pair<int64_t, uint64_t>{0, 0};
         }
         vector::vector_t max_row_id_vec(resource_,
                                         types::logical_value_t(resource_, static_cast<int64_t>(MAX_ROW_ID)),
@@ -447,30 +479,36 @@ namespace components::table {
             for (size_t i = 0; i < column_count(); i++) {
                 column_ids.emplace_back(i);
             }
-            row_groups_->update(row_ids_slice.data<int64_t>(), column_ids, updates_slice);
+            auto updated = row_groups_->update(row_ids_slice.data<int64_t>(), column_ids, updates_slice);
+            if (updated.has_error()) {
+                return updated.convert_error<std::pair<int64_t, uint64_t>>(); // write_conflict / out_of_memory
+            }
         }
+        // pair = {0, affected-row count}; the caller's update reply reads it.
+        return std::pair<int64_t, uint64_t>{0, update_count};
     }
 
-    void data_table_t::update_column(vector::vector_t& row_ids,
-                                     const std::vector<uint64_t>& column_path,
-                                     vector::data_chunk_t& updates) {
+    core::result_wrapper_t<bool> data_table_t::update_column(vector::vector_t& row_ids,
+                                                           const std::vector<uint64_t>& column_path,
+                                                           vector::data_chunk_t& updates) {
         assert(row_ids.type().type() == types::logical_type::BIGINT);
         assert(updates.column_count() == 1);
         if (updates.size() == 0) {
-            return;
+            return true;
         }
 
-        // Concurrent DDL altered the table. abort() rather than throw: under
-        // -fno-exceptions a throw inside an actor-zeta coroutine is silently
-        // swallowed (UB). TODO: return core::error_t for a graceful txn abort.
-        assert(is_root_ && "Transaction conflict: cannot update a table that has been altered!");
+        // Concurrent DDL altered the table (no longer root). Report write_conflict for a graceful
+        // txn abort instead of aborting: under -fno-exceptions a throw inside an actor-zeta
+        // coroutine is silently swallowed (UB).
         if (!is_root_) {
-            std::abort();
+            return core::error_t(core::error_code_t::write_conflict,
+                                 std::pmr::string("Transaction conflict: cannot update a table that has been altered!",
+                                                  resource_));
         }
 
         updates.flatten();
         row_ids.flatten(updates.size());
-        row_groups_->update_column(row_ids, column_path, updates);
+        return row_groups_->update_column(row_ids, column_path, updates);
     }
 
     uint64_t data_table_t::column_count() const { return column_definitions_.size(); }
@@ -479,10 +517,14 @@ namespace components::table {
         return row_groups_->get_column_segment_info();
     }
 
-    void data_table_t::checkpoint(storage::metadata_writer_t& writer) {
+    core::result_wrapper_t<bool> data_table_t::checkpoint(storage::metadata_writer_t& writer) {
         storage::partial_block_manager_t partial_block_manager(row_groups_->block_manager());
 
-        auto row_group_pointers = row_groups_->checkpoint(partial_block_manager);
+        auto row_group_pointers_res = row_groups_->checkpoint(partial_block_manager);
+        if (row_group_pointers_res.has_error()) {
+            return row_group_pointers_res.convert_error<bool>(); // out_of_memory
+        }
+        const auto& row_group_pointers = row_group_pointers_res.value();
 
         // write table metadata
         writer.write_string(name_);
@@ -502,11 +544,13 @@ namespace components::table {
         }
 
         writer.flush();
+        return true;
     }
 
-    std::unique_ptr<data_table_t> data_table_t::load_from_disk(std::pmr::memory_resource* resource,
-                                                               storage::block_manager_t& block_manager,
-                                                               storage::metadata_reader_t& reader) {
+    core::result_wrapper_t<std::unique_ptr<data_table_t>>
+    data_table_t::load_from_disk(std::pmr::memory_resource* resource,
+                                 storage::block_manager_t& block_manager,
+                                 storage::metadata_reader_t& reader) {
         auto name = reader.read_string();
 
         auto col_count = reader.read<uint32_t>();
@@ -536,6 +580,13 @@ namespace components::table {
             }
         }
         table->row_groups_->set_total_rows(total_loaded_rows);
+
+        // Corrupt-stream check at the load boundary: if any read above ran past the end of the metadata
+        // chain, the reader recorded a sticky data_corruption error (reads became no-ops, so `table` may
+        // be partially built). Surface it instead of returning a half-loaded table.
+        if (reader.has_error()) {
+            return core::error_t(reader.error());
+        }
 
         return table;
     }

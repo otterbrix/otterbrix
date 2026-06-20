@@ -197,8 +197,10 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
 
     // Simulate two segments with non-overlapping ranges
     // Segment 1: [1..50], Segment 2: [51..100]
-    auto seg1 =
+    auto seg1_r =
         column_segment_t::create_segment(buffer_manager, complex_logical_type{logical_type::BIGINT}, 0, 262144, 262144);
+    REQUIRE_FALSE(seg1_r.has_error());
+    auto seg1 = std::move(seg1_r.value());
     {
         base_statistics_t s1(&resource, logical_type::BIGINT);
         s1.set_min(logical_value_t{&resource, int64_t(1)});
@@ -206,11 +208,13 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
         seg1->set_segment_statistics(std::move(s1));
     }
 
-    auto seg2 = column_segment_t::create_segment(buffer_manager,
-                                                 complex_logical_type{logical_type::BIGINT},
-                                                 50,
-                                                 262144,
-                                                 262144);
+    auto seg2_r = column_segment_t::create_segment(buffer_manager,
+                                                   complex_logical_type{logical_type::BIGINT},
+                                                   50,
+                                                   262144,
+                                                   262144);
+    REQUIRE_FALSE(seg2_r.has_error());
+    auto seg2 = std::move(seg2_r.value());
     {
         base_statistics_t s2(&resource, logical_type::BIGINT);
         s2.set_min(logical_value_t{&resource, int64_t(51)});
@@ -274,14 +278,14 @@ TEST_CASE("per-segment statistics: populated during append") {
 
     // Append data through column_data_t
     column_append_state append_state;
-    col->initialize_append(append_state);
+    REQUIRE_FALSE(col->initialize_append(append_state).has_error());
 
     vector_t vec(&resource, logical_type::BIGINT, 100);
     auto data = vec.data<int64_t>();
     for (uint64_t i = 0; i < 100; i++) {
         data[i] = static_cast<int64_t>(i + 1);
     }
-    col->append(append_state, vec, 100);
+    REQUIRE_FALSE(col->append(append_state, vec, 100).has_error());
 
     // The current segment should have per-segment statistics
     REQUIRE(append_state.current != nullptr);

@@ -76,8 +76,8 @@ namespace components::table {
         // The append chain returns out_of_memory when a row group / column segment allocation
         // fails. initialize_append: true on success. append: on success the bool reports whether
         // a new row group was started.
-        core::result_wrapper_t<bool> initialize_append(table_append_state& state);
-        core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
+        [[nodiscard]] core::result_wrapper_t<bool> initialize_append(table_append_state& state);
+        [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
         void revert_append(int64_t row_start, uint64_t count);
@@ -89,11 +89,11 @@ namespace components::table {
 
         uint64_t delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id);
         // Update path returns write_conflict / out_of_memory; true on success.
-        core::result_wrapper_t<bool>
+        [[nodiscard]] core::result_wrapper_t<bool>
         update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates);
-        core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
-                                                   const std::vector<uint64_t>& column_path,
-                                                   vector::data_chunk_t& updates);
+        [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
+                                                                 const std::vector<uint64_t>& column_path,
+                                                                 vector::data_chunk_t& updates);
 
         std::vector<column_segment_info> get_column_segment_info();
 
@@ -112,7 +112,7 @@ namespace components::table {
 
         // The checkpoint chain returns out_of_memory when a column flush pin fails;
         // the row group pointers on success.
-        core::result_wrapper_t<std::vector<storage::row_group_pointer_t>>
+        [[nodiscard]] core::result_wrapper_t<std::vector<storage::row_group_pointer_t>>
         checkpoint(storage::partial_block_manager_t& partial_block_manager);
 
         storage::block_manager_t& block_manager() { return block_manager_; }

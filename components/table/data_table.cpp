@@ -275,7 +275,7 @@ namespace components::table {
         assert(state.append_lock &&
                "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_lock) {
-            return core::error_t(core::error_code_t::other_error,
+            return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
         }
         return row_groups_->initialize_append(state); // out_of_memory

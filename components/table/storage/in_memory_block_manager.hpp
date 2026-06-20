@@ -42,7 +42,7 @@ namespace components::table::storage {
         // Unreachable for in-memory blocks (block_id >= MAXIMUM_BLOCK are never disk-reloaded; block_handle_t::load
         // returns {} for them without calling read()). Returns io_error rather than throwing, to keep the virtual
         // signature uniform with the disk manager. The message string uses the buffer manager's own resource.
-        core::result_wrapper_t<bool> read(block_t&) override {
+        [[nodiscard]] core::result_wrapper_t<bool> read(block_t&) override {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"in-memory block manager cannot perform disk read",
                                                   buffer_manager.resource()});

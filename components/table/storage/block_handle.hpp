@@ -143,7 +143,7 @@ namespace components::table::storage {
         // Reload-from-disk path (block_id < MAXIMUM_BLOCK) calls block_manager.read(), which can fail with
         // data_corruption/io_error -- forwarded here instead of throwing. Already-LOADED and
         // managed-in-memory ({}) fast paths return a valid handle with no error.
-        core::result_wrapper_t<buffer_handle_t> load(std::unique_ptr<file_buffer_t> buffer = nullptr);
+        [[nodiscard]] core::result_wrapper_t<buffer_handle_t> load(std::unique_ptr<file_buffer_t> buffer = nullptr);
         buffer_handle_t load_from_buffer(std::unique_lock<std::mutex>& l,
                                          std::byte* data,
                                          std::unique_ptr<file_buffer_t> reusable_buffer,

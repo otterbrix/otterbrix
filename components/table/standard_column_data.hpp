@@ -31,22 +31,22 @@ namespace components::table {
                                 uint64_t target_count) override;
         uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) override;
 
-        core::result_wrapper_t<bool> initialize_append(column_append_state& state) override;
-        core::result_wrapper_t<bool>
+        [[nodiscard]] core::result_wrapper_t<bool> initialize_append(column_append_state& state) override;
+        [[nodiscard]] core::result_wrapper_t<bool>
         append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count) override;
         void revert_append(int64_t start_row) override;
         uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) override;
         void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx) override;
-        core::result_wrapper_t<bool> update(uint64_t column_index,
-                                            vector::vector_t& update_vector,
-                                            int64_t* row_ids,
-                                            uint64_t update_count) override;
-        core::result_wrapper_t<bool> update_column(const std::vector<uint64_t>& column_pasth,
-                                                   vector::vector_t& update_vector,
-                                                   int64_t* row_ids,
-                                                   uint64_t update_count,
-                                                   uint64_t depth) override;
+        [[nodiscard]] core::result_wrapper_t<bool> update(uint64_t column_index,
+                                                          vector::vector_t& update_vector,
+                                                          int64_t* row_ids,
+                                                          uint64_t update_count) override;
+        [[nodiscard]] core::result_wrapper_t<bool> update_column(const std::vector<uint64_t>& column_pasth,
+                                                                 vector::vector_t& update_vector,
+                                                                 int64_t* row_ids,
+                                                                 uint64_t update_count,
+                                                                 uint64_t depth) override;
 
         void get_column_segment_info(uint64_t row_group_index,
                                      std::vector<uint64_t> col_path,
@@ -55,7 +55,7 @@ namespace components::table {
         void initialize_column(const persistent_column_data_t& persistent_data) override;
 
         // Transition the main data segments AND the validity child's segments to disk.
-        core::result_wrapper_t<bool> transition_to_disk() override;
+        [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk() override;
 
         // Compact reclaim: collect the main column's blocks AND the validity child's blocks.
         void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const override;

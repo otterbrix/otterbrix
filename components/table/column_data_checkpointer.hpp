@@ -20,7 +20,7 @@ namespace components::table {
         column_data_checkpointer_t(column_data_t& column_data, storage::partial_block_manager_t& partial_block_manager);
 
         // Returns out_of_memory when a segment pin fails during flush; persistent data on success.
-        core::result_wrapper_t<persistent_column_data_t> checkpoint();
+        [[nodiscard]] core::result_wrapper_t<persistent_column_data_t> checkpoint();
 
     private:
         column_data_t& column_data_;

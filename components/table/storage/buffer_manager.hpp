@@ -40,22 +40,24 @@ namespace components::table::storage {
         buffer_manager_t() = default;
         virtual ~buffer_manager_t() = default;
 
-        virtual core::result_wrapper_t<buffer_handle_t>
+        [[nodiscard]] virtual core::result_wrapper_t<buffer_handle_t>
         allocate(memory_tag tag, uint64_t block_size, bool can_destroy = true) = 0;
         // Returns true on success; result_wrapper_t<bool> rather than <void> because result_wrapper_t forbids
         // void (`!is_same_v<T, void>` constraint).
-        virtual core::result_wrapper_t<bool> reallocate(std::shared_ptr<block_handle_t>& handle, uint64_t block_size) = 0;
-        virtual core::result_wrapper_t<buffer_handle_t> pin(std::shared_ptr<block_handle_t>& handle) = 0;
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        reallocate(std::shared_ptr<block_handle_t>& handle, uint64_t block_size) = 0;
+        [[nodiscard]] virtual core::result_wrapper_t<buffer_handle_t> pin(std::shared_ptr<block_handle_t>& handle) = 0;
         virtual void prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) = 0;
         virtual void unpin(block_handle_t* handle) = 0;
 
         virtual uint64_t block_allocation_size() const = 0;
         virtual uint64_t block_size() const = 0;
 
-        virtual core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+        [[nodiscard]] virtual core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_transient_memory(uint64_t size, uint64_t block_size);
-        virtual core::result_wrapper_t<std::shared_ptr<block_handle_t>> register_small_memory(uint64_t size);
-        virtual core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+        [[nodiscard]] virtual core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+        register_small_memory(uint64_t size);
+        [[nodiscard]] virtual core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_small_memory(memory_tag tag, uint64_t size);
 
         virtual void reserve_memory(uint64_t size);
@@ -63,7 +65,8 @@ namespace components::table::storage {
         virtual std::vector<memory_info_t> get_memory_usage_info() const = 0;
         // Returns out_of_memory when eviction can't shrink to the new limit; forwards
         // buffer_pool_t::set_limit's result.
-        virtual core::result_wrapper_t<bool> set_memory_limit(uint64_t limit = std::numeric_limits<uint64_t>::max());
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        set_memory_limit(uint64_t limit = std::numeric_limits<uint64_t>::max());
 
         virtual std::unique_ptr<file_buffer_t>
         construct_manager_buffer(uint64_t size,

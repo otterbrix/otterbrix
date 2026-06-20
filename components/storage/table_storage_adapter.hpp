@@ -102,7 +102,7 @@ namespace components::storage {
             }
         }
 
-        core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
+        [[nodiscard]] core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
                                                   const table::table_filter_t* filter,
                                                   int64_t limit,
                                                   const std::vector<size_t>* projected_cols,
@@ -221,7 +221,7 @@ namespace components::storage {
         // Returns the start_row on success, or write_conflict / out_of_memory surfaced by the
         // table-layer append chain. The agent_disk append handler reads the wrapper and turns
         // any error into a graceful txn abort.
-        core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data, table::transaction_data txn) override {
+        [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data, table::transaction_data txn) override {
             table::table_append_state append_state(resource_);
             auto lock_r = table_.append_lock(append_state);
             if (lock_r.has_error()) {
@@ -248,7 +248,7 @@ namespace components::storage {
 
         // Returns {start_row, count} on success, or write_conflict / out_of_memory surfaced by
         // the table-layer delete+append MVCC update; agent_disk surfaces it.
-        core::result_wrapper_t<std::pair<int64_t, uint64_t>>
+        [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data txn) override {
             auto count = static_cast<uint64_t>(data.size());
             if (count == 0)

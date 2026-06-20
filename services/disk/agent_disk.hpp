@@ -504,7 +504,7 @@ namespace services::disk {
         // when the oid isn't owned or is a record-only marker. `filter` may be nullptr;
         // `projected_cols` may be nullptr for all columns. The wrapper carries any buffer-pool
         // OOM / data_corruption surfaced by the table-layer scan as a value.
-        core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
+        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
         scan_batched_local(components::catalog::oid_t table_oid,
                            components::table::table_filter_t* filter,
                            int64_t limit,

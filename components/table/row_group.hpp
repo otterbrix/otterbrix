@@ -84,19 +84,19 @@ namespace components::table {
 
         // The append chain returns out_of_memory when a column segment allocation fails;
         // true on success.
-        core::result_wrapper_t<bool> initialize_append(row_group_append_state& append_state);
-        core::result_wrapper_t<bool>
+        [[nodiscard]] core::result_wrapper_t<bool> initialize_append(row_group_append_state& append_state);
+        [[nodiscard]] core::result_wrapper_t<bool>
         append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
 
         // Update path returns write_conflict / out_of_memory; true on success.
-        core::result_wrapper_t<bool> update(vector::data_chunk_t& updates,
-                                            int64_t* ids,
-                                            uint64_t offset,
-                                            uint64_t count,
-                                            const std::vector<uint64_t>& column_ids);
-        core::result_wrapper_t<bool> update_column(vector::data_chunk_t& updates,
-                                                   vector::vector_t& row_ids,
-                                                   const std::vector<uint64_t>& column_path);
+        [[nodiscard]] core::result_wrapper_t<bool> update(vector::data_chunk_t& updates,
+                                                          int64_t* ids,
+                                                          uint64_t offset,
+                                                          uint64_t count,
+                                                          const std::vector<uint64_t>& column_ids);
+        [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::data_chunk_t& updates,
+                                                                 vector::vector_t& row_ids,
+                                                                 const std::vector<uint64_t>& column_path);
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);
 
@@ -106,14 +106,14 @@ namespace components::table {
 
         // The checkpoint chain returns out_of_memory when a column flush pin fails;
         // the row group pointer on success.
-        core::result_wrapper_t<storage::row_group_pointer_t>
+        [[nodiscard]] core::result_wrapper_t<storage::row_group_pointer_t>
         write_to_disk(storage::partial_block_manager_t& partial_block_manager);
         void create_from_pointer(const storage::row_group_pointer_t& pointer);
 
         // Write-through: re-point every COMPLETE managed column segment of this row group to a
         // disk-backed segment (call once the row group is closed -> its segments are final). No-op for
         // in-memory tables. Returns io_error/out_of_memory on failure; true on success.
-        core::result_wrapper_t<bool> transition_to_disk();
+        [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk();
 
         uint64_t allocation_size() const { return allocation_size_; }
 

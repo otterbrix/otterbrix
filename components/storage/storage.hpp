@@ -62,7 +62,7 @@ namespace components::storage {
         // scan; true on success. Default implementation does a regular scan into one chunk
         // (the void scan path leaves no scan_error), so it always reports success; subclasses
         // that drive a batched scan override to read state.table_state.scan_error.
-        virtual core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
+        [[nodiscard]] virtual core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
                                                           const table::table_filter_t* filter,
                                                           int64_t limit,
                                                           const std::vector<size_t>* projected_cols,
@@ -94,7 +94,7 @@ namespace components::storage {
         // Returns write_conflict / out_of_memory from the table-layer update; on success
         // {0, affected-row count}. Default fallback drives the void overload (replay path:
         // no error surfacing).
-        virtual core::result_wrapper_t<std::pair<int64_t, uint64_t>>
+        [[nodiscard]] virtual core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data /*txn*/) {
             update(row_ids, data);
             return std::pair<int64_t, uint64_t>{0, 0};
@@ -104,7 +104,7 @@ namespace components::storage {
 
         // Txn-aware overloads with default fallbacks. Returns write_conflict / out_of_memory
         // surfaced by the table-layer append chain; the start_row on success.
-        virtual core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data, table::transaction_data /*txn*/) {
+        [[nodiscard]] virtual core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data, table::transaction_data /*txn*/) {
             return append(data);
         }
         virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t /*txn_id*/) {

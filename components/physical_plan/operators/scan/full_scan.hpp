@@ -9,7 +9,7 @@
 
 namespace components::operators {
 
-    core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
+    [[nodiscard]] core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
     transform_predicate(std::pmr::memory_resource* resource,
                         const expressions::compare_expression_ptr& expression,
                         const std::pmr::vector<types::complex_logical_type>& types,

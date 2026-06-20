@@ -87,17 +87,17 @@ namespace services::disk {
         // (bootstrap_*_inner_sync / the manager probe) checks construction_failed() and drops the entry /
         // drives .prev corrupt-recovery. IN_MEMORY ctors never set this.
         bool construction_failed() const noexcept { return construction_error_.contains_error(); }
-        const core::error_t& construction_error() const noexcept { return construction_error_; }
+        [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
 
         /// Checkpoint (disk mode only, no-op/success for in-memory).
         /// W-TORN: writes data blocks + fsync, then header + fsync (2 fsync — durability before header swap).
         /// Returns out_of_memory when a column flush pin fails in
         /// data_table_t::checkpoint; true on success (or IN_MEMORY no-op).
-        core::result_wrapper_t<bool> checkpoint();
+        [[nodiscard]] core::result_wrapper_t<bool> checkpoint();
         /// Same as checkpoint() + tracks W-TORN per-table wal_id snapshot.
         /// prev_checkpoint_wal_id_ ← old checkpoint_wal_id_; checkpoint_wal_id_ ← new_wal_id.
         /// Propagates the checkpoint() error; on error the wal_id fields stay unchanged.
-        core::result_wrapper_t<bool> checkpoint(wal::id_t new_wal_id);
+        [[nodiscard]] core::result_wrapper_t<bool> checkpoint(wal::id_t new_wal_id);
 
         /// W-TORN: latest committed checkpoint wal_id for this DISK table (0 if never checkpointed / IN_MEMORY).
         wal::id_t checkpoint_wal_id() const noexcept { return checkpoint_wal_id_; }

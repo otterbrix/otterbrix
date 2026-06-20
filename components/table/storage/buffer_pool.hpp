@@ -89,7 +89,7 @@ namespace components::table::storage {
 
         // Returns out_of_memory when eviction cannot free enough for the new limit. maximum_memory is
         // restored on the second-pass failure before returning the error.
-        core::result_wrapper_t<bool> set_limit(uint64_t limit);
+        [[nodiscard]] core::result_wrapper_t<bool> set_limit(uint64_t limit);
 
         void set_allocator_bulk_dealloc_flush_threashold(uint64_t threshold);
         uint64_t get_allocator_bulk_dealloc_flush_threashold();

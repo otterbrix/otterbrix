@@ -21,25 +21,28 @@ namespace components::table::storage {
                                   core::filesystem::local_file_system_t& fs,
                                   buffer_pool_t& buffer_pool);
 
-        core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+        [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_transient_memory(uint64_t size, uint64_t block_size) final;
-        core::result_wrapper_t<std::shared_ptr<block_handle_t>> register_small_memory(uint64_t size) final;
-        core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+        [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+        register_small_memory(uint64_t size) final;
+        [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_small_memory(memory_tag tag, uint64_t size) final;
 
         uint64_t block_allocation_size() const final;
         uint64_t block_size() const final;
 
-        core::result_wrapper_t<buffer_handle_t>
+        [[nodiscard]] core::result_wrapper_t<buffer_handle_t>
         allocate(memory_tag tag, uint64_t block_size, bool can_destroy = true) final;
 
-        core::result_wrapper_t<bool> reallocate(std::shared_ptr<block_handle_t>& handle, uint64_t block_size) final;
+        [[nodiscard]] core::result_wrapper_t<bool>
+        reallocate(std::shared_ptr<block_handle_t>& handle, uint64_t block_size) final;
 
-        core::result_wrapper_t<buffer_handle_t> pin(std::shared_ptr<block_handle_t>& handle) final;
+        [[nodiscard]] core::result_wrapper_t<buffer_handle_t> pin(std::shared_ptr<block_handle_t>& handle) final;
         void prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) final;
         void unpin(block_handle_t* handle) final;
 
-        core::result_wrapper_t<bool> set_memory_limit(uint64_t limit = std::numeric_limits<uint64_t>::max()) final;
+        [[nodiscard]] core::result_wrapper_t<bool>
+        set_memory_limit(uint64_t limit = std::numeric_limits<uint64_t>::max()) final;
 
         std::vector<memory_info_t> get_memory_usage_info() const override;
 
@@ -55,10 +58,10 @@ namespace components::table::storage {
         core::filesystem::local_file_system_t& filesystem() const noexcept { return fs_; }
 
     protected:
-        core::result_wrapper_t<temp_buffer_pool_reservation_t>
+        [[nodiscard]] core::result_wrapper_t<temp_buffer_pool_reservation_t>
         evict_blocks_or_error(memory_tag tag, uint64_t memory_delta, std::unique_ptr<file_buffer_t>* buffer);
 
-        core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+        [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_memory(memory_tag tag, uint64_t block_size, bool can_destroy);
 
         void purge_queue(const block_handle_t& handle) final;
@@ -67,10 +70,10 @@ namespace components::table::storage {
 
         void add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle) final;
 
-        core::result_wrapper_t<bool> batch_read(std::vector<std::shared_ptr<block_handle_t>>& handles,
-                                                const std::map<uint64_t, uint64_t>& load_map,
-                                                uint64_t first_block,
-                                                uint64_t last_block);
+        [[nodiscard]] core::result_wrapper_t<bool> batch_read(std::vector<std::shared_ptr<block_handle_t>>& handles,
+                                                              const std::map<uint64_t, uint64_t>& load_map,
+                                                              uint64_t first_block,
+                                                              uint64_t last_block);
 
         std::pmr::memory_resource* resource_;
         core::filesystem::local_file_system_t& fs_;

@@ -96,7 +96,7 @@ namespace components::operators {
                 for (const auto& child_ids : per_row_child_ids) {
                     if (!child_ids.empty()) {
                         set_error(core::error_t{
-                            core::error_code_t::other_error,
+                            core::error_code_t::invalid_constraint,
                             std::pmr::string{"FK constraint violated: child rows reference deleted parent row",
                                              resource_}});
                         co_return;

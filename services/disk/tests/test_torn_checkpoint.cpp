@@ -30,9 +30,12 @@ namespace {
         chunk.set_cardinality(1);
         chunk.set_value(0, 0, logical_value_t{res, value});
         table_append_state state(res);
-        table.append_lock(state);
-        table.initialize_append(state);
-        table.append(chunk, state);
+        auto lock_result = table.append_lock(state);
+        REQUIRE_FALSE(lock_result.has_error());
+        auto init_result = table.initialize_append(state);
+        REQUIRE_FALSE(init_result.has_error());
+        auto append_result = table.append(chunk, state);
+        REQUIRE_FALSE(append_result.has_error());
         table.finalize_append(state, transaction_data{0, 0});
     }
 } // namespace
@@ -53,17 +56,20 @@ TEST_CASE("services::disk::torn::checkpoint_wal_id_overload_tracks_prev") {
     REQUIRE(ts.prev_checkpoint_wal_id() == 0);
 
     append_one_int(ts.table(), &resource, 1);
-    ts.checkpoint(services::wal::id_t{100});
+    auto checkpoint_result_100 = ts.checkpoint(services::wal::id_t{100});
+    REQUIRE_FALSE(checkpoint_result_100.has_error());
     REQUIRE(ts.checkpoint_wal_id() == 100);
     REQUIRE(ts.prev_checkpoint_wal_id() == 0); // first checkpoint, no prior id
 
     append_one_int(ts.table(), &resource, 2);
-    ts.checkpoint(services::wal::id_t{250});
+    auto checkpoint_result_250 = ts.checkpoint(services::wal::id_t{250});
+    REQUIRE_FALSE(checkpoint_result_250.has_error());
     REQUIRE(ts.checkpoint_wal_id() == 250);
     REQUIRE(ts.prev_checkpoint_wal_id() == 100); // shifted
 
     append_one_int(ts.table(), &resource, 3);
-    ts.checkpoint(services::wal::id_t{260});
+    auto checkpoint_result_260 = ts.checkpoint(services::wal::id_t{260});
+    REQUIRE_FALSE(checkpoint_result_260.has_error());
     REQUIRE(ts.checkpoint_wal_id() == 260);
     REQUIRE(ts.prev_checkpoint_wal_id() == 250); // shifted again
 
@@ -82,7 +88,8 @@ TEST_CASE("services::disk::torn::checkpoint_no_overload_leaves_ids_zero") {
 
     table_storage_t ts(&resource, std::move(cols), otbx);
     append_one_int(ts.table(), &resource, 42);
-    ts.checkpoint();
+    auto checkpoint_result = ts.checkpoint();
+    REQUIRE_FALSE(checkpoint_result.has_error());
     REQUIRE(ts.checkpoint_wal_id() == 0);
     REQUIRE(ts.prev_checkpoint_wal_id() == 0);
 
@@ -104,7 +111,8 @@ TEST_CASE("services::disk::torn::data_persists_after_checkpoint_with_wal_id") {
         for (int64_t i = 0; i < N; i++) {
             append_one_int(ts.table(), &resource, i);
         }
-        ts.checkpoint(services::wal::id_t{777});
+        auto checkpoint_result_777 = ts.checkpoint(services::wal::id_t{777});
+        REQUIRE_FALSE(checkpoint_result_777.has_error());
         REQUIRE(ts.checkpoint_wal_id() == 777);
     }
 
@@ -135,7 +143,8 @@ TEST_CASE("services::disk::torn::load_storage_disk_sync_promotes_only_prev") {
         cols.emplace_back("value", logical_type::BIGINT);
         table_storage_t ts(&resource, std::move(cols), otbx);
         append_one_int(ts.table(), &resource, 7);
-        ts.checkpoint();
+        auto checkpoint_result = ts.checkpoint();
+        REQUIRE_FALSE(checkpoint_result.has_error());
     }
     std::filesystem::rename(otbx, prev);
     REQUIRE_FALSE(std::filesystem::exists(otbx));
@@ -169,7 +178,8 @@ TEST_CASE("services::disk::torn::load_falls_back_to_prev_on_corrupt_otbx") {
         cols.emplace_back("value", logical_type::BIGINT);
         table_storage_t ts(&resource, std::move(cols), otbx);
         append_one_int(ts.table(), &resource, 99);
-        ts.checkpoint();
+        auto checkpoint_result = ts.checkpoint();
+        REQUIRE_FALSE(checkpoint_result.has_error());
     }
     std::filesystem::copy_file(otbx, prev);
 
@@ -212,7 +222,8 @@ TEST_CASE("services::disk::torn::reopen_corrupt_otbx_no_prev_surfaces_error_valu
         table_storage_t ts(&resource, std::move(cols), otbx);
         REQUIRE_FALSE(ts.construction_failed());
         append_one_int(ts.table(), &resource, 5);
-        ts.checkpoint();
+        auto checkpoint_result = ts.checkpoint();
+        REQUIRE_FALSE(checkpoint_result.has_error());
     }
     REQUIRE(std::filesystem::exists(otbx));
     REQUIRE_FALSE(std::filesystem::exists(std::filesystem::path(otbx.string() + ".prev")));

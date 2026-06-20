@@ -110,7 +110,8 @@ TEST_CASE("components::table::column") {
             for (size_t i = 0; i < update_size; i++) {
                 ids.emplace_back(i);
             }
-            column->update(0, v, ids.data(), update_size);
+            auto update_result = column->update(0, v, ids.data(), update_size);
+            REQUIRE_FALSE(update_result.has_error());
         }
         // Scan after update
         {
@@ -186,7 +187,8 @@ TEST_CASE("components::table::column") {
             for (size_t i = 0; i < update_size; i++) {
                 ids.emplace_back(i);
             }
-            column->update(0, v, ids.data(), update_size);
+            auto update_result = column->update(0, v, ids.data(), update_size);
+            REQUIRE_FALSE(update_result.has_error());
         }
         // Scan after update
         {
@@ -278,7 +280,8 @@ TEST_CASE("components::table::column") {
             for (size_t i = 0; i < update_size; i++) {
                 ids.emplace_back(i);
             }
-            column->update(0, v, ids.data(), update_size);
+            auto update_result = column->update(0, v, ids.data(), update_size);
+            REQUIRE_FALSE(update_result.has_error());
         }
         // Scan after update
         {
@@ -383,7 +386,8 @@ TEST_CASE("components::table::column") {
             for (size_t i = 0; i < update_size; i++) {
                 ids.emplace_back(i);
             }
-            column->update(0, v, ids.data(), update_size);
+            auto update_result = column->update(0, v, ids.data(), update_size);
+            REQUIRE_FALSE(update_result.has_error());
         }
         // Scan after update
         {
@@ -490,7 +494,8 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, logical_value_t::create_list(v.resource(), logical_type::UBIGINT, list));
                 ids.emplace_back(static_cast<int64_t>(i));
             }
-            column->update(0, v, ids.data(), update_size);
+            auto update_result = column->update(0, v, ids.data(), update_size);
+            REQUIRE_FALSE(update_result.has_error());
         }
         // Scan after update
         {
@@ -597,7 +602,8 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, logical_value_t::create_list(v.resource(), logical_type::STRING_LITERAL, list));
                 ids.emplace_back(static_cast<int64_t>(i));
             }
-            column->update(0, v, ids.data(), update_size);
+            auto update_result = column->update(0, v, ids.data(), update_size);
+            REQUIRE_FALSE(update_result.has_error());
         }
         // Scan after update
         {

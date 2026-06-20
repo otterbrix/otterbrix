@@ -1059,7 +1059,7 @@ namespace services::disk {
         if (scan_r.has_error()) {
             return scan_r.convert_error<std::pmr::vector<components::vector::data_chunk_t>>();
         }
-        return std::move(batches);
+        return batches;
     }
 
     // Thin mailbox wrapper over scan_batched_local (D6: same-actor callers use the local

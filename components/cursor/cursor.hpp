@@ -47,9 +47,12 @@ namespace components::cursor {
         core::error_t get_error() const;
 
     private:
+        // Result rows as a batch of ≤DEFAULT_VECTOR_CAPACITY chunks (never combined into
+        // one oversized chunk). Always holds at least one (possibly empty) chunk so
+        // chunk_data() / column metadata have a valid front to return.
         std::size_t size_{};
         index_t current_index_{start_index};
-        vector::data_chunk_t table_data_;
+        std::pmr::vector<vector::data_chunk_t> chunks_;
         std::pmr::vector<components::types::complex_logical_type> type_data_;
         core::error_t error_;
     };

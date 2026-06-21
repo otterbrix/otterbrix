@@ -418,28 +418,32 @@ namespace services::disk {
         }
     }
 
-    std::unique_ptr<components::vector::data_chunk_t>
+    std::pmr::vector<components::vector::data_chunk_t>
     manager_disk_t::scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid,
                                                   std::pmr::memory_resource* resource) const {
+        std::pmr::vector<components::vector::data_chunk_t> batches{resource};
         if (agents_.empty())
-            return {};
+            return batches;
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
         if (idx >= agents_.size() || agents_[idx] == nullptr)
-            return {};
+            return batches;
         const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(table_oid);
         if (entry == nullptr || entry->storage == nullptr)
-            return {};
+            return batches;
         const auto total = entry->storage->total_rows();
         if (total == 0)
-            return {};
-        auto types = entry->storage->types();
+            return batches;
         // REGULAR scan (default transaction_data) so the visibility filter drops
         // committed-deleted tombstones. scan_segment (COMMITTED_ROWS, no filter)
         // would seed the index with deleted rows whose column data is still present,
-        // and index_scan + fetch + WHERE would then return them.
-        auto out = std::make_unique<components::vector::data_chunk_t>(resource, types, total);
-        entry->storage->scan(*out, /*filter=*/nullptr, /*limit=*/-1);
-        return out;
+        // and index_scan + fetch + WHERE would then return them. scan_batched emits the
+        // table as ≤DEFAULT_VECTOR_CAPACITY chunks, so no oversized chunk is built.
+        entry->storage->scan_batched(batches,
+                                     /*filter=*/nullptr,
+                                     /*limit=*/-1,
+                                     /*projected_cols=*/nullptr,
+                                     components::table::transaction_data{});
+        return batches;
     }
 
     std::pmr::vector<components::catalog::oid_t> manager_disk_t::scan_live_table_oids_sync() const {

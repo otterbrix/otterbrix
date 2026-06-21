@@ -72,18 +72,19 @@ namespace components::operators {
         // repopulate their indexes: the compact pass above invalidated row positions.
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
-        std::unique_ptr<components::vector::data_chunk_t> pg_class_rows;
+        std::pmr::vector<components::vector::data_chunk_t> pg_class_batches(resource_);
         {
             auto [_sc, scf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::storage_scan,
                                                ctx->session,
                                                kPgClass,
                                                std::unique_ptr<components::table::table_filter_t>{},
-                                               /*limit=*/-1,
+                                               /*limit=*/int64_t{-1},
+                                               std::vector<size_t>{},
                                                ctx->txn);
-            pg_class_rows = co_await std::move(scf);
+            pg_class_batches = co_await std::move(scf);
         }
-        if (!pg_class_rows) {
+        if (pg_class_batches.empty()) {
             mark_executed();
             co_return;
         }
@@ -98,26 +99,28 @@ namespace components::operators {
         // pg_computed_column GC doesn't have to re-scan pg_class.
         std::vector<catalog::oid_t> computing_table_oids;
 
-        for (std::uint64_t i = 0; i < pg_class_rows->size(); ++i) {
-            // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode
-            auto rk_v = pg_class_rows->value(3, i);
-            const auto rkv = rk_v.is_null() ? std::string_view{"r"} : rk_v.value<std::string_view>();
-            const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
-            if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed) {
-                continue;
-            }
+        for (const auto& pg_class_rows : pg_class_batches) {
+            for (std::uint64_t i = 0; i < pg_class_rows.size(); ++i) {
+                // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode
+                auto rk_v = pg_class_rows.value(3, i);
+                const auto rkv = rk_v.is_null() ? std::string_view{"r"} : rk_v.value<std::string_view>();
+                const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
+                if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed) {
+                    continue;
+                }
 
-            auto oid_v = pg_class_rows->value(0, i);
-            if (oid_v.is_null())
-                continue;
-            const auto this_oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());
-            if (this_oid == catalog::INVALID_OID)
-                continue;
+                auto oid_v = pg_class_rows.value(0, i);
+                if (oid_v.is_null())
+                    continue;
+                const auto this_oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());
+                if (this_oid == catalog::INVALID_OID)
+                    continue;
 
-            if (relkind == catalog::relkind::computed) {
-                computing_table_oids.push_back(this_oid);
+                if (relkind == catalog::relkind::computed) {
+                    computing_table_oids.push_back(this_oid);
+                }
+                user_tables.push_back({this_oid});
             }
-            user_tables.push_back({this_oid});
         }
 
         // For each user table, re-populate its index from the just-compacted
@@ -140,8 +143,8 @@ namespace components::operators {
 
             // total==0 (table emptied by compact) still repopulates: the clear
             // step inside repopulate_table wipes stale index entries.
-            // storage_scan_segment returns an empty chunk for count==0.
-            std::unique_ptr<components::vector::data_chunk_t> scan_data;
+            // storage_scan_segment returns an empty vector for count==0.
+            std::pmr::vector<components::vector::data_chunk_t> scan_data(resource_);
             {
                 auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_scan_segment,
@@ -213,12 +216,13 @@ namespace components::operators {
                 cc_keys.emplace_back("relid");
                 std::pmr::vector<types::logical_value_t> cc_vals(resource_);
                 cc_vals.emplace_back(toid_lv);
-                auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   cc_ctx,
-                                                   kPgComputedColumn,
-                                                   std::move(cc_keys),
-                                                   components::operators::make_key_chunk(resource_, std::move(cc_vals)));
+                auto [_cc, ccf] =
+                    actor_zeta::send(ctx->disk_address,
+                                     &services::disk::manager_disk_t::read_chunks_by_key,
+                                     cc_ctx,
+                                     kPgComputedColumn,
+                                     std::move(cc_keys),
+                                     components::operators::make_key_chunk(resource_, std::move(cc_vals)));
                 auto cc_batches = co_await std::move(ccf);
 
                 // Both GC passes below delete by (kPgComputedColumn, col 1=attoid)
@@ -318,12 +322,13 @@ namespace components::operators {
                     cc2_keys.emplace_back("relid");
                     std::pmr::vector<types::logical_value_t> cc2_vals(resource_);
                     cc2_vals.emplace_back(toid_lv2);
-                    auto [_cc2, ccf2] = actor_zeta::send(ctx->disk_address,
-                                                         &services::disk::manager_disk_t::read_chunks_by_key,
-                                                         cc_ctx,
-                                                         kPgComputedColumn,
-                                                         std::move(cc2_keys),
-                                                         components::operators::make_key_chunk(resource_, std::move(cc2_vals)));
+                    auto [_cc2, ccf2] =
+                        actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::read_chunks_by_key,
+                                         cc_ctx,
+                                         kPgComputedColumn,
+                                         std::move(cc2_keys),
+                                         components::operators::make_key_chunk(resource_, std::move(cc2_vals)));
                     auto live_cc = co_await std::move(ccf2);
 
                     std::set<std::string> live_attnames;

@@ -48,6 +48,16 @@ namespace {
             }
             return logical_value_t{v.resource(), raw_sum};
         }
+        // Combine two partial sums (used to fold per-chunk states into one group state).
+        // Callers must ensure neither operand is NA before dispatching here.
+        template<typename T>
+        auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            return logical_value_t{v1.resource(), T(v1.value<T>() + v2.value<T>())};
+        }
+        template<typename T, typename U>
+        auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
+            return logical_value_t{v1.resource(), T(v1.value<U>() + v2.value<U>())};
+        }
     };
 
     template<>
@@ -409,12 +419,26 @@ namespace {
         return core::error_t::no_error();
     }
 
-    static core::error_t sum_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
-        ctx.batch_results.push_back(static_cast<sum_kernel_state&>(from).value);
+    // Fold this chunk's partial sum into the running group state. A NA operand is the
+    // additive identity (no non-null rows seen yet), so it is skipped.
+    static core::error_t sum_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
+        auto& src = static_cast<sum_kernel_state&>(from);
+        auto& acc = static_cast<sum_kernel_state&>(into);
+        if (src.value.type().type() == logical_type::NA) {
+            return core::error_t::no_error();
+        }
+        if (acc.value.type().type() == logical_type::NA) {
+            acc.value = src.value;
+        } else {
+            acc.value = operator_switch<sum_operator_t>(acc.value, src.value);
+        }
         return core::error_t::no_error();
     }
 
-    static core::error_t sum_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
+    static core::error_t sum_finalize(aggregate_kernel_context& ctx) {
+        ctx.batch_results.push_back(static_cast<sum_kernel_state*>(ctx.state())->value);
+        return core::error_t::no_error();
+    }
 
     struct min_kernel_state : kernel_state {
         explicit min_kernel_state(std::pmr::memory_resource* resource)
@@ -433,12 +457,24 @@ namespace {
         return core::error_t::no_error();
     }
 
-    static core::error_t min_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
-        ctx.batch_results.push_back(static_cast<min_kernel_state&>(from).value);
+    static core::error_t min_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
+        auto& src = static_cast<min_kernel_state&>(from);
+        auto& acc = static_cast<min_kernel_state&>(into);
+        if (src.value.type().type() == logical_type::NA) {
+            return core::error_t::no_error();
+        }
+        if (acc.value.type().type() == logical_type::NA) {
+            acc.value = src.value;
+        } else {
+            acc.value = operator_switch<min_operator_t>(acc.value, src.value);
+        }
         return core::error_t::no_error();
     }
 
-    static core::error_t min_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
+    static core::error_t min_finalize(aggregate_kernel_context& ctx) {
+        ctx.batch_results.push_back(static_cast<min_kernel_state*>(ctx.state())->value);
+        return core::error_t::no_error();
+    }
 
     struct max_kernel_state : kernel_state {
         explicit max_kernel_state(std::pmr::memory_resource* resource)
@@ -457,12 +493,24 @@ namespace {
         return core::error_t::no_error();
     }
 
-    static core::error_t max_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
-        ctx.batch_results.push_back(static_cast<max_kernel_state&>(from).value);
+    static core::error_t max_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
+        auto& src = static_cast<max_kernel_state&>(from);
+        auto& acc = static_cast<max_kernel_state&>(into);
+        if (src.value.type().type() == logical_type::NA) {
+            return core::error_t::no_error();
+        }
+        if (acc.value.type().type() == logical_type::NA) {
+            acc.value = src.value;
+        } else {
+            acc.value = operator_switch<max_operator_t>(acc.value, src.value);
+        }
         return core::error_t::no_error();
     }
 
-    static core::error_t max_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
+    static core::error_t max_finalize(aggregate_kernel_context& ctx) {
+        ctx.batch_results.push_back(static_cast<max_kernel_state*>(ctx.state())->value);
+        return core::error_t::no_error();
+    }
 
     struct count_kernel_state : kernel_state {
         size_t value;
@@ -489,13 +537,16 @@ namespace {
         return core::error_t::no_error();
     }
 
-    static core::error_t count_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
-        ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
-                                       static_cast<count_kernel_state&>(from).value);
+    static core::error_t count_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
+        static_cast<count_kernel_state&>(into).value += static_cast<count_kernel_state&>(from).value;
         return core::error_t::no_error();
     }
 
-    static core::error_t count_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
+    static core::error_t count_finalize(aggregate_kernel_context& ctx) {
+        ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(),
+                                       static_cast<count_kernel_state*>(ctx.state())->value);
+        return core::error_t::no_error();
+    }
 
     struct avg_kernel_state : kernel_state {
         explicit avg_kernel_state(std::pmr::memory_resource* resource)
@@ -521,17 +572,32 @@ namespace {
         return core::error_t::no_error();
     }
 
-    static core::error_t avg_merge(aggregate_kernel_context& ctx, kernel_state&& from, kernel_state&) {
-        auto& s = static_cast<avg_kernel_state&>(from);
-        if (s.count == 0) {
-            ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), logical_type::NA);
+    // Accumulate running sum + count so the average is computed once over the whole
+    // group in finalize (combining per-chunk averages would be incorrect).
+    static core::error_t avg_merge(aggregate_kernel_context&, kernel_state&& from, kernel_state& into) {
+        auto& src = static_cast<avg_kernel_state&>(from);
+        auto& acc = static_cast<avg_kernel_state&>(into);
+        if (src.count == 0) {
             return core::error_t::no_error();
         }
-        ctx.batch_results.push_back(operator_switch<divide_operator_t>(s.value, s.count));
+        acc.count += src.count;
+        if (acc.value.type().type() == logical_type::NA) {
+            acc.value = src.value;
+        } else {
+            acc.value = operator_switch<sum_operator_t>(acc.value, src.value);
+        }
         return core::error_t::no_error();
     }
 
-    static core::error_t avg_finalize(aggregate_kernel_context&) { return core::error_t::no_error(); }
+    static core::error_t avg_finalize(aggregate_kernel_context& ctx) {
+        auto& acc = *static_cast<avg_kernel_state*>(ctx.state());
+        if (acc.count == 0) {
+            ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), logical_type::NA);
+            return core::error_t::no_error();
+        }
+        ctx.batch_results.push_back(operator_switch<divide_operator_t>(acc.value, acc.count));
+        return core::error_t::no_error();
+    }
 
     std::unique_ptr<aggregate_function> make_sum_func(std::pmr::memory_resource* resource,
                                                       const std::string& name,

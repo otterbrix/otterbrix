@@ -36,8 +36,8 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <core/executor.hpp>
 #include <condition_variable>
+#include <core/executor.hpp>
 #include <limits>
 #include <list>
 #include <mutex>
@@ -243,12 +243,11 @@ namespace services::disk {
             actor_zeta::behavior_t behavior{};
         };
 
-        manager_disk_t(
-            std::pmr::memory_resource*,
-            actor_zeta::scheduler_raw scheduler,
-            actor_zeta::scheduler_raw scheduler_disk,
-            configuration::config_disk config,
-            log_t& log);
+        manager_disk_t(std::pmr::memory_resource*,
+                       actor_zeta::scheduler_raw scheduler,
+                       actor_zeta::scheduler_raw scheduler_disk,
+                       configuration::config_disk config,
+                       log_t& log);
         ~manager_disk_t();
 
         // True if a storage entry is registered for `table_oid` (used by WAL replay to lazily
@@ -321,11 +320,11 @@ namespace services::disk {
         // data_table_t::compact), so pre-compact row_ids persisted in on-disk
         // index btrees go stale; base_spaces feeds this scan into
         // manager_index_t::bootstrap_repopulate_sync to rebuild against current
-        // row_ids. Single-threaded bootstrap only. Returns a default-constructed
-        // unique_ptr when the oid is unknown or its storage is empty.
-        std::unique_ptr<components::vector::data_chunk_t>
-        scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid,
-                                      std::pmr::memory_resource* resource) const;
+        // row_ids. Single-threaded bootstrap only. Returns the storage as a batch of
+        // ≤DEFAULT_VECTOR_CAPACITY chunks (empty when the oid is unknown or its storage
+        // is empty).
+        std::pmr::vector<components::vector::data_chunk_t>
+        scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid, std::pmr::memory_resource* resource) const;
 
         // Catalog scan returning (oid, delete_id) for every tombstoned pg_class
         // row. base_spaces calls it after WAL replay to rebuild the per-agent
@@ -587,52 +586,51 @@ namespace services::disk {
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
         unique_future<uint64_t> storage_total_rows(session_id_t session, components::catalog::oid_t table_oid);
 
-        // Storage data operations
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        // Storage data operations.
+        // Returns a vector of chunks and applies index-based column projection at the
+        // storage layer. Empty `projected_cols` means "read all columns" (pass-through).
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan(session_id_t session,
                      components::catalog::oid_t table_oid,
                      std::unique_ptr<components::table::table_filter_t> filter,
-                     int limit,
+                     int64_t limit,
+                     std::vector<size_t> projected_cols,
                      components::table::transaction_data txn);
-        // Batched + projected variant: returns a vector of chunks and applies
-        // index-based column projection at the storage layer.
-        // Empty `projected_cols` means "read all columns" (pass-through).
+        // Both reads return a vector of chunks, each ≤ DEFAULT_VECTOR_CAPACITY rows.
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
-        storage_scan_batched(session_id_t session,
-                             components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::table::table_filter_t> filter,
-                             int64_t limit,
-                             std::vector<size_t> projected_cols,
-                             components::table::transaction_data txn);
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
                       uint64_t count);
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
+        // Appends every chunk in order. Appends within one txn are contiguous, so the
+        // result is the single coalesced range [range_start, range_start + total_count).
         unique_future<std::pair<uint64_t, uint64_t>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::data_chunk_t> data);
 
+        // Updates every chunk in order; row_ids[i] are the storage row-ids for data[i]
+        // (the two vectors are positionally aligned and must have equal length). Returns
+        // the coalesced new-row range [range_start, range_start + total_count).
         unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       components::vector::vector_t row_ids,
-                       std::unique_ptr<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::vector_t> row_ids,
+                       std::pmr::vector<components::vector::data_chunk_t> data);
         unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
                                                     components::catalog::oid_t table_oid,
                                                     components::vector::vector_t row_ids,
                                                     uint64_t count);
         // Batched MVCC swap. Each range carries its own table_oid.
         unique_future<void> storage_publish_commits(execution_context_t ctx,
-                                                   uint64_t commit_id,
-                                                   std::vector<components::pg_catalog_append_range_t> ranges);
+                                                    uint64_t commit_id,
+                                                    std::vector<components::pg_catalog_append_range_t> ranges);
 
         unique_future<void> storage_publish_deletes(execution_context_t ctx,
-                                                   uint64_t commit_id,
-                                                   std::set<components::catalog::oid_t> tables);
+                                                    uint64_t commit_id,
+                                                    std::set<components::catalog::oid_t> tables);
 
         unique_future<void> storage_revert_appends(execution_context_t ctx,
                                                    std::vector<components::pg_catalog_append_range_t> ranges);
@@ -655,7 +653,6 @@ namespace services::disk {
                                                        &manager_disk_t::storage_total_rows,
                                                        // Storage data operations
                                                        &manager_disk_t::storage_scan,
-                                                       &manager_disk_t::storage_scan_batched,
                                                        &manager_disk_t::storage_fetch,
                                                        &manager_disk_t::storage_scan_segment,
                                                        &manager_disk_t::storage_append,
@@ -736,11 +733,13 @@ namespace services::disk {
 
         // Hash-route by table_oid. Catalog tables (oid < FIRST_USER_OID) → agent 0;
         // user tables hash across agents_[1..N-1].
-        static constexpr std::size_t pool_idx_for_oid(components::catalog::oid_t oid,
-                                                      std::size_t pool_size) noexcept {
-            if (pool_size == 0) return 0;
-            if (static_cast<std::uint32_t>(oid) < components::catalog::FIRST_USER_OID) return 0;
-            if (pool_size == 1) return 0;
+        static constexpr std::size_t pool_idx_for_oid(components::catalog::oid_t oid, std::size_t pool_size) noexcept {
+            if (pool_size == 0)
+                return 0;
+            if (static_cast<std::uint32_t>(oid) < components::catalog::FIRST_USER_OID)
+                return 0;
+            if (pool_size == 1)
+                return 0;
             return 1 + (static_cast<std::size_t>(oid) % (pool_size - 1));
         }
     };

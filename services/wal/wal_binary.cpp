@@ -37,6 +37,70 @@ namespace services::wal {
             return static_cast<crc32_t>(crc);
         }
 
+        // Serialize a chunk batch into one length-prefixed payload:
+        //   [chunk_count:4] then for each chunk: [chunk_size:4][serialized chunk]
+        // The whole batch lands in a single record, so recovery sees all chunks or none.
+        void serialize_chunk_batch(buffer_t& payload_buf,
+                                   const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
+            const size_t count_pos = payload_buf.size();
+            payload_buf.resize(count_pos + 4);
+            write_le32(payload_buf.data() + count_pos, static_cast<uint32_t>(chunks.size()));
+            for (const auto& chunk : chunks) {
+                const size_t len_pos = payload_buf.size();
+                payload_buf.resize(len_pos + 4); // size placeholder
+                const size_t data_start = payload_buf.size();
+                components::vector::serialize_binary(chunk, payload_buf);
+                const auto chunk_size = static_cast<uint32_t>(payload_buf.size() - data_start);
+                write_le32(payload_buf.data() + len_pos, chunk_size);
+            }
+        }
+
+        // Inverse of serialize_chunk_batch: deserialize every ≤CAP chunk into a vector
+        // (the form replay consumes). Sets ok=false on a malformed payload.
+        std::pmr::vector<components::vector::data_chunk_t> deserialize_chunk_batch(const char* payload,
+                                                                                   uint32_t payload_size,
+                                                                                   std::pmr::memory_resource* resource,
+                                                                                   bool& ok) {
+            ok = true;
+            std::pmr::vector<components::vector::data_chunk_t> chunks(resource);
+            if (payload_size < 4) {
+                ok = false;
+                return chunks;
+            }
+            const char* ptr = payload;
+            uint32_t chunk_count = read_le32(ptr);
+            ptr += 4;
+            uint32_t remaining = payload_size - 4;
+
+            chunks.reserve(chunk_count);
+            for (uint32_t ci = 0; ci < chunk_count; ++ci) {
+                if (remaining < 4) {
+                    ok = false;
+                    chunks.clear();
+                    return chunks;
+                }
+                uint32_t chunk_size = read_le32(ptr);
+                ptr += 4;
+                remaining -= 4;
+                if (remaining < chunk_size) {
+                    ok = false;
+                    chunks.clear();
+                    return chunks;
+                }
+                bool chunk_ok = false;
+                auto chunk = components::vector::deserialize_binary(ptr, chunk_size, resource, chunk_ok);
+                if (!chunk_ok) {
+                    ok = false;
+                    chunks.clear();
+                    return chunks;
+                }
+                chunks.emplace_back(std::move(chunk));
+                ptr += chunk_size;
+                remaining -= chunk_size;
+            }
+            return chunks;
+        }
+
         // -----------------------------------------------------------------
         // DML header (common to INSERT/DELETE/UPDATE) layout:
         //
@@ -139,12 +203,12 @@ namespace services::wal {
                           id_t wal_id,
                           uint64_t txn_id,
                           components::catalog::oid_t table_oid,
-                          const components::vector::data_chunk_t& data_chunk,
+                          const std::pmr::vector<components::vector::data_chunk_t>& chunks,
                           uint64_t row_start,
                           uint64_t row_count) {
-        // Serialize the data_chunk into a temporary buffer.
+        // Serialize the whole chunk batch into one record payload.
         buffer_t payload_buf(buffer.get_allocator());
-        components::vector::serialize_binary(data_chunk, payload_buf);
+        serialize_chunk_batch(payload_buf, chunks);
 
         return write_dml_record(buffer,
                                 last_crc32,
@@ -193,12 +257,12 @@ namespace services::wal {
                           uint64_t txn_id,
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
-                          const components::vector::data_chunk_t& new_data,
+                          const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
                           uint64_t count) {
         // Payload layout for UPDATE:
         //   [row_ids_size : 4 LE]          // byte count of the row-ids block
         //   [row_ids      : row_ids_size]
-        //   [data_chunk   : remainder]
+        //   [chunk_batch  : remainder]     // [chunk_count:4] then [chunk_size:4][chunk]*
 
         buffer_t payload_buf(buffer.get_allocator());
 
@@ -211,8 +275,8 @@ namespace services::wal {
         p += 4;
         std::memcpy(p, row_ids, row_ids_bytes);
 
-        // Append serialised data_chunk.
-        components::vector::serialize_binary(new_data, payload_buf);
+        // Append the serialized chunk batch.
+        serialize_chunk_batch(payload_buf, new_chunks);
 
         return write_dml_record(buffer,
                                 last_crc32,
@@ -364,12 +428,11 @@ namespace services::wal {
             case wal_record_type::PHYSICAL_INSERT: {
                 if (payload_size > 0) {
                     bool ok = false;
-                    auto chunk = components::vector::deserialize_binary(payload, payload_size, resource, ok);
+                    rec.physical_data = deserialize_chunk_batch(payload, payload_size, resource, ok);
                     if (!ok) {
                         rec.is_corrupt = true;
                         return rec;
                     }
-                    rec.physical_data = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
                 }
                 break;
             }
@@ -397,15 +460,14 @@ namespace services::wal {
                 std::memcpy(rec.physical_row_ids.data(), row_ids_data, row_ids_bytes);
 
                 const char* chunk_data = row_ids_data + row_ids_bytes;
-                uint32_t chunk_size = payload_size - 4 - row_ids_bytes;
-                if (chunk_size > 0) {
+                uint32_t chunk_batch_size = payload_size - 4 - row_ids_bytes;
+                if (chunk_batch_size > 0) {
                     bool ok = false;
-                    auto chunk = components::vector::deserialize_binary(chunk_data, chunk_size, resource, ok);
+                    rec.physical_data = deserialize_chunk_batch(chunk_data, chunk_batch_size, resource, ok);
                     if (!ok) {
                         rec.is_corrupt = true;
                         return rec;
                     }
-                    rec.physical_data = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
                 }
                 break;
             }

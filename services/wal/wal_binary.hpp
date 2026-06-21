@@ -2,6 +2,7 @@
 
 #include <memory_resource>
 #include <string>
+#include <vector>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <services/wal/base.hpp>
@@ -24,13 +25,15 @@ namespace services::wal {
     // strings.
     // -----------------------------------------------------------------------
 
+    // The whole chunk batch is written into ONE record (count-prefixed, each chunk
+    // length-prefixed) so a torn write can never leave a partially-applied batch.
     crc32_t encode_insert(buffer_t& buffer,
                           std::pmr::memory_resource* resource,
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
                           components::catalog::oid_t table_oid,
-                          const components::vector::data_chunk_t& data_chunk,
+                          const std::pmr::vector<components::vector::data_chunk_t>& chunks,
                           uint64_t row_start,
                           uint64_t row_count);
 
@@ -49,7 +52,7 @@ namespace services::wal {
                           uint64_t txn_id,
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
-                          const components::vector::data_chunk_t& new_data,
+                          const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
                           uint64_t count);
 
     // commit_id (from transaction_manager_t::commit()) is appended to COMMIT

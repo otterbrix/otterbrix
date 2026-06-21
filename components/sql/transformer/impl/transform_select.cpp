@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <unordered_set>
 
 #include <components/expressions/aggregate_expression.hpp>
@@ -212,18 +213,20 @@ namespace components::sql::transform {
                     agg_r->children().back()->set_result_alias(sub_select->alias->aliasname);
                     if (sub_select->alias->colnames &&
                         agg_r->children().back()->type() == logical_plan::node_type::data_t) {
-                        auto& chunk =
-                            reinterpret_cast<logical_plan::node_data_t*>(agg_r->children().back().get())->data_chunk();
-                        if (sub_select->alias->colnames->lst.size() != chunk.column_count()) {
+                        auto* data_node = reinterpret_cast<logical_plan::node_data_t*>(agg_r->children().back().get());
+                        if (sub_select->alias->colnames->lst.size() != data_node->data_chunk().column_count()) {
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
                                 std::pmr::string{"column names count has to equal actual column count", resource_});
                             return;
                         }
-                        size_t column_index = 0;
-                        for (auto colname : sub_select->alias->colnames->lst) {
-                            chunk.data[column_index].set_type_alias(strVal(colname.data));
-                            column_index++;
+                        // All chunks share the same column shape; alias every chunk's columns.
+                        for (auto& chunk : data_node->chunks()) {
+                            size_t column_index = 0;
+                            for (auto colname : sub_select->alias->colnames->lst) {
+                                chunk.data[column_index].set_type_alias(strVal(colname.data));
+                                column_index++;
+                            }
                         }
                     }
                 }
@@ -436,18 +439,20 @@ namespace components::sql::transform {
                     agg->children().back()->set_result_alias(sub_select->alias->aliasname);
                     if (sub_select->alias->colnames &&
                         agg->children().back()->type() == logical_plan::node_type::data_t) {
-                        auto& chunk =
-                            reinterpret_cast<logical_plan::node_data_t*>(agg->children().back().get())->data_chunk();
-                        if (sub_select->alias->colnames->lst.size() != chunk.column_count()) {
+                        auto* data_node = reinterpret_cast<logical_plan::node_data_t*>(agg->children().back().get());
+                        if (sub_select->alias->colnames->lst.size() != data_node->data_chunk().column_count()) {
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
                                 std::pmr::string{"column names count has to equal actual column count", resource_});
                             return nullptr;
                         }
-                        size_t column_index = 0;
-                        for (auto colname : sub_select->alias->colnames->lst) {
-                            chunk.data[column_index].set_type_alias(strVal(colname.data));
-                            column_index++;
+                        // All chunks share the same column shape; alias every chunk's columns.
+                        for (auto& chunk : data_node->chunks()) {
+                            size_t column_index = 0;
+                            for (auto colname : sub_select->alias->colnames->lst) {
+                                chunk.data[column_index].set_type_alias(strVal(colname.data));
+                                column_index++;
+                            }
                         }
                     }
                 }
@@ -460,29 +465,36 @@ namespace components::sql::transform {
             agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
         }
         if (node.valuesLists) {
-            vector::data_chunk_t chunk(resource_, {}, node.valuesLists->lst.size());
-            chunk.set_cardinality(node.valuesLists->lst.size());
-            size_t row_index = 0;
-
-            for (auto row : node.valuesLists->lst) {
-                auto values = pg_ptr_cast<List>(row.data)->lst;
-
-                size_t column_index = 0;
-                for (auto it_value = values.begin(); it_value != values.end(); ++it_value, ++column_index) {
-                    auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
-                    if (value.has_error()) {
-                        error_ = value.error();
-                        return nullptr;
+            // Split the literal rows into uniform ≤CAP chunks (only the last is smaller) so
+            // no oversized data_chunk_t is built.
+            const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
+            const uint64_t total = node.valuesLists->lst.size();
+            std::pmr::vector<vector::data_chunk_t> chunks(resource_);
+            auto row_it = node.valuesLists->lst.begin();
+            uint64_t global_row = 0;
+            while (global_row < total) {
+                const uint64_t batch = std::min<uint64_t>(cap, total - global_row);
+                vector::data_chunk_t chunk(resource_, {}, batch);
+                chunk.set_cardinality(batch);
+                for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
+                    auto values = pg_ptr_cast<List>(row_it->data)->lst;
+                    size_t column_index = 0;
+                    for (auto it_value = values.begin(); it_value != values.end(); ++it_value, ++column_index) {
+                        auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
+                        if (value.has_error()) {
+                            error_ = value.error();
+                            return nullptr;
+                        }
+                        if (column_index >= chunk.data.size()) {
+                            chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
+                        }
+                        chunk.set_value(column_index, chunk_row, std::move(value.value()));
                     }
-                    if (column_index >= chunk.data.size()) {
-                        chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
-                    }
-                    chunk.set_value(column_index, row_index, std::move(value.value()));
                 }
-                row_index++;
+                chunks.emplace_back(std::move(chunk));
             }
 
-            return logical_plan::make_node_raw_data(resource_, std::move(chunk));
+            return logical_plan::make_node_raw_data(resource_, std::move(chunks));
         }
 
         auto group =

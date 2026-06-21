@@ -136,7 +136,7 @@ namespace services::index {
         // harmless (collection_t::fetch skips out-of-bounds row_ids) and DML
         // refreshes it over time.
         void bootstrap_repopulate_sync(components::catalog::oid_t table_oid,
-                                       std::unique_ptr<components::vector::data_chunk_t> chunk,
+                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
                                        uint64_t row_count);
 
         // Collection lifecycle
@@ -146,17 +146,17 @@ namespace services::index {
         // DML: txn-aware bulk index operations.
         unique_future<void> insert_rows(execution_context_t ctx,
                                         components::catalog::oid_t table_oid,
-                                        std::unique_ptr<components::vector::data_chunk_t> data,
+                                        std::pmr::vector<components::vector::data_chunk_t> data,
                                         uint64_t start_row_id,
                                         uint64_t count);
         unique_future<void> delete_rows(execution_context_t ctx,
                                         components::catalog::oid_t table_oid,
-                                        std::unique_ptr<components::vector::data_chunk_t> data,
+                                        std::pmr::vector<components::vector::data_chunk_t> data,
                                         std::pmr::vector<int64_t> row_ids);
         unique_future<void> update_rows(execution_context_t ctx,
                                         components::catalog::oid_t table_oid,
-                                        std::unique_ptr<components::vector::data_chunk_t> old_data,
-                                        std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                        std::pmr::vector<components::vector::data_chunk_t> old_data,
+                                        std::pmr::vector<components::vector::data_chunk_t> new_data,
                                         std::pmr::vector<int64_t> row_ids,
                                         int64_t new_start_row_id);
 
@@ -188,7 +188,7 @@ namespace services::index {
         // of every row (storage_row = i). See index_contract for details.
         unique_future<void> repopulate_table(session_id_t session,
                                              components::catalog::oid_t table_oid,
-                                             std::unique_ptr<components::vector::data_chunk_t> chunk,
+                                             std::pmr::vector<components::vector::data_chunk_t> chunks,
                                              uint64_t row_count,
                                              core::date::timezone_offset_t session_tz);
 
@@ -246,7 +246,7 @@ namespace services::index {
                                                        uint64_t wal_record_id,
                                                        uint8_t record_type,
                                                        std::pmr::vector<int64_t> row_ids,
-                                                       std::unique_ptr<components::vector::data_chunk_t> physical_data,
+                                                       std::pmr::vector<components::vector::data_chunk_t> physical_data,
                                                        uint64_t physical_row_start,
                                                        uint64_t txn_id,
                                                        core::date::timezone_offset_t session_tz);

@@ -4,19 +4,18 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_group.hpp>
-#include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/node_limit.hpp>
+#include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
-#include <components/logical_plan/node_limit.hpp>
 #include <components/table/column_definition.hpp>
-#include <memory>
 #include <components/tableref/tableref.hpp>
 #include <integration/cpp/otterbrix.hpp>
+#include <memory>
 
 #include <memory_resource>
 #include <vector>
-
 
 using namespace components::logical_plan;
 
@@ -41,12 +40,17 @@ namespace otterbrix {
         // Chaining operations: each takes the source node + its column schema
         // and returns the new node + its (eagerly recomputed) column schema.
         built_relation_t filter_relation(const built_relation_t& relation, const expression_wrapper_t& condition);
-        built_relation_t sort_relation(const built_relation_t& relation, const std::vector<expression_wrapper_t>& exprs);
-        built_relation_t group_relation(const built_relation_t& relation, const std::vector<expression_wrapper_t>& exprs);
-        built_relation_t select_relation(const built_relation_t& relation, const std::vector<expression_wrapper_t>& exprs);
+        built_relation_t sort_relation(const built_relation_t& relation,
+                                       const std::vector<expression_wrapper_t>& exprs);
+        built_relation_t group_relation(const built_relation_t& relation,
+                                        const std::vector<expression_wrapper_t>& exprs);
+        built_relation_t select_relation(const built_relation_t& relation,
+                                         const std::vector<expression_wrapper_t>& exprs);
 
-        built_relation_t join_relation(const built_relation_t& relation, const built_relation_t& other,
-                const std::vector<expression_wrapper_t>& exprs, components::logical_plan::join_type type);
+        built_relation_t join_relation(const built_relation_t& relation,
+                                       const built_relation_t& other,
+                                       const std::vector<expression_wrapper_t>& exprs,
+                                       components::logical_plan::join_type type);
 
         built_relation_t limit_relation(const built_relation_t& relation, int64_t count);
 
@@ -57,13 +61,13 @@ namespace otterbrix {
         // group/match/sort/select/limit children. Allocates the tmp.tN table
         // exactly as the former make_aggregate_relation did and returns the
         // composed aggregate node (column schema is computed by the callers).
-        components::logical_plan::node_ptr make_aggregate_node(
-                const components::logical_plan::node_ptr& from,
-                components::logical_plan::node_group_ptr group,
-                components::logical_plan::node_match_ptr match,
-                components::logical_plan::node_sort_ptr sort,
-                components::logical_plan::node_select_ptr select,
-                components::logical_plan::node_limit_ptr limit = nullptr);
+        components::logical_plan::node_ptr
+        make_aggregate_node(const components::logical_plan::node_ptr& from,
+                            components::logical_plan::node_group_ptr group,
+                            components::logical_plan::node_match_ptr match,
+                            components::logical_plan::node_sort_ptr sort,
+                            components::logical_plan::node_select_ptr select,
+                            components::logical_plan::node_limit_ptr limit = nullptr);
 
         boost::intrusive_ptr<otterbrix_t> space;
     };

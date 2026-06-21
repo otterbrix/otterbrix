@@ -64,7 +64,7 @@ namespace components::operators {
         // chunk that still carries the schema so consumers can inspect columns.
         if (ctx->disk_address == actor_zeta::address_t::empty_address() || name_.empty()) {
             output_ = make_operator_data(resource_, output_schema_, 0);
-            output_->data_chunk().set_cardinality(0);
+            output_->chunks().front().set_cardinality(0);
             mark_executed();
             co_return;
         }
@@ -102,7 +102,7 @@ namespace components::operators {
         }
         const auto cap = std::max<std::size_t>(total_rows, 1);
         output_ = make_operator_data(resource_, output_schema_, cap);
-        auto& chunk = output_->data_chunk();
+        auto& chunk = output_->chunks().front();
         chunk.set_cardinality(total_rows);
 
         std::size_t r = 0;

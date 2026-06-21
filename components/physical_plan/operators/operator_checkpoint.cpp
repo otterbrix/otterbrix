@@ -99,9 +99,9 @@ namespace components::operators {
 
                 // total==0 (table emptied by compact) still repopulates: the
                 // clear step inside repopulate_table wipes stale index entries.
-                // storage_scan_segment returns an empty chunk for count==0, which
+                // storage_scan_segment returns an empty vector for count==0, which
                 // is exactly what repopulate_table expects.
-                std::unique_ptr<components::vector::data_chunk_t> scan_data;
+                std::pmr::vector<components::vector::data_chunk_t> scan_data(resource_);
                 {
                     auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
                                                        &services::disk::manager_disk_t::storage_scan_segment,

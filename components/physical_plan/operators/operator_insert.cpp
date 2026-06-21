@@ -46,60 +46,85 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+        // database_oid selects the WAL worker. Hardcoded to main_database
+        // until catalog_resolve_database_t populates ctx->database_oid.
+        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
 
-        // When a resolver sibling supplied catalog metadata, compute a
-        // chunk_position -> table_position translation via alias matching.
-        // The disk-actor's storage_append already aligns by alias (with
-        // positional fallback), so the translation is built and stashed for
-        // diagnostics today — the field is the wiring hook for a future
-        // storage_append(...,key_translation) signature change. We log
-        // mismatches at trace level so resolver/data drift is visible.
-        if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
-            auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
-            for (std::size_t i = 0; i < translation.size(); ++i) {
-                if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
-                    trace(log_,
-                          "operator_insert: resolved metadata has no column matching chunk alias '{}'",
-                          std::string(out_chunk.data[i].type().alias()));
+        // Hold the input chunks alive while we ship them; set_output below rebinds output_.
+        auto input = output_;
+
+        auto copy_of = [this](const data_chunk_t& src) {
+            data_chunk_t dst(resource_, src.types(), src.size());
+            src.copy(dst, 0);
+            return dst;
+        };
+
+        // Build the whole batch up front: storage_append consumes its copy (schema
+        // adoption / _id dedup mutate it), while WAL and index need the submitted rows
+        // intact. The chunks append sequentially, so the per-chunk segments stay
+        // contiguous and coalesce into one [start_row, start_row + total_count) range.
+        chunks_vector_t append_data(resource_);
+        chunks_vector_t wal_chunks(resource_);
+        chunks_vector_t idx_chunks(resource_);
+        const bool mirror_index = ctx->index_address != actor_zeta::address_t::empty_address();
+        for (auto& out_chunk : input->chunks()) {
+            if (out_chunk.size() == 0) {
+                continue;
+            }
+            // When a resolver sibling supplied catalog metadata, compute a
+            // chunk_position -> table_position translation via alias matching.
+            // The disk-actor's storage_append already aligns by alias (with
+            // positional fallback), so the translation is built only to surface
+            // resolver/data drift at trace level — the wiring hook for a future
+            // storage_append(...,key_translation) signature change.
+            if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
+                auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
+                for (std::size_t i = 0; i < translation.size(); ++i) {
+                    if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
+                        trace(log_,
+                              "operator_insert: resolved metadata has no column matching chunk alias '{}'",
+                              std::string(out_chunk.data[i].type().alias()));
+                    }
                 }
+            }
+            append_data.emplace_back(copy_of(out_chunk));
+            wal_chunks.emplace_back(copy_of(out_chunk));
+            if (mirror_index) {
+                idx_chunks.emplace_back(copy_of(out_chunk));
             }
         }
 
-        // 1. Capture WAL data BEFORE storage_append moves the chunk.
-        auto wal_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-        out_chunk.copy(*wal_data, 0);
-
-        // 2. storage_append (handles schema adoption, _id dedup).
-        auto data_copy = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-        out_chunk.copy(*data_copy, 0);
-        auto [_a, af] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_append,
-                                         exec_ctx,
-                                         table_oid_,
-                                         std::move(data_copy));
-        auto [start_row, actual_count] = co_await std::move(af);
-
-        if (actual_count == 0) {
-            // Nothing inserted (e.g. duplicate _id). Clear output and drop WAL.
+        if (append_data.empty()) {
             set_output(nullptr);
             mark_executed();
             co_return;
         }
 
-        // 3. WAL physical_insert (synchronous; flush is fire-and-forget).
+        // 1. storage_append (handles schema adoption, _id dedup) — one batched send.
+        auto [_a, af] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_append,
+                                         exec_ctx,
+                                         table_oid_,
+                                         std::move(append_data));
+        auto [start_row, total_count] = co_await std::move(af);
+
+        if (total_count == 0) {
+            // Nothing inserted across all chunks (e.g. every row a duplicate _id).
+            set_output(nullptr);
+            mark_executed();
+            co_return;
+        }
+
+        // 2. WAL physical_insert: one record for the whole range (flush is fire-and-forget).
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            // database_oid selects the WAL worker. Hardcoded to main_database
-            // until catalog_resolve_database_t populates ctx->database_oid.
-            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                              &services::wal::manager_wal_replicate_t::write_physical_insert,
                                              ctx->session,
                                              table_oid_,
-                                             std::move(wal_data),
-                                             static_cast<uint64_t>(start_row),
-                                             actual_count,
+                                             std::move(wal_chunks),
+                                             start_row,
+                                             total_count,
                                              ctx->txn.transaction_id,
                                              db_oid);
             auto wal_id = co_await std::move(wf);
@@ -108,57 +133,61 @@ namespace components::operators {
             ctx->add_pending_disk_future(std::move(df));
         }
 
-        // 4. Mirror to index (txn-aware).
-        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            auto idx_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-            out_chunk.copy(*idx_data, 0);
+        // 3. Mirror to index (txn-aware) — one batched send.
+        if (mirror_index) {
             auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::insert_rows,
                                                exec_ctx,
                                                table_oid_,
-                                               std::move(idx_data),
-                                               static_cast<uint64_t>(start_row),
-                                               actual_count);
+                                               std::move(idx_chunks),
+                                               start_row,
+                                               total_count);
             co_await std::move(ixf);
         }
 
-        // 5. Record swap-info on context for executor's commit-side block.
+        // Record swap-info on context for executor's commit-side block.
         ctx->dml_append_row_start = static_cast<int64_t>(start_row);
-        ctx->dml_append_row_count = actual_count;
+        ctx->dml_append_row_count = total_count;
         ctx->dml_table_oid = table_oid_;
 
-        // 6. Build the result chunk.
         if (returning_.empty()) {
-            // No RETURNING: emit a column-less chunk whose cardinality carries
-            // the affected-row count for the cursor.
-            data_chunk_t res_chunk(resource_, {}, actual_count);
-            res_chunk.set_cardinality(actual_count);
-            set_output(make_operator_data(resource_, std::move(res_chunk)));
+            // No RETURNING: emit column-less chunks whose cardinalities sum to the
+            // affected-row count (the cursor totals chunk sizes). Split into
+            // ≤DEFAULT_VECTOR_CAPACITY chunks so no oversized data_chunk_t is built.
+            const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
+            chunks_vector_t count_chunks(resource_);
+            uint64_t remaining = total_count;
+            while (remaining > 0) {
+                const uint64_t batch = std::min<uint64_t>(cap, remaining);
+                data_chunk_t res_chunk(resource_, {}, batch);
+                res_chunk.set_cardinality(batch);
+                count_chunks.emplace_back(std::move(res_chunk));
+                remaining -= batch;
+            }
+            set_output(make_operator_data(resource_, std::move(count_chunks)));
             mark_executed();
             co_return;
         }
 
-        // RETURNING: read the just-appended segment back from storage so that
-        // DB-applied DEFAULTs and generated columns (which storage_append fills
-        // on its own copy, not on out_chunk) are present in the projected rows.
-        // The projection's field paths were resolved against the full table
-        // schema, so a partial/reordered insert chunk would not line up — the
-        // canonical stored row does. Read in DEFAULT_VECTOR_CAPACITY windows so
-        // every projected chunk stays within the vector capacity bound.
+        // RETURNING: read the just-appended range back from storage so that DB-applied
+        // DEFAULTs and generated columns (which storage_append fills on its own copy,
+        // not on the submitted chunks) are present in the projected rows. The
+        // projection's field paths were resolved against the full table schema, so the
+        // canonical stored row is what lines up. The read returns the range as a vector
+        // of ≤DEFAULT_VECTOR_CAPACITY chunks; project each.
+        auto [_s, sf] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_scan_segment,
+                                         ctx->session,
+                                         table_oid_,
+                                         static_cast<int64_t>(start_row),
+                                         total_count);
+        auto segments = co_await std::move(sf);
         chunks_vector_t projected(resource_);
-        for (uint64_t offset = 0; offset < actual_count; offset += vector::DEFAULT_VECTOR_CAPACITY) {
-            const uint64_t window = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, actual_count - offset);
-            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_scan_segment,
-                                             ctx->session,
-                                             table_oid_,
-                                             static_cast<int64_t>(start_row) + static_cast<int64_t>(offset),
-                                             window);
-            auto seg = co_await std::move(sf);
-            if (!seg || seg->size() == 0) {
+        for (auto& seg : segments) {
+            if (seg.size() == 0) {
                 continue;
             }
-            auto proj = evaluate_projection(resource_, returning_, &*seg, ctx->parameters, ctx->session_tz);
+            auto proj = evaluate_projection(resource_, returning_, &seg, ctx->parameters, ctx->session_tz);
             if (proj.has_error()) {
                 set_error(proj.error());
                 mark_executed();

@@ -11,11 +11,11 @@ namespace otterbrix::abc {
         if (is_dict_like(obj)) {
             return false;
         }
-        auto &import_cache = otterbrix::connection_environment_t::import_cache();
+        auto& import_cache = otterbrix::connection_environment_t::import_cache();
         auto iterable = import_cache.collections.abc.Iterable();
         return py::isinstance(obj, iterable);
     }
-    
+
     // NOLINTNEXTLINE(readability-identifier-naming)
     bool is_dict_like(py::handle obj) {
         auto& import_cache = otterbrix::connection_environment_t::import_cache();

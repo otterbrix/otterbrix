@@ -238,9 +238,9 @@ extern "C" cursor_ptr create_collection(otterbrix_ptr ptr, string_view_t databas
                                                                   core::relname_t{collection},
                                                                   {},
                                                                   {}));
-        auto cursor = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        auto cursor =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
@@ -260,9 +260,9 @@ extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_na
             dispatcher->resource(),
             database,
             components::logical_plan::make_node_drop_database(dispatcher->resource()));
-        auto cursor = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        auto cursor =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
@@ -284,9 +284,9 @@ extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_
             database,
             collection,
             components::logical_plan::make_node_drop_collection(dispatcher->resource()));
-        auto cursor = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        auto cursor =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);

@@ -31,6 +31,17 @@ using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
 namespace {
+    // storage_append takes the whole chunk batch; wrap a single chunk for the
+    // one-shot test call sites.
+    std::pmr::vector<components::vector::data_chunk_t>
+    to_batch(std::pmr::memory_resource* resource, std::unique_ptr<components::vector::data_chunk_t> chunk) {
+        std::pmr::vector<components::vector::data_chunk_t> batch(resource);
+        if (chunk) {
+            batch.emplace_back(std::move(*chunk));
+        }
+        return batch;
+    }
+
     std::string ddl_dir() {
         static std::string p = "/tmp/test_otterbrix_ddl_" + std::to_string(::getpid());
         return p;
@@ -599,7 +610,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
                                                    components::table::transaction_data{0, 0},
                                                    {},
                                                    table_oid};
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(chunk));
+        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
     }
 
     // Verify storage now has 3 columns (post-#96).
@@ -749,8 +760,10 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
             {{"a", complex_logical_type{logical_type::BIGINT}}},
             [&](data_chunk_t& c) { c.set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{1})); },
             /*rows=*/1);
-        auto [start, count] =
-            fx.invoke(&manager_disk_t::storage_append, append_ctx(table_oid), table_oid, std::move(chunk));
+        auto [start, count] = fx.invoke(&manager_disk_t::storage_append,
+                                        append_ctx(table_oid),
+                                        table_oid,
+                                        to_batch(&fx.resource, std::move(chunk)));
         REQUIRE(count == 1);
         (void) start;
     }
@@ -769,7 +782,10 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                 c.set_value(1, 0, logical_value_t(&fx.resource, std::string("x")));
             },
             /*rows=*/1);
-        fx.invoke(&manager_disk_t::storage_append, append_ctx(table_oid), table_oid, std::move(chunk));
+        fx.invoke(&manager_disk_t::storage_append,
+                  append_ctx(table_oid),
+                  table_oid,
+                  to_batch(&fx.resource, std::move(chunk)));
     }
 
     {
@@ -779,14 +795,18 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         // (zero-initialized) values for the new column.
         auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 2);
-        auto rows = fx.invoke(&manager_disk_t::storage_scan,
-                              session_id_t{},
-                              table_oid,
-                              std::unique_ptr<components::table::table_filter_t>{},
-                              /*limit=*/-1,
-                              components::table::transaction_data{0, 0});
-        REQUIRE(rows);
-        REQUIRE(rows->size() == 2);
+        auto batches = fx.invoke(&manager_disk_t::storage_scan,
+                                 session_id_t{},
+                                 table_oid,
+                                 std::unique_ptr<components::table::table_filter_t>{},
+                                 /*limit=*/int64_t{-1},
+                                 std::vector<size_t>{},
+                                 components::table::transaction_data{0, 0});
+        size_t total = 0;
+        for (const auto& ch : batches) {
+            total += ch.size();
+        }
+        REQUIRE(total == 2);
     }
 
     auto attoid_c = test_computed_register(fx, table_oid, "c", components::catalog::well_known_oid::float64_type);
@@ -802,20 +822,27 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                 c.set_value(2, 0, logical_value_t(&fx.resource, double{3.14}));
             },
             /*rows=*/1);
-        fx.invoke(&manager_disk_t::storage_append, append_ctx(table_oid), table_oid, std::move(chunk));
+        fx.invoke(&manager_disk_t::storage_append,
+                  append_ctx(table_oid),
+                  table_oid,
+                  to_batch(&fx.resource, std::move(chunk)));
     }
 
     {
         auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 3);
-        auto rows = fx.invoke(&manager_disk_t::storage_scan,
-                              session_id_t{},
-                              table_oid,
-                              std::unique_ptr<components::table::table_filter_t>{},
-                              /*limit=*/-1,
-                              components::table::transaction_data{0, 0});
-        REQUIRE(rows);
-        REQUIRE(rows->size() == 3);
+        auto batches = fx.invoke(&manager_disk_t::storage_scan,
+                                 session_id_t{},
+                                 table_oid,
+                                 std::unique_ptr<components::table::table_filter_t>{},
+                                 /*limit=*/int64_t{-1},
+                                 std::vector<size_t>{},
+                                 components::table::transaction_data{0, 0});
+        size_t total = 0;
+        for (const auto& ch : batches) {
+            total += ch.size();
+        }
+        REQUIRE(total == 3);
     }
 
     // resolve_table for the relkind='g' table reads columns from
@@ -860,11 +887,8 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         chunk->set_cardinality(1);
         chunk->set_value(0, 0, logical_value_t(&fx.resource, kval));
         chunk->set_value(1, 0, logical_value_t(&fx.resource, std::int64_t{kval * 10}));
-        components::execution_context_t append_ctx{session_id_t{},
-                                                   components::table::transaction_data{0, 0},
-                                                   {},
-                                                   oid};
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, std::move(chunk));
+        components::execution_context_t append_ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}, oid};
+        fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
     };
 
     // Create + populate the N targets and the survivor.
@@ -887,8 +911,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     // ONE batched drop for all N targets (survivor NOT in the oid list).
     {
         std::pmr::vector<catalog::oid_t> drop_oids{&fx.resource};
-        for (auto oid : targets)
-            drop_oids.push_back(oid);
+        for (auto oid : targets) drop_oids.push_back(oid);
         fx.invoke(&manager_disk_t::drop_storage_many, session_id_t{}, std::move(drop_oids));
     }
 
@@ -906,8 +929,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
                                 std::move(key_cols),
                                 test_probe::build_key_chunk(&fx.resource, std::move(vals)));
         std::uint64_t total = 0;
-        for (const auto& c : chunks)
-            total += c.size();
+        for (const auto& c : chunks) total += c.size();
         REQUIRE(total == 0);
     }
 
@@ -925,8 +947,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
                                 std::move(key_cols),
                                 test_probe::build_key_chunk(&fx.resource, std::move(vals)));
         std::uint64_t total = 0;
-        for (const auto& c : chunks)
-            total += c.size();
+        for (const auto& c : chunks) total += c.size();
         REQUIRE(total == 1);
     }
 }
@@ -972,13 +993,11 @@ TEST_CASE("services::disk::ddl::mark_storage_dropped_many_records_n_gc_entries")
         fx.invoke(&manager_disk_t::create_storage_disk, session_id_t{}, tbl, db_oid, std::move(cols));
     };
 
-    for (auto oid : targets)
-        make_disk_storage(oid);
+    for (auto oid : targets) make_disk_storage(oid);
     make_disk_storage(survivor);
 
     // Every DISK-backed storage materialised its .otbx on creation.
-    for (auto oid : targets)
-        REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
+    for (auto oid : targets) REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
     REQUIRE(std::filesystem::exists(otbx_path_for(survivor)));
 
     // ONE batched mark for all N targets at dropped_at_commit_id = D (survivor
@@ -986,26 +1005,22 @@ TEST_CASE("services::disk::ddl::mark_storage_dropped_many_records_n_gc_entries")
     constexpr std::uint64_t D = 5000;
     {
         std::pmr::vector<catalog::oid_t> mark_oids{&fx.resource};
-        for (auto oid : targets)
-            mark_oids.push_back(oid);
+        for (auto oid : targets) mark_oids.push_back(oid);
         fx.invoke(&manager_disk_t::mark_storage_dropped_many, session_id_t{}, std::move(mark_oids), D);
     }
 
     // Marking alone leaves the .otbx files in place (GC is horizon-driven).
-    for (auto oid : targets)
-        REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
+    for (auto oid : targets) REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
 
     // A horizon advance that does NOT pass D (dropped_at_commit_id < new_horizon
     // is false for new_horizon <= D) reclaims nothing.
     fx.invoke(&manager_disk_t::on_horizon_advanced, D);
-    for (auto oid : targets)
-        REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
+    for (auto oid : targets) REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
 
     // Advancing the horizon PAST D fires the GC sweep: each recorded entry's
     // .otbx (and sidecars) is reclaimed.
     fx.invoke(&manager_disk_t::on_horizon_advanced, D + 1);
-    for (auto oid : targets)
-        REQUIRE_FALSE(std::filesystem::exists(otbx_path_for(oid)));
+    for (auto oid : targets) REQUIRE_FALSE(std::filesystem::exists(otbx_path_for(oid)));
 
     // The non-marked survivor's .otbx is untouched (no GC entry was recorded).
     REQUIRE(std::filesystem::exists(otbx_path_for(survivor)));

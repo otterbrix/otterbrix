@@ -53,6 +53,13 @@ namespace catalog_ns = components::catalog;
 constexpr auto kMainDb = catalog_ns::well_known_oid::main_database;
 constexpr catalog_ns::oid_t kTestTableOid = 16500;
 
+// write_physical_insert/update now take the whole chunk batch; wrap a single chunk.
+inline std::pmr::vector<data_chunk_t> to_batch(std::unique_ptr<data_chunk_t> chunk) {
+    std::pmr::vector<data_chunk_t> batch(chunk->resource());
+    batch.emplace_back(std::move(*chunk));
+    return batch;
+}
+
 static const std::filesystem::path base_wal_worker_path = "/tmp/otterbrix_test_wal_worker";
 
 // The manager self-drives on an internal loop thread and runs its workers on
@@ -110,7 +117,7 @@ struct test_wal_worker {
                                                                catalog_ns::oid_t table_oid = kTestTableOid) {
         auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
         auto chunk = gen_data_chunk(row_count, arena);
-        auto chunk_ptr = std::make_unique<data_chunk_t>(std::move(chunk));
+        auto chunk_ptr = to_batch(std::make_unique<data_chunk_t>(std::move(chunk)));
 
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
                                                                  &manager_wal_replicate_t::write_physical_insert,
@@ -145,7 +152,7 @@ struct test_wal_worker {
                                                                catalog_ns::oid_t table_oid = kTestTableOid) {
         auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
         auto chunk = gen_data_chunk(row_count, arena);
-        auto chunk_ptr = std::make_unique<data_chunk_t>(std::move(chunk));
+        auto chunk_ptr = to_batch(std::make_unique<data_chunk_t>(std::move(chunk)));
         auto ids_copy = row_ids;
 
         auto [needs_sched, future] = actor_zeta::otterbrix::send(manager_->address(),
@@ -226,8 +233,8 @@ TEST_CASE("wal_worker::insert_write_read") {
             REQUIRE(r.transaction_id == 100);
             REQUIRE(r.table_oid == kTestTableOid);
             REQUIRE(r.physical_row_count == 10);
-            REQUIRE(r.physical_data != nullptr);
-            REQUIRE(r.physical_data->size() == 10);
+            REQUIRE(!r.physical_data.empty());
+            REQUIRE(r.physical_data.front().size() == 10);
         }
     }
     REQUIRE(found_insert);
@@ -285,8 +292,8 @@ TEST_CASE("wal_worker::update_write_read") {
             found_update = true;
             REQUIRE(r.transaction_id == 300);
             REQUIRE(r.physical_row_ids.size() == 3);
-            REQUIRE(r.physical_data != nullptr);
-            REQUIRE(r.physical_data->size() == 3);
+            REQUIRE(!r.physical_data.empty());
+            REQUIRE(r.physical_data.front().size() == 3);
             for (size_t i = 0; i < ids.size(); ++i) {
                 REQUIRE(r.physical_row_ids[i] == ids[i]);
             }
@@ -350,7 +357,7 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
                                                          kTestTableOid,
-                                                         std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                         to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                          static_cast<uint64_t>(i * 4),
                                                          uint64_t{4},
                                                          uint64_t{500},
@@ -470,7 +477,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
                                                          kTestTableOid,
-                                                         std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                         to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                          uint64_t{0},
                                                          uint64_t{8},
                                                          uint64_t{600},
@@ -528,7 +535,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             &manager_wal_replicate_t::write_physical_insert,
             session_id_t::generate_uid(),
             kTestTableOid,
-            std::make_unique<data_chunk_t>(gen_data_chunk(3, std::pmr::get_default_resource())),
+            to_batch(std::make_unique<data_chunk_t>(gen_data_chunk(3, std::pmr::get_default_resource()))),
             uint64_t{0},
             uint64_t{3},
             uint64_t{601},
@@ -577,7 +584,7 @@ TEST_CASE("wal_worker::segment_rotation") {
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      kTestTableOid,
-                                                     std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                     to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                      i * 20,
                                                      uint64_t{20},
                                                      uint64_t{700 + i},
@@ -623,7 +630,7 @@ TEST_CASE("wal_worker::spanning_record") {
         types.emplace_back(components::types::logical_type::DOUBLE, "score");
         types.emplace_back(components::types::logical_type::BOOLEAN, "active");
         auto chunk = gen_data_chunk(500, 0, types, arena);
-        auto chunk_ptr = std::make_unique<data_chunk_t>(std::move(chunk));
+        auto chunk_ptr = to_batch(std::make_unique<data_chunk_t>(std::move(chunk)));
 
         auto [ns, fut] = actor_zeta::otterbrix::send(env.manager_->address(),
                                                      &manager_wal_replicate_t::write_physical_insert,
@@ -647,8 +654,8 @@ TEST_CASE("wal_worker::spanning_record") {
         if (r.record_type == wal_record_type::PHYSICAL_INSERT && r.transaction_id == 800) {
             found = true;
             REQUIRE(r.physical_row_count == 500);
-            REQUIRE(r.physical_data != nullptr);
-            REQUIRE(r.physical_data->size() == 500);
+            REQUIRE(!r.physical_data.empty());
+            REQUIRE(r.physical_data.front().size() == 500);
         }
     }
     REQUIRE(found);
@@ -685,7 +692,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      kTestTableOid,
-                                                     std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                     to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                      uint64_t{0},
                                                      uint64_t{10},
                                                      uint64_t{900},
@@ -752,7 +759,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      kTestTableOid,
-                                                     std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                     to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                      uint64_t{0},
                                                      uint64_t{10},
                                                      uint64_t{1000},

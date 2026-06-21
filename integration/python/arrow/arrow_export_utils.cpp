@@ -15,15 +15,14 @@ namespace otterbrix {
         py::gil_assert();
         auto pyarrow_lib_module = py::module::import("pyarrow").attr("lib");
         auto batch_import_func = pyarrow_lib_module.attr("RecordBatch").attr("_import_from_c");
-        batches.append(
-            batch_import_func(reinterpret_cast<uint64_t>(&data), reinterpret_cast<uint64_t>(&arrow_schema)));
+        batches.append(batch_import_func(reinterpret_cast<uint64_t>(&data), reinterpret_cast<uint64_t>(&arrow_schema)));
     }
 
     namespace pyarrow {
 
         py::object to_arrow_table(const std::vector<components::types::complex_logical_type>& types,
-                                const std::vector<std::string>& names,
-                                const py::list& batches) {
+                                  const std::vector<std::string>& names,
+                                  const py::list& batches) {
             py::gil_scoped_acquire acquire;
 
             auto pyarrow_lib_module = py::module::import("pyarrow").attr("lib");

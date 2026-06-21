@@ -990,8 +990,10 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
+        // UNION ALL keeps each branch's rows as its own chunk, so the 4 rows span two
+        // chunks — read through the cursor's chunk-spanning accessor, not chunk_data().
         for (size_t row = 0; row < 4; ++row) {
-            REQUIRE(cur->chunk_data().value(0, row).value<int64_t>() == 1);
+            REQUIRE(cur->value(0, row).value<int64_t>() == 1);
         }
     }
 

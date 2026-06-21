@@ -1,92 +1,84 @@
 #include "cursor.hpp"
 
-#include <components/vector/vector_operations.hpp>
-
 namespace components::cursor {
 
+    namespace {
+        // An empty (0-column, 0-row) chunk so chunk_data() always has a valid front.
+        vector::data_chunk_t empty_chunk(std::pmr::memory_resource* resource) {
+            return vector::data_chunk_t(resource, std::pmr::vector<types::complex_logical_type>{resource});
+        }
+    } // namespace
+
     cursor_t::cursor_t(std::pmr::memory_resource* resource)
-        : table_data_(resource, {})
+        : chunks_(resource)
         , type_data_(resource)
-        , error_(core::error_t::no_error()) {}
+        , error_(core::error_t::no_error()) {
+        chunks_.emplace_back(empty_chunk(resource));
+    }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, const core::error_t& error)
-        : table_data_(resource, {})
+        : chunks_(resource)
         , type_data_(resource)
-        , error_(error) {}
+        , error_(error) {
+        chunks_.emplace_back(empty_chunk(resource));
+    }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, core::error_t&& error)
-        : table_data_(resource, {})
+        : chunks_(resource)
         , type_data_(resource)
-        , error_(std::move(error)) {}
+        , error_(std::move(error)) {
+        chunks_.emplace_back(empty_chunk(resource));
+    }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk)
         : size_(chunk.size())
-        , table_data_(std::move(chunk))
+        , chunks_(resource)
         , type_data_(resource)
         , error_(core::error_t::no_error()) {
         // Strip placeholder columns (created by projected_cols scans to keep
         // storage indices stable for downstream operators). User-facing
-        // iteration via chunk_data() should only see real data.
-        table_data_.drop_unprojected_placeholders();
+        // iteration should only see real data.
+        chunk.drop_unprojected_placeholders();
         // Mirror final column shape into type_data_ so callers querying the
         // result's typed-column descriptor see one entry per output column.
-        const auto& chunk_types = table_data_.types();
+        const auto& chunk_types = chunk.types();
         type_data_.assign(chunk_types.begin(), chunk_types.end());
+        chunks_.emplace_back(std::move(chunk));
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks)
-        : table_data_(resource, std::pmr::vector<types::complex_logical_type>{resource})
+        : chunks_(std::move(chunks), resource)
         , type_data_(resource)
         , error_(core::error_t::no_error()) {
+        // Keep the chunks as-is (each ≤DEFAULT_VECTOR_CAPACITY); never combine into one
+        // oversized chunk. Drop placeholder columns per chunk (same shape across all).
         std::size_t total = 0;
-        for (const auto& c : chunks) {
+        for (auto& c : chunks_) {
+            c.drop_unprojected_placeholders();
             total += c.size();
         }
         size_ = total;
-        if (chunks.empty()) {
-            return;
+        if (chunks_.empty()) {
+            chunks_.emplace_back(empty_chunk(resource));
         }
-        if (chunks.size() == 1) {
-            table_data_ = std::move(chunks.front());
-            table_data_.drop_unprojected_placeholders();
-            const auto& chunk_types = table_data_.types();
-            type_data_.assign(chunk_types.begin(), chunk_types.end());
-            return;
-        }
-        // For multi-chunk combine, drop placeholders from each chunk first so the
-        // combined chunk only has real columns. All chunks share the same shape
-        // (same scan), so dropping is consistent.
-        for (auto& c : chunks) {
-            c.drop_unprojected_placeholders();
-        }
-        auto types = chunks.front().types();
-        vector::data_chunk_t combined(resource, types, total == 0 ? 1 : total);
-        uint64_t offset = 0;
-        for (auto& c : chunks) {
-            if (c.size() == 0) {
-                continue;
-            }
-            for (uint64_t col = 0; col < c.column_count(); ++col) {
-                vector::vector_ops::copy(c.data[col], combined.data[col], c.size(), 0, offset);
-            }
-            vector::vector_ops::copy(c.row_ids, combined.row_ids, c.size(), 0, offset);
-            offset += c.size();
-        }
-        combined.set_cardinality(total);
-        table_data_ = std::move(combined);
-        const auto& combined_types = table_data_.types();
-        type_data_.assign(combined_types.begin(), combined_types.end());
+        const auto& chunk_types = chunks_.front().types();
+        type_data_.assign(chunk_types.begin(), chunk_types.end());
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource,
                        std::pmr::vector<components::types::complex_logical_type>&& types)
         : size_(types.size())
-        , table_data_(resource, {})
+        , chunks_(resource)
         , type_data_(std::move(types))
-        , error_(core::error_t::no_error()) {}
+        , error_(core::error_t::no_error()) {
+        chunks_.emplace_back(empty_chunk(resource));
+    }
 
-    vector::data_chunk_t& cursor_t::chunk_data() { return table_data_; }
-    const vector::data_chunk_t& cursor_t::chunk_data() const { return table_data_; }
+    // chunk_data() exposes the first chunk — its column shape/types are shared by every
+    // chunk, and for a single-chunk result it is the whole result. Row access that may
+    // span chunks must go through value()/row(), which locate the owning chunk.
+    vector::data_chunk_t& cursor_t::chunk_data() { return chunks_.front(); }
+    const vector::data_chunk_t& cursor_t::chunk_data() const { return chunks_.front(); }
     std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() { return type_data_; }
     const std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() const { return type_data_; }
 
@@ -96,11 +88,20 @@ namespace components::cursor {
     index_t cursor_t::current_index() const { return current_index_; }
 
     types::logical_value_t cursor_t::value(uint64_t col_idx) const {
-        return table_data_.value(col_idx, static_cast<uint64_t>(current_index_));
+        return value(col_idx, static_cast<uint64_t>(current_index_));
     }
 
     types::logical_value_t cursor_t::value(uint64_t col_idx, uint64_t row_idx) const {
-        return table_data_.value(col_idx, row_idx);
+        // Locate the chunk holding the global row_idx (chunks are ≤CAP each).
+        uint64_t base = 0;
+        for (const auto& chunk : chunks_) {
+            const auto rows = chunk.size();
+            if (row_idx < base + rows) {
+                return chunk.value(col_idx, row_idx - base);
+            }
+            base += rows;
+        }
+        return chunks_.front().value(col_idx, row_idx);
     }
 
     std::pmr::vector<types::logical_value_t> cursor_t::row() const {
@@ -108,10 +109,11 @@ namespace components::cursor {
     }
 
     std::pmr::vector<types::logical_value_t> cursor_t::row(uint64_t row_idx) const {
-        std::pmr::vector<types::logical_value_t> result(table_data_.resource());
-        result.reserve(table_data_.column_count());
-        for (uint64_t col = 0; col < table_data_.column_count(); ++col) {
-            result.push_back(table_data_.value(col, row_idx));
+        const auto cols = chunks_.front().column_count();
+        std::pmr::vector<types::logical_value_t> result(chunks_.front().resource());
+        result.reserve(cols);
+        for (uint64_t col = 0; col < cols; ++col) {
+            result.push_back(value(col, row_idx));
         }
         return result;
     }

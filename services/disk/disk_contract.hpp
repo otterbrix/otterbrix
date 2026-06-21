@@ -81,8 +81,8 @@ namespace services::disk {
 
         // Batched WAL-safe delete: loops the singular delete_pg_catalog_rows logic
         // per spec, emitting the same WAL records as N singular calls.
-        actor_zeta::unique_future<void>
-        delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
+        actor_zeta::unique_future<void> delete_pg_catalog_rows_many(execution_context_t ctx,
+                                                                    std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
         // Patches each backfill's pg_attribute row with the shared `commit_id` written
         // into the added_at or dropped_at column (selected by the marker's kind).
@@ -157,41 +157,35 @@ namespace services::disk {
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
         actor_zeta::unique_future<uint64_t> storage_total_rows(session_id_t session,
                                                                components::catalog::oid_t table_oid);
-        // Storage data operations
-        actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        // Storage data operations.
+        // Returns a vector of chunks and applies index-based column projection at the
+        // disk layer. Empty `projected_cols` means "read all columns" (pass-through).
+        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan(session_id_t session,
                      components::catalog::oid_t table_oid,
                      std::unique_ptr<components::table::table_filter_t> filter,
-                     int limit,
+                     int64_t limit,
+                     std::vector<size_t> projected_cols,
                      components::table::transaction_data txn);
-        // Batched + projected variant: returns a vector of chunks (PR #483 multi-chunk)
-        // and applies index-based column projection at the disk layer (PR #477).
-        // Empty `projected_cols` means "read all columns" (pass-through).
+        // Both reads return a vector of chunks, each ≤ DEFAULT_VECTOR_CAPACITY rows.
         actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
-        storage_scan_batched(session_id_t session,
-                             components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::table::table_filter_t> filter,
-                             int64_t limit,
-                             std::vector<size_t> projected_cols,
-                             components::table::transaction_data txn);
-        actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
                       uint64_t count);
-        actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
 
         actor_zeta::unique_future<std::pair<uint64_t, uint64_t>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::data_chunk_t> data);
 
         actor_zeta::unique_future<std::pair<int64_t, uint64_t>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       components::vector::vector_t row_ids,
-                       std::unique_ptr<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::vector_t> row_ids,
+                       std::pmr::vector<components::vector::data_chunk_t> data);
         actor_zeta::unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
                                                                 components::catalog::oid_t table_oid,
                                                                 components::vector::vector_t row_ids,
@@ -200,11 +194,11 @@ namespace services::disk {
         // Batched MVCC swap. Each range carries its own table_oid.
         actor_zeta::unique_future<void>
         storage_publish_commits(execution_context_t ctx,
-                               uint64_t commit_id,
-                               std::vector<components::pg_catalog_append_range_t> ranges);
+                                uint64_t commit_id,
+                                std::vector<components::pg_catalog_append_range_t> ranges);
         actor_zeta::unique_future<void> storage_publish_deletes(execution_context_t ctx,
-                                                               uint64_t commit_id,
-                                                               std::set<components::catalog::oid_t> tables);
+                                                                uint64_t commit_id,
+                                                                std::set<components::catalog::oid_t> tables);
         actor_zeta::unique_future<void>
         storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
 
@@ -213,8 +207,8 @@ namespace services::disk {
         // owning agent un-stamps them back to NOT_DELETED_ID via
         // data_table_t::revert_all_deletes(ctx.txn.transaction_id), restoring row
         // visibility for an aborted DELETE. Routed per owning agent by oid.
-        actor_zeta::unique_future<void>
-        storage_revert_deletes(execution_context_t ctx, std::vector<components::catalog::oid_t> tables);
+        actor_zeta::unique_future<void> storage_revert_deletes(execution_context_t ctx,
+                                                               std::vector<components::catalog::oid_t> tables);
 
         // Event-driven GC subscriber. Walks per-agent dropped_storages_
         // slices and physically removes entries whose
@@ -243,9 +237,8 @@ namespace services::disk {
         // entry's dropped_at_commit_id from the TXN-ID placeholder to the real
         // commit_id, putting it in the same value space the on_horizon_advanced
         // sweep compares against.
-        actor_zeta::unique_future<void> storage_dropped_committed(session_id_t session,
-                                                                  uint64_t txn_id,
-                                                                  uint64_t commit_id);
+        actor_zeta::unique_future<void>
+        storage_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
         // DROP-rollback un-mark. The mirror of storage_dropped_committed for the
         // abort path: a DROP TABLE inside a transaction records its GC entry with
@@ -270,7 +263,6 @@ namespace services::disk {
                                                             &disk_contract::storage_total_rows,
                                                             // Storage data operations
                                                             &disk_contract::storage_scan,
-                                                            &disk_contract::storage_scan_batched,
                                                             &disk_contract::storage_fetch,
                                                             &disk_contract::storage_scan_segment,
                                                             &disk_contract::storage_append,

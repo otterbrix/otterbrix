@@ -99,7 +99,7 @@ namespace components::operators {
         // harnesses).
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             output_ = make_operator_data(resource_, output_schema_, 0);
-            output_->data_chunk().set_cardinality(0);
+            output_->chunks().front().set_cardinality(0);
             mark_executed();
             co_return;
         }
@@ -110,7 +110,7 @@ namespace components::operators {
         if (table_oid_ == catalog::INVALID_OID) {
             if (relname_.empty()) {
                 output_ = make_operator_data(resource_, output_schema_, 0);
-                output_->data_chunk().set_cardinality(0);
+                output_->chunks().front().set_cardinality(0);
                 mark_executed();
                 co_return;
             }
@@ -122,18 +122,19 @@ namespace components::operators {
                 key_cols.emplace_back("relnamespace");
                 key_vals.emplace_back(resource_, static_cast<std::uint32_t>(input_namespace_oid_));
             }
-            auto [_lookup, lookup_f] = actor_zeta::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::read_chunks_by_key,
-                                                        exec_ctx,
-                                                        kPgClass,
-                                                        std::move(key_cols),
-                                                        components::operators::make_key_chunk(resource_, std::move(key_vals)));
+            auto [_lookup, lookup_f] =
+                actor_zeta::send(ctx->disk_address,
+                                 &services::disk::manager_disk_t::read_chunks_by_key,
+                                 exec_ctx,
+                                 kPgClass,
+                                 std::move(key_cols),
+                                 components::operators::make_key_chunk(resource_, std::move(key_vals)));
             auto lookup_batches = co_await std::move(lookup_f);
             if (lookup_batches.empty() || lookup_batches[0].size() == 0 || lookup_batches[0].column_count() == 0 ||
                 lookup_batches[0].value(0, 0).is_null()) {
                 // Not found — emit empty output, leave found_=false.
                 output_ = make_operator_data(resource_, output_schema_, 0);
-                output_->data_chunk().set_cardinality(0);
+                output_->chunks().front().set_cardinality(0);
                 mark_executed();
                 co_return;
             }
@@ -183,7 +184,7 @@ namespace components::operators {
         if (!found_) {
             // Table not found: emit an empty, correctly-typed chunk.
             output_ = make_operator_data(resource_, output_schema_, 0);
-            output_->data_chunk().set_cardinality(0);
+            output_->chunks().front().set_cardinality(0);
             mark_executed();
             co_return;
         }
@@ -502,7 +503,7 @@ namespace components::operators {
         const auto row_count = rows.size();
         const uint64_t capacity = std::max<uint64_t>(row_count, vector::DEFAULT_VECTOR_CAPACITY);
         output_ = make_operator_data(resource_, output_schema_, capacity);
-        auto& out_chunk = output_->data_chunk();
+        auto& out_chunk = output_->chunks().front();
         for (std::size_t i = 0; i < row_count; ++i) {
             const auto& r = rows[i];
             // Direct typed writes — schema is INTEGER, UINTEGER, STRING,

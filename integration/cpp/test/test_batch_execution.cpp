@@ -589,10 +589,12 @@ TEST_CASE("integration::cpp::test_batch_join") {
             REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == 4);
         }
 
-        // batch semantics: one consume & one merge per group, one finalize for the whole batch
+        // Batch semantics: each group is aggregated independently — its chunks are folded
+        // into one value via consume + merge, then finalize emits the group's result. With
+        // one chunk per (small) group that is one consume, one merge and one finalize each.
         REQUIRE(consume_calls == JOIN_RIGHT_SIZE);
         REQUIRE(merge_calls == JOIN_RIGHT_SIZE);
-        REQUIRE(finalize_calls == 1);
+        REQUIRE(finalize_calls == JOIN_RIGHT_SIZE);
     }
 }
 
@@ -785,9 +787,10 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
             dispatcher->execute_sql(session, "SELECT count FROM TestDatabase.TestCollection ORDER BY count ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == row_count);
-        auto& chunk = cur->chunk_data();
+        // Result spans multiple chunks once row_count > DEFAULT_VECTOR_CAPACITY, so read
+        // through the cursor's chunk-spanning accessor rather than one chunk's raw buffer.
         for (unsigned i = 0; i < row_count; ++i) {
-            REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i));
+            REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
         }
     }
 
@@ -798,10 +801,9 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
                                            "GROUP BY count ORDER BY count ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == row_count);
-        auto& chunk = cur->chunk_data();
         for (unsigned i = 0; i < row_count; ++i) {
-            REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i));
-            REQUIRE(chunk.data[1].data<int64_t>()[i] == 1);
+            REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
+            REQUIRE(cur->value(1, i).value<int64_t>() == 1);
         }
     }
 

@@ -23,10 +23,10 @@ namespace services::disk {
             auto& agent = agents_[idx];
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                       &agent_disk_t::append_pg_catalog_row_inner,
-                                                                       ctx,
-                                                                       table_oid,
-                                                                       std::move(row));
+                                                                      &agent_disk_t::append_pg_catalog_row_inner,
+                                                                      ctx,
+                                                                      table_oid,
+                                                                      std::move(row));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
@@ -47,11 +47,11 @@ namespace services::disk {
             auto& agent = agents_[idx];
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                       &agent_disk_t::delete_pg_catalog_rows_inner,
-                                                                       ctx,
-                                                                       table_oid,
-                                                                       oid_col_idx,
-                                                                       target_oid);
+                                                                      &agent_disk_t::delete_pg_catalog_rows_inner,
+                                                                      ctx,
+                                                                      table_oid,
+                                                                      oid_col_idx,
+                                                                      target_oid);
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }
@@ -77,11 +77,11 @@ namespace services::disk {
                 continue;
             }
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                   &agent_disk_t::delete_pg_catalog_rows_inner,
-                                                                   ctx,
-                                                                   spec.table_oid,
-                                                                   spec.oid_col_idx,
-                                                                   spec.target_oid);
+                                                                  &agent_disk_t::delete_pg_catalog_rows_inner,
+                                                                  ctx,
+                                                                  spec.table_oid,
+                                                                  spec.oid_col_idx,
+                                                                  spec.target_oid);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -90,8 +90,7 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::update_pg_attribute_commit_id_fields(
+    manager_disk_t::unique_future<void> manager_disk_t::update_pg_attribute_commit_id_fields(
         execution_context_t ctx,
         std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
         std::uint64_t commit_id) {
@@ -111,11 +110,11 @@ namespace services::disk {
         for (const auto& b : backfills) {
             auto [needs_sched, fut] =
                 actor_zeta::otterbrix::send(agent->address(),
-                                             &agent_disk_t::update_pg_attribute_commit_id_field_inner,
-                                             ctx,
-                                             b.attoid,
-                                             b.kind,
-                                             commit_id);
+                                            &agent_disk_t::update_pg_attribute_commit_id_field_inner,
+                                            ctx,
+                                            b.attoid,
+                                            b.kind,
+                                            commit_id);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -136,9 +135,9 @@ namespace services::disk {
             auto& agent = agents_[idx];
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                       &agent_disk_t::compact_relkind_g_storage_inner,
-                                                                       table_oid,
-                                                                       std::move(live_attnames));
+                                                                      &agent_disk_t::compact_relkind_g_storage_inner,
+                                                                      table_oid,
+                                                                      std::move(live_attnames));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }

@@ -6,27 +6,26 @@
 
 namespace otterbrix {
 
-// string_utils as std
-namespace string_utils {
+    // string_utils as std
+    namespace string_utils {
 
-	inline char character_to_lower(char c) {
-		if (c >= 'A' && c <= 'Z') {
-			return static_cast<char>(c + ('a' - 'A'));
-		}
-		return c;
-	}
+        inline char character_to_lower(char c) {
+            if (c >= 'A' && c <= 'Z') {
+                return static_cast<char>(c + ('a' - 'A'));
+            }
+            return c;
+        }
 
-	//! Case insensitive hash
-	uint64_t ci_hash(const std::string &str);
+        //! Case insensitive hash
+        uint64_t ci_hash(const std::string& str);
 
-	//! Case insensitive equals
-	bool ci_equals(const std::string &l1, const std::string &l2);
+        //! Case insensitive equals
+        bool ci_equals(const std::string& l1, const std::string& l2);
 
-    std::string lower(const std::string& str);
+        std::string lower(const std::string& str);
 
-    void deduplicate_columns(std::vector<std::string> &names);
+        void deduplicate_columns(std::vector<std::string>& names);
 
-} // namespace string_utils
+    } // namespace string_utils
 
 } // namespace otterbrix
-

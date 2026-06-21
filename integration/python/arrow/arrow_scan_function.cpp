@@ -3,8 +3,8 @@
 
 #include <otterbrix_wrapper/python_dependency.hpp>
 
-#include <components/vector/arrow/scaner/arrow_type.hpp>
 #include <components/tableref/tableref.hpp>
+#include <components/vector/arrow/scaner/arrow_type.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -86,15 +86,16 @@ namespace otterbrix {
 
     arrow_scan_function_t::arrow_scan_function_t()
         : table_function_t("arrow_scan",
-                        {components::types::logical_type::POINTER},
-                        ArrowScanFunc,
-                        ArrowScanBind,
-                        ArrowScanInitGlobal,
-                        ArrowScanInitLocal) {}
+                           {components::types::logical_type::POINTER},
+                           ArrowScanFunc,
+                           ArrowScanBind,
+                           ArrowScanInitGlobal,
+                           ArrowScanInitLocal) {}
 
-    std::unique_ptr<function_data_t> arrow_scan_function_t::ArrowScanBind(table_function_bind_input_t& input,
-                                                              std::vector<complex_logical_type>& return_types,
-                                                              std::vector<std::string>& names) {
+    std::unique_ptr<function_data_t>
+    arrow_scan_function_t::ArrowScanBind(table_function_bind_input_t& input,
+                                         std::vector<complex_logical_type>& return_types,
+                                         std::vector<std::string>& names) {
         if (input.inputs[0].is_null()) {
             throw std::runtime_error("arrow_scan: factory pointer cannot be null");
         }
@@ -128,7 +129,8 @@ namespace otterbrix {
         return std::make_unique<arrow_scan_local_state_t>();
     }
 
-    void arrow_scan_function_t::ArrowScanFunc(table_function_input_t& data_p, components::vector::data_chunk_t& output) {
+    void arrow_scan_function_t::ArrowScanFunc(table_function_input_t& data_p,
+                                              components::vector::data_chunk_t& output) {
         auto& global_state = data_p.global_state->cast<arrow_scan_global_state_t>();
         std::lock_guard<std::mutex> guard(global_state.lock);
         if (global_state.done) {
@@ -179,8 +181,7 @@ namespace otterbrix {
             if (chunk_res.has_error()) {
                 throw std::runtime_error(std::string(chunk_res.error().what));
             }
-            global_state.current =
-                std::make_unique<components::vector::data_chunk_t>(std::move(chunk_res.value()));
+            global_state.current = std::make_unique<components::vector::data_chunk_t>(std::move(chunk_res.value()));
             global_state.current_offset = 0;
         }
 

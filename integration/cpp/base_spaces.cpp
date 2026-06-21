@@ -216,14 +216,14 @@ namespace otterbrix {
                 for (auto* r : records) {
                     switch (r->record_type) {
                         case services::wal::wal_record_type::PHYSICAL_INSERT:
-                            if (r->physical_data) {
+                            if (!r->physical_data.empty()) {
                                 if (!disk_ptr->has_storage(table_oid)) {
                                     // Try lazy-load from .otbx; if that fails (table is
                                     // in-memory or .otbx absent), synthesise an in-memory
                                     // storage from the WAL chunk's column types.
                                     disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        auto types = r->physical_data->types();
+                                        auto types = r->physical_data.front().types();
                                         std::vector<components::table::column_definition_t> cols;
                                         cols.reserve(types.size());
                                         for (const auto& t : types) {
@@ -235,7 +235,9 @@ namespace otterbrix {
                                     }
                                 }
                                 // TODO: load timezone from settings?
-                                disk_ptr->direct_append_sync(table_oid, *r->physical_data, {});
+                                for (auto& chunk : r->physical_data) {
+                                    disk_ptr->direct_append_sync(table_oid, chunk, {});
+                                }
                             }
                             break;
                         case services::wal::wal_record_type::PHYSICAL_DELETE: {
@@ -243,8 +245,20 @@ namespace otterbrix {
                             break;
                         }
                         case services::wal::wal_record_type::PHYSICAL_UPDATE:
-                            if (r->physical_data) {
-                                disk_ptr->direct_update_sync(table_oid, r->physical_row_ids, *r->physical_data);
+                            if (!r->physical_data.empty()) {
+                                // physical_row_ids is flat across the batch; slice it per
+                                // chunk in vector order to match each chunk's rows.
+                                std::size_t id_base = 0;
+                                for (auto& chunk : r->physical_data) {
+                                    const std::size_t n = chunk.size();
+                                    std::pmr::vector<int64_t> ids(r->physical_row_ids.get_allocator().resource());
+                                    ids.reserve(n);
+                                    for (std::size_t i = 0; i < n && id_base + i < r->physical_row_ids.size(); ++i) {
+                                        ids.push_back(r->physical_row_ids[id_base + i]);
+                                    }
+                                    id_base += n;
+                                    disk_ptr->direct_update_sync(table_oid, ids, chunk);
+                                }
                             }
                             break;
                         default:
@@ -464,10 +478,10 @@ namespace otterbrix {
                 const auto base = disk_config.path / std::to_string(static_cast<unsigned>(row.table_oid)) / index_name;
                 std::filesystem::create_directories(base);
                 try {
-                    shared_hash_storage = boost::intrusive_ptr(new services::index::disk_hash_table_t(
-                        base / "hash_index.bin",
-                        services::index::disk_hash_table_t::default_bucket_count,
-                        &resource));
+                    shared_hash_storage = boost::intrusive_ptr(
+                        new services::index::disk_hash_table_t(base / "hash_index.bin",
+                                                               services::index::disk_hash_table_t::default_bucket_count,
+                                                               &resource));
                 } catch (const std::exception& e) {
                     trace(log_,
                           "bootstrap_indexes_sync: disk hash storage init failed for {}: {}",
@@ -485,27 +499,27 @@ namespace otterbrix {
                                                              committed_txn_ids.end(),
                                                              &resource);
 
-            auto agent = actor_zeta::spawn<services::index::index_agent_disk_t>(
-                &resource,
-                disk_config.path,
-                row.table_oid,
-                index_name,
-                row.type,
-                disk_config.bitcask_flush_threshold,
-                disk_config.bitcask_segment_record_limit,
-                disk_config.btree_flush_threshold,
-                log_,
-                std::move(committed_for_agent),
-                shared_hash_storage);
+            auto agent =
+                actor_zeta::spawn<services::index::index_agent_disk_t>(&resource,
+                                                                       disk_config.path,
+                                                                       row.table_oid,
+                                                                       index_name,
+                                                                       row.type,
+                                                                       disk_config.bitcask_flush_threshold,
+                                                                       disk_config.bitcask_segment_record_limit,
+                                                                       disk_config.btree_flush_threshold,
+                                                                       log_,
+                                                                       std::move(committed_for_agent),
+                                                                       shared_hash_storage);
             auto agent_addr = agent->address();
 
             manager_index_->bootstrap_index_sync(row.table_oid,
-                                                  std::move(row.name),
-                                                  row.type,
-                                                  std::move(row.keys),
-                                                  agent_addr,
-                                                  std::move(agent),
-                                                  std::move(shared_hash_storage));
+                                                 std::move(row.name),
+                                                 row.type,
+                                                 std::move(row.keys),
+                                                 agent_addr,
+                                                 std::move(agent),
+                                                 std::move(shared_hash_storage));
             ++indexes_wired;
         }
 
@@ -522,13 +536,14 @@ namespace otterbrix {
         // silently drops them (SELECT WHERE indexed_col = X returns 0 rows).
         // Sync — same pre-scheduler-start window as the bootstrap_*_sync calls.
         for (auto oid : live_tables) {
-            auto chunk = manager_disk_->scan_storage_for_rebuild_sync(oid, &resource);
-            if (!chunk)
-                continue;
-            const auto row_count = chunk->size();
+            auto chunks = manager_disk_->scan_storage_for_rebuild_sync(oid, &resource);
+            uint64_t row_count = 0;
+            for (const auto& chunk : chunks) {
+                row_count += chunk.size();
+            }
             if (row_count == 0)
                 continue;
-            manager_index_->bootstrap_repopulate_sync(oid, std::move(chunk), row_count);
+            manager_index_->bootstrap_repopulate_sync(oid, std::move(chunks), row_count);
         }
 
         trace(log_,

@@ -40,7 +40,7 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        const auto& chunk = output_->data_chunk();
+        const auto& in_chunks = output_->chunks();
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         const auto& par_indices = fk_.parent_col_indices;
@@ -68,18 +68,31 @@ namespace components::operators {
         // scan of the child table. per_row_child_ids[row] = referencing child
         // row_ids for that parent row (empty -> nothing references it). The parent
         // key columns are copied into an OWNED keys-chunk (it crosses the mailbox and
-        // actors must not share buffers). All rows are copied in input order, so
-        // keys-chunk row i pairs with parent row i (result[i] mapping).
+        // actors must not share buffers). Every input chunk's rows are concatenated in
+        // order at a running destination offset; the cascade actions below aggregate the
+        // per-row results across all parent rows, so only the combined key set matters.
+        const uint64_t total_rows = output_->size();
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(par_indices.size());
         for (auto pidx : par_indices) {
-            key_types.push_back(chunk.data[pidx].type());
+            key_types.push_back(in_chunks.front().data[pidx].type());
         }
-        components::vector::data_chunk_t keys(resource_, key_types, chunk.size() == 0 ? 1 : chunk.size());
-        for (std::size_t j = 0; j < par_indices.size(); ++j) {
-            components::vector::vector_ops::copy(chunk.data[par_indices[j]], keys.data[j], chunk.size(), 0, 0);
+        components::vector::data_chunk_t keys(resource_, key_types, total_rows == 0 ? 1 : total_rows);
+        uint64_t dst_offset = 0;
+        for (const auto& chunk : in_chunks) {
+            if (chunk.size() == 0) {
+                continue;
+            }
+            for (std::size_t j = 0; j < par_indices.size(); ++j) {
+                components::vector::vector_ops::copy(chunk.data[par_indices[j]],
+                                                     keys.data[j],
+                                                     chunk.size(),
+                                                     0,
+                                                     dst_offset);
+            }
+            dst_offset += chunk.size();
         }
-        keys.set_cardinality(chunk.size());
+        keys.set_cardinality(total_rows);
 
         auto [_s, sfut] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::scan_by_keys,
@@ -164,48 +177,59 @@ namespace components::operators {
                                                    fk_.child_table_oid,
                                                    std::move(fetch_ids),
                                                    static_cast<uint64_t>(all_child_ids.size()));
-                auto fetched = co_await std::move(ffut);
-                if (!fetched || fetched->size() == 0)
+                auto fetched = co_await std::move(ffut); // vector of ≤CAP chunks
+                if (fetched.empty())
                     break;
 
                 const bool is_set_null = (fk_.del_action == 'n');
-                // Apply the uniform per-column transform to every fetched row.
+                // Apply the uniform per-column transform to every fetched row in every chunk.
                 for (std::size_t ci = 0; ci < fk_.child_col_schema_indices.size(); ++ci) {
                     const auto schema_idx = fk_.child_col_schema_indices[ci];
-                    if (schema_idx == absent || schema_idx >= fetched->column_count())
+                    if (schema_idx == absent)
                         continue;
-                    if (is_set_null) {
-                        for (uint64_t r = 0; r < fetched->size(); ++r) {
-                            fetched->data[schema_idx].validity().set_invalid(r);
-                        }
-                    } else {
-                        // SET DEFAULT: decode attdefspec; NULL default → same as SET NULL.
-                        const auto& spec = ci < fk_.child_col_default_specs.size() ? fk_.child_col_default_specs[ci]
-                                                                                   : std::string{};
-                        auto default_val =
+                    // SET DEFAULT: decode attdefspec once; NULL default → same as SET NULL.
+                    std::optional<types::logical_value_t> default_val;
+                    if (!is_set_null) {
+                        const auto& spec =
+                            ci < fk_.child_col_default_specs.size() ? fk_.child_col_default_specs[ci] : std::string{};
+                        default_val =
                             spec.empty() ? std::nullopt : components::catalog::decode_default_spec(resource_, spec);
-                        for (uint64_t r = 0; r < fetched->size(); ++r) {
-                            if (default_val.has_value()) {
-                                fetched->set_value(schema_idx, r, *default_val);
+                    }
+                    for (auto& chunk : fetched) {
+                        if (schema_idx >= chunk.column_count())
+                            continue;
+                        for (uint64_t r = 0; r < chunk.size(); ++r) {
+                            if (!is_set_null && default_val.has_value()) {
+                                chunk.set_value(schema_idx, r, *default_val);
                             } else {
-                                fetched->data[schema_idx].validity().set_invalid(r);
+                                chunk.data[schema_idx].validity().set_invalid(r);
                             }
                         }
                     }
                 }
 
-                // Single update for the whole set.
-                components::vector::vector_t upd_ids(resource_, types::logical_type::BIGINT, all_child_ids.size());
-                for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
-                    upd_ids.data<int64_t>()[i] = all_child_ids[i];
+                // Single update for the whole set — one chunk per fetched chunk, with the
+                // flat all_child_ids sliced positionally to match each chunk's rows.
+                std::pmr::vector<components::vector::vector_t> upd_ids_batch(resource_);
+                std::pmr::vector<components::vector::data_chunk_t> upd_data_batch(resource_);
+                std::size_t id_base = 0;
+                for (auto& chunk : fetched) {
+                    const uint64_t n = chunk.size();
+                    components::vector::vector_t ids(resource_, types::logical_type::BIGINT, n);
+                    for (uint64_t i = 0; i < n; ++i) {
+                        ids.data<int64_t>()[i] = all_child_ids[id_base + i];
+                    }
+                    id_base += n;
+                    upd_ids_batch.emplace_back(std::move(ids));
+                    upd_data_batch.emplace_back(std::move(chunk));
                 }
                 execution_context_t upd_ctx{ctx->session, {}, {}};
                 auto [_u, ufut] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_update,
                                                    upd_ctx,
                                                    fk_.child_table_oid,
-                                                   std::move(upd_ids),
-                                                   std::move(fetched));
+                                                   std::move(upd_ids_batch),
+                                                   std::move(upd_data_batch));
                 co_await std::move(ufut);
                 break;
             }

@@ -53,4 +53,8 @@ namespace components::logical_plan {
                                      components::vector::data_chunk_t&& chunk,
                                      std::pmr::vector<expressions::key_t>&& key_translation);
 
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
+                                     std::pmr::vector<components::vector::data_chunk_t>&& chunks,
+                                     std::pmr::vector<expressions::key_t>&& key_translation);
+
 } // namespace components::logical_plan

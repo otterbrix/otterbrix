@@ -37,9 +37,8 @@ namespace services::disk {
         co_return;
     }
 
-    manager_disk_t::unique_future<wal::id_t> manager_disk_t::checkpoint_all(session_id_t session,
-                                                                            wal::id_t current_wal_id,
-                                                                            uint64_t compact_watermark) {
+    manager_disk_t::unique_future<wal::id_t>
+    manager_disk_t::checkpoint_all(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_,
               "manager_disk_t::checkpoint_all , session : {} , wal_id : {} , compact_watermark : {}",
               session.data(),
@@ -105,9 +104,8 @@ namespace services::disk {
         co_return wal::id_t{0};
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::vacuum_all(session_id_t session,
-                                                                   uint64_t lowest_active_start_time,
-                                                                   uint64_t compact_watermark) {
+    manager_disk_t::unique_future<void>
+    manager_disk_t::vacuum_all(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
         // Per-agent vacuum_inner runs the canonical cleanup_versions + compact.

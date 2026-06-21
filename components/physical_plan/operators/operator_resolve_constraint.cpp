@@ -51,7 +51,7 @@ namespace components::operators {
         // stamp data on the target logical node, not to emit rows. Schema is
         // cached on the operator (output_schema_), built once in the ctor.
         output_ = make_operator_data(resource_, output_schema_, 0);
-        output_->data_chunk().set_cardinality(0);
+        output_->chunks().front().set_cardinality(0);
 
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             mark_executed();
@@ -210,12 +210,13 @@ namespace components::operators {
 
             std::pmr::vector<std::string> attr_p_keys(resource_);
             attr_p_keys.emplace_back("attrelid");
-            auto [_b, fut_attr_p] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::read_chunks_by_keys,
-                                                     exec_ctx,
-                                                     kPgAttribute,
-                                                     std::move(attr_p_keys),
-                                                     components::operators::make_keys_chunk(resource_, parent_key_rows));
+            auto [_b, fut_attr_p] =
+                actor_zeta::send(ctx->disk_address,
+                                 &services::disk::manager_disk_t::read_chunks_by_keys,
+                                 exec_ctx,
+                                 kPgAttribute,
+                                 std::move(attr_p_keys),
+                                 components::operators::make_keys_chunk(resource_, parent_key_rows));
 
             std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> child_results =
                 co_await std::move(fut_attr_c);
@@ -246,9 +247,9 @@ namespace components::operators {
                                 auto row_attoid = static_cast<catalog::oid_t>(
                                     attr_chunk.value(catalog::pg_attribute_col::attoid, ai).value<std::uint32_t>());
                                 if (row_attoid == wanted_oid) {
-                                    names.emplace_back(std::string(
-                                        attr_chunk.value(catalog::pg_attribute_col::attname, ai)
-                                            .value<std::string_view>()));
+                                    names.emplace_back(
+                                        std::string(attr_chunk.value(catalog::pg_attribute_col::attname, ai)
+                                                        .value<std::string_view>()));
                                     found = true;
                                     break;
                                 }
@@ -326,9 +327,9 @@ namespace components::operators {
                                 auto row_attoid = static_cast<catalog::oid_t>(
                                     attr_chunk.value(catalog::pg_attribute_col::attoid, ai).value<std::uint32_t>());
                                 if (row_attoid == wanted_oid) {
-                                    names.emplace_back(std::string(
-                                        attr_chunk.value(catalog::pg_attribute_col::attname, ai)
-                                            .value<std::string_view>()));
+                                    names.emplace_back(
+                                        std::string(attr_chunk.value(catalog::pg_attribute_col::attname, ai)
+                                                        .value<std::string_view>()));
                                     found = true;
                                     break;
                                 }
@@ -351,12 +352,13 @@ namespace components::operators {
                     cls_keys.emplace_back("oid");
                     std::pmr::vector<types::logical_value_t> cls_vals(resource_);
                     cls_vals.emplace_back(child_oid_lv);
-                    auto [_cls, fut_cls] = actor_zeta::send(ctx->disk_address,
-                                                            &services::disk::manager_disk_t::read_chunks_by_key,
-                                                            exec_ctx,
-                                                            kPgClass,
-                                                            std::move(cls_keys),
-                                                            components::operators::make_key_chunk(resource_, std::move(cls_vals)));
+                    auto [_cls, fut_cls] =
+                        actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::read_chunks_by_key,
+                                         exec_ctx,
+                                         kPgClass,
+                                         std::move(cls_keys),
+                                         components::operators::make_key_chunk(resource_, std::move(cls_vals)));
                     auto cls_batches = co_await std::move(fut_cls);
                     if (!cls_batches.empty() && cls_batches[0].size() != 0 &&
                         cls_batches[0].column_count() > catalog::pg_class_col::relname) {
@@ -370,12 +372,13 @@ namespace components::operators {
                         ns_keys.emplace_back("oid");
                         std::pmr::vector<types::logical_value_t> ns_vals(resource_);
                         ns_vals.emplace_back(ns_oid_lv);
-                        auto [_ns, fut_ns] = actor_zeta::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::read_chunks_by_key,
-                                                              exec_ctx,
-                                                              kPgNamespace,
-                                                              std::move(ns_keys),
-                                                              components::operators::make_key_chunk(resource_, std::move(ns_vals)));
+                        auto [_ns, fut_ns] =
+                            actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::read_chunks_by_key,
+                                             exec_ctx,
+                                             kPgNamespace,
+                                             std::move(ns_keys),
+                                             components::operators::make_key_chunk(resource_, std::move(ns_vals)));
                         auto ns_batches = co_await std::move(fut_ns);
                         if (!ns_batches.empty() && ns_batches[0].size() != 0 &&
                             ns_batches[0].column_count() > catalog::pg_namespace_col::nspname) {

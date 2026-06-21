@@ -14,7 +14,7 @@ namespace components::operators {
         if (!resolve_output) {
             return std::nullopt;
         }
-        const auto& chunk = resolve_output->data_chunk();
+        const auto& chunk = resolve_output->chunks().front();
         if (chunk.column_count() != 5) {
             return std::nullopt;
         }

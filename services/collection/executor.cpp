@@ -542,10 +542,9 @@ namespace services::collection::executor {
         // the coroutine frame allocator finds the PMR resource (the [this] capture
         // is not visible to promise_type::operator new). The throw-away
         // context_storage keeps the caller's own context_storage untouched.
-        auto run_resolve_subplan =
-            [this, session, resolve_txn, &session_ctx, &context_storage](
-                executor_t* self,
-                std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes)
+        auto run_resolve_subplan = [this, session, resolve_txn, &session_ctx, &context_storage](
+                                       executor_t* self,
+                                       std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes)
             -> executor_t::unique_future<execute_result_t> {
             (void) self;
             auto root = boost::intrusive_ptr<components::logical_plan::node_t>(
@@ -555,12 +554,11 @@ namespace services::collection::executor {
             }
             auto params = components::logical_plan::make_parameter_node(resource());
             services::context_storage_t cstor{resource(), log_.clone(), context_storage.session_timezone};
-            co_return co_await this->execute_plan(
-                session,
-                components::logical_plan::execution_plan_t{resource(), root, params},
-                std::move(cstor),
-                resolve_txn,
-                session_ctx.lowest_active_start_time);
+            co_return co_await this->execute_plan(session,
+                                                  components::logical_plan::execution_plan_t{resource(), root, params},
+                                                  std::move(cstor),
+                                                  resolve_txn,
+                                                  session_ctx.lowest_active_start_time);
         };
 
         if (plan.sub_queries.back() &&
@@ -1250,12 +1248,13 @@ namespace services::collection::executor {
                     if (cstr->kind() == constraint_kind::check && cstr->check_expr().empty()) {
                         co_return execute_result_t{make_cursor(
                             resource(),
-                            core::error_t{core::error_code_t::invalid_constraint,
-                                          std::pmr::string{"CHECK constraint expression is empty or contains "
-                                                           "unsupported constructs (functions, subqueries, and CASE "
-                                                           "expressions are not allowed; valid: comparisons, AND/OR/NOT, "
-                                                           "IS NULL/IS NOT NULL, column references, and constants)",
-                                                           resource()}})};
+                            core::error_t{
+                                core::error_code_t::invalid_constraint,
+                                std::pmr::string{"CHECK constraint expression is empty or contains "
+                                                 "unsupported constructs (functions, subqueries, and CASE "
+                                                 "expressions are not allowed; valid: comparisons, AND/OR/NOT, "
+                                                 "IS NULL/IS NOT NULL, column references, and constants)",
+                                                 resource()}})};
                     }
                 }
 
@@ -1294,7 +1293,9 @@ namespace services::collection::executor {
                     // pre-rewrite dispatcher_idx may not cover the new ones).
                     services::catalog_resolve::plan_resolve_index_t reenrich_idx;
                     services::catalog_resolve::gather_plan_resolve_index(plan.sub_queries.back().get(), &reenrich_idx);
-                    components::execution_context_t enriched_ctx{session, resolve_txn, context_storage.session_timezone};
+                    components::execution_context_t enriched_ctx{session,
+                                                                 resolve_txn,
+                                                                 context_storage.session_timezone};
                     auto ef2 = services::dispatcher::enrich_plan(resource(),
                                                                  plan.sub_queries.back(),
                                                                  disk_address_,
@@ -1304,9 +1305,7 @@ namespace services::collection::executor {
                                                                  &context_storage);
                     auto enrich_err2 = co_await std::move(ef2);
                     if (enrich_err2.contains_error()) {
-                        trace(log_,
-                              "executor::execute_plan_full: ALTER re-enrich error: {}",
-                              enrich_err2.what);
+                        trace(log_, "executor::execute_plan_full: ALTER re-enrich error: {}", enrich_err2.what);
                         co_return execute_result_t{make_cursor(resource(), std::move(enrich_err2))};
                     }
                 }
@@ -1344,9 +1343,9 @@ namespace services::collection::executor {
         // paths (was copy-pasted). Takes `self` so the coroutine frame allocator
         // finds the PMR resource — the [this] capture is not visible to
         // promise_type::operator new (same pattern as allocate_oids_inline).
-        auto revert_failed_txn =
-            [this, session, resolve_txn, &session_ctx](executor_t* self,
-                                                       execute_result_t& exec_result) -> executor_t::unique_future<void> {
+        auto revert_failed_txn = [this, session, resolve_txn, &session_ctx](
+                                     executor_t* self,
+                                     execute_result_t& exec_result) -> executor_t::unique_future<void> {
             (void) self;
             // Storage revert: fold DML append ranges + pg_catalog append ranges
             // into a single storage_revert_appends (each range carries its own
@@ -1406,9 +1405,8 @@ namespace services::collection::executor {
                 }
             }
 
-            auto [_ab, abf] = actor_zeta::send(parent_address_,
-                                               &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
-                                               session);
+            auto [_ab, abf] =
+                actor_zeta::send(parent_address_, &services::dispatcher::manager_dispatcher_t::txn_abort_msg, session);
             co_await std::move(abf);
 
             exec_result.dml_appends.clear();

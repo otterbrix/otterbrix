@@ -27,6 +27,17 @@ using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
 namespace {
+    // storage_append takes the whole chunk batch; wrap a single chunk for the
+    // one-shot test call site.
+    std::pmr::vector<components::vector::data_chunk_t>
+    to_batch(std::pmr::memory_resource* resource, std::unique_ptr<components::vector::data_chunk_t> chunk) {
+        std::pmr::vector<components::vector::data_chunk_t> batch(resource);
+        if (chunk) {
+            batch.emplace_back(std::move(*chunk));
+        }
+        return batch;
+    }
+
     std::string resolve_dir() {
         static std::string p = "/tmp/test_otterbrix_resolve_" + std::to_string(::getpid());
         return p;
@@ -167,12 +178,11 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
 
     fixture fx;
     auto ns_oid = disk_test_helpers::test_create_namespace(fx, "ns_rbk");
-    auto table_oid = disk_test_helpers::test_create_table(
-        fx,
-        ns_oid,
-        "rbk_tbl",
-        std::vector<components::table::column_definition_t>{},
-        catalog::relkind::regular);
+    auto table_oid = disk_test_helpers::test_create_table(fx,
+                                                          ns_oid,
+                                                          "rbk_tbl",
+                                                          std::vector<components::table::column_definition_t>{},
+                                                          catalog::relkind::regular);
     REQUIRE(table_oid >= FIRST_USER_OID);
 
     // Regular IN_MEMORY storage with an explicit {k, payload} schema. The rows
@@ -212,7 +222,7 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                    {},
                                                    table_oid};
         auto [start, count] =
-            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(chunk));
+            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
         REQUIRE(count == nrows);
         (void) start;
     }
@@ -223,8 +233,7 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
 
     auto total_rows = [](const auto& chunks) {
         std::uint64_t t = 0;
-        for (const auto& c : chunks)
-            t += c.size();
+        for (const auto& c : chunks) t += c.size();
         return t;
     };
 
@@ -241,18 +250,14 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         keys.set_cardinality(N);
         std::pmr::vector<std::string> key_cols{&fx.resource};
         key_cols.emplace_back("k");
-        auto res = fx.invoke(&manager_disk_t::read_chunks_by_keys,
-                             fx.ctx(),
-                             table_oid,
-                             std::move(key_cols),
-                             std::move(keys));
+        auto res =
+            fx.invoke(&manager_disk_t::read_chunks_by_keys, fx.ctx(), table_oid, std::move(key_cols), std::move(keys));
         REQUIRE(res.size() == N);
         // Copy into a std::vector for re-use in the parity loop (chunk-by-chunk
         // size/value comparison below).
         for (auto& entry : res) {
             std::vector<data_chunk_t> e;
-            for (auto& c : entry)
-                e.push_back(std::move(c));
+            for (auto& c : entry) e.push_back(std::move(c));
             batched.push_back(std::move(e));
         }
     }
@@ -278,8 +283,7 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         // Same total row count per key (the no-match key yields 0 on both paths).
         std::uint64_t single_total = total_rows(single);
         std::uint64_t batched_total = 0;
-        for (auto& c : batched[i])
-            batched_total += c.size();
+        for (auto& c : batched[i]) batched_total += c.size();
         REQUIRE(batched_total == single_total);
 
         // Same set of (k, payload) pairs per key on both paths.

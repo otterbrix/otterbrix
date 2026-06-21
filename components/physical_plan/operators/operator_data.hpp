@@ -2,8 +2,8 @@
 
 #include <boost/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
-#include <memory_resource>
 #include <components/vector/data_chunk.hpp>
+#include <memory_resource>
 #include <vector>
 
 namespace components::operators {
@@ -31,12 +31,6 @@ namespace components::operators {
         const chunks_vector_t& chunks() const { return chunks_; }
         void append_chunk(vector::data_chunk_t&& chunk);
 
-        // Backward-compat single-chunk API. Lazily concatenates all chunks into one
-        // the first time it is called; subsequent calls are O(1). Callers that still
-        // rely on a single-chunk view go through this accessor.
-        vector::data_chunk_t& data_chunk();
-        const vector::data_chunk_t& data_chunk() const;
-
         std::pmr::memory_resource* resource() const;
 
     private:
@@ -45,14 +39,6 @@ namespace components::operators {
     };
 
     using operator_data_ptr = operator_data_t::ptr;
-
-    // Splits a data_chunk_t into ≤DEFAULT_VECTOR_CAPACITY-sized chunks. Input is consumed.
-    chunks_vector_t split_chunk_into_batches(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
-
-    // Splits an operator_data_t whose single chunk exceeds DEFAULT_VECTOR_CAPACITY into
-    // multiple ≤DEFAULT_VECTOR_CAPACITY chunks. Returns the input unchanged otherwise.
-    boost::intrusive_ptr<operator_data_t> split_large_output(std::pmr::memory_resource* resource,
-                                                             boost::intrusive_ptr<operator_data_t> data);
 
     inline operator_data_ptr make_operator_data(std::pmr::memory_resource* resource,
                                                 const std::pmr::vector<types::complex_logical_type>& types,

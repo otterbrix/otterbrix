@@ -29,7 +29,7 @@ namespace components::operators {
         // the offset_val rows at the head are skipped in this operator below.
         int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_scan_batched,
+                                         &services::disk::manager_disk_t::storage_scan,
                                          ctx->session,
                                          table_oid_,
                                          std::unique_ptr<table::table_filter_t>(nullptr),
@@ -58,7 +58,7 @@ namespace components::operators {
         }
 
         // Maintain the operator_data_t invariant: at least one (possibly empty)
-        // chunk. storage_scan_batched can return an empty vector when the disk
+        // chunk. storage_scan can return an empty vector when the disk
         // service get_storage(table_oid) hits an oid-resolution race (observed
         // at SSB-scale on comma-join cross-products). Without this guard,
         // operator_join.cpp:125 asserts. Fetch types only on the empty path so

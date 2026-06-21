@@ -714,9 +714,7 @@ namespace components::vector {
                 for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
                     children.push_back(child_vec.value(i));
                 }
-                return types::logical_value_t::create_struct(vector->resource(),
-                                                             vector->type_,
-                                                             std::move(children));
+                return types::logical_value_t::create_struct(vector->resource(), vector->type_, std::move(children));
             }
             case types::logical_type::STRUCT: {
                 auto& child_entries = vector->entries();

@@ -58,11 +58,13 @@ namespace otterbrix {
         return py_arrow_object_type_t::Invalid;
     }
 
-    py::object python_table_arrow_array_stream_factory_t::produce_scanner(py::object& arrow_scanner, py::handle& arrow_obj_handle) {
+    py::object python_table_arrow_array_stream_factory_t::produce_scanner(py::object& arrow_scanner,
+                                                                          py::handle& arrow_obj_handle) {
         return arrow_scanner(arrow_obj_handle);
     }
 
-    std::unique_ptr<arrow_array_schema_wrapper_t> python_table_arrow_array_stream_factory_t::produce(uintptr_t factory_ptr) {
+    std::unique_ptr<arrow_array_schema_wrapper_t>
+    python_table_arrow_array_stream_factory_t::produce(uintptr_t factory_ptr) {
         py::gil_scoped_acquire acquire;
         auto factory =
             static_cast<python_table_arrow_array_stream_factory_t*>(reinterpret_cast<void*>(factory_ptr)); // NOLINT
@@ -135,7 +137,7 @@ namespace otterbrix {
     }
 
     void python_table_arrow_array_stream_factory_t::get_schema_internal(py::handle arrow_obj_handle,
-                                                               arrow_schema_wrapper_t& schema) {
+                                                                        arrow_schema_wrapper_t& schema) {
         auto arrow_object_type = get_arrow_type(arrow_obj_handle);
 
         // Arrow C-stream PyCapsule interface: read the schema straight off the stream capsule.

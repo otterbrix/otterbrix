@@ -223,8 +223,12 @@ namespace components::operators {
         if (!left_)
             return;
 
+        const auto has_columns = [](const operator_data_ptr& data) {
+            return data && !data->chunks().empty() && data->chunks().front().column_count() > 0;
+        };
+
         operator_data_ptr data_src = left_->output();
-        if (!data_src || data_src->data_chunk().column_count() == 0) {
+        if (!has_columns(data_src)) {
             if (left_->left() && left_->left()->output()) {
                 data_src = left_->left()->output();
             }
@@ -232,35 +236,42 @@ namespace components::operators {
 
         output_ = left_->output();
 
-        if (!data_src || data_src->data_chunk().size() == 0)
+        if (!data_src || data_src->size() == 0)
             return;
-        const auto& chunk = data_src->data_chunk();
 
-        // NOT NULL checks.
-        for (const auto& col_name : not_null_columns_) {
-            for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-                if (chunk.data[col].type().alias() != col_name)
-                    continue;
+        // Constraints are validated independently on every chunk of the input.
+        for (const auto& chunk : data_src->chunks()) {
+            if (chunk.size() == 0) {
+                continue;
+            }
+
+            // NOT NULL checks.
+            for (const auto& col_name : not_null_columns_) {
+                for (uint64_t col = 0; col < chunk.column_count(); ++col) {
+                    if (chunk.data[col].type().alias() != col_name)
+                        continue;
+                    for (uint64_t row = 0; row < chunk.size(); ++row) {
+                        if (!chunk.data[col].validity().row_is_valid(row)) {
+                            set_error(core::error_t{
+                                core::error_code_t::other_error,
+                                std::pmr::string{"NOT NULL constraint violated for column: " + col_name, resource_}});
+                            return;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // CHECK expression evaluation.
+            for (const auto& [name, pred] : check_predicates_) {
                 for (uint64_t row = 0; row < chunk.size(); ++row) {
-                    if (!chunk.data[col].validity().row_is_valid(row)) {
-                        set_error(core::error_t{
-                            core::error_code_t::other_error,
-                            std::pmr::string{"NOT NULL constraint violated for column: " + col_name, resource_}});
+                    auto check_result = pred->check(chunk, row);
+                    if (check_result.has_error() || !check_result.value()) {
+                        set_error(
+                            core::error_t{core::error_code_t::other_error,
+                                          std::pmr::string{"CHECK constraint \"" + name + "\" violated", resource_}});
                         return;
                     }
-                }
-                break;
-            }
-        }
-
-        // CHECK expression evaluation.
-        for (const auto& [name, pred] : check_predicates_) {
-            for (uint64_t row = 0; row < chunk.size(); ++row) {
-                auto check_result = pred->check(chunk, row);
-                if (check_result.has_error() || !check_result.value()) {
-                    set_error(core::error_t{core::error_code_t::other_error,
-                                            std::pmr::string{"CHECK constraint \"" + name + "\" violated", resource_}});
-                    return;
                 }
             }
         }

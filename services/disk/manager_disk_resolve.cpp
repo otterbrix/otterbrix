@@ -6,7 +6,7 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    // Every catalog read here goes through agent-0's storage_scan_batched_inner
+    // Every catalog read here goes through agent-0's storage_scan_inner
     // (catalog oids route to agent-0). Reading via the mailbox — not a borrowed
     // storage_entry_sync pointer — serialises against agent-0's compact path
     // (checkpoint/vacuum/maybe_cleanup_inner) running on the scheduler_disk_
@@ -23,7 +23,7 @@ namespace services::disk {
             const std::size_t idx = pool_idx_for_oid(pg_namespace_oid_tbl, agents_.size());
             std::vector<size_t> projected{0, 1};
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
-                                                                  &agent_disk_t::storage_scan_batched_inner,
+                                                                  &agent_disk_t::storage_scan_inner,
                                                                   pg_namespace_oid_tbl,
                                                                   std::unique_ptr<components::table::table_filter_t>{},
                                                                   int64_t{-1},
@@ -66,7 +66,7 @@ namespace services::disk {
         const std::size_t idx = pool_idx_for_oid(pg_proc_oid, agents_.size());
         std::vector<size_t> projected{0, 1, 2, 3, 4, 5, 6};
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
-                                                              &agent_disk_t::storage_scan_batched_inner,
+                                                              &agent_disk_t::storage_scan_inner,
                                                               pg_proc_oid,
                                                               std::unique_ptr<components::table::table_filter_t>{},
                                                               int64_t{-1},
@@ -114,7 +114,7 @@ namespace services::disk {
         const std::size_t idx = pool_idx_for_oid(pg_namespace_oid_tbl, agents_.size());
         std::vector<size_t> projected{0, 1};
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agents_[idx]->address(),
-                                                              &agent_disk_t::storage_scan_batched_inner,
+                                                              &agent_disk_t::storage_scan_inner,
                                                               pg_namespace_oid_tbl,
                                                               std::unique_ptr<components::table::table_filter_t>{},
                                                               int64_t{-1},

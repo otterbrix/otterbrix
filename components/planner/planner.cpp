@@ -743,8 +743,7 @@ namespace components::planner {
                 const auto* cm = static_cast<const logical_plan::node_create_matview_t*>(node);
                 // Empty inferred columns → rewrite_create_matview returns the node
                 // unchanged and consumes nothing.
-                return cm->inferred_columns().empty() ? std::size_t{0}
-                                                      : std::size_t{2} + cm->inferred_columns().size();
+                return cm->inferred_columns().empty() ? std::size_t{0} : std::size_t{2} + cm->inferred_columns().size();
             }
             case nt::create_index_t:
                 return 1;

@@ -11,7 +11,6 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/aggregate/operator_aggregate.cpp
         operators/aggregate/operator_func.cpp
-        operators/aggregate/grouped_aggregate.cpp
 
         operators/predicates/predicate.cpp
         operators/predicates/simple_predicate.cpp

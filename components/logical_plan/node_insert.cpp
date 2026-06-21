@@ -55,4 +55,13 @@ namespace components::logical_plan {
         return res;
     }
 
+    node_insert_ptr make_node_insert(std::pmr::memory_resource* resource,
+                                     std::pmr::vector<components::vector::data_chunk_t>&& chunks,
+                                     std::pmr::vector<expressions::key_t>&& key_translation) {
+        auto res = make_node_insert(resource);
+        res->append_child(make_node_raw_data(resource, std::move(chunks)));
+        res->key_translation() = std::move(key_translation);
+        return res;
+    }
+
 } // namespace components::logical_plan

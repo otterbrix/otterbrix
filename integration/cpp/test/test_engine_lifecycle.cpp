@@ -145,9 +145,9 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
 
     INFO("select via execute_sql") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM " + lifecycle_database_name + "." +
-                                               lifecycle_collection_one + ";");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "SELECT * FROM " + lifecycle_database_name + "." + lifecycle_collection_one + ";");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
         REQUIRE(inst->use_count() == 2u);

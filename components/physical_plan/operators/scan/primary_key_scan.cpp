@@ -20,31 +20,22 @@ namespace components::operators {
     }
 
     actor_zeta::unique_future<void> primary_key_scan::await_async_and_resume(pipeline::context_t* ctx) {
-        if (size_ > 0) {
-            // Copy rows vector for send
-            vector::vector_t row_ids_copy(resource_, types::logical_type::BIGINT, size_);
-            for (size_t i = 0; i < size_; i++) {
-                row_ids_copy.set_value(i, types::logical_value_t{resource_, rows_.data<int64_t>()[i]});
-            }
+        // One fetch for all row-ids; the disk layer returns the rows as a vector of
+        // ≤DEFAULT_VECTOR_CAPACITY chunks.
+        vector::vector_t ids(resource_, types::logical_type::BIGINT, size_);
+        for (size_t i = 0; i < size_; i++) {
+            ids.set_value(i, types::logical_value_t{resource_, rows_.data<int64_t>()[i]});
+        }
+        auto [_f, ff] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_fetch,
+                                         ctx->session,
+                                         table_oid_,
+                                         std::move(ids),
+                                         size_);
+        auto batches = co_await std::move(ff);
 
-            auto [_f, ff] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_fetch,
-                                             ctx->session,
-                                             table_oid_,
-                                             std::move(row_ids_copy),
-                                             size_);
-            auto data = co_await std::move(ff);
-
-            if (data) {
-                output_ = make_operator_data(resource_, split_chunk_into_batches(resource_, std::move(*data)));
-            } else {
-                auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::storage_types,
-                                                 ctx->session,
-                                                 table_oid_);
-                auto types = co_await std::move(tf);
-                output_ = make_operator_data(resource_, types);
-            }
+        if (!batches.empty()) {
+            output_ = make_operator_data(resource_, std::move(batches));
         } else {
             auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_types,

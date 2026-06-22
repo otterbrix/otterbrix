@@ -5,10 +5,17 @@
 #include <string>
 #include <type_traits>
 
+#include <core/result_wrapper.hpp>
+
 #include "metadata_manager.hpp"
 
 namespace components::table::storage {
 
+    // Reads a chained metadata stream. A corrupt stream (a read that runs past the end of the chain)
+    // records a sticky data_corruption error_t that callers MUST check via has_error() after deserializing.
+    // Once errored, every read is a no-op returning zero-initialized data, so deserialization unwinds without
+    // UB; the load boundary (data_table_t::load_from_disk / single_file_block_manager_t::deserialize_free_list)
+    // surfaces the error as a result_wrapper_t.
     class metadata_reader_t {
     public:
         metadata_reader_t(metadata_manager_t& manager, meta_block_pointer_t start);
@@ -17,14 +24,14 @@ namespace components::table::storage {
 
         template<typename T>
         requires std::is_trivially_copyable_v<T> T read() {
-            T value;
+            T value{};
             read_data(reinterpret_cast<std::byte*>(&value), sizeof(T));
             return value;
         }
 
         std::string read_string() {
             auto len = read<uint32_t>();
-            if (len == 0) {
+            if (len == 0 || has_error()) {
                 return {};
             }
             std::string result(len, '\0');
@@ -33,6 +40,10 @@ namespace components::table::storage {
         }
 
         bool finished() const { return finished_; }
+
+        // Sticky corrupt-stream flag: true once a read ran past the end of the chain.
+        bool has_error() const { return error_.contains_error(); }
+        const core::error_t& error() const { return error_; }
 
     private:
         void follow_chain();
@@ -43,6 +54,7 @@ namespace components::table::storage {
         uint64_t current_offset_{0};
         uint64_t sub_block_size_{0};
         bool finished_{false};
+        core::error_t error_{core::error_t::no_error()};
 
         static constexpr uint64_t SUB_BLOCK_HEADER_SIZE = sizeof(uint64_t) + sizeof(uint32_t);
     };

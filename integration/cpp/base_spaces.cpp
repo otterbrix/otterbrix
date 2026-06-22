@@ -160,6 +160,18 @@ namespace otterbrix {
             // so the WAL-replay filter below can correctly skip
             // already-checkpointed records for user tables.
             disk_ptr->load_user_table_storages_sync();
+            // pg_class persists unconditionally, but IN_MEMORY user tables leave
+            // no .otbx, so load_user_table_storages_sync cannot bring their
+            // storage back. Reconstruct the (empty) storage shell for any alive
+            // user table the catalog knows about but whose storage is still
+            // missing, from its pg_attribute columns. Without this, a reopened
+            // session's CREATE TABLE IF NOT EXISTS finds the table "exists" and
+            // skips creating storage, resolve_table returns a schema, but every
+            // INSERT silently no-ops (storage_append returns 0,0) and scans see
+            // nothing. Runs after load_user_table_storages_sync so on-disk tables
+            // (already loaded) are skipped, and before WAL replay so replayed
+            // INSERTs land in the rehydrated storage.
+            disk_ptr->rehydrate_in_memory_user_storages_sync();
         }
         if (disk_ptr) {
             // Pass WAL address: disk uses this to write pg_catalog WAL records inline from
@@ -332,6 +344,34 @@ namespace otterbrix {
             disk_ptr->restore_oid_generator_sync();
         }
 
+        // Re-seed the MVCC commit clock on reopen from a SINGLE combined durable
+        // frontier so its two halves (current_timestamp_ and published_horizon_)
+        // can never disagree. The frontier is the max of two durable sources:
+        //   * the persisted pg_attribute commit-ids (added_at/dropped_at) — the
+        //     checkpointed catalog frontier (covers ALTER-touched schemas), and
+        //   * the max WAL COMMIT-marker commit_id replayed this boot — the durable
+        //     MVCC frontier for plain CREATE TABLE / data loads (the SSB case,
+        //     where pg_attribute carries no commit-id so the persisted scan is 0).
+        // restore_commit_clock raises current_timestamp_ to frontier+1 AND
+        // published_horizon_ to frontier together: persisted columns stay visible,
+        // post-recovery snapshots see persisted commits as published, AND fresh
+        // post-reopen INSERTs draw commit-ids strictly above the durable band so
+        // they are never mis-judged invisible. Mirror restore_oid_generator_sync:
+        // single-threaded bootstrap (schedulers not started), a one-time direct
+        // call, not ongoing cross-actor sharing.
+        if (disk_ptr) {
+            uint64_t reopen_frontier = disk_ptr->max_persisted_commit_id_sync();
+            for (const auto& r : wal_records) {
+                if (r.is_commit_marker() && r.commit_id > reopen_frontier) {
+                    reopen_frontier = r.commit_id;
+                }
+            }
+            if (reopen_frontier > 0) {
+                manager_dispatcher_->seed_commit_clock_sync(reopen_frontier);
+                trace(log_, "spaces::restored MVCC commit clock from durable frontier {}", reopen_frontier);
+            }
+        }
+
         // Recover pg_class rows tombstoned by a pre-crash DROP TABLE that never
         // physically removed the .otbx. The scan returns (oid, sentinel
         // delete_id=1) pairs; rebuild dropped_storages_ on disk and
@@ -376,22 +416,11 @@ namespace otterbrix {
             }
         }
 
-        // Publish max COMMIT commit_id so the post-recovery txn_manager_'s
-        // published_horizon_ matches the durable MVCC frontier. Only the
-        // max-COMMIT horizon is restored — in_flight ids are never reconstructed,
-        // since crashed in-flight txns were visible to no snapshot anyway.
-        if (!wal_records.empty()) {
-            uint64_t max_commit_id = 0;
-            for (const auto& r : wal_records) {
-                if (r.is_commit_marker() && r.commit_id > max_commit_id) {
-                    max_commit_id = r.commit_id;
-                }
-            }
-            if (max_commit_id > 0) {
-                manager_dispatcher_->set_replay_horizon_sync(max_commit_id);
-                trace(log_, "spaces::WAL replay published_horizon advanced to {}", max_commit_id);
-            }
-        }
+        // NOTE: the post-recovery MVCC commit clock (both current_timestamp_ and
+        // published_horizon_) is restored ABOVE from the combined durable frontier
+        // (max of persisted pg_attribute commit-ids and the max WAL COMMIT marker).
+        // in_flight ids are never reconstructed — crashed in-flight txns were
+        // visible to no snapshot anyway.
 
         // Must run pre-scheduler-start while single-threaded. committed_txn_ids
         // travels by value into bootstrap_indexes_sync (and from there into each

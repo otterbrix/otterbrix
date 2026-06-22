@@ -45,19 +45,20 @@ namespace components::table::storage {
 
     uint64_t standard_buffer_manager_t::block_size() const { return temp_block_manager_->block_size(); }
 
-    temp_buffer_pool_reservation_t
-    standard_buffer_manager_t::evict_blocks_or_throw(memory_tag tag,
+    core::result_wrapper_t<temp_buffer_pool_reservation_t>
+    standard_buffer_manager_t::evict_blocks_or_error(memory_tag tag,
                                                      uint64_t memory_delta,
                                                      std::unique_ptr<file_buffer_t>* buffer) {
         auto r = buffer_pool_.evict_blocks(tag, memory_delta, buffer_pool_.maximum_memory, buffer);
         if (!r.success) {
-            throw std::runtime_error("standard_buffer_manager_t out of memory");
+            return core::error_t(core::error_code_t::out_of_memory,
+                                 std::pmr::string{"standard_buffer_manager_t out of memory", resource()});
         }
         return std::move(r.reservation);
     }
 
-    std::shared_ptr<block_handle_t> standard_buffer_manager_t::register_transient_memory(uint64_t size,
-                                                                                         uint64_t block_size) {
+    core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+    standard_buffer_manager_t::register_transient_memory(uint64_t size, uint64_t block_size) {
         assert(size <= block_size);
 
         if (size < block_size) {
@@ -65,16 +66,24 @@ namespace components::table::storage {
         }
 
         auto buffer_handle = allocate(memory_tag::IN_MEMORY_TABLE, size, false);
-        return buffer_handle.block_handle()->shared_from_this();
+        if (buffer_handle.has_error()) {
+            return buffer_handle.convert_error<std::shared_ptr<block_handle_t>>();
+        }
+        return buffer_handle.value().block_handle()->shared_from_this();
     }
 
-    std::shared_ptr<block_handle_t> standard_buffer_manager_t::register_small_memory(uint64_t size) {
+    core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+    standard_buffer_manager_t::register_small_memory(uint64_t size) {
         return buffer_manager_t::register_small_memory(size);
     }
 
-    std::shared_ptr<block_handle_t> standard_buffer_manager_t::register_small_memory(memory_tag tag, uint64_t size) {
+    core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+    standard_buffer_manager_t::register_small_memory(memory_tag tag, uint64_t size) {
         assert(size < block_size());
-        auto reservation = evict_blocks_or_throw(tag, size, nullptr);
+        auto reservation = evict_blocks_or_error(tag, size, nullptr);
+        if (reservation.has_error()) {
+            return reservation.convert_error<std::shared_ptr<block_handle_t>>();
+        }
 
         auto buffer = construct_manager_buffer(size, nullptr, file_buffer_type::TINY_BUFFER);
 
@@ -84,16 +93,19 @@ namespace components::table::storage {
                                                        std::move(buffer),
                                                        destroy_buffer_condition::BLOCK,
                                                        size,
-                                                       std::move(reservation));
+                                                       std::move(reservation.value()));
         return result;
     }
 
-    std::shared_ptr<block_handle_t>
+    core::result_wrapper_t<std::shared_ptr<block_handle_t>>
     standard_buffer_manager_t::register_memory(memory_tag tag, uint64_t block_size, bool can_destroy) {
         auto alloc_size = allocation_size(block_size);
 
         std::unique_ptr<file_buffer_t> reusable_buffer;
-        auto res = evict_blocks_or_throw(tag, alloc_size, &reusable_buffer);
+        auto res = evict_blocks_or_error(tag, alloc_size, &reusable_buffer);
+        if (res.has_error()) {
+            return res.convert_error<std::shared_ptr<block_handle_t>>();
+        }
 
         auto buffer = construct_manager_buffer(block_size, std::move(reusable_buffer));
         destroy_buffer_condition destroy_buffer_condition =
@@ -104,17 +116,25 @@ namespace components::table::storage {
                                                 std::move(buffer),
                                                 destroy_buffer_condition,
                                                 alloc_size,
-                                                std::move(res));
+                                                std::move(res.value()));
     }
 
-    buffer_handle_t standard_buffer_manager_t::allocate(memory_tag tag, uint64_t block_size, bool can_destroy) {
+    core::result_wrapper_t<buffer_handle_t>
+    standard_buffer_manager_t::allocate(memory_tag tag, uint64_t block_size, bool can_destroy) {
         auto block = register_memory(tag, block_size, can_destroy);
-        auto buf = pin(block);
-        buf.set_ownership(std::move(block));
+        if (block.has_error()) {
+            return block.convert_error<buffer_handle_t>();
+        }
+        auto buf = pin(block.value());
+        if (buf.has_error()) {
+            return buf;
+        }
+        buf.value().set_ownership(std::move(block.value()));
         return buf;
     }
 
-    void standard_buffer_manager_t::reallocate(std::shared_ptr<block_handle_t>& handle, uint64_t block_size) {
+    core::result_wrapper_t<bool> standard_buffer_manager_t::reallocate(std::shared_ptr<block_handle_t>& handle,
+                                                                       uint64_t block_size) {
         assert(block_size >= this->block_size());
         auto lock = handle->get_lock();
 
@@ -127,30 +147,41 @@ namespace components::table::storage {
         int64_t memory_delta = static_cast<int64_t>(req.alloc_size) - static_cast<int64_t>(handle_memory_usage);
 
         if (memory_delta == 0) {
-            return;
+            return true;
         } else if (memory_delta > 0) {
             lock.unlock();
             auto reservation =
-                evict_blocks_or_throw(handle->get_memory_tag(), static_cast<uint64_t>(memory_delta), nullptr);
+                evict_blocks_or_error(handle->get_memory_tag(), static_cast<uint64_t>(memory_delta), nullptr);
+            if (reservation.has_error()) {
+                return reservation.convert_error<bool>();
+            }
             lock.lock();
 
-            handle->merge_memory_reservation(lock, std::move(reservation));
+            handle->merge_memory_reservation(lock, std::move(reservation.value()));
         } else {
             handle->resize_memory(lock, req.alloc_size);
         }
 
         handle->resize_buffer(lock, block_size, memory_delta);
+        return true;
     }
 
-    void standard_buffer_manager_t::batch_read(std::vector<std::shared_ptr<block_handle_t>>& handles,
-                                               const std::map<uint64_t, uint64_t>& load_map,
-                                               uint64_t first_block,
-                                               uint64_t last_block) {
+    // Returns the OOM error from allocate()/evict rather than throwing. prefetch() (a best-effort optimization
+    // with a void signature) swallows the error and returns early: the blocks stay unloaded and are loaded
+    // lazily later via pin(), which surfaces any real OOM to a caller able to handle it.
+    core::result_wrapper_t<bool>
+    standard_buffer_manager_t::batch_read(std::vector<std::shared_ptr<block_handle_t>>& handles,
+                                          const std::map<uint64_t, uint64_t>& load_map,
+                                          uint64_t first_block,
+                                          uint64_t last_block) {
         auto& block_manager = handles[0]->block_manager;
         uint64_t block_count = last_block - first_block + 1;
 
         auto intermediate_buffer = allocate(memory_tag::BASE_TABLE, block_count * block_manager.block_size());
-        block_manager.read_blocks(intermediate_buffer.file_buffer(), first_block, block_count);
+        if (intermediate_buffer.has_error()) {
+            return intermediate_buffer.convert_error<bool>();
+        }
+        block_manager.read_blocks(intermediate_buffer.value().file_buffer(), first_block, block_count);
 
         for (uint64_t block_idx = 0; block_idx < block_count; block_idx++) {
             uint64_t block_id = first_block + block_idx;
@@ -160,19 +191,26 @@ namespace components::table::storage {
 
             uint64_t required_memory = handle->memory_usage();
             std::unique_ptr<file_buffer_t> reusable_buffer;
-            auto reservation = evict_blocks_or_throw(handle->get_memory_tag(), required_memory, &reusable_buffer);
+            auto reservation = evict_blocks_or_error(handle->get_memory_tag(), required_memory, &reusable_buffer);
+            if (reservation.has_error()) {
+                return reservation.convert_error<bool>();
+            }
             buffer_handle_t buf;
             {
                 auto lock = handle->get_lock();
                 if (handle->state() == block_state::LOADED) {
-                    reservation.resize(0);
+                    reservation.value().resize(0);
                     continue;
                 }
-                auto block_ptr = intermediate_buffer.file_buffer().internal_buffer() +
+                auto block_ptr = intermediate_buffer.value().file_buffer().internal_buffer() +
                                  block_idx * block_manager.block_allocation_size();
-                buf = handle->load_from_buffer(lock, block_ptr, std::move(reusable_buffer), std::move(reservation));
+                buf = handle->load_from_buffer(lock,
+                                               block_ptr,
+                                               std::move(reusable_buffer),
+                                               std::move(reservation.value()));
             }
         }
+        return true;
     }
 
     void standard_buffer_manager_t::prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) {
@@ -195,22 +233,31 @@ namespace components::table::storage {
             } else if (previous_block_id + 1 == entry.first) {
                 previous_block_id = entry.first;
             } else {
-                batch_read(handles, to_be_loaded, first_block, previous_block_id);
+                if (batch_read(handles, to_be_loaded, first_block, previous_block_id).has_error()) {
+                    return; // best-effort prefetch: abort on OOM, blocks load lazily via pin() later
+                }
                 first_block = entry.first;
                 previous_block_id = entry.first;
             }
         }
-        batch_read(handles, to_be_loaded, first_block, previous_block_id);
+        if (batch_read(handles, to_be_loaded, first_block, previous_block_id).has_error()) {
+            return;
+        }
     }
 
-    buffer_handle_t standard_buffer_manager_t::pin(std::shared_ptr<block_handle_t>& handle) {
+    core::result_wrapper_t<buffer_handle_t> standard_buffer_manager_t::pin(std::shared_ptr<block_handle_t>& handle) {
         buffer_handle_t buf;
 
         uint64_t required_memory;
         {
             auto lock = handle->get_lock();
             if (handle->state() == block_state::LOADED) {
-                buf = handle->load();
+                // LOADED fast path: load() cannot error here (no disk read), so unwrap directly.
+                auto loaded = handle->load();
+                if (loaded.has_error()) {
+                    return loaded;
+                }
+                buf = std::move(loaded.value());
             }
             required_memory = handle->memory_usage();
         }
@@ -219,17 +266,31 @@ namespace components::table::storage {
             return buf;
         } else {
             std::unique_ptr<file_buffer_t> reusable_buffer;
-            auto reservation = evict_blocks_or_throw(handle->get_memory_tag(), required_memory, &reusable_buffer);
+            auto reservation = evict_blocks_or_error(handle->get_memory_tag(), required_memory, &reusable_buffer);
+            if (reservation.has_error()) {
+                return reservation.convert_error<buffer_handle_t>();
+            }
 
             auto lock = handle->get_lock();
             if (handle->state() == block_state::LOADED) {
-                reservation.resize(0);
-                buf = handle->load();
+                reservation.value().resize(0);
+                auto loaded = handle->load();
+                if (loaded.has_error()) {
+                    return loaded;
+                }
+                buf = std::move(loaded.value());
             } else {
                 assert(handle->readers() == 0);
-                buf = handle->load(std::move(reusable_buffer));
+                // Disk-reload path: load() can fail with data_corruption/io_error. Release the reservation we
+                // just took and propagate the error rather than throwing.
+                auto loaded = handle->load(std::move(reusable_buffer));
+                if (loaded.has_error()) {
+                    reservation.value().resize(0);
+                    return loaded;
+                }
+                buf = std::move(loaded.value());
                 auto& memory_charge = handle->memory_usage(lock);
-                memory_charge = std::move(reservation);
+                memory_charge = std::move(reservation.value());
                 int64_t delta = static_cast<int64_t>(handle->get_buffer(lock)->allocation_size()) -
                                 static_cast<int64_t>(handle->memory_usage());
                 if (delta) {
@@ -259,7 +320,11 @@ namespace components::table::storage {
             assert(handle->readers() > 0);
             auto new_readers = handle->decrement_readers();
             if (new_readers == 0) {
-                if (handle->must_add_to_eviction_queue()) {
+                if (!handle->is_reloadable()) {
+                    // Managed in-memory block (no disk copy): never queue, never unload on unpin -- it cannot be
+                    // reloaded. Keep it resident. (can_unload() already rejects it, so this just avoids needless
+                    // eviction-queue churn.)
+                } else if (handle->must_add_to_eviction_queue()) {
                     auto sp = handle->shared_from_this();
                     purge = buffer_pool_.add_to_eviction_queue(sp);
                 } else {
@@ -273,7 +338,9 @@ namespace components::table::storage {
         }
     }
 
-    void standard_buffer_manager_t::set_memory_limit(uint64_t limit) { buffer_pool_.set_limit(limit); }
+    core::result_wrapper_t<bool> standard_buffer_manager_t::set_memory_limit(uint64_t limit) {
+        return buffer_pool_.set_limit(limit);
+    }
 
     std::vector<memory_info_t> standard_buffer_manager_t::get_memory_usage_info() const {
         std::vector<memory_info_t> result;
@@ -291,8 +358,13 @@ namespace components::table::storage {
         if (size == 0) {
             return;
         }
-        auto reservation = evict_blocks_or_throw(memory_tag::EXTENSION, size, nullptr);
-        reservation.size = 0;
+        // void signature (base virtual; currently no callers). On OOM this no-ops rather than throwing;
+        // evict_blocks_or_error released nothing in that case.
+        auto reservation = evict_blocks_or_error(memory_tag::EXTENSION, size, nullptr);
+        if (reservation.has_error()) {
+            return;
+        }
+        reservation.value().size = 0;
     }
 
     void standard_buffer_manager_t::free_reserved_memory(uint64_t size) {

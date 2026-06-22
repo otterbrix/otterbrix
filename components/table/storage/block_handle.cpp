@@ -155,7 +155,7 @@ namespace components::table::storage {
         return buffer_handle_t(this, buffer_.get());
     }
 
-    buffer_handle_t block_handle_t::load(std::unique_ptr<file_buffer_t> reusable_buffer) {
+    core::result_wrapper_t<buffer_handle_t> block_handle_t::load(std::unique_ptr<file_buffer_t> reusable_buffer) {
         if (state_ == block_state::LOADED) {
             assert(buffer_);
             ++readers_;
@@ -164,10 +164,15 @@ namespace components::table::storage {
 
         if (block_id_ < MAXIMUM_BLOCK) {
             auto block = allocate_block(block_manager, std::move(reusable_buffer), block_id_);
-            block_manager.read(*block);
+            // Disk reload: surface a checksum/IO failure as a value (data_corruption/io_error) rather than
+            // throwing. The block stays UNLOADED on error.
+            auto read_result = block_manager.read(*block);
+            if (read_result.has_error()) {
+                return read_result.convert_error<buffer_handle_t>();
+            }
             buffer_ = std::move(block);
         } else {
-            return {};
+            return buffer_handle_t{};
         }
         state_ = block_state::LOADED;
         readers_ = 1;
@@ -196,6 +201,11 @@ namespace components::table::storage {
             return false;
         }
         if (readers_ > 0) {
+            return false;
+        }
+        if (!is_reloadable()) {
+            // No disk copy (managed in-memory block): load() would return {} -> can never reload.
+            // Never unload such a block; keep it resident. (Hard safety net for evict + purge paths.)
             return false;
         }
         return true;

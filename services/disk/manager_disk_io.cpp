@@ -224,9 +224,9 @@ namespace services::disk {
         }
     }
 
-    void manager_disk_t::load_storage_disk_sync(components::catalog::oid_t table_oid,
-                                                components::catalog::oid_t /*database_oid*/,
-                                                const std::filesystem::path& otbx_path) {
+    core::error_t manager_disk_t::load_storage_disk_sync(components::catalog::oid_t table_oid,
+                                                         components::catalog::oid_t /*database_oid*/,
+                                                         const std::filesystem::path& otbx_path) {
         trace(log_,
               "manager_disk_t::load_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
@@ -292,48 +292,67 @@ namespace services::disk {
             std::error_code ec;
             std::filesystem::rename(prev_path, otbx_path, ec);
             if (ec) {
-                throw std::runtime_error("W-TORN promote .prev failed: " + ec.message());
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"W-TORN promote .prev failed: " + ec.message(), resource()});
             }
             transfer_to_agent(otbx_path);
-            return;
+            return core::error_t::no_error();
         }
 
-        // Corrupt-recovery (rename .otbx → .broken, .prev → .otbx, retry) must detect
-        // SFBM-open failure, but bootstrap_disk_inner_sync is noexcept (its
-        // make_unique<> swallows the throw on corrupt files). So we probe-construct on
-        // the manager thread to catch the exception, then destroy the probe to release
-        // the WRITE_LOCK before the agent reopens (per-process lock: closing this fd
-        // frees it entirely). The close-reopen window is single-threaded, no race.
-        try {
+        // Corrupt-recovery (rename .otbx → .broken, .prev → .otbx, retry) must detect SFBM-open / metadata
+        // failure. The DISK load ctor records the error in table_storage.construction_failed() rather than
+        // throwing (bootstrap_disk_inner_sync is noexcept and reachable on the agent thread). We
+        // probe-construct on the manager thread to read that flag, then destroy the probe to release the
+        // WRITE_LOCK before the agent reopens (per-process lock: closing this fd frees it entirely). The
+        // close-reopen window is single-threaded, no race. This function runs on the bootstrap thread (NOT
+        // the agent message thread); the terminal "no .prev to recover from" / failed-W-TORN-rename cases
+        // return a core::error_t to the open/bootstrap caller instead of throwing.
+        bool probe_failed = false;
+        std::string probe_error;
+        {
             auto probe = std::make_unique<collection_storage_entry_t>(resource(), otbx_path);
+            if (probe->table_storage.construction_failed()) {
+                probe_failed = true;
+                probe_error = probe->table_storage.construction_error().what.c_str();
+            }
             probe.reset(); // release WRITE_LOCK before agent reopens on agent thread
-        } catch (const std::exception& e) {
-            warn(log_, "load_storage_disk_sync: failed to load {} : {}", otbx_path.string(), e.what());
+        }
+        if (probe_failed) {
+            warn(log_, "load_storage_disk_sync: failed to load {} : {}", otbx_path.string(), probe_error);
             if (!prev_exists) {
-                throw;
+                return core::error_t(core::error_code_t::data_corruption,
+                                     std::pmr::string{"load_storage_disk_sync: " + otbx_path.string() + " : " +
+                                                          probe_error,
+                                                      resource()});
             }
             auto broken_path = otbx_path;
             broken_path += ".broken";
             std::error_code ec;
             std::filesystem::rename(otbx_path, broken_path, ec);
             if (ec) {
-                throw std::runtime_error("W-TORN move corrupt otbx aside failed: " + ec.message());
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"W-TORN move corrupt otbx aside failed: " + ec.message(),
+                                                      resource()});
             }
             std::filesystem::rename(prev_path, otbx_path, ec);
             if (ec) {
-                throw std::runtime_error("W-TORN promote .prev failed after corrupt otbx: " + ec.message());
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"W-TORN promote .prev failed after corrupt otbx: " +
+                                                          ec.message(),
+                                                      resource()});
             }
             warn(log_,
                  "load_storage_disk_sync: recovered {} from .prev (corrupt original kept as .broken)",
                  otbx_path.string());
             transfer_to_agent(otbx_path);
-            return;
+            return core::error_t::no_error();
         }
         if (prev_exists) {
             std::error_code ec;
             std::filesystem::remove(prev_path, ec);
         }
         transfer_to_agent(otbx_path);
+        return core::error_t::no_error();
     }
 
     wal::id_t manager_disk_t::peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
@@ -375,10 +394,11 @@ namespace services::disk {
         if (!std::filesystem::exists(otbx_path)) {
             return; // in-memory table — WAL replay creates it from the first INSERT chunk
         }
-        try {
-            load_storage_disk_sync(table_oid, database_oid, otbx_path);
-        } catch (const std::exception& e) {
-            warn(log_, "load_storage_for_wal_replay_sync: failed to load {}: {}", otbx_path.string(), e.what());
+        if (auto err = load_storage_disk_sync(table_oid, database_oid, otbx_path); err.contains_error()) {
+            warn(log_,
+                 "load_storage_for_wal_replay_sync: failed to load {}: {}",
+                 otbx_path.string(),
+                 err.what.c_str());
         }
     }
 

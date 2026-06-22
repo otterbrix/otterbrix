@@ -112,7 +112,8 @@ namespace components::table {
         explicit undo_buffer_allocator_t(storage::buffer_manager_t& buffer_manager)
             : buffer_manager(buffer_manager) {}
 
-        undo_buffer_reference allocate(uint64_t alloc_len);
+        // Returns out_of_memory when fresh transaction memory cannot be reserved.
+        [[nodiscard]] core::result_wrapper_t<undo_buffer_reference> allocate(uint64_t alloc_len);
 
         storage::buffer_manager_t& buffer_manager;
         std::unique_ptr<undo_buffer_entry_t> head{};
@@ -188,11 +189,12 @@ namespace components::table {
                                    uint64_t count,
                                    vector::vector_t& result,
                                    uint64_t result_offset_base = 0);
-        void update(uint64_t column_index,
-                    vector::vector_t& update,
-                    int64_t* ids,
-                    uint64_t count,
-                    vector::vector_t& base_data);
+        // Returns write_conflict or out_of_memory; true on success.
+        [[nodiscard]] core::result_wrapper_t<bool> update(uint64_t column_index,
+                                                          vector::vector_t& update,
+                                                          int64_t* ids,
+                                                          uint64_t count,
+                                                          vector::vector_t& base_data);
         void fetch_row(int64_t row_id, vector::vector_t& result, uint64_t result_idx);
         bool check_row(int64_t row_id, const table_filter_t* filter);
         bool row_is_updated(int64_t row_id);

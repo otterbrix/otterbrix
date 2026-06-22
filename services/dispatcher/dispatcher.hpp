@@ -82,11 +82,16 @@ namespace services::dispatcher {
 
         void sync(sync_pack pack);
 
-        // Bootstrap hook: advance the published horizon past the max durable
-        // commit_id found during WAL replay, so post-recovery snapshots get the
-        // right MVCC visibility. Direct sync call is safe only because the
-        // scheduler is not started yet. Idempotent — publish() ignores stale ids.
-        void set_replay_horizon_sync(uint64_t commit_id);
+        // Bootstrap hook: restore the MVCC commit clock from the combined durable
+        // frontier (max of the persisted pg_attribute commit-ids and the max WAL
+        // COMMIT-marker commit_id). Raises BOTH halves together via
+        // transaction_manager_t::restore_commit_clock: current_timestamp_ to
+        // frontier+1 (so a reopened instance issues start_times/commit-ids strictly
+        // above every persisted id — no reuse of the already-published band) AND
+        // published_horizon_ to frontier (so post-recovery snapshots see persisted
+        // commits as published). Direct sync call — safe only because the scheduler
+        // is not started yet. Idempotent (never lowers either half).
+        void seed_commit_clock_sync(uint64_t high_water);
 
         // Like the on_drop_resource_marked() mailbox handler but usable before
         // scheduler.start: base_spaces calls these after rebuilding the dropped-

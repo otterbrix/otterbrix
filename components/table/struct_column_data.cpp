@@ -135,33 +135,47 @@ namespace components::table {
         }
     }
 
-    void struct_column_data_t::initialize_append(column_append_state& state) {
+    core::result_wrapper_t<bool> struct_column_data_t::initialize_append(column_append_state& state) {
         column_append_state validity_append;
-        validity.initialize_append(validity_append);
+        auto v = validity.initialize_append(validity_append);
+        if (v.has_error()) {
+            return v; // out_of_memory (rules 2/9)
+        }
         state.child_appends.push_back(std::move(validity_append));
 
         for (auto& sub_column : sub_columns) {
             column_append_state child_append;
-            sub_column->initialize_append(child_append);
+            auto child = sub_column->initialize_append(child_append);
+            if (child.has_error()) {
+                return child;
+            }
             state.child_appends.push_back(std::move(child_append));
         }
+        return true;
     }
 
-    void struct_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
+    core::result_wrapper_t<bool>
+    struct_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
         if (vector.get_vector_type() != vector::vector_type::FLAT) {
             vector::vector_t append_vector(vector);
             append_vector.flatten(count);
-            append(state, append_vector, count);
-            return;
+            return append(state, append_vector, count);
         }
 
-        validity.append(state.child_appends[0], vector, count);
+        auto v = validity.append(state.child_appends[0], vector, count);
+        if (v.has_error()) {
+            return v; // out_of_memory (rules 2/9)
+        }
 
         auto& child_entries = vector.entries();
         for (uint64_t i = 0; i < child_entries.size(); i++) {
-            sub_columns[i]->append(state.child_appends[i + 1], *child_entries[i], count);
+            auto child = sub_columns[i]->append(state.child_appends[i + 1], *child_entries[i], count);
+            if (child.has_error()) {
+                return child;
+            }
         }
         count_ += count;
+        return true;
     }
 
     void struct_column_data_t::revert_append(int64_t start_row) {
@@ -185,33 +199,41 @@ namespace components::table {
         return scan_count;
     }
 
-    void struct_column_data_t::update(uint64_t column_index,
-                                      vector::vector_t& update_vector,
-                                      int64_t* row_ids,
-                                      uint64_t update_count) {
-        validity.update(column_index, update_vector, row_ids, update_count);
+    core::result_wrapper_t<bool> struct_column_data_t::update(uint64_t column_index,
+                                                            vector::vector_t& update_vector,
+                                                            int64_t* row_ids,
+                                                            uint64_t update_count) {
+        auto v = validity.update(column_index, update_vector, row_ids, update_count);
+        if (v.has_error()) {
+            return v;
+        }
         auto& child_entries = update_vector.entries();
         for (uint64_t i = 0; i < child_entries.size(); i++) {
-            sub_columns[i]->update(column_index, *child_entries[i], row_ids, update_count);
+            auto child = sub_columns[i]->update(column_index, *child_entries[i], row_ids, update_count);
+            if (child.has_error()) {
+                return child;
+            }
         }
+        return true;
     }
 
-    void struct_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                             vector::vector_t& update_vector,
-                                             int64_t* row_ids,
-                                             uint64_t update_count,
-                                             uint64_t depth) {
+    core::result_wrapper_t<bool> struct_column_data_t::update_column(const std::vector<uint64_t>& column_path,
+                                                                  vector::vector_t& update_vector,
+                                                                  int64_t* row_ids,
+                                                                  uint64_t update_count,
+                                                                  uint64_t depth) {
         if (depth >= column_path.size()) {
             throw std::runtime_error("Attempting to directly update a struct column - this should not be possible");
         }
         auto update_column = column_path[depth];
         if (update_column == 0) {
-            validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
+            return validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
         } else {
             if (update_column > sub_columns.size()) {
                 throw std::runtime_error("update column_path out of range");
             }
-            sub_columns[update_column - 1]->update_column(column_path, update_vector, row_ids, update_count, depth + 1);
+            return sub_columns[update_column - 1]
+                ->update_column(column_path, update_vector, row_ids, update_count, depth + 1);
         }
     }
 

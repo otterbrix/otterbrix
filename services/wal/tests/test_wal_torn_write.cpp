@@ -63,11 +63,13 @@ TEST_CASE("wal::torn::table_storage_tracks_wal_id_chain") {
     REQUIRE(ts.checkpoint_wal_id() == 0);
     REQUIRE(ts.prev_checkpoint_wal_id() == 0);
 
-    ts.checkpoint(wal::id_t{42});
+    auto checkpoint_42_result = ts.checkpoint(wal::id_t{42});
+    REQUIRE_FALSE(checkpoint_42_result.has_error());
     REQUIRE(ts.checkpoint_wal_id() == 42);
     REQUIRE(ts.prev_checkpoint_wal_id() == 0);
 
-    ts.checkpoint(wal::id_t{100});
+    auto checkpoint_100_result = ts.checkpoint(wal::id_t{100});
+    REQUIRE_FALSE(checkpoint_100_result.has_error());
     REQUIRE(ts.checkpoint_wal_id() == 100);
     REQUIRE(ts.prev_checkpoint_wal_id() == 42);
 
@@ -111,7 +113,8 @@ TEST_CASE("wal::torn::prev_le_current_invariant") {
 
     services::disk::table_storage_t ts(&resource, std::move(cols), otbx);
     for (wal::id_t id : {wal::id_t{1}, wal::id_t{5}, wal::id_t{7}, wal::id_t{7}, wal::id_t{12}}) {
-        ts.checkpoint(id);
+        auto checkpoint_result = ts.checkpoint(id);
+        REQUIRE_FALSE(checkpoint_result.has_error());
         REQUIRE(ts.prev_checkpoint_wal_id() <= ts.checkpoint_wal_id());
     }
     // After the full sequence, prev should be the second-to-last (7), current the last (12).

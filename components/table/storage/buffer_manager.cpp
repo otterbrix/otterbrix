@@ -4,16 +4,20 @@
 
 namespace components::table::storage {
 
-    std::shared_ptr<block_handle_t> buffer_manager_t::register_transient_memory(uint64_t, uint64_t) {
+    // The logic_error throws below are not OOM errors: they guard against calling a memory-registration entry
+    // point on a buffer_manager_t subtype that does not support it -- a programming error.
+    core::result_wrapper_t<std::shared_ptr<block_handle_t>>
+    buffer_manager_t::register_transient_memory(uint64_t, uint64_t) {
         throw std::logic_error(
             "Incorrect call: This type of buffer_manager_t can not create 'transient-memory' blocks");
     }
 
-    std::shared_ptr<block_handle_t> buffer_manager_t::register_small_memory(uint64_t size) {
+    core::result_wrapper_t<std::shared_ptr<block_handle_t>> buffer_manager_t::register_small_memory(uint64_t size) {
         return register_small_memory(memory_tag::BASE_TABLE, size);
     }
 
-    std::shared_ptr<block_handle_t> buffer_manager_t::register_small_memory(memory_tag, uint64_t) {
+    core::result_wrapper_t<std::shared_ptr<block_handle_t>> buffer_manager_t::register_small_memory(memory_tag,
+                                                                                                   uint64_t) {
         throw std::logic_error("Incorrect call: This type of buffer_manager_t can not create 'small-memory' blocks");
     }
 
@@ -24,7 +28,7 @@ namespace components::table::storage {
         throw std::logic_error("Incorrect call: This type of buffer_manager_t can not free reserved memory");
     }
 
-    void buffer_manager_t::set_memory_limit(uint64_t) {
+    core::result_wrapper_t<bool> buffer_manager_t::set_memory_limit(uint64_t) {
         throw std::logic_error("Incorrect call: This type of buffer_manager_t can not set a memory limit");
     }
 

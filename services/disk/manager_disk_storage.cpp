@@ -85,7 +85,17 @@ namespace services::disk {
             }
         }
 
-        return s->append(local, txn);
+        // WAL-replay only (txn{0,0}), single-threaded: a write_conflict / out_of_memory
+        // here is a hard recovery fault with no error channel — bind the wrapper and return
+        // 0 on failure (no rows materialized).
+        auto append_r = s->append(local, txn);
+        if (append_r.has_error()) {
+            warn(log_,
+                 "manager_disk_t::direct_append_sync: replay append failed for oid={} (rules 2/9)",
+                 static_cast<unsigned>(table_oid));
+            return 0;
+        }
+        return append_r.value();
     }
 
     void manager_disk_t::direct_delete_sync(catalog::oid_t table_oid,
@@ -332,13 +342,15 @@ namespace services::disk {
         co_return nullptr;
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::storage_scan_batched(session_id_t /*session*/,
                                          catalog::oid_t table_oid,
                                          std::unique_ptr<components::table::table_filter_t> filter,
                                          int64_t limit,
                                          std::vector<size_t> projected_cols,
                                          components::table::transaction_data txn) {
+        // Transparent router: the agent reply carries the scan_error; forward the wrapper
+        // unchanged so the scan operators turn it into an error cursor.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -399,7 +411,7 @@ namespace services::disk {
         co_return nullptr;
     }
 
-    manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
     manager_disk_t::storage_append(execution_context_t ctx,
                                    catalog::oid_t table_oid,
                                    std::unique_ptr<components::vector::data_chunk_t> data) {
@@ -407,6 +419,8 @@ namespace services::disk {
         // expansion, NOT NULL, dedup, type promotion) and the canonical write live
         // in the agent twin, so every same-oid access is serialized by the agent's
         // mailbox — no borrowed-pointer access from the manager loop thread.
+        // Transparent router: forward the agent's result_wrapper_t (write_conflict /
+        // out_of_memory) unchanged so operator_insert surfaces the error.
         if (!data || data->size() == 0) {
             co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
@@ -428,13 +442,14 @@ namespace services::disk {
         co_return std::make_pair(uint64_t{0}, uint64_t{0});
     }
 
-    manager_disk_t::unique_future<std::pair<int64_t, uint64_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
     manager_disk_t::storage_update(execution_context_t ctx,
                                    catalog::oid_t table_oid,
                                    components::vector::vector_t row_ids,
                                    std::unique_ptr<components::vector::data_chunk_t> data) {
         // Pure router to the agent twin — the agent's mailbox serializes
-        // the canonical write with every other same-oid access.
+        // the canonical write with every other same-oid access. Transparent: forward the
+        // agent's result_wrapper_t (write_conflict / out_of_memory) unchanged.
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[idx];

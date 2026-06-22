@@ -178,6 +178,12 @@ namespace components::table {
     bool collection_scan_state::scan(vector::data_chunk_t& result) {
         while (row_group) {
             row_group->scan(*this, result);
+            // OOM during the scan: stop. The error stays in scan_error for the caller to
+            // surface via has_error().
+            if (has_error()) {
+                row_group = nullptr;
+                return false;
+            }
             const bool rg_exhausted =
                 static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= max_row_group_row;
             if (!rg_exhausted) {
@@ -216,6 +222,11 @@ namespace components::table {
                 cs.result_offset = 0;
             }
             row_group->scan(*this, batch);
+            if (has_error()) {
+                // OOM: keep whatever batches completed and stop; scan_error persists.
+                row_group = nullptr;
+                return;
+            }
             if (batch.size() > 0) {
                 batches.push_back(std::move(batch));
             }
@@ -249,6 +260,10 @@ namespace components::table {
                                                table_scan_type type) {
         while (row_group) {
             row_group->scan_committed(*this, result, type);
+            if (has_error()) {
+                row_group = nullptr;
+                return false;
+            }
             if (result.size() > 0) {
                 return true;
             } else {
@@ -279,6 +294,10 @@ namespace components::table {
     bool collection_scan_state::scan_committed(vector::data_chunk_t& result, table_scan_type type) {
         while (row_group) {
             row_group->scan_committed(*this, result, type);
+            if (has_error()) {
+                row_group = nullptr;
+                return false;
+            }
             if (result.size() > 0) {
                 return true;
             } else {

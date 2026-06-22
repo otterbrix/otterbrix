@@ -96,7 +96,7 @@ namespace components::operators {
                 for (const auto& child_ids : per_row_child_ids) {
                     if (!child_ids.empty()) {
                         set_error(core::error_t{
-                            core::error_code_t::other_error,
+                            core::error_code_t::invalid_constraint,
                             std::pmr::string{"FK constraint violated: child rows reference deleted parent row",
                                              resource_}});
                         co_return;
@@ -206,7 +206,14 @@ namespace components::operators {
                                                    fk_.child_table_oid,
                                                    std::move(upd_ids),
                                                    std::move(fetched));
-                co_await std::move(ufut);
+                // The update reply carries any write_conflict / out_of_memory; surface it as a
+                // clean error cursor instead of silently dropping it.
+                auto update_result = co_await std::move(ufut);
+                if (update_result.has_error()) {
+                    set_error(update_result.error());
+                    mark_failed();
+                    co_return;
+                }
                 break;
             }
             default:

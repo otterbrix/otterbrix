@@ -48,6 +48,33 @@ namespace components::table {
         return commit_id;
     }
 
+    void transaction_manager_t::restore_commit_clock(uint64_t frontier) {
+        // Bootstrap-time, single-threaded (schedulers not started): raise BOTH
+        // halves of the monotonic commit clock together from one durable frontier.
+        //   * current_timestamp_ → max(current, frontier + 1): the next
+        //     begin_transaction's start_time = fetch_add() therefore exceeds every
+        //     persisted added_at_commit_id AND every published commit-id, so
+        //     post-reopen INSERTs never reuse the durable band; resolve_table keeps
+        //     persisted columns visible and reader snapshots judge fresh rows
+        //     correctly.
+        //   * published_horizon_ → max(current, frontier): post-recovery snapshots
+        //     see the persisted commits as published.
+        // Raising them in lockstep preserves the invariant
+        // current_timestamp_ >= published_horizon_ + 1. Both reopen sites — WAL
+        // COMMIT-marker frontier and checkpointed pg_attribute frontier — funnel
+        // through here so they cannot disagree.
+        // frontier + 1 cannot overflow in practice (commit ids start at 1 and a
+        // realistic frontier is far below UINT64_MAX).
+        auto cur_ts = current_timestamp_.load(std::memory_order_relaxed);
+        if (frontier + 1 > cur_ts) {
+            current_timestamp_.store(frontier + 1, std::memory_order_relaxed);
+        }
+        auto cur_horizon = published_horizon_.load(std::memory_order_relaxed);
+        if (frontier > cur_horizon) {
+            published_horizon_.store(frontier, std::memory_order_release);
+        }
+    }
+
     void transaction_manager_t::publish(uint64_t commit_id) {
         std::lock_guard guard(lock_);
         in_flight_commits_.erase(commit_id);

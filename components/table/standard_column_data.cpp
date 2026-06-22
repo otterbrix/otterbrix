@@ -72,23 +72,46 @@ namespace components::table {
         return scan_count;
     }
 
-    void standard_column_data_t::initialize_append(column_append_state& state) {
-        column_data_t::initialize_append(state);
+    core::result_wrapper_t<bool> standard_column_data_t::initialize_append(column_append_state& state) {
+        auto base = column_data_t::initialize_append(state);
+        if (base.has_error()) {
+            return base; // out_of_memory (rules 2/9)
+        }
         column_append_state child_append;
-        validity.initialize_append(child_append);
+        auto child = validity.initialize_append(child_append);
+        if (child.has_error()) {
+            return child;
+        }
         state.child_appends.push_back(std::move(child_append));
+        return true;
     }
 
-    void standard_column_data_t::append_data(column_append_state& state,
-                                             vector::unified_vector_format& uvf,
-                                             uint64_t count) {
-        column_data_t::append_data(state, uvf, count);
-        validity.append_data(state.child_appends[0], uvf, count);
+    core::result_wrapper_t<bool> standard_column_data_t::append_data(column_append_state& state,
+                                                                    vector::unified_vector_format& uvf,
+                                                                    uint64_t count) {
+        auto base = column_data_t::append_data(state, uvf, count);
+        if (base.has_error()) {
+            return base; // out_of_memory (rules 2/9)
+        }
+        return validity.append_data(state.child_appends[0], uvf, count);
     }
 
     void standard_column_data_t::revert_append(int64_t start_row) {
         column_data_t::revert_append(start_row);
         validity.revert_append(start_row);
+    }
+
+    core::result_wrapper_t<bool> standard_column_data_t::transition_to_disk() {
+        auto base = column_data_t::transition_to_disk();
+        if (base.has_error()) {
+            return base; // io_error / out_of_memory (rules 2/9)
+        }
+        return validity.transition_to_disk();
+    }
+
+    void standard_column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
+        column_data_t::collect_disk_block_ids(out);
+        validity.collect_disk_block_ids(out);
     }
 
     uint64_t standard_column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {
@@ -101,23 +124,26 @@ namespace components::table {
         return scan_count;
     }
 
-    void standard_column_data_t::update(uint64_t column_index,
-                                        vector::vector_t& update_vector,
-                                        int64_t* row_ids,
-                                        uint64_t update_count) {
-        column_data_t::update(column_index, update_vector, row_ids, update_count);
-        validity.update(column_index, update_vector, row_ids, update_count);
+    core::result_wrapper_t<bool> standard_column_data_t::update(uint64_t column_index,
+                                                              vector::vector_t& update_vector,
+                                                              int64_t* row_ids,
+                                                              uint64_t update_count) {
+        auto base = column_data_t::update(column_index, update_vector, row_ids, update_count);
+        if (base.has_error()) {
+            return base;
+        }
+        return validity.update(column_index, update_vector, row_ids, update_count);
     }
 
-    void standard_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                               vector::vector_t& update_vector,
-                                               int64_t* row_ids,
-                                               uint64_t update_count,
-                                               uint64_t depth) {
+    core::result_wrapper_t<bool> standard_column_data_t::update_column(const std::vector<uint64_t>& column_path,
+                                                                     vector::vector_t& update_vector,
+                                                                     int64_t* row_ids,
+                                                                     uint64_t update_count,
+                                                                     uint64_t depth) {
         if (depth >= column_path.size()) {
-            column_data_t::update(column_path[0], update_vector, row_ids, update_count);
+            return column_data_t::update(column_path[0], update_vector, row_ids, update_count);
         } else {
-            validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
+            return validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
         }
     }
 

@@ -749,8 +749,10 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
             {{"a", complex_logical_type{logical_type::BIGINT}}},
             [&](data_chunk_t& c) { c.set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{1})); },
             /*rows=*/1);
-        auto [start, count] =
+        auto append_r =
             fx.invoke(&manager_disk_t::storage_append, append_ctx(table_oid), table_oid, std::move(chunk));
+        REQUIRE_FALSE(append_r.has_error());
+        auto [start, count] = append_r.value();
         REQUIRE(count == 1);
         (void) start;
     }

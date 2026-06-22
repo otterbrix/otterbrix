@@ -67,8 +67,11 @@ namespace components::table::storage {
                                     uint64_t block_alloc_size = DEFAULT_BLOCK_ALLOC_SIZE);
         ~single_file_block_manager_t() override;
 
-        void create_new_database();
-        void load_existing_database();
+        // Return io_error / data_corruption on file create/open/header failure. Called only on the
+        // single-threaded bootstrap/load path, whose boundary (load_storage_disk_sync) maps the error onto
+        // .prev corrupt-recovery.
+        [[nodiscard]] core::result_wrapper_t<bool> create_new_database();
+        [[nodiscard]] core::result_wrapper_t<bool> load_existing_database();
 
         std::unique_ptr<block_t> convert_block(uint64_t block_id, file_buffer_t& source_buffer) override;
         std::unique_ptr<block_t> create_block(uint64_t block_id, file_buffer_t* source_buffer) override;
@@ -82,7 +85,7 @@ namespace components::table::storage {
         void increase_block_ref_count(uint64_t block_id) override;
         uint64_t meta_block() override;
         void set_meta_block(uint64_t block) { meta_block_ = block; }
-        void read(block_t& block) override;
+        [[nodiscard]] core::result_wrapper_t<bool> read(block_t& block) override;
         void read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t block_count) override;
         void write(file_buffer_t& block, uint64_t block_id) override;
 
@@ -95,7 +98,7 @@ namespace components::table::storage {
         void write_header(const database_header_t& header);
 
         meta_block_pointer_t serialize_free_list();
-        void deserialize_free_list(meta_block_pointer_t pointer);
+        [[nodiscard]] core::result_wrapper_t<bool> deserialize_free_list(meta_block_pointer_t pointer);
 
         core::filesystem::file_handle_t& handle() const { return *handle_; }
 

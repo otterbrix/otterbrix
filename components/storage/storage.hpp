@@ -12,6 +12,7 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector.hpp>
+#include <core/result_wrapper.hpp>
 
 namespace components::storage {
 
@@ -57,12 +58,15 @@ namespace components::storage {
         // Batched scan: emit one ≤DEFAULT_VECTOR_CAPACITY chunk per scan vector directly,
         // avoiding the accumulate-then-split round-trip. `projected_cols == nullptr` means
         // scan all columns; otherwise sparse projection.
-        // Default implementation: do a regular scan into one chunk; subclasses can override.
-        virtual void scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
-                                  const table::table_filter_t* filter,
-                                  int64_t limit,
-                                  const std::vector<size_t>* projected_cols,
-                                  table::transaction_data txn) {
+        // Returns a buffer-pool OOM / data_corruption error_t surfaced by the table-layer
+        // scan; true on success. Default implementation does a regular scan into one chunk
+        // (the void scan path leaves no scan_error), so it always reports success; subclasses
+        // that drive a batched scan override to read state.table_state.scan_error.
+        [[nodiscard]] virtual core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
+                                                          const table::table_filter_t* filter,
+                                                          int64_t limit,
+                                                          const std::vector<size_t>* projected_cols,
+                                                          table::transaction_data txn) {
             auto t = types();
             vector::data_chunk_t one(resource(), t);
             if (projected_cols) {
@@ -73,6 +77,7 @@ namespace components::storage {
             if (one.size() > 0) {
                 batches.push_back(std::move(one));
             }
+            return true;
         }
 
         virtual void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) = 0;
@@ -86,16 +91,22 @@ namespace components::storage {
         virtual uint64_t append(vector::data_chunk_t& data) = 0;
 
         virtual void update(vector::vector_t& row_ids, vector::data_chunk_t& data) = 0;
-        virtual std::pair<int64_t, uint64_t>
+        // Returns write_conflict / out_of_memory from the table-layer update; on success
+        // {0, affected-row count}. Default fallback drives the void overload (replay path:
+        // no error surfacing).
+        [[nodiscard]] virtual core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data /*txn*/) {
             update(row_ids, data);
-            return {0, 0};
+            return std::pair<int64_t, uint64_t>{0, 0};
         }
 
         virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) = 0;
 
-        // Txn-aware overloads with default fallbacks
-        virtual uint64_t append(vector::data_chunk_t& data, table::transaction_data /*txn*/) { return append(data); }
+        // Txn-aware overloads with default fallbacks. Returns write_conflict / out_of_memory
+        // surfaced by the table-layer append chain; the start_row on success.
+        [[nodiscard]] virtual core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data, table::transaction_data /*txn*/) {
+            return append(data);
+        }
         virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t /*txn_id*/) {
             return delete_rows(row_ids, count);
         }

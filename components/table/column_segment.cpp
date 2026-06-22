@@ -129,10 +129,10 @@ namespace components::table {
             return fetch_string(dict, base_ptr, location, string_length);
         }
 
-        void write_string_memory(column_segment_t& segment,
-                                 std::string_view string,
-                                 uint64_t& result_block,
-                                 int32_t& result_offset) {
+        core::result_wrapper_t<bool> write_string_memory(column_segment_t& segment,
+                                                         std::string_view string,
+                                                         uint64_t& result_block,
+                                                         int32_t& result_offset) {
             auto total_length = static_cast<uint32_t>(string.size() + sizeof(uint32_t));
             std::shared_ptr<storage::block_handle_t> block;
             storage::buffer_handle_t handle;
@@ -144,14 +144,22 @@ namespace components::table {
                 auto new_block = std::make_unique<string_block_t>();
                 new_block->offset = 0;
                 new_block->size = alloc_size;
-                handle = buffer_manager.allocate(storage::memory_tag::OVERFLOW_STRINGS, alloc_size, false);
+                auto allocated = buffer_manager.allocate(storage::memory_tag::OVERFLOW_STRINGS, alloc_size, false);
+                if (allocated.has_error()) {
+                    return allocated.convert_error<bool>();
+                }
+                handle = std::move(allocated.value());
                 block = handle.block_handle()->shared_from_this();
                 state.overflow_blocks.emplace(block->block_id(), new_block.get());
                 new_block->block = std::move(block);
                 new_block->next = std::move(state.head);
                 state.head = std::move(new_block);
             } else {
-                handle = buffer_manager.pin(state.head->block);
+                auto pinned = buffer_manager.pin(state.head->block);
+                if (pinned.has_error()) {
+                    return pinned.convert_error<bool>();
+                }
+                handle = std::move(pinned.value());
             }
 
             result_block = state.head->block->block_id();
@@ -162,13 +170,14 @@ namespace components::table {
             ptr += sizeof(uint32_t);
             memcpy(ptr, string.data(), string.size());
             state.head->offset += total_length;
+            return true;
         }
 
-        void write_string(column_segment_t& segment,
-                          std::string_view string,
-                          uint64_t& result_block,
-                          int32_t& result_offset) {
-            write_string_memory(segment, string, result_block, result_offset);
+        core::result_wrapper_t<bool> write_string(column_segment_t& segment,
+                                                  std::string_view string,
+                                                  uint64_t& result_block,
+                                                  int32_t& result_offset) {
+            return write_string_memory(segment, string, result_block, result_offset);
         }
 
         uint64_t remaining_space(column_segment_t& segment, storage::buffer_handle_t& handle) {
@@ -181,12 +190,17 @@ namespace components::table {
 
         template<typename T>
         void fixed_size_fetch_row(column_segment_t& segment,
-                                  column_fetch_state&,
+                                  column_fetch_state& state,
                                   int64_t row_id,
                                   vector::vector_t& result,
                                   uint64_t result_idx) {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto handle = buffer_manager.pin(segment.block);
+            auto pinned = buffer_manager.pin(segment.block);
+            if (pinned.has_error()) {
+                state.fetch_error = pinned.error();
+                return;
+            }
+            auto& handle = pinned.value();
 
             auto data_ptr = handle.ptr() + segment.block_offset() + static_cast<uint64_t>(row_id) * sizeof(T);
 
@@ -194,13 +208,18 @@ namespace components::table {
         }
 
         void validity_fetch_row(column_segment_t& segment,
-                                column_fetch_state&,
+                                column_fetch_state& state,
                                 int64_t row_id,
                                 vector::vector_t& result,
                                 uint64_t result_idx) {
             assert(row_id >= 0 && row_id < static_cast<int64_t>(segment.count.load()));
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto handle = buffer_manager.pin(segment.block);
+            auto pinned = buffer_manager.pin(segment.block);
+            if (pinned.has_error()) {
+                state.fetch_error = pinned.error();
+                return;
+            }
+            auto& handle = pinned.value();
             auto dataptr = handle.ptr() + segment.block_offset();
             vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
             auto& result_mask = result.validity();
@@ -214,7 +233,11 @@ namespace components::table {
                               int64_t row_id,
                               vector::vector_t& result,
                               uint64_t result_idx) {
-            auto& handle = state.get_or_insert_handle(segment);
+            auto* handle_ptr = state.get_or_insert_handle(segment);
+            if (!handle_ptr) {
+                return; // state.fetch_error already set by get_or_insert_handle
+            }
+            auto& handle = *handle_ptr;
 
             auto baseptr = handle.ptr() + segment.block_offset();
             auto dict = dictionary(segment, handle);
@@ -231,29 +254,43 @@ namespace components::table {
         }
 
         template<typename T>
-        bool fixed_size_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
+        core::result_wrapper_t<bool>
+        fixed_size_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto handle = buffer_manager.pin(segment.block);
+            auto pinned = buffer_manager.pin(segment.block);
+            if (pinned.has_error()) {
+                return pinned.convert_error<bool>();
+            }
+            auto& handle = pinned.value();
 
             auto data_ptr = handle.ptr() + segment.block_offset() + static_cast<uint64_t>(row_id) * sizeof(T);
             return table_filter_dispatch(filter, *reinterpret_cast<T*>(data_ptr));
         }
 
-        bool validity_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
+        core::result_wrapper_t<bool>
+        validity_check_row(column_segment_t& segment, int64_t row_id, const table_filter_t* filter) {
             assert(row_id >= 0 && row_id < static_cast<int64_t>(segment.count.load()));
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto handle = buffer_manager.pin(segment.block);
+            auto pinned = buffer_manager.pin(segment.block);
+            if (pinned.has_error()) {
+                return pinned.convert_error<bool>();
+            }
+            auto& handle = pinned.value();
             auto dataptr = handle.ptr() + segment.block_offset();
             vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(dataptr));
 
             return table_filter_dispatch(filter, mask.row_is_valid(static_cast<uint64_t>(row_id)));
         }
 
-        bool string_check_row(column_segment_t& segment,
-                              column_fetch_state& state,
-                              int64_t row_id,
-                              const table_filter_t* filter) {
-            auto& handle = state.get_or_insert_handle(segment);
+        core::result_wrapper_t<bool> string_check_row(column_segment_t& segment,
+                                                      column_fetch_state& state,
+                                                      int64_t row_id,
+                                                      const table_filter_t* filter) {
+            auto* handle_ptr = state.get_or_insert_handle(segment);
+            if (!handle_ptr) {
+                return state.fetch_error; // implicit error_t -> result_wrapper_t<bool>
+            }
+            auto& handle = *handle_ptr;
 
             auto baseptr = handle.ptr() + segment.block_offset();
             auto dict = dictionary(segment, handle);
@@ -372,10 +409,14 @@ namespace components::table {
             memcpy(target, &offset, sizeof(int64_t));
         }
 
-        uint64_t
+        core::result_wrapper_t<uint64_t>
         string_append(column_segment_t& segment, vector::unified_vector_format& data, uint64_t offset, uint64_t count) {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto handle = buffer_manager.pin(segment.block);
+            auto pinned = buffer_manager.pin(segment.block);
+            if (pinned.has_error()) {
+                return pinned.convert_error<uint64_t>();
+            }
+            auto& handle = pinned.value();
             assert(segment.block_offset() == 0);
             auto handle_ptr = handle.ptr();
             auto source_data = data.get_data<std::string_view>();
@@ -419,7 +460,10 @@ namespace components::table {
                 if (use_overflow_block) {
                     uint64_t block;
                     int32_t current_offset;
-                    write_string(segment, source_data[source_idx], block, current_offset);
+                    auto written = write_string(segment, source_data[source_idx], block, current_offset);
+                    if (written.has_error()) {
+                        return written.convert_error<uint64_t>();
+                    }
                     *dictionary_size += static_cast<uint32_t>(BIG_STRING_MARKER_BASE_SIZE);
                     remaining -= BIG_STRING_MARKER_BASE_SIZE;
                     auto dict_pos = end - *dictionary_size;
@@ -500,11 +544,16 @@ namespace components::table {
         }
 
         void constant_fetch_row(column_segment_t& segment,
-                                column_fetch_state&,
+                                column_fetch_state& state,
                                 vector::vector_t& result,
                                 uint64_t result_idx) {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto handle = buffer_manager.pin(segment.block);
+            auto pinned = buffer_manager.pin(segment.block);
+            if (pinned.has_error()) {
+                state.fetch_error = pinned.error();
+                return;
+            }
+            auto& handle = pinned.value();
             auto* src = handle.ptr() + segment.block_offset();
             auto ts = segment.type_size;
             std::memcpy(result.data() + result_idx * ts, src, ts);
@@ -607,12 +656,17 @@ namespace components::table {
         }
 
         void rle_fetch_row(column_segment_t& segment,
-                           column_fetch_state&,
+                           column_fetch_state& state,
                            int64_t row_id,
                            vector::vector_t& result,
                            uint64_t result_idx) {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto handle = buffer_manager.pin(segment.block);
+            auto pinned = buffer_manager.pin(segment.block);
+            if (pinned.has_error()) {
+                state.fetch_error = pinned.error();
+                return;
+            }
+            auto& handle = pinned.value();
             auto* base = handle.ptr() + segment.block_offset();
             auto ts = segment.type_size;
 
@@ -701,12 +755,17 @@ namespace components::table {
         }
 
         void dict_fetch_row(column_segment_t& segment,
-                            column_fetch_state&,
+                            column_fetch_state& state,
                             int64_t row_id,
                             vector::vector_t& result,
                             uint64_t result_idx) {
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto handle = buffer_manager.pin(segment.block);
+            auto pinned = buffer_manager.pin(segment.block);
+            if (pinned.has_error()) {
+                state.fetch_error = pinned.error();
+                return;
+            }
+            auto& handle = pinned.value();
             auto* base = handle.ptr() + segment.block_offset();
             auto ts = segment.type_size;
 
@@ -876,17 +935,25 @@ namespace components::table {
         if (type.type() == types::logical_type::VALIDITY) {
             auto& buffer_manager = this->block->block_manager.buffer_manager;
             if (block_id_ == storage::INVALID_BLOCK) {
-                auto handle = buffer_manager.pin(this->block);
-                memset(handle.ptr(), 0xFF, this->segment_size());
+                // The block was just registered (memory reserved), so pinning it cannot OOM. A ctor
+                // cannot return an error, so we assert and skip on the impossible failure.
+                auto pinned = buffer_manager.pin(this->block);
+                assert(!pinned.has_error() && "pin of freshly-registered managed block must not OOM");
+                if (!pinned.has_error()) {
+                    memset(pinned.value().ptr(), 0xFF, this->segment_size());
+                }
             }
         } else if (type.type() == types::logical_type::STRING_LITERAL) {
             auto& buffer_manager = this->block->block_manager.buffer_manager;
             if (block_id_ == storage::INVALID_BLOCK) {
-                auto handle = buffer_manager.pin(this->block);
-                impl::string_dictionary_container_t dictionary;
-                dictionary.size = 0;
-                dictionary.end = static_cast<uint32_t>(this->segment_size());
-                set_dictionary(*this, handle, dictionary);
+                auto pinned = buffer_manager.pin(this->block);
+                assert(!pinned.has_error() && "pin of freshly-registered managed block must not OOM");
+                if (!pinned.has_error()) {
+                    impl::string_dictionary_container_t dictionary;
+                    dictionary.size = 0;
+                    dictionary.end = static_cast<uint32_t>(this->segment_size());
+                    set_dictionary(*this, pinned.value(), dictionary);
+                }
             }
             auto state = std::make_unique<uncompressed_string_segment_state>();
             if (segment_state) {
@@ -924,13 +991,17 @@ namespace components::table {
 
     uint64_t column_segment_t::segment_size() const { return segment_size_; }
 
-    std::unique_ptr<column_segment_t> column_segment_t::create_segment(storage::buffer_manager_t& manager,
-                                                                       const types::complex_logical_type& type,
-                                                                       int64_t start,
-                                                                       uint64_t segment_size,
-                                                                       uint64_t block_size) {
+    core::result_wrapper_t<std::unique_ptr<column_segment_t>>
+    column_segment_t::create_segment(storage::buffer_manager_t& manager,
+                                     const types::complex_logical_type& type,
+                                     int64_t start,
+                                     uint64_t segment_size,
+                                     uint64_t block_size) {
         auto block = manager.register_transient_memory(segment_size, block_size);
-        return std::make_unique<column_segment_t>(std::move(block),
+        if (block.has_error()) {
+            return block.convert_error<std::unique_ptr<column_segment_t>>();
+        }
+        return std::make_unique<column_segment_t>(std::move(block.value()),
                                                   type,
                                                   start,
                                                   0U,
@@ -940,22 +1011,15 @@ namespace components::table {
     }
 
     void column_segment_t::initialize_scan(column_scan_state& state) {
-        switch (type.to_physical_type()) {
-            case types::physical_type::BIT: {
-                auto& buffer_manager = block->block_manager.buffer_manager;
-                state.scan_state = std::make_unique<storage::buffer_handle_t>(buffer_manager.pin(block));
-                break;
-            }
-            case types::physical_type::STRING: {
-                auto& buffer_manager = block->block_manager.buffer_manager;
-                state.scan_state = std::make_unique<storage::buffer_handle_t>(buffer_manager.pin(block));
-                break;
-            }
-            default: {
-                auto& buffer_manager = block->block_manager.buffer_manager;
-                state.scan_state = std::make_unique<storage::buffer_handle_t>(buffer_manager.pin(block));
-            }
+        // All physical types pin the same backing block; a pin OOM is recorded in state.scan_error
+        // and column_data_t::scan_vector bails before touching the (null) scan_state.
+        auto& buffer_manager = block->block_manager.buffer_manager;
+        auto pinned = buffer_manager.pin(block);
+        if (pinned.has_error()) {
+            state.scan_error = pinned.error();
+            return;
         }
+        state.scan_state = std::make_unique<storage::buffer_handle_t>(std::move(pinned.value()));
     }
 
     void column_segment_t::scan(column_scan_state& state,
@@ -972,7 +1036,7 @@ namespace components::table {
             assert(result.get_vector_type() == vector::vector_type::FLAT);
         }
     }
-    bool column_segment_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
+    core::result_wrapper_t<bool> column_segment_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
         if (compression_ == compression::compression_type::CONSTANT) {
             // For CONSTANT segments, all rows have the same value at offset 0.
             // Rewrite row_id to 0 so the check reads from the single stored value.
@@ -1375,32 +1439,44 @@ namespace components::table {
 
     void column_segment_t::skip(column_scan_state& state) { state.internal_index = state.row_index; }
 
-    void column_segment_t::resize(uint64_t new_size) {
+    core::result_wrapper_t<bool> column_segment_t::resize(uint64_t new_size) {
         assert(new_size > segment_size_);
         assert(offset_ == 0);
         assert(block && new_size <= block_manager().block_size());
 
         auto& buffer_manager = block->block_manager.buffer_manager;
         auto old_handle = buffer_manager.pin(block);
+        if (old_handle.has_error()) {
+            return old_handle.convert_error<bool>();
+        }
+        // Genuine fresh allocation — this is the OOM-able site.
         auto new_handle = buffer_manager.allocate(storage::memory_tag::IN_MEMORY_TABLE, new_size);
-        auto new_block = new_handle.block_handle()->shared_from_this();
-        memcpy(new_handle.ptr(), old_handle.ptr(), segment_size_);
+        if (new_handle.has_error()) {
+            return new_handle.convert_error<bool>();
+        }
+        auto new_block = new_handle.value().block_handle()->shared_from_this();
+        memcpy(new_handle.value().ptr(), old_handle.value().ptr(), segment_size_);
 
         this->block_id_ = new_block->block_id();
         this->block = std::move(new_block);
         this->segment_size_ = new_size;
+        return true;
     }
 
-    void column_segment_t::initialize_append(column_append_state& state) {
+    core::result_wrapper_t<bool> column_segment_t::initialize_append(column_append_state& state) {
         auto& buffer_manager = block->block_manager.buffer_manager;
         auto handle = buffer_manager.pin(block);
-        state.handle = std::make_unique<storage::buffer_handle_t>(std::move(handle));
+        if (handle.has_error()) {
+            return handle.convert_error<bool>();
+        }
+        state.handle = std::make_unique<storage::buffer_handle_t>(std::move(handle.value()));
+        return true;
     }
 
-    uint64_t column_segment_t::append(column_append_state& state,
-                                      vector::unified_vector_format& data,
-                                      uint64_t offset,
-                                      uint64_t count) {
+    core::result_wrapper_t<uint64_t> column_segment_t::append(column_append_state& state,
+                                                             vector::unified_vector_format& data,
+                                                             uint64_t offset,
+                                                             uint64_t count) {
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:
@@ -1448,7 +1524,7 @@ namespace components::table {
         }
     }
 
-    uint64_t column_segment_t::finalize_append(column_append_state& state) {
+    core::result_wrapper_t<uint64_t> column_segment_t::finalize_append(column_append_state& state) {
         state.handle.reset();
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
@@ -1476,7 +1552,11 @@ namespace components::table {
                        vector::validity_mask_t::STANDARD_MASK_SIZE;
             case types::physical_type::STRING: {
                 auto& buffer_manager = block->block_manager.buffer_manager;
-                auto handle = buffer_manager.pin(block);
+                auto pinned = buffer_manager.pin(block);
+                if (pinned.has_error()) {
+                    return pinned.convert_error<uint64_t>();
+                }
+                auto& handle = pinned.value();
                 auto dict = impl::dictionary(*this, handle);
                 assert(dict.end == segment_size_);
                 auto offset_size = impl::DICTIONARY_HEADER_SIZE + count * sizeof(int32_t);
@@ -1506,7 +1586,13 @@ namespace components::table {
         uint64_t start_bit = start_row - static_cast<uint64_t>(start);
 
         auto& buffer_manager = block->block_manager.buffer_manager;
-        auto handle = buffer_manager.pin(block);
+        // Resident managed block (already pinned on the append path); pin cannot OOM here.
+        auto pinned = buffer_manager.pin(block);
+        assert(!pinned.has_error() && "revert_append: pin of resident managed block must not OOM");
+        if (pinned.has_error()) {
+            return;
+        }
+        auto& handle = pinned.value();
         uint64_t revert_start;
         if (start_bit % 8 != 0) {
             uint64_t byte_pos = start_bit / 8;

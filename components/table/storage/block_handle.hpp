@@ -5,6 +5,9 @@
 #include <memory>
 #include <mutex>
 
+#include <core/result_wrapper.hpp>
+
+#include "buffer_handle.hpp"
 #include "file_buffer.hpp"
 
 namespace components::table::storage {
@@ -100,6 +103,12 @@ namespace components::table::storage {
 
         bool must_add_to_eviction_queue() const { return destroy_condition_ != destroy_buffer_condition::UNPIN; }
 
+        // Reloadable iff a disk copy exists (block_id < MAXIMUM_BLOCK): load() can re-read it via the block
+        // manager. Managed in-memory blocks (block_id >= MAXIMUM_BLOCK) have no backing store -- load() returns
+        // {} for them, so they must never be unloaded/evicted (a later re-pin would deref a null buffer).
+        // Same condition load() uses.
+        bool is_reloadable() const { return block_id_ < MAXIMUM_BLOCK; }
+
         uint64_t memory_usage() const { return memory_usage_; }
 
         bool is_unloaded() const { return state_ == block_state::UNLOADED; }
@@ -131,7 +140,10 @@ namespace components::table::storage {
         void resize_memory(std::unique_lock<std::mutex>&, uint64_t alloc_size);
 
         void resize_buffer(std::unique_lock<std::mutex>&, uint64_t block_size, int64_t memory_delta);
-        buffer_handle_t load(std::unique_ptr<file_buffer_t> buffer = nullptr);
+        // Reload-from-disk path (block_id < MAXIMUM_BLOCK) calls block_manager.read(), which can fail with
+        // data_corruption/io_error -- forwarded here instead of throwing. Already-LOADED and
+        // managed-in-memory ({}) fast paths return a valid handle with no error.
+        [[nodiscard]] core::result_wrapper_t<buffer_handle_t> load(std::unique_ptr<file_buffer_t> buffer = nullptr);
         buffer_handle_t load_from_buffer(std::unique_lock<std::mutex>& l,
                                          std::byte* data,
                                          std::unique_ptr<file_buffer_t> reusable_buffer,

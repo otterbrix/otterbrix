@@ -1,6 +1,7 @@
 #pragma once
 #include <components/types/types.hpp>
 #include <core/operations_helper.hpp>
+#include <core/result_wrapper.hpp>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -336,6 +337,12 @@ namespace components::table {
         uint64_t last_offset = 0;
         uint64_t result_offset = 0;
         std::vector<bool> scan_child_column;
+        // OOM (buffer-pool exhaustion) raised by a pin() while scanning this column.
+        // Leaf segment helpers set it; column_data_t::scan_vector bails on it and
+        // row_group_t aggregates it into collection_scan_state::scan_error. Success
+        // path leaves it as no_error().
+        core::error_t scan_error{core::error_t::no_error()};
+        bool has_error() const { return scan_error.contains_error(); }
 
         void initialize(const types::complex_logical_type& type, const std::vector<storage_index_t>& children);
         void initialize(const types::complex_logical_type& type);
@@ -345,8 +352,12 @@ namespace components::table {
     struct column_fetch_state {
         std::unordered_map<uint64_t, storage::buffer_handle_t> handles;
         std::vector<std::unique_ptr<column_fetch_state>> child_states;
+        // OOM raised by the pin() inside get_or_insert_handle(); callers that route
+        // through a column_scan_state copy it into scan_error.
+        core::error_t fetch_error{core::error_t::no_error()};
 
-        storage::buffer_handle_t& get_or_insert_handle(column_segment_t& segment);
+        // Returns nullptr and sets fetch_error on buffer-pool exhaustion.
+        storage::buffer_handle_t* get_or_insert_handle(column_segment_t& segment);
     };
 
     struct string_block_t {

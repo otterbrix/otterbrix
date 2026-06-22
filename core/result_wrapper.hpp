@@ -56,6 +56,13 @@ namespace core {
         incorrect_function_argument,
         incorrect_function_return_type,
         invalid_constraint,
+
+        // Buffer/storage-layer runtime errors. Surfaced via result_wrapper_t/error_t instead of throwing on
+        // the agent_disk thread.
+        out_of_memory,   // buffer pool exhausted; evict_blocks could not free enough memory
+        data_corruption, // block checksum mismatch on read (disk reload / spill read)
+        io_error,        // file create/open/header/read/write failure
+        write_conflict,  // MVCC write-write conflict
     };
 
     struct error_t {

@@ -42,7 +42,14 @@ namespace services::disk {
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }
-        co_return co_await std::move(fut);
+        // Catalog-read funnel: the agent reply carries the scan_error. A buffer-pool OOM on a
+        // catalog scan degrades to an empty batch set here, matching the no-agent / not-owned
+        // fallbacks above (resolve callers already tolerate empty).
+        auto scan_r = co_await std::move(fut);
+        if (scan_r.has_error()) {
+            co_return empty;
+        }
+        co_return std::move(scan_r.value());
     }
 
     manager_disk_t::unique_future<resolve_namespace_result_t>

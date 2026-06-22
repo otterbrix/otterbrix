@@ -188,9 +188,9 @@ TEST_CASE("components::table::data_table") {
         }
 
         table_append_state state(&resource);
-        data_table->append_lock(state);
-        data_table->initialize_append(state);
-        data_table->append(chunk, state);
+        REQUIRE_FALSE(data_table->append_lock(state).has_error());
+        REQUIRE_FALSE(data_table->initialize_append(state).has_error());
+        REQUIRE_FALSE(data_table->append(chunk, state).has_error());
         data_table->finalize_append(state, transaction_data{0, 0});
     }
     INFO("Fetch") {
@@ -711,7 +711,8 @@ TEST_CASE("components::table::data_table") {
                 v.set_value(i, logical_value_t(&resource, int64_t(i * 2 + 1)));
                 chunk.set_value(0, i, logical_value_t{&resource, int16_t(i * 2 + 1)});
             }
-            extended_table->update_column(v, {8}, chunk);
+            auto update_result = extended_table->update_column(v, {8}, chunk);
+            REQUIRE_FALSE(update_result.has_error());
         }
         // Scan after extension
         {

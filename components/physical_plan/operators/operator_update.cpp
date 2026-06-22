@@ -313,7 +313,16 @@ namespace components::operators {
                                          table_oid_,
                                          std::move(row_ids),
                                          std::move(data_copy));
-        auto [upd_row_start, upd_row_count] = co_await std::move(uf);
+        // The update reply carries any write_conflict / out_of_memory the table-layer MVCC
+        // update surfaced; surface it as a clean error cursor (the executor turns has_error()
+        // into an error cursor) so the txn aborts gracefully.
+        auto update_result = co_await std::move(uf);
+        if (update_result.has_error()) {
+            set_error(update_result.error());
+            mark_failed();
+            co_return;
+        }
+        auto [upd_row_start, upd_row_count] = update_result.value();
 
         // 3. WAL physical_update.
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {

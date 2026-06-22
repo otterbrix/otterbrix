@@ -1703,8 +1703,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 // resolve_table visibility filter never rejects — so the live guard here is the
 // WAL-frontier half of the same restore.)
 TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_invisible") {
-    auto config =
-        test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_keeps_committed_deletes");
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_keeps_committed_deletes");
     test_clear_directory(config);
 
     INFO("phase 1: WAL-backed table, INSERT 100, DELETE 50, CHECKPOINT") {

@@ -529,8 +529,7 @@ namespace services::catalog_resolve {
 
     // --- SELECT-time view expansion helpers ---
 
-    components::logical_plan::node_catalog_resolve_t*
-    find_first_view_resolve(components::logical_plan::node_t* root) {
+    components::logical_plan::node_catalog_resolve_t* find_first_view_resolve(components::logical_plan::node_t* root) {
         using namespace components::logical_plan;
         if (!root || root->type() != node_type::sequence_t) {
             return nullptr;

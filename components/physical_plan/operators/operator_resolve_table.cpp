@@ -62,12 +62,11 @@ namespace components::operators {
         build_output_schema(output_schema_);
     }
 
-    operator_resolve_table_t::operator_resolve_table_t(
-        std::pmr::memory_resource* resource,
-        log_t log,
-        catalog::oid_t namespace_oid,
-        std::string relname,
-        components::logical_plan::node_catalog_resolve_t* target_node)
+    operator_resolve_table_t::operator_resolve_table_t(std::pmr::memory_resource* resource,
+                                                       log_t log,
+                                                       catalog::oid_t namespace_oid,
+                                                       std::string relname,
+                                                       components::logical_plan::node_catalog_resolve_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
         , table_oid_(catalog::INVALID_OID)
         , input_namespace_oid_(namespace_oid)

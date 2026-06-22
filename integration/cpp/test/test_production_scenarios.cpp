@@ -1098,23 +1098,23 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
                 const int64_t extprice = 1000 + (id % 9000); // 1000..9999
                 if (i > 0)
                     ss << ",";
-                ss << "(" << id                       // lo_orderkey
-                   << ", " << (1 + (id % 7))           // lo_linenumber
-                   << ", " << (id % 30000)             // lo_custkey
-                   << ", " << (id % 200000)            // lo_partkey
-                   << ", " << (id % 2000)              // lo_suppkey
-                   << ", " << year                     // lo_orderdate (== year here)
-                   << ", '1-URGENT'"                   // lo_orderpriority
-                   << ", '0'"                          // lo_shippriority
-                   << ", " << quantity                 // lo_quantity
-                   << ", " << extprice                 // lo_extendedprice
-                   << ", " << (extprice * quantity)    // lo_ordtotalprice
-                   << ", " << discount                 // lo_discount
-                   << ", " << (extprice * discount)    // lo_revenue
-                   << ", " << (extprice / 2)           // lo_supplycost
-                   << ", " << (id % 8)                 // lo_tax
-                   << ", " << year                     // lo_commitdate
-                   << ", 'MAIL')";                     // lo_shipmode
+                ss << "(" << id                     // lo_orderkey
+                   << ", " << (1 + (id % 7))        // lo_linenumber
+                   << ", " << (id % 30000)          // lo_custkey
+                   << ", " << (id % 200000)         // lo_partkey
+                   << ", " << (id % 2000)           // lo_suppkey
+                   << ", " << year                  // lo_orderdate (== year here)
+                   << ", '1-URGENT'"                // lo_orderpriority
+                   << ", '0'"                       // lo_shippriority
+                   << ", " << quantity              // lo_quantity
+                   << ", " << extprice              // lo_extendedprice
+                   << ", " << (extprice * quantity) // lo_ordtotalprice
+                   << ", " << discount              // lo_discount
+                   << ", " << (extprice * discount) // lo_revenue
+                   << ", " << (extprice / 2)        // lo_supplycost
+                   << ", " << (id % 8)              // lo_tax
+                   << ", " << year                  // lo_commitdate
+                   << ", 'MAIL')";                  // lo_shipmode
             }
             ss << ";";
             auto session = otterbrix::session_id_t();
@@ -1217,8 +1217,9 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
         // column as not found. Assert the resolve path succeeds.
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(
-                session, "SELECT lo_orderdate FROM TestDatabase.Lineorder WHERE lo_orderdate = 1993;");
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "SELECT lo_orderdate FROM TestDatabase.Lineorder WHERE lo_orderdate = 1993;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
         }

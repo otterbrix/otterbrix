@@ -203,8 +203,7 @@ namespace components::table {
         // defaults to UNCOMPRESSED until checkpoint), so this branch only fires for segments loaded from a
         // prior checkpoint.
         const auto loaded_compression = segment.compression();
-        if (loaded_compression != compression::compression_type::UNCOMPRESSED && data &&
-            segment.segment_size() > 0) {
+        if (loaded_compression != compression::compression_type::UNCOMPRESSED && data && segment.segment_size() > 0) {
             const auto compressed_size = segment.segment_size();
             auto* compressed_data = data + segment.block_offset();
             auto allocation = partial_block_manager_.get_block_allocation(compressed_size);

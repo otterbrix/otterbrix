@@ -36,10 +36,10 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_transaction.hpp>
 #include <components/planner/optimizer.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/dispatcher/enrich_logical_plan.hpp>
@@ -246,13 +246,13 @@ namespace services::collection::executor {
         using node_type = components::logical_plan::node_type;
         using components::logical_plan::node_aggregate_t;
         using components::logical_plan::node_catalog_resolve_t;
-        using components::logical_plan::resolve_kind;
         using components::logical_plan::node_create_database_t;
         using components::logical_plan::node_join_t;
         using components::logical_plan::node_match_t;
         using components::logical_plan::node_ptr;
         using components::logical_plan::node_sequence_t;
         using components::logical_plan::node_t;
+        using components::logical_plan::resolve_kind;
 
         // === Sub-query pre-execution (front-to-back) ===
         // The transformer flattens every nested sub-query into plan.sub_queries,
@@ -1213,9 +1213,9 @@ namespace services::collection::executor {
                     // INSERT-chunk columns in registered_cols; create_plan routes
                     // it to operator_computed_field_register_t. dbname/relname are
                     // not set — the register operator only reads table_oid + columns.
-                    auto register_node =
-                        components::logical_plan::make_node_alter_column(resource(),
-                                                                         components::logical_plan::alter_column_op::add);
+                    auto register_node = components::logical_plan::make_node_alter_column(
+                        resource(),
+                        components::logical_plan::alter_column_op::add);
                     register_node->set_computed(true);
                     register_node->set_table_oid(resolved_tbl_oid);
                     register_node->set_registered_cols(std::move(registered_cols));
@@ -2014,9 +2014,9 @@ namespace services::collection::executor {
         // dispatcher-owned transaction_t (txn_commit_drain_msg), batch-
         // publishes storage, commits the index mirrors per table, writes the
         // WAL marker and crosses the ProcArray barrier (txn_publish_msg).
-        auto commit_node = components::logical_plan::make_node_transaction(
-            resource(),
-            components::logical_plan::transaction_op::commit);
+        auto commit_node =
+            components::logical_plan::make_node_transaction(resource(),
+                                                            components::logical_plan::transaction_op::commit);
         if (ddl_mode) {
             // DDL mode prepends the flush durability barrier + WAL(cid=0)
             // record inside the operator.

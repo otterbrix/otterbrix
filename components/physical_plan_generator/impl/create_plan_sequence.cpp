@@ -21,8 +21,7 @@ namespace services::planner::impl {
         // A catalog-write child is a node_insert_t targeting a pg_catalog table; its
         // single node_data_t child carries the ready-made row. Harvest (table_oid,
         // row) for folding into the specialized operator's catalog_write_t vector.
-        components::vector::data_chunk_t&
-        catalog_write_row(const components::logical_plan::node_ptr& insert_child) {
+        components::vector::data_chunk_t& catalog_write_row(const components::logical_plan::node_ptr& insert_child) {
             using namespace components::logical_plan;
             auto* ins = static_cast<node_insert_t*>(insert_child.get());
             auto* data = static_cast<node_data_t*>(ins->children().front().get());
@@ -126,8 +125,7 @@ namespace services::planner::impl {
                 return false;
             }
             const auto* ac = static_cast<const node_alter_column_t*>(child.get());
-            return !ac->computed() &&
-                   (ac->op() == alter_column_op::add || ac->op() == alter_column_op::rename);
+            return !ac->computed() && (ac->op() == alter_column_op::add || ac->op() == alter_column_op::rename);
         };
         if (!node->children().empty()) {
             if (is_chainable_alter(node->children().front())) {

@@ -758,15 +758,14 @@ namespace services::disk {
                 }
                 auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
                 schema_chunk->set_cardinality(0);
-                [[maybe_unused]] auto _sc =
-                    actor_zeta::send(manager_wal_addr_,
-                                     &wal::manager_wal_replicate_t::write_physical_add_column,
-                                     ctx.session,
-                                     table_oid,
-                                     std::move(schema_chunk),
-                                     static_cast<std::uint64_t>(wal_added_columns.size()),
-                                     txn.transaction_id,
-                                     db_oid);
+                [[maybe_unused]] auto _sc = actor_zeta::send(manager_wal_addr_,
+                                                             &wal::manager_wal_replicate_t::write_physical_add_column,
+                                                             ctx.session,
+                                                             table_oid,
+                                                             std::move(schema_chunk),
+                                                             static_cast<std::uint64_t>(wal_added_columns.size()),
+                                                             txn.transaction_id,
+                                                             db_oid);
             }
 
             // 5a-ii. PHYSICAL_INSERT carrying the FINAL preprocessed chunk + the

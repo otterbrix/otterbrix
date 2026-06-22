@@ -4304,8 +4304,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty c
 
     INFO("CREATE SEQUENCE returns an empty cursor") {
         auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session, "CREATE SEQUENCE DdlEmptyDb.ddl_seq START 10 INCREMENT 2;");
+        auto cur = dispatcher->execute_sql(session, "CREATE SEQUENCE DdlEmptyDb.ddl_seq START 10 INCREMENT 2;");
         REQUIRE(cur->is_success());
         REQUIRE_FALSE(cur->is_error());
         REQUIRE(cur->size() == 0);

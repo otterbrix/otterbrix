@@ -19,8 +19,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> validity_column_data_t::append_data(column_append_state& state,
-                                                                    vector::unified_vector_format& uvf,
-                                                                    uint64_t count) {
+                                                                     vector::unified_vector_format& uvf,
+                                                                     uint64_t count) {
         return column_data_t::append_data(state, uvf, count);
     }
 

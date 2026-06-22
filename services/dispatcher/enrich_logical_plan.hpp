@@ -81,8 +81,7 @@ namespace services::catalog_resolve {
 
     // Find the FIRST table-kind catalog_resolve_t with relkind='v' (and
     // non-empty view_sql) in `root`'s direct children. Returns nullptr if none.
-    components::logical_plan::node_catalog_resolve_t*
-    find_first_view_resolve(components::logical_plan::node_t* root);
+    components::logical_plan::node_catalog_resolve_t* find_first_view_resolve(components::logical_plan::node_t* root);
 
     // Parse view body SQL and transform it into a fresh logical plan. The
     // transformer is instantiated per-call (its mutable state lives on the

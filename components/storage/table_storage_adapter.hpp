@@ -103,10 +103,10 @@ namespace components::storage {
         }
 
         [[nodiscard]] core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
-                                                  const table::table_filter_t* filter,
-                                                  int64_t limit,
-                                                  const std::vector<size_t>* projected_cols,
-                                                  table::transaction_data txn) override {
+                                                                const table::table_filter_t* filter,
+                                                                int64_t limit,
+                                                                const std::vector<size_t>* projected_cols,
+                                                                table::transaction_data txn) override {
             std::vector<table::storage_index_t> column_indices;
             if (projected_cols) {
                 column_indices.reserve(projected_cols->size());
@@ -221,7 +221,8 @@ namespace components::storage {
         // Returns the start_row on success, or write_conflict / out_of_memory surfaced by the
         // table-layer append chain. The agent_disk append handler reads the wrapper and turns
         // any error into a graceful txn abort.
-        [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data, table::transaction_data txn) override {
+        [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data,
+                                                              table::transaction_data txn) override {
             table::table_append_state append_state(resource_);
             auto lock_r = table_.append_lock(append_state);
             if (lock_r.has_error()) {

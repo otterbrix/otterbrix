@@ -21,10 +21,10 @@ namespace services::planner::impl {
         // via delete_pg_catalog_rows, no predicate scan, no children.
         if (node_delete->oid_col_idx() >= 0 && components::catalog::is_catalog_table(node->table_oid())) {
             return boost::intrusive_ptr(new components::operators::operator_delete(context.resource,
-                                                                                  context.log.clone(),
-                                                                                  node->table_oid(),
-                                                                                  node_delete->oid_col_idx(),
-                                                                                  node_delete->target_oid()));
+                                                                                   context.log.clone(),
+                                                                                   node->table_oid(),
+                                                                                   node_delete->oid_col_idx(),
+                                                                                   node_delete->target_oid()));
         }
 
         auto returning = build_returning_columns(context.resource, node_delete->returning(), params);

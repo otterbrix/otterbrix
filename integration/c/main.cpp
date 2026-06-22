@@ -260,9 +260,9 @@ extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_na
             database,
             components::logical_plan::make_node_drop(dispatcher->resource(),
                                                      components::logical_plan::drop_target_kind::database));
-        auto cursor = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        auto cursor =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
@@ -285,9 +285,9 @@ extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_
             collection,
             components::logical_plan::make_node_drop(dispatcher->resource(),
                                                      components::logical_plan::drop_target_kind::collection));
-        auto cursor = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        auto cursor =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);

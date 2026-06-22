@@ -164,8 +164,18 @@ namespace services::disk {
                           "manager_disk_t::bootstrap_system_tables_sync loading : {} oid={}",
                           std::string(def.name),
                           static_cast<unsigned>(tbl_oid));
-                    load_storage_disk_sync(tbl_oid, sys_db_oid, otbx);
-                    return false; // loaded, not freshly created
+                    // load_storage_disk_sync returns an error instead of throwing on the terminal
+                    // corrupt/no-.prev case: this open/bootstrap chain must not throw (base_spaces
+                    // drives it pre-scheduler-start). The error is logged; the table is left
+                    // unloaded and a later resolve / WAL replay surfaces the absence cleanly.
+                    if (auto err = load_storage_disk_sync(tbl_oid, sys_db_oid, otbx); err.contains_error()) {
+                        warn(log_,
+                             "bootstrap_system_tables_sync: failed to load system table {} oid={} : {}",
+                             std::string(def.name),
+                             static_cast<unsigned>(tbl_oid),
+                             err.what.c_str());
+                    }
+                    return false; // loaded (or failed-and-logged), not freshly created
                 }
                 trace(log_,
                       "manager_disk_t::bootstrap_system_tables_sync creating disk : {} oid={}",
@@ -224,8 +234,13 @@ namespace services::disk {
                 if (entry != nullptr) {
                     // const_cast: checkpoint mutates the SFBM/free-list but
                     // storage_entry_sync hands back a const pointer. Safe because the
-                    // agent thread is idle at this bootstrap-time call.
-                    const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
+                    // agent thread is idle at this bootstrap-time call. The wrapper carries
+                    // out_of_memory; bind it and warn (bootstrap has no error channel — a
+                    // system-table checkpoint OOM here is a hard environment fault).
+                    auto cp_r = const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
+                    if (cp_r.has_error()) {
+                        warn(log_, "manager_disk bootstrap: pg_settings checkpoint failed (rules 2/9)");
+                    }
                 }
             }
             if (freshly_created.size() <= 1)
@@ -297,7 +312,14 @@ namespace services::disk {
                     entry = agents_[0]->storage_entry_sync(tbl_oid);
                 }
                 if (entry != nullptr) {
-                    const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
+                    // The wrapper carries out_of_memory; bind it and warn
+                    // (bootstrap has no error channel).
+                    auto cp_r = const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
+                    if (cp_r.has_error()) {
+                        warn(log_,
+                             "manager_disk bootstrap: catalog table oid={} checkpoint failed (rules 2/9)",
+                             static_cast<unsigned>(tbl_oid));
+                    }
                 }
             }
         }
@@ -324,6 +346,17 @@ namespace services::disk {
             }
             auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
             if (table.column_count() == 0 || table.calculate_size() == 0) {
+                continue;
+            }
+            // Column 0 is the identity OID only for oid-keyed system tables, where
+            // it is a UINTEGER (oid_col()). Some system tables (e.g. pg_settings)
+            // key on a STRING column 0 (`name`); reading that as a uint32 OID
+            // yields garbage that would poison oid_gen_ with a huge, non-
+            // deterministic high_water — every fresh CREATE TABLE then mints a
+            // wild OID, and on reopen the persisted (garbage) catalog OID no longer
+            // matches the storage the agent loaded, so user-table appends silently
+            // no-op. Only scan column 0 when it is an OID column.
+            if (table.columns()[0].type().type() != components::types::logical_type::UINTEGER) {
                 continue;
             }
             std::vector<components::table::storage_index_t> col_indices;
@@ -357,6 +390,65 @@ namespace services::disk {
 
         oid_gen_.seed(high_water);
         trace(log_, "manager_disk_t::restore_oid_generator_sync : seeded high_water={}", high_water);
+    }
+
+    std::uint64_t manager_disk_t::max_persisted_commit_id_sync() const {
+        // agents_[0] (catalog agent) owns all catalog SFBM entries.
+        // Pre-scheduler-start, single-threaded (same window as restore_oid_generator_sync).
+        if (agents_.empty() || agents_[0] == nullptr) {
+            return 0;
+        }
+
+        // pg_attribute is the ONLY system table carrying commit-id columns
+        // (added_at_commit_id @ index 10, dropped_at_commit_id @ index 11 — both
+        // i64). pg_class et al. carry none, so scanning pg_attribute is sufficient
+        // and authoritative.
+        constexpr std::size_t kAddedAtCol = 10;
+        constexpr std::size_t kDroppedAtCol = 11;
+
+        const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
+        if (entry == nullptr || entry->storage == nullptr) {
+            return 0;
+        }
+        auto& storage = *const_cast<collection_storage_entry_t*>(entry)->storage;
+        const auto total = storage.total_rows();
+        if (total == 0) {
+            return 0;
+        }
+        auto types = storage.types();
+        if (types.size() <= kDroppedAtCol) {
+            return 0;
+        }
+
+        std::pmr::synchronized_pool_resource scan_resource;
+        // Read via storage->scan with a default ("see all committed") transaction_data
+        // (snapshot_horizon = UINT64_MAX). This is the SAME read path resolve_table
+        // takes, so it folds the MVCC UPDATE that the schema-growth backfill applies
+        // to added_at_commit_id (the stamp is written as an UPDATE producing a newer
+        // row version; a raw table.scan/create_index_scan would surface the original
+        // added_at = NULL/0 version instead and miss the real commit-id).
+        components::vector::data_chunk_t chunk(&scan_resource, types, total);
+        storage.scan(chunk, /*filter=*/nullptr, /*limit=*/-1, components::table::transaction_data{});
+
+        std::uint64_t max_commit_id = 0;
+        for (uint64_t i = 0; i < chunk.size(); ++i) {
+            auto added_cell = chunk.value(kAddedAtCol, i);
+            if (!added_cell.is_null()) {
+                const auto v = added_cell.value<std::int64_t>();
+                if (v > 0 && static_cast<std::uint64_t>(v) > max_commit_id) {
+                    max_commit_id = static_cast<std::uint64_t>(v);
+                }
+            }
+            auto dropped_cell = chunk.value(kDroppedAtCol, i);
+            if (!dropped_cell.is_null()) {
+                const auto v = dropped_cell.value<std::int64_t>();
+                if (v > 0 && static_cast<std::uint64_t>(v) > max_commit_id) {
+                    max_commit_id = static_cast<std::uint64_t>(v);
+                }
+            }
+        }
+
+        return max_commit_id;
     }
 
     void manager_disk_t::load_user_table_storages_sync() {
@@ -406,15 +498,199 @@ namespace services::disk {
                       "manager_disk_t::load_user_table_storages_sync : oid={} db_oid={}",
                       static_cast<unsigned>(tbl_oid),
                       static_cast<unsigned>(db_oid));
-                try {
-                    load_storage_disk_sync(tbl_oid, db_oid, otbx);
-                } catch (const std::exception& e) {
+                if (auto err = load_storage_disk_sync(tbl_oid, db_oid, otbx); err.contains_error()) {
                     warn(log_,
                          "load_user_table_storages_sync: failed for oid={} : {}",
                          static_cast<unsigned>(tbl_oid),
-                         e.what());
+                         err.what.c_str());
                 }
             }
+        }
+    }
+
+    void manager_disk_t::rehydrate_in_memory_user_storages_sync() {
+        // pg_class persists unconditionally (system tables are always written to
+        // disk), but IN_MEMORY user-table row data is not. After
+        // load_user_table_storages_sync has loaded every on-disk .otbx, any alive
+        // user table still missing a storage is an IN_MEMORY table whose shell was
+        // lost on restart. Reconstruct an empty in-memory storage from its
+        // pg_attribute columns so the catalog (which says the table exists) and the
+        // storage layer agree: otherwise CREATE TABLE IF NOT EXISTS skips creation,
+        // resolve_table returns a schema, but storage_append no-ops (returns 0,0)
+        // and scans see nothing. Pre-scheduler-start, single-threaded.
+        if (agents_.empty() || agents_[0] == nullptr) {
+            return;
+        }
+        constexpr components::catalog::oid_t main_db_oid = catalog::well_known_oid::main_database;
+
+        // Pass 1: scan pg_class for alive user tables that have row storage
+        // (relkind 'r' regular or 'm' materialized view) and are not yet loaded.
+        // pg_class layout: [0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode].
+        std::vector<catalog::oid_t> need_oids;
+        {
+            const collection_storage_entry_t* cls_entry = agents_[0]->storage_entry_sync(pg_class_oid);
+            if (cls_entry == nullptr) {
+                return;
+            }
+            auto& cls_table = const_cast<collection_storage_entry_t*>(cls_entry)->table_storage.table();
+            if (cls_table.column_count() < 4 || cls_table.calculate_size() == 0) {
+                return;
+            }
+            std::pmr::synchronized_pool_resource scan_resource;
+            // Sparse scan of the non-adjacent [oid (0), relkind (3)] columns via
+            // the projected_cols data_chunk ctor: pass the FULL pg_class type list
+            // plus the projected absolute indices, and read by ABSOLUTE index
+            // (chunk.value(0,..) / chunk.value(3,..)). A compacted 2-type chunk
+            // mis-decodes the dictionary-encoded relkind string column (segfault).
+            std::vector<components::table::storage_index_t> col_indices;
+            col_indices.emplace_back(static_cast<int64_t>(0)); // oid
+            col_indices.emplace_back(static_cast<int64_t>(3)); // relkind
+            components::table::table_scan_state scan_state(&scan_resource);
+            cls_table.initialize_scan(scan_state, col_indices);
+            const auto& all_cols = cls_table.columns();
+            std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
+            all_types.reserve(all_cols.size());
+            for (const auto& c : all_cols) {
+                all_types.push_back(c.type());
+            }
+            const std::vector<std::size_t> projected{static_cast<std::size_t>(0), static_cast<std::size_t>(3)};
+            while (true) {
+                components::vector::data_chunk_t chunk(&scan_resource,
+                                                       all_types,
+                                                       projected,
+                                                       components::vector::DEFAULT_VECTOR_CAPACITY);
+                cls_table.scan(chunk, scan_state);
+                if (chunk.size() == 0)
+                    break;
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto oid_v = chunk.value(0, i);
+                    if (oid_v.is_null())
+                        continue;
+                    const auto oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());
+                    if (oid < catalog::FIRST_USER_OID)
+                        continue;
+                    if (has_storage(oid))
+                        continue;
+                    auto rk_v = chunk.value(3, i);
+                    const char relkind = (rk_v.is_null() || rk_v.value<std::string_view>().empty())
+                                             ? catalog::relkind::regular
+                                             : rk_v.value<std::string_view>().front();
+                    // Only relkinds with physical row storage. Views, computed/
+                    // virtual tables, sequences etc. have no append-target storage.
+                    if (relkind != catalog::relkind::regular && relkind != catalog::relkind::materialized_view) {
+                        continue;
+                    }
+                    need_oids.push_back(oid);
+                }
+            }
+        }
+        if (need_oids.empty()) {
+            return;
+        }
+
+        // Pass 2: read pg_attribute once, grouping live (non-dropped) columns by
+        // attrelid. pg_attribute layout: [0=attoid, 1=attrelid, 2=attname,
+        // 3=atttypid, 4=attnum, 5=attnotnull, 6=atthasdefault, 7=attisdropped,
+        // 8=atttypspec, ...]. Each column's (attnum, name, type) reconstructs the
+        // storage schema in ordinal order — the same order CREATE TABLE registered.
+        struct rehydrate_col_t {
+            std::int32_t attnum{0};
+            std::string name;
+            components::types::complex_logical_type type;
+        };
+        std::unordered_map<catalog::oid_t, std::vector<rehydrate_col_t>> cols_by_relid;
+        {
+            const collection_storage_entry_t* attr_entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
+            if (attr_entry == nullptr) {
+                return;
+            }
+            auto& attr_table = const_cast<collection_storage_entry_t*>(attr_entry)->table_storage.table();
+            if (attr_table.column_count() < 9 || attr_table.calculate_size() == 0) {
+                return;
+            }
+            std::unordered_set<catalog::oid_t> wanted(need_oids.begin(), need_oids.end());
+            std::pmr::synchronized_pool_resource scan_resource;
+            const auto& all_cols = attr_table.columns();
+            std::vector<components::table::storage_index_t> col_indices;
+            for (std::size_t c = 0; c < all_cols.size(); ++c) {
+                col_indices.emplace_back(static_cast<int64_t>(c));
+            }
+            components::table::table_scan_state scan_state(&scan_resource);
+            attr_table.initialize_scan(scan_state, col_indices);
+            std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
+            all_types.reserve(all_cols.size());
+            for (const auto& c : all_cols) {
+                all_types.push_back(c.type());
+            }
+            while (true) {
+                components::vector::data_chunk_t chunk(&scan_resource,
+                                                       all_types,
+                                                       components::vector::DEFAULT_VECTOR_CAPACITY);
+                attr_table.scan(chunk, scan_state);
+                if (chunk.size() == 0)
+                    break;
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    auto relid_v = chunk.value(1, i);
+                    if (relid_v.is_null())
+                        continue;
+                    const auto relid = static_cast<catalog::oid_t>(relid_v.value<std::uint32_t>());
+                    if (wanted.find(relid) == wanted.end())
+                        continue;
+                    auto dropped_v = chunk.value(7, i);
+                    if (!dropped_v.is_null() && dropped_v.value<bool>())
+                        continue; // tombstoned column
+                    rehydrate_col_t rc;
+                    auto attname_v = chunk.value(2, i);
+                    if (!attname_v.is_null()) {
+                        auto sv = attname_v.value<std::string_view>();
+                        rc.name.assign(sv.data(), sv.size());
+                    }
+                    auto attnum_v = chunk.value(4, i);
+                    rc.attnum = attnum_v.is_null() ? 0 : attnum_v.value<std::int32_t>();
+                    std::string typspec;
+                    auto typspec_v = chunk.value(8, i);
+                    if (!typspec_v.is_null()) {
+                        auto sv = typspec_v.value<std::string_view>();
+                        typspec.assign(sv.data(), sv.size());
+                    }
+                    if (!typspec.empty()) {
+                        rc.type = catalog::decode_type_spec(resource_, typspec);
+                    } else {
+                        auto atttypid_v = chunk.value(3, i);
+                        const auto atttypid = atttypid_v.is_null()
+                                                  ? catalog::INVALID_OID
+                                                  : static_cast<catalog::oid_t>(atttypid_v.value<std::uint32_t>());
+                        rc.type = components::types::complex_logical_type(catalog::oid_to_builtin_type(atttypid));
+                    }
+                    if (!rc.name.empty() && !rc.type.has_alias()) {
+                        rc.type.set_alias(rc.name);
+                    }
+                    cols_by_relid[relid].push_back(std::move(rc));
+                }
+            }
+        }
+
+        // Pass 3: create the in-memory storage shell for each missing table, with
+        // columns in attnum (ordinal) order.
+        for (auto oid : need_oids) {
+            auto it = cols_by_relid.find(oid);
+            if (it == cols_by_relid.end() || it->second.empty()) {
+                continue; // no columns resolved — skip rather than create a 0-col storage
+            }
+            auto& cols = it->second;
+            std::sort(cols.begin(), cols.end(), [](const rehydrate_col_t& a, const rehydrate_col_t& b) {
+                return a.attnum < b.attnum;
+            });
+            std::vector<components::table::column_definition_t> defs;
+            defs.reserve(cols.size());
+            for (auto& c : cols) {
+                defs.emplace_back(c.name, c.type);
+            }
+            trace(log_,
+                  "manager_disk_t::rehydrate_in_memory_user_storages_sync : oid={} cols={}",
+                  static_cast<unsigned>(oid),
+                  defs.size());
+            create_storage_with_columns_sync(oid, main_db_oid, std::move(defs));
         }
     }
 

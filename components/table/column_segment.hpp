@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/vector/vector.hpp>
+#include <core/result_wrapper.hpp>
 
 #include "base_statistics.hpp"
 #include "compression/compression_type.hpp"
@@ -46,11 +47,14 @@ namespace components::table {
         uint64_t type_size;
         std::shared_ptr<storage::block_handle_t> block;
 
-        static std::unique_ptr<column_segment_t> create_segment(storage::buffer_manager_t& block_manager,
-                                                                const types::complex_logical_type& type,
-                                                                int64_t start,
-                                                                uint64_t segment_size,
-                                                                uint64_t block_size);
+        // Returns an out_of_memory error_t when the backing transient block cannot be
+        // registered; otherwise the new segment.
+        [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<column_segment_t>>
+        create_segment(storage::buffer_manager_t& block_manager,
+                       const types::complex_logical_type& type,
+                       int64_t start,
+                       uint64_t segment_size,
+                       uint64_t block_size);
 
         void initialize_scan(column_scan_state& state);
         void scan(column_scan_state& state,
@@ -59,7 +63,8 @@ namespace components::table {
                   uint64_t result_offset,
                   scan_vector_type scan_type);
 
-        bool check_predicate(int64_t row_id, const table_filter_t* filter);
+        // Returns out_of_memory when a pin fails; otherwise the predicate result.
+        [[nodiscard]] core::result_wrapper_t<bool> check_predicate(int64_t row_id, const table_filter_t* filter);
         void fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx);
 
         static uint64_t filter_indexing(vector::indexing_vector_t& indexing,
@@ -72,12 +77,13 @@ namespace components::table {
         void skip(column_scan_state& state);
 
         uint64_t segment_size() const;
-        void resize(uint64_t segment_size);
+        // OOM-propagating: pin/allocate failures surface as out_of_memory.
+        [[nodiscard]] core::result_wrapper_t<bool> resize(uint64_t segment_size);
 
-        void initialize_append(column_append_state& state);
-        uint64_t
+        [[nodiscard]] core::result_wrapper_t<bool> initialize_append(column_append_state& state);
+        [[nodiscard]] core::result_wrapper_t<uint64_t>
         append(column_append_state& state, vector::unified_vector_format& data, uint64_t offset, uint64_t count);
-        uint64_t finalize_append(column_append_state& state);
+        [[nodiscard]] core::result_wrapper_t<uint64_t> finalize_append(column_append_state& state);
         void revert_append(uint64_t start_row);
 
         uint64_t block_id() { return block_id_; }

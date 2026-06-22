@@ -4,9 +4,7 @@
 // fall through to nullptr rather than throwing — transformer.cpp surfaces a
 // runtime error for unknown plans, matching other partially-supported statements.
 
-#include <components/logical_plan/node_abort_transaction.hpp>
-#include <components/logical_plan/node_begin_transaction.hpp>
-#include <components/logical_plan/node_commit_transaction.hpp>
+#include <components/logical_plan/node_transaction.hpp>
 #include <components/sql/transformer/transformer.hpp>
 
 namespace components::sql::transform {
@@ -15,11 +13,11 @@ namespace components::sql::transform {
         switch (node.kind) {
             case TRANS_STMT_BEGIN:
             case TRANS_STMT_START:
-                return logical_plan::node_ptr(new logical_plan::node_begin_transaction_t(resource_));
+                return logical_plan::make_node_transaction(resource_, logical_plan::transaction_op::begin);
             case TRANS_STMT_COMMIT:
-                return logical_plan::node_ptr(new logical_plan::node_commit_transaction_t(resource_));
+                return logical_plan::make_node_transaction(resource_, logical_plan::transaction_op::commit);
             case TRANS_STMT_ROLLBACK:
-                return logical_plan::node_ptr(new logical_plan::node_abort_transaction_t(resource_));
+                return logical_plan::make_node_transaction(resource_, logical_plan::transaction_op::abort);
             default:
                 // SAVEPOINT, RELEASE, ROLLBACK TO, two-phase-commit forms — not supported.
                 return nullptr;

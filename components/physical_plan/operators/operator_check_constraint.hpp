@@ -17,13 +17,17 @@ namespace components::operators {
         operator_check_constraint_t(std::pmr::memory_resource* resource,
                                     log_t log,
                                     std::vector<std::string> not_null_columns,
-                                    std::vector<std::pair<std::string, std::string>> check_exprs = {});
+                                    std::vector<std::pair<std::string, std::string>> check_exprs = {},
+                                    std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {});
 
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         std::vector<std::string> not_null_columns_;
         std::vector<std::pair<std::string, predicates::predicate_ptr>> check_predicates_; // (name, compiled)
+        // Fixed-ARRAY columns (NOT NULL, no DEFAULT) and their declared sizes: a value
+        // shorter than the size cannot be padded and is rejected with an error.
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;
     };
 
 } // namespace components::operators

@@ -390,17 +390,20 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
     }
 
-    INFO("phase 2: restart — WAL replay with consistent 1-column records") {
+    INFO("phase 2: restart — WAL replay with the full post-default chunk") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Name column survives WAL replay (it's the only column in WAL records).
-        // After restart, computing table schema is derived from WAL chunk (1 column).
-        // Defaulted columns (status, count) are NOT preserved — their schema is lost.
+        // The PHYSICAL_INSERT carries the chunk AFTER the disk agent's default-expansion
+        // stage, so status='active'/count=0 are baked into the WAL record (not just the
+        // supplied 'name'). On restart the storage is synthesised from the WAL chunk's
+        // column types, so the defaulted columns and their values survive replay.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'bob';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 5);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 5);
     }
 }
 
@@ -531,6 +534,98 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 200;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 300;", 1);
+        // The PHYSICAL_INSERT carries the default-expanded chunk, so the unsupplied 'tag'
+        // column (DEFAULT 'untagged') is durable across restart too.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 3);
+    }
+}
+
+// Dynamic-schema (relkind='g' / IN_MEMORY computing) tables grow their column set
+// per-INSERT (stage 1b in agent_disk::storage_append_inner). That growth is made durable
+// by emitting a PHYSICAL_ADD_COLUMN WAL record (the new columns as a 0-row alias-tagged
+// chunk) BEFORE the dependent PHYSICAL_INSERT, and replaying it on restart (base_spaces
+// replay loop -> direct_add_column_sync) so the grown schema is reconstructed ahead of
+// the rows that reference it.
+//
+// Scenario: a computing table is created with WAL ON, a first INSERT introduces (id,
+// name), a second INSERT introduces an ADDITIONAL new column (value) — triggering stage-1b
+// growth and a PHYSICAL_ADD_COLUMN record — then the engine is restarted and ALL columns +
+// rows must survive.
+TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_schema_growth_wal");
+    test_clear_directory(config);
+
+    INFO("phase 1: computing table, two INSERTs growing the schema, WAL ON") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+
+        // CREATE TABLE with no columns => relkind='g' (computed / IN_MEMORY dynamic schema).
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection ();");
+            REQUIRE(cur->is_success());
+        }
+
+        // First INSERT: introduces columns (id bigint, name string). Schema adopted.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (id, name) VALUES "
+                                               "(1, 'alice'), (2, 'bob');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+
+        // Second INSERT: introduces an ADDITIONAL new column 'value' alongside the
+        // existing (id, name). This is stage-1b schema growth and emits a
+        // PHYSICAL_ADD_COLUMN WAL record before the PHYSICAL_INSERT.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (id, name, value) VALUES "
+                                               "(3, 'charlie', 100);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        // In-session sanity: 3 rows, 3 columns (id, name, value); rows 1-2 NULL for value.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->chunk_data().column_count() == 3);
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 100;", 1);
+    }
+
+    INFO("phase 2: restart — PHYSICAL_ADD_COLUMN replay reconstructs the grown schema") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // All three rows survive WAL replay.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
+
+        // The dynamically-added 'value' column survives: its schema was reconstructed by
+        // replaying PHYSICAL_ADD_COLUMN ahead of the PHYSICAL_INSERT that filled it.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->chunk_data().column_count() == 3);
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 100;", 1);
+
+        // The first-INSERT columns are still queryable and bind to the right rows.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'charlie';", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 3;", 1);
     }
 }
 
@@ -1582,6 +1677,96 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
     }
 }
 
+// REGRESSION — MVCC commit-clock restore on reopen (the durable WAL-COMMIT-marker
+// frontier → published_horizon_ + current_timestamp_). What the restore guards:
+//
+//   * Committed DML stamps each row version with a real commit-id (insert_id for
+//     an INSERT, delete_id for a DELETE), drawn from the prior session's commit
+//     clock. CHECKPOINT folds those stamps into the .otbx.
+//   * On reopen the transaction_manager restarts at {current_timestamp_=1,
+//     published_horizon_=0}, and nothing on the recovery path calls publish()
+//     (publish only runs in the live commit pipeline). So WITHOUT the restore a
+//     fresh post-reopen reader snapshots published_horizon_=0 and the MVCC filter
+//     (row_version_manager: id > snapshot_horizon ⇒ not visible) judges every
+//     committed DELETE as "deleted after my snapshot" — the deleted rows REAPPEAR.
+//   * The restore raises published_horizon_ to the durable frontier (max of
+//     persisted pg_attribute commit-ids and the max WAL COMMIT-marker commit-id)
+//     so persisted commits read as published.
+//
+// Without the restore the phase-2 count comes back 100 instead of 50 (deleted
+// rows resurrected). Sibling tests test_wal_pool::insert_delete_checkpoint_restart
+// and test_persistence::wal_recovery_dml_full_cycle give equivalent coverage;
+// this case states the intent explicitly so the regression is unmistakable.
+//
+// (The restore also feeds a pg_attribute/added_at branch, but that never fires
+// through real DDL today — ALTER ADD COLUMN leaves added_at=0, which the
+// resolve_table visibility filter never rejects — so the live guard here is the
+// WAL-frontier half of the same restore.)
+TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_invisible") {
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_keeps_committed_deletes");
+    test_clear_directory(config);
+
+    INFO("phase 1: WAL-backed table, INSERT 100, DELETE 50, CHECKPOINT") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        // Default storage (WAL-recovered, no .otbx): reopen rebuilds the table from
+        // WAL + the committed MVCC stamps, so delete visibility depends on the
+        // restored published_horizon_ (a disk-backed table's CHECKPOINT compaction
+        // would mask the bug by physically dropping committed-deleted rows).
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.TestCollection (name string, count bigint);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 100; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+        // DELETE WHERE count < 50 (removes 50 rows: 0..49). Each tombstone gets
+        // delete_id = this txn's committed commit-id (> 0).
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 50;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 50);
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: REOPEN — committed deletes MUST stay deleted (no resurrection)") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // Decisive: without the commit-clock restore published_horizon_=0, the
+        // committed delete tombstones (delete_id > 0) are judged not-yet-applied
+        // and the 50 deleted rows reappear → 100 here instead of 50.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
+    }
+}
+
 TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_restart") {
     auto config =
         test_create_config("/tmp/otterbrix/integration/test_persistence/disk_index_mixed_ops_checkpoint_restart");
@@ -2038,5 +2223,86 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 70;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count >= 40;", 60);
+    }
+}
+
+// Regression guard for the SSB-reopen bug: with disk AND wal OFF (the SSB
+// benchmark configuration), pg_class is still persisted unconditionally, but an
+// IN_MEMORY user table's row storage is not. On reopen the catalog therefore
+// reports the table as existing while the disk agent owns no storage at its oid.
+// CREATE TABLE IF NOT EXISTS then skips storage creation, resolve_table returns
+// the schema, yet every INSERT silently no-ops (storage_append returns 0,0) and a
+// regular snapshot scan sees nothing. rehydrate_in_memory_user_storages_sync
+// reconstructs the missing storage shell at bootstrap so post-reopen inserts land
+// and are visible. Without that bootstrap step phase-2 returns 0 rows.
+TEST_CASE("integration::cpp::test_persistence::reopen_in_memory_reinsert_visible") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_in_memory_reinsert");
+    // SSB benchmark config: both disk and WAL persistence are OFF. User tables are
+    // created IN_MEMORY; only the system catalog is durable.
+    config.disk.on = false;
+    config.wal.on = false;
+    test_clear_directory(config);
+
+    INFO("phase 1: create IN_MEMORY table + insert 100 rows") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE IF NOT EXISTS TestDatabase.TestCollection (name string, count bigint);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 100; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 100);
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+    }
+
+    INFO("phase 2: reopen, re-run setup + re-insert, the fresh rows must be visible") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // Mirror the benchmark runner, which re-runs CREATE TABLE IF NOT EXISTS and
+        // re-INSERTs on every reopen. The catalog still knows the table, so this is
+        // a no-op DDL — but the storage shell must exist for the inserts to land.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE IF NOT EXISTS TestDatabase.TestCollection (name string, count bigint);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+            for (int i = 0; i < 100; ++i) {
+                query << "('reopen_" << i << "', " << i << ")" << (i == 99 ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            // The bug: storage_append no-ops, so the cursor reports 0 affected rows.
+            REQUIRE(cur->size() == 100);
+        }
+
+        // Decisive gate: a REGULAR snapshot scan must see the re-inserted rows.
+        // With the bug this returns 0 (the SSB "4ms / 0 rows" symptom).
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
     }
 }

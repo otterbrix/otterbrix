@@ -210,9 +210,11 @@ namespace components::operators {
         std::pmr::memory_resource* resource,
         log_t log,
         std::vector<std::string> not_null_columns,
-        std::vector<std::pair<std::string, std::string>> check_exprs)
+        std::vector<std::pair<std::string, std::string>> check_exprs,
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs)
         : read_write_operator_t(resource, log, operator_type::check_constraint)
-        , not_null_columns_(std::move(not_null_columns)) {
+        , not_null_columns_(std::move(not_null_columns))
+        , array_size_reqs_(std::move(array_size_reqs)) {
         check_predicates_.reserve(check_exprs.size());
         for (auto& [name, expr_str] : check_exprs) {
             check_predicates_.emplace_back(std::move(name), build_check_predicate(resource, expr_str));
@@ -255,6 +257,31 @@ namespace components::operators {
                             set_error(core::error_t{
                                 core::error_code_t::other_error,
                                 std::pmr::string{"NOT NULL constraint violated for column: " + col_name, resource_}});
+                            return;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // Fixed-ARRAY length checks. A NOT NULL fixed ARRAY column with no DEFAULT cannot
+            // pad a value shorter than its declared size (there is nothing to fill the missing
+            // slots with), so such a value must be rejected here rather than silently dropped
+            // at the append. Validated per column: a single short element fails the operation.
+            for (const auto& [col_name, required_size] : array_size_reqs_) {
+                for (uint64_t col = 0; col < chunk.column_count(); ++col) {
+                    if (chunk.data[col].type().alias() != col_name)
+                        continue;
+                    for (uint64_t row = 0; row < chunk.size(); ++row) {
+                        if (!chunk.data[col].validity().row_is_valid(row))
+                            continue; // NULL handled by the NOT NULL check above
+                        if (chunk.data[col].value(row).children().size() < required_size) {
+                            set_error(core::error_t{
+                                core::error_code_t::other_error,
+                                std::pmr::string{"value for NOT NULL array column '" + col_name + "' has fewer than " +
+                                                     std::to_string(required_size) +
+                                                     " elements and the column has no default to pad from",
+                                                 resource_}});
                             return;
                         }
                     }

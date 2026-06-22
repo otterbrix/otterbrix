@@ -8,6 +8,7 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/table/transaction_manager.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
@@ -735,6 +736,95 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
         uint64_t check_total = 0;
         for (auto& c : check_batches) check_total += c.size();
         REQUIRE(check_total == 1);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// Regression: MVCC commit-clock restore on reopen. A column persisted with a
+// non-zero added_at_commit_id (from a PRIOR session's clock) must stay visible
+// after reopen. Before the fix the reopened transaction_manager_t started its
+// clock at {1,0}, so every new txn's start_time fell below the persisted
+// added_at_commit_id and resolve_table judged all columns "added after my
+// snapshot" → "column not found". The fix re-seeds the clock from
+// max_persisted_commit_id_sync().
+TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restart") {
+    auto dir = persist_dir() + "/commit_clock";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    // A commit-id well above the reopened clock's fresh start (1) and above the
+    // attribute attnum/attoid value space — proves we read the commit-id column,
+    // not some other monotonic value.
+    constexpr std::int64_t kPersistedCommitId = 5000;
+    oid_t table_oid = INVALID_OID;
+    oid_t col_attoid = INVALID_OID;
+    {
+        fresh_disk fd(dir);
+        fd.manager->bootstrap_system_tables_sync();
+        auto ns_oid = test_create_namespace(fd, "cc_ns");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_oid = test_create_table(fd, ns_oid, "cc_t", std::move(cols));
+
+        // Allocate an attoid for an ADD COLUMN-style row and stamp it with a high
+        // added_at_commit_id, mirroring what a committed ADD COLUMN at commit_id
+        // kPersistedCommitId would persist. Append it directly to pg_attribute and
+        // publish so it is durable in the checkpoint.
+        auto attoids = fd.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        col_attoid = attoids[0];
+        constexpr oid_t pg_attr = well_known_oid::pg_attribute_table;
+        auto attr_row = catalog::build_pg_attribute_row(&fd.resource,
+                                                        col_attoid,
+                                                        table_oid,
+                                                        std::string("added_col"),
+                                                        well_known_oid::int64_type,
+                                                        /*attnum*/ 2,
+                                                        /*not_null*/ false,
+                                                        /*has_default*/ false,
+                                                        /*is_dropped*/ false,
+                                                        /*typspec*/ std::string{},
+                                                        /*defspec*/ std::string{},
+                                                        /*added_at_commit_id*/ kPersistedCommitId,
+                                                        /*dropped_at_commit_id*/ 0);
+        std::vector<components::pg_catalog_append_range_t> appends;
+        auto rng = fd.invoke(&manager_disk_t::append_pg_catalog_row,
+                             disk_test_helpers::auto_ctx(),
+                             pg_attr,
+                             std::move(attr_row));
+        appends.push_back(std::move(rng));
+        fd.invoke(&manager_disk_t::storage_publish_commits,
+                  disk_test_helpers::rebuild_ctx(),
+                  static_cast<std::uint64_t>(kPersistedCommitId),
+                  std::move(appends));
+        fd.checkpoint();
+    }
+    {
+        fresh_disk fd2(dir);
+        fd2.manager->bootstrap_system_tables_sync();
+        fd2.manager->restore_oid_generator_sync();
+
+        // (a) The new scan returns the persisted high commit-id.
+        const auto max_cid = fd2.manager->max_persisted_commit_id_sync();
+        REQUIRE(max_cid == static_cast<std::uint64_t>(kPersistedCommitId));
+
+        // (b) After seeding, a freshly-begun transaction's start_time is GREATER
+        // than the persisted added_at_commit_id, so resolve_table's visibility
+        // filter (added_at <= start_time) would accept the column.
+        components::table::transaction_manager_t txn_mgr(&fd2.resource);
+        // Pre-seed: a fresh manager hands out start_time 1 — below the persisted id.
+        {
+            auto& pre = txn_mgr.begin_transaction(components::session::session_id_t::generate_uid());
+            REQUIRE(pre.start_time() < static_cast<std::uint64_t>(kPersistedCommitId));
+        }
+        txn_mgr.seed_commit_clock(max_cid);
+        auto& post = txn_mgr.begin_transaction(components::session::session_id_t::generate_uid());
+        REQUIRE(post.start_time() > static_cast<std::uint64_t>(kPersistedCommitId));
+        // published_horizon_ is raised to (not above) the seed, so the persisted
+        // commit is treated as published.
+        REQUIRE(txn_mgr.published_horizon() == max_cid);
+
+        // seed_commit_clock is idempotent / never lowers.
+        txn_mgr.seed_commit_clock(1);
+        REQUIRE(txn_mgr.published_horizon() == max_cid);
     }
     std::filesystem::remove_all(dir);
 }

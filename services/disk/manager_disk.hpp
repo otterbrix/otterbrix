@@ -80,12 +80,24 @@ namespace services::disk {
         components::table::data_table_t& table() { return *table_; }
         storage_mode_t mode() const { return mode_; }
 
-        /// Checkpoint (disk mode only, no-op for in-memory).
+        // DISK ctors do file I/O (create/open/header read) + metadata-chain deserialize, all of which can
+        // fail with io_error/data_corruption. A constructor cannot return a result_wrapper_t and MUST NOT
+        // throw -- the DISK ctors run on the agent thread via bootstrap_create_disk_inner_sync (noexcept),
+        // so a throw would std::terminate. Instead the ctor records the error here; the caller
+        // (bootstrap_*_inner_sync / the manager probe) checks construction_failed() and drops the entry /
+        // drives .prev corrupt-recovery. IN_MEMORY ctors never set this.
+        bool construction_failed() const noexcept { return construction_error_.contains_error(); }
+        [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
+
+        /// Checkpoint (disk mode only, no-op/success for in-memory).
         /// W-TORN: writes data blocks + fsync, then header + fsync (2 fsync — durability before header swap).
-        void checkpoint();
+        /// Returns out_of_memory when a column flush pin fails in
+        /// data_table_t::checkpoint; true on success (or IN_MEMORY no-op).
+        [[nodiscard]] core::result_wrapper_t<bool> checkpoint();
         /// Same as checkpoint() + tracks W-TORN per-table wal_id snapshot.
         /// prev_checkpoint_wal_id_ ← old checkpoint_wal_id_; checkpoint_wal_id_ ← new_wal_id.
-        void checkpoint(wal::id_t new_wal_id);
+        /// Propagates the checkpoint() error; on error the wal_id fields stay unchanged.
+        [[nodiscard]] core::result_wrapper_t<bool> checkpoint(wal::id_t new_wal_id);
 
         /// W-TORN: latest committed checkpoint wal_id for this DISK table (0 if never checkpointed / IN_MEMORY).
         wal::id_t checkpoint_wal_id() const noexcept { return checkpoint_wal_id_; }
@@ -125,6 +137,8 @@ namespace services::disk {
         std::unique_ptr<components::table::data_table_t> table_;
         wal::id_t checkpoint_wal_id_{0};
         wal::id_t prev_checkpoint_wal_id_{0};
+        // Set by the DISK ctors on file/metadata failure instead of throwing (see construction_failed()).
+        core::error_t construction_error_{core::error_t::no_error()};
     };
 
     // Storage entry per collection. Namespace-scope so agent_disk_t can own a
@@ -288,6 +302,19 @@ namespace services::disk {
         // for filtering and (2) avoid synthesising phantom storages with
         // possibly-wrong schemas from a single WAL chunk.
         void load_user_table_storages_sync();
+        // Rehydrate the in-memory storage SHELL for every alive user table that
+        // is present in the persisted pg_class catalog but whose row storage was
+        // not loaded by load_user_table_storages_sync (no .otbx on disk — the
+        // IN_MEMORY relstoragemode case). pg_class persists unconditionally, so on
+        // reopen a CREATE TABLE IF NOT EXISTS sees the table "exists" and skips
+        // storage creation, and resolve_table returns the schema, yet the disk
+        // agent owns no storage at that oid — so storage_append no-ops (returns
+        // 0,0) and scans see nothing. Reconstructs each missing storage from its
+        // pg_attribute column definitions so the catalog and the storage layer
+        // agree. Pre-scheduler-start, single-threaded (same window as
+        // load_user_table_storages_sync). Skips relkinds without row storage
+        // (views, computed/virtual tables) and any oid already loaded.
+        void rehydrate_in_memory_user_storages_sync();
         // Synchronous scan of pg_class.oid column, returning the set
         // of user-table OIDs (oid >= FIRST_USER_OID) currently alive in the
         // catalog. Called by base_spaces between system-record replay and
@@ -351,6 +378,14 @@ namespace services::disk {
         // never collides with on-disk OIDs.
         void restore_oid_generator_sync();
 
+        // Scan the persisted catalog for the maximum MVCC commit-id, so reopen can
+        // re-seed the dispatcher's commit clock (transaction_manager_t::seed_commit_clock).
+        // The authoritative source is pg_attribute columns added_at_commit_id (index 10)
+        // and dropped_at_commit_id (index 11) — the only commit-id columns in the whole
+        // catalog schema. Returns the max non-null int64 across both columns (0 if none).
+        // Pre-scheduler-start, single-threaded — mirrors restore_oid_generator_sync.
+        std::uint64_t max_persisted_commit_id_sync() const;
+
         // Read the value of a named setting from pg_settings. Returns the most recently
         // appended value for the given name, or empty string if not found.
         // Synchronous — called at startup before actor schedulers start.
@@ -366,8 +401,7 @@ namespace services::disk {
         // Cross-namespace function lookup: returns ALL pg_proc rows whose proname matches
         // `name`, regardless of pronamespace. Used by the UDF admin paths (#41 Path 2/4):
         // register_udf needs to detect cross-namespace conflicts; drop_udf needs to purge
-        // every row sharing the name. The single-namespace resolve_function above is the
-        // hot-path query API; this one is admin-scope and may return an empty vector.
+        // every row sharing the name. Admin-scope (register/drop UDF); may return an empty vector.
         unique_future<std::pmr::vector<resolve_function_result_t>>
         resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
 
@@ -472,6 +506,12 @@ namespace services::disk {
         void direct_update_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 components::vector::data_chunk_t& new_data);
+        // WAL-replay of a PHYSICAL_ADD_COLUMN record: re-apply each schema column to
+        // the owned storage ahead of the dependent PHYSICAL_INSERT. `schema_chunk` is
+        // a 0-row chunk whose columns ARE the new columns (alias-tagged types).
+        // Idempotent: columns already present (by name) are skipped.
+        void direct_add_column_sync(components::catalog::oid_t table_oid,
+                                    const components::vector::data_chunk_t& schema_chunk);
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }
@@ -589,14 +629,18 @@ namespace services::disk {
         // Storage data operations.
         // Returns a vector of chunks and applies index-based column projection at the
         // storage layer. Empty `projected_cols` means "read all columns" (pass-through).
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        // Returns a vector of chunks and applies index-based column projection at the
+        // storage layer. Empty `projected_cols` means "read all columns" (pass-through). The
+        // reply wraps the batches so a buffer-pool OOM / data_corruption from the table-layer
+        // scan reaches the scan operators as a value rather than a throw across the mailbox.
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_scan(session_id_t session,
                      components::catalog::oid_t table_oid,
                      std::unique_ptr<components::table::table_filter_t> filter,
                      int64_t limit,
                      std::vector<size_t> projected_cols,
                      components::table::transaction_data txn);
-        // Both reads return a vector of chunks, each ≤ DEFAULT_VECTOR_CAPACITY rows.
+        // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
@@ -606,7 +650,9 @@ namespace services::disk {
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
         // Appends every chunk in order. Appends within one txn are contiguous, so the
         // result is the single coalesced range [range_start, range_start + total_count).
-        unique_future<std::pair<uint64_t, uint64_t>>
+        // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
+        // table-layer append chain reaches operator_insert as a value.
+        unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::data_chunk_t> data);
@@ -614,7 +660,9 @@ namespace services::disk {
         // Updates every chunk in order; row_ids[i] are the storage row-ids for data[i]
         // (the two vectors are positionally aligned and must have equal length). Returns
         // the coalesced new-row range [range_start, range_start + total_count).
-        unique_future<std::pair<int64_t, uint64_t>>
+        // Reply wraps (updated, appended) so a write_conflict / out_of_memory from the
+        // table-layer MVCC update reaches operator_update / fk_cascade as a value.
+        unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
@@ -688,9 +736,14 @@ namespace services::disk {
                                       components::catalog::oid_t database_oid,
                                       std::vector<components::table::column_definition_t> columns,
                                       const std::filesystem::path& otbx_path);
-        void load_storage_disk_sync(components::catalog::oid_t table_oid,
-                                    components::catalog::oid_t database_oid,
-                                    const std::filesystem::path& otbx_path);
+        // Returns no_error() on success (incl. successful .prev corrupt-recovery). Returns an
+        // io_error/data_corruption on the terminal "corrupt .otbx + no recoverable .prev" / failed
+        // W-TORN promote-move case instead of throwing: this runs on the single-threaded
+        // bootstrap/recovery path whose callers (bootstrap_system_tables_sync,
+        // load_user_table_storages_sync, load_storage_for_wal_replay_sync) propagate / log the error.
+        [[nodiscard]] core::error_t load_storage_disk_sync(components::catalog::oid_t table_oid,
+                                                           components::catalog::oid_t database_oid,
+                                                           const std::filesystem::path& otbx_path);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -730,6 +783,17 @@ namespace services::disk {
         // access goes through agent storage_*_inner mailbox handlers.
         void create_agent(int count_agents);
         auto agent() -> actor_zeta::address_t;
+
+        // Single manager-side scan funnel over the owning agent's
+        // storage_scan_inner, so there is ONE place that issues a catalog
+        // scan. `filter` null = "see all rows"; `projected_cols` empty = "all
+        // columns"; returns an empty batch vector when there is no owning agent.
+        // txn defaults to transaction_data{} = "see all committed".
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        scan_table(components::catalog::oid_t table_oid,
+                   std::unique_ptr<components::table::table_filter_t> filter,
+                   std::vector<std::size_t> projected_cols,
+                   components::table::transaction_data txn = components::table::transaction_data{});
 
         // Hash-route by table_oid. Catalog tables (oid < FIRST_USER_OID) → agent 0;
         // user tables hash across agents_[1..N-1].

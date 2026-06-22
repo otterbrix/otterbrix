@@ -760,10 +760,12 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
             {{"a", complex_logical_type{logical_type::BIGINT}}},
             [&](data_chunk_t& c) { c.set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{1})); },
             /*rows=*/1);
-        auto [start, count] = fx.invoke(&manager_disk_t::storage_append,
-                                        append_ctx(table_oid),
-                                        table_oid,
-                                        to_batch(&fx.resource, std::move(chunk)));
+        auto append_r = fx.invoke(&manager_disk_t::storage_append,
+                                  append_ctx(table_oid),
+                                  table_oid,
+                                  to_batch(&fx.resource, std::move(chunk)));
+        REQUIRE_FALSE(append_r.has_error());
+        auto [start, count] = append_r.value();
         REQUIRE(count == 1);
         (void) start;
     }
@@ -795,13 +797,15 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         // (zero-initialized) values for the new column.
         auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 2);
-        auto batches = fx.invoke(&manager_disk_t::storage_scan,
-                                 session_id_t{},
-                                 table_oid,
-                                 std::unique_ptr<components::table::table_filter_t>{},
-                                 /*limit=*/int64_t{-1},
-                                 std::vector<size_t>{},
-                                 components::table::transaction_data{0, 0});
+        auto scan_r = fx.invoke(&manager_disk_t::storage_scan,
+                                session_id_t{},
+                                table_oid,
+                                std::unique_ptr<components::table::table_filter_t>{},
+                                /*limit=*/int64_t{-1},
+                                std::vector<size_t>{},
+                                components::table::transaction_data{0, 0});
+        REQUIRE_FALSE(scan_r.has_error());
+        const auto& batches = scan_r.value();
         size_t total = 0;
         for (const auto& ch : batches) {
             total += ch.size();
@@ -831,13 +835,15 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     {
         auto types = fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid);
         REQUIRE(types.size() == 3);
-        auto batches = fx.invoke(&manager_disk_t::storage_scan,
-                                 session_id_t{},
-                                 table_oid,
-                                 std::unique_ptr<components::table::table_filter_t>{},
-                                 /*limit=*/int64_t{-1},
-                                 std::vector<size_t>{},
-                                 components::table::transaction_data{0, 0});
+        auto scan_r = fx.invoke(&manager_disk_t::storage_scan,
+                                session_id_t{},
+                                table_oid,
+                                std::unique_ptr<components::table::table_filter_t>{},
+                                /*limit=*/int64_t{-1},
+                                std::vector<size_t>{},
+                                components::table::transaction_data{0, 0});
+        REQUIRE_FALSE(scan_r.has_error());
+        const auto& batches = scan_r.value();
         size_t total = 0;
         for (const auto& ch : batches) {
             total += ch.size();

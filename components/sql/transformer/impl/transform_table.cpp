@@ -1,12 +1,6 @@
-#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
-#include <components/logical_plan/node_catalog_resolve_type.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
-#include <components/logical_plan/node_drop_collection.hpp>
-#include <components/logical_plan/node_drop_index.hpp>
-#include <components/logical_plan/node_drop_macro.hpp>
-#include <components/logical_plan/node_drop_sequence.hpp>
-#include <components/logical_plan/node_drop_type.hpp>
-#include <components/logical_plan/node_drop_view.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -119,14 +113,14 @@ namespace components::sql::transform {
                 switch (static_cast<table_name>(drop_name.size())) {
                     case table: {
                         std::string collection = strVal(drop_name.front().data);
-                        auto n = logical_plan::make_node_drop_collection(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
                         return wrap_one(std::string{}, collection, std::move(n));
                     }
                     case database_table: {
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
                         std::string collection = strVal(it->data);
-                        auto n = logical_plan::make_node_drop_collection(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
                         return wrap_one(database, collection, std::move(n));
                     }
                     case database_schema_table: {
@@ -135,7 +129,7 @@ namespace components::sql::transform {
                         std::string /*schema*/ _ = strVal(it++->data);
                         std::string collection = strVal(it->data);
                         (void) _;
-                        auto n = logical_plan::make_node_drop_collection(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
                         return wrap_one(database, collection, std::move(n));
                     }
                     case uuid_database_schema_table: {
@@ -146,7 +140,7 @@ namespace components::sql::transform {
                         std::string collection = strVal(it->data);
                         (void) _u;
                         (void) _s;
-                        auto n = logical_plan::make_node_drop_collection(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
                         return wrap_one(database, collection, std::move(n));
                     }
                     default:
@@ -178,7 +172,7 @@ namespace components::sql::transform {
                         std::string database = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        auto n = logical_plan::make_node_drop_index(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     case database_schema_table: {
@@ -188,7 +182,7 @@ namespace components::sql::transform {
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
                         (void) _;
-                        auto n = logical_plan::make_node_drop_index(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     case uuid_database_schema_table: {
@@ -200,7 +194,7 @@ namespace components::sql::transform {
                         std::string name = strVal(it->data);
                         (void) _u;
                         (void) _s;
-                        auto n = logical_plan::make_node_drop_index(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     default:
@@ -217,7 +211,7 @@ namespace components::sql::transform {
                     return nullptr;
                 }
                 std::string type_name = strVal(drop_name.back().data);
-                auto n = logical_plan::make_node_drop_type(resource_);
+                auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::type);
                 // Wrap with resolve_type so Pass 1 stamps type_oid +
                 // resolved_type_metadata. enrich's drop_type_t branch reads
                 // from plan-tree idx (resolve_type_t stamps it at Pass 1).
@@ -236,14 +230,14 @@ namespace components::sql::transform {
                 switch (static_cast<table_name>(drop_name.size())) {
                     case table: {
                         std::string seq_name = strVal(drop_name.front().data);
-                        auto n = logical_plan::make_node_drop_sequence(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::sequence);
                         return wrap_one(std::string{}, seq_name, std::move(n));
                     }
                     case database_table: {
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
                         std::string seq_name = strVal(it->data);
-                        auto n = logical_plan::make_node_drop_sequence(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::sequence);
                         return wrap_one(database, seq_name, std::move(n));
                     }
                     default:
@@ -257,14 +251,14 @@ namespace components::sql::transform {
                 switch (static_cast<table_name>(drop_name.size())) {
                     case table: {
                         std::string view_name = strVal(drop_name.front().data);
-                        auto n = logical_plan::make_node_drop_view(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::view);
                         return wrap_one(std::string{}, view_name, std::move(n));
                     }
                     case database_table: {
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
                         std::string view_name = strVal(it->data);
-                        auto n = logical_plan::make_node_drop_view(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::view);
                         return wrap_one(database, view_name, std::move(n));
                     }
                     default:
@@ -278,14 +272,14 @@ namespace components::sql::transform {
                 switch (static_cast<table_name>(drop_name.size())) {
                     case table: {
                         std::string macro_name = strVal(drop_name.front().data);
-                        auto n = logical_plan::make_node_drop_macro(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::macro);
                         return wrap_one(std::string{}, macro_name, std::move(n));
                     }
                     case database_table: {
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
                         std::string macro_name = strVal(it->data);
-                        auto n = logical_plan::make_node_drop_macro(resource_);
+                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::macro);
                         return wrap_one(database, macro_name, std::move(n));
                     }
                     default:

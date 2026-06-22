@@ -178,16 +178,49 @@ namespace components::table {
         : column_data_(column_data)
         , partial_block_manager_(partial_block_manager) {}
 
-    void column_checkpoint_state_t::flush_segment(column_segment_t& segment, uint64_t row_start, uint64_t tuple_count) {
+    core::result_wrapper_t<bool>
+    column_checkpoint_state_t::flush_segment(column_segment_t& segment, uint64_t row_start, uint64_t tuple_count) {
         auto& block_manager = column_data_.block_manager();
 
         // pin the segment's buffer to get data
-        auto handle = block_manager.buffer_manager.pin(segment.block);
+        auto pinned = block_manager.buffer_manager.pin(segment.block);
+        if (pinned.has_error()) {
+            return pinned.convert_error<bool>(); // out_of_memory
+        }
+        auto& handle = pinned.value();
         auto* data = handle.ptr();
 
         auto phys = segment.type.to_physical_type();
         bool is_fixed_size = (phys != types::physical_type::STRING && phys != types::physical_type::BIT &&
                               phys != types::physical_type::INVALID);
+
+        // A DISK-LOADED segment that is already compressed (CONSTANT/RLE/DICTIONARY) holds its COMPRESSED
+        // byte stream in the pinned buffer, NOT raw values. Re-running the compression analysis below would
+        // read those compressed bytes as raw fixed-width values and re-compress garbage (reopen corruption:
+        // a packed RLE column read back as 0x140003). Such a segment is already in its final on-disk form,
+        // so copy its bytes through VERBATIM to a fresh allocation, preserving the compression type and the
+        // (compressed) segment_size. A freshly-appended in-memory segment is UNCOMPRESSED (compression_
+        // defaults to UNCOMPRESSED until checkpoint), so this branch only fires for segments loaded from a
+        // prior checkpoint.
+        const auto loaded_compression = segment.compression();
+        if (loaded_compression != compression::compression_type::UNCOMPRESSED && data &&
+            segment.segment_size() > 0) {
+            const auto compressed_size = segment.segment_size();
+            auto* compressed_data = data + segment.block_offset();
+            auto allocation = partial_block_manager_.get_block_allocation(compressed_size);
+            partial_block_manager_.write_to_block(allocation.block_id,
+                                                  allocation.offset_in_block,
+                                                  compressed_data,
+                                                  compressed_size);
+            storage::data_pointer_t dp;
+            dp.row_start = row_start;
+            dp.tuple_count = tuple_count;
+            dp.block_pointer = storage::block_pointer_t(allocation.block_id, allocation.offset_in_block);
+            dp.compression = loaded_compression;
+            dp.segment_size = compressed_size;
+            data_pointers_.push_back(dp);
+            return true;
+        }
 
         if (is_fixed_size && tuple_count > 1 && data && segment.type_size > 0) {
             auto* segment_data = data + segment.block_offset();
@@ -208,7 +241,7 @@ namespace components::table {
                 dp.compression = compression::compression_type::CONSTANT;
                 dp.segment_size = constant_size;
                 data_pointers_.push_back(dp);
-                return;
+                return true;
             }
 
             // Try RLE compression
@@ -234,7 +267,7 @@ namespace components::table {
                 dp.compression = compression::compression_type::RLE;
                 dp.segment_size = rle_size;
                 data_pointers_.push_back(dp);
-                return;
+                return true;
             }
 
             // Try DICTIONARY compression (low-cardinality columns)
@@ -256,7 +289,7 @@ namespace components::table {
                 dp.compression = compression::compression_type::DICTIONARY;
                 dp.segment_size = dict_info.compressed_size;
                 data_pointers_.push_back(dp);
-                return;
+                return true;
             }
         }
 
@@ -275,6 +308,7 @@ namespace components::table {
         dp.compression = compression::compression_type::UNCOMPRESSED;
         dp.segment_size = segment_size;
         data_pointers_.push_back(dp);
+        return true;
     }
 
     persistent_column_data_t column_checkpoint_state_t::get_persistent_data() const {

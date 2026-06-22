@@ -42,8 +42,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_fk_check.cpp
         operators/operator_fk_cascade.cpp
         operators/operator_sequence.cpp
-        operators/operator_primitive_write.cpp
-        operators/operator_primitive_delete.cpp
         operators/operator_create_collection.cpp
         operators/operator_create_matview.cpp
         operators/operator_create_index_metadata.cpp
@@ -68,7 +66,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_resolve_database.cpp
         operators/operator_resolve_table.cpp
         operators/operator_resolve_type.cpp
-        operators/operator_resolve_function.cpp
         operators/operator_resolve_constraint.cpp
         operators/operator_allocate_oids.cpp
         operators/resolved_table_metadata.cpp

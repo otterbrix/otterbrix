@@ -3,6 +3,7 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <components/table/storage/metadata_manager.hpp>
 #include <components/table/storage/metadata_reader.hpp>
@@ -10,6 +11,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <unistd.h>
 
 namespace {
@@ -38,7 +40,7 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
 
     test_env_t env;
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-    bm.create_new_database();
+    REQUIRE(!bm.create_new_database().has_error());
 
     constexpr size_t NUM_BLOCKS = 5;
     std::vector<uint64_t> block_ids;
@@ -72,7 +74,7 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
         auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
                                              block_ids[i],
                                              static_cast<uint64_t>(bm.block_size()));
-        bm.read(*blk);
+        REQUIRE(!bm.read(*blk).has_error());
 
         auto* data = blk->buffer();
         REQUIRE(std::memcmp(data, original_data[i].data(), original_data[i].size()) == 0);
@@ -90,7 +92,7 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
     // create and write
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         uint64_t id = bm.free_block_id();
         auto blk =
@@ -109,13 +111,13 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
     // load and read
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         REQUIRE(bm.total_blocks() == 1);
 
         auto blk =
             std::make_unique<block_t>(env.resource.upstream_resource(), 0, static_cast<uint64_t>(bm.block_size()));
-        bm.read(*blk);
+        REQUIRE(!bm.read(*blk).has_error());
 
         auto* data = blk->buffer();
         for (size_t j = 0; j < blk->size(); j++) {
@@ -132,7 +134,7 @@ TEST_CASE("single_file_block_manager: free list reuse") {
 
     test_env_t env;
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-    bm.create_new_database();
+    REQUIRE(!bm.create_new_database().has_error());
 
     // allocate 3 blocks
     uint64_t id0 = bm.free_block_id();
@@ -182,7 +184,7 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
     // so free_blocks() after serialize is not simply (freed count).
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         // Allocate 5 blocks (ids 0..4), write dummy data to each
         for (int i = 0; i < 5; i++) {
@@ -214,7 +216,7 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         REQUIRE(bm.free_blocks() == free_blocks_after_serialize);
 
@@ -235,7 +237,7 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.create_new_database();
+        REQUIRE(!bm.create_new_database().has_error());
 
         for (int i = 0; i < 3; i++) {
             uint64_t id = bm.free_block_id();
@@ -257,7 +259,7 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
 
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
-        bm.load_existing_database();
+        REQUIRE(!bm.load_existing_database().has_error());
 
         REQUIRE(bm.free_blocks() == 0);
         // Next alloc should give block 3 (next after 0,1,2)
@@ -266,4 +268,189 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
     }
 
     cleanup_test_file();
+}
+
+// ---------------------------------------------------------------------------
+// Error-VALUE regression tests: the converted paths return a
+// core::result_wrapper_t carrying core::error_code_t::{data_corruption,io_error}
+// instead of throwing. Each test drives the error branch, asserts the error
+// VALUE, and wraps the failing call in REQUIRE_NOTHROW.
+// ---------------------------------------------------------------------------
+
+namespace {
+    std::string corrupt_db_path(const char* tag) {
+        return "/tmp/test_otterbrix_blockmgr_err_" + std::string(tag) + "_" + std::to_string(::getpid()) + ".otbx";
+    }
+} // namespace
+
+// Block checksum mismatch -> data_corruption.
+// single_file_block_manager_t::read() calls verify_checksum(), which compares the
+// first 8 bytes of the block (the checksum slot, written by checksum_and_write)
+// against the CRC32c of the payload that follows it. We write a known block, then
+// flip ONE payload byte directly in the .otbx so the stored checksum no longer
+// matches the recomputed CRC -> verify_checksum() returns false -> read() returns
+// error_code_t::data_corruption (NOT a throw/segfault).
+TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (error value)") {
+    using namespace components::table::storage;
+    const std::string path = corrupt_db_path("checksum");
+    std::remove(path.c_str());
+
+    test_env_t env;
+    uint64_t block_id = 0;
+    uint64_t payload_disk_offset = 0;
+    std::byte original_byte{};
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        REQUIRE(!bm.create_new_database().has_error());
+
+        block_id = bm.free_block_id();
+        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
+                                             block_id,
+                                             static_cast<uint64_t>(bm.block_size()));
+        auto* data = blk->buffer(); // payload region (internal_buffer_ + 8-byte checksum header)
+        for (size_t j = 0; j < blk->size(); j++) {
+            data[j] = static_cast<std::byte>((j * 7 + 1) & 0xFF);
+        }
+        bm.write(*blk, block_id); // checksum_and_write stores CRC in the 8-byte header slot
+
+        // On disk the block lives at BLOCK_START + block_id * block_allocation_size().
+        // Bytes [0,8) of that region are the checksum slot; the payload starts at +8.
+        // Corrupting a payload byte (not the slot) guarantees stored-checksum != recomputed.
+        payload_disk_offset = BLOCK_START + block_id * bm.block_allocation_size() + sizeof(uint64_t);
+        original_byte = data[0];
+    }
+
+    // Mutate one payload byte on disk so the persisted CRC no longer matches.
+    {
+        std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(f.is_open());
+        f.seekg(static_cast<std::streamoff>(payload_disk_offset));
+        char b = 0;
+        f.read(&b, 1);
+        REQUIRE(f.gcount() == 1);
+        b = static_cast<char>(b ^ 0xFF); // flip every bit of this payload byte
+        f.seekp(static_cast<std::streamoff>(payload_disk_offset));
+        f.write(&b, 1);
+        f.flush();
+        REQUIRE(f.good());
+        // Sanity: we really changed a byte relative to the in-memory original.
+        REQUIRE(static_cast<std::byte>(b) != original_byte);
+    }
+
+    // Reopen and read the corrupted block back: read() must surface data_corruption
+    // as a VALUE, not throw, and must NOT report success.
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        REQUIRE(!bm.load_existing_database().has_error());
+
+        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
+                                             block_id,
+                                             static_cast<uint64_t>(bm.block_size()));
+        core::result_wrapper_t<bool> result = false;
+        REQUIRE_NOTHROW(result = bm.read(*blk));
+        REQUIRE(result.has_error()); // would be a false pass if the read succeeded
+        REQUIRE(result.error().type == core::error_code_t::data_corruption);
+    }
+
+    std::remove(path.c_str());
+}
+
+// File open/header IO failure -> io_error.
+// load_existing_database() opens with FILE_CREATE (so a missing file is created
+// empty, not an open failure). Reading the main header from a zero-length file
+// makes the positional read return false -> io_error ("Failed to read main header").
+TEST_CASE("single_file_block_manager: load empty file -> io_error (error value)") {
+    using namespace components::table::storage;
+    const std::string path = corrupt_db_path("empty");
+    std::remove(path.c_str());
+
+    // Create a zero-byte file so the header read hits EOF immediately.
+    {
+        std::ofstream f(path, std::ios::out | std::ios::binary | std::ios::trunc);
+        REQUIRE(f.is_open());
+    }
+    REQUIRE(std::ifstream(path, std::ios::binary).peek() == std::char_traits<char>::eof());
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+
+    core::result_wrapper_t<bool> result = false;
+    REQUIRE_NOTHROW(result = bm.load_existing_database());
+    REQUIRE(result.has_error());
+    REQUIRE(result.error().type == core::error_code_t::io_error);
+
+    std::remove(path.c_str());
+}
+
+// Bad magic/header -> data_corruption.
+// Build a valid db, then overwrite the main_header magic (offset 0) with garbage.
+// The header read succeeds but main_header_t::validate() fails -> data_corruption
+// ("Invalid database file: bad magic or version"), surfaced as a VALUE.
+TEST_CASE("single_file_block_manager: load bad-magic header -> data_corruption (error value)") {
+    using namespace components::table::storage;
+    const std::string path = corrupt_db_path("badmagic");
+    std::remove(path.c_str());
+
+    test_env_t env;
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        REQUIRE(!bm.create_new_database().has_error());
+        database_header_t header;
+        header.initialize();
+        bm.write_header(header);
+    }
+
+    // The main_header_t::magic is the first 4 bytes of the file (offset 0).
+    {
+        std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(f.is_open());
+        uint32_t bad_magic = 0xDEADBEEF; // != main_header_t::MAGIC_NUMBER
+        REQUIRE(bad_magic != main_header_t::MAGIC_NUMBER);
+        f.seekp(0);
+        f.write(reinterpret_cast<const char*>(&bad_magic), sizeof(bad_magic));
+        f.flush();
+        REQUIRE(f.good());
+    }
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        core::result_wrapper_t<bool> result = false;
+        REQUIRE_NOTHROW(result = bm.load_existing_database());
+        REQUIRE(result.has_error());
+        REQUIRE(result.error().type == core::error_code_t::data_corruption);
+    }
+
+    std::remove(path.c_str());
+}
+
+// buffer_pool set_limit / standard_buffer_manager set_memory_limit success path.
+// set_limit() returns out_of_memory only when evict_blocks() cannot free enough
+// memory for the new limit. With no pinned/un-evictable blocks held in the pool,
+// eviction trivially succeeds (used_memory == 0), so the failure branch is not
+// reachable from a fresh pool in a unit test. Asserts only the SUCCESS path:
+// returns a non-error VALUE and does not throw.
+TEST_CASE("buffer_pool/standard_buffer_manager: set_memory_limit success returns non-error value") {
+    using namespace components::table::storage;
+    test_env_t env;
+
+    // Direct pool: lower the limit on an empty pool -> nothing to evict -> success.
+    {
+        core::result_wrapper_t<bool> r = false;
+        REQUIRE_NOTHROW(r = env.buffer_pool.set_limit(uint64_t(1) << 20));
+        REQUIRE_FALSE(r.has_error());
+        REQUIRE(r.value() == true);
+    }
+    // Raising the limit can never fail eviction either.
+    {
+        core::result_wrapper_t<bool> r = false;
+        REQUIRE_NOTHROW(r = env.buffer_pool.set_limit(uint64_t(1) << 32));
+        REQUIRE_FALSE(r.has_error());
+    }
+    // Through the buffer manager facade (set_memory_limit delegates to set_limit).
+    {
+        core::result_wrapper_t<bool> r = false;
+        REQUIRE_NOTHROW(r = env.buffer_manager.set_memory_limit(uint64_t(1) << 24));
+        REQUIRE_FALSE(r.has_error());
+    }
 }

@@ -65,6 +65,31 @@ namespace components::table {
 
         uint64_t published_horizon() const noexcept { return published_horizon_.load(std::memory_order_acquire); }
 
+        // Reopen restores BOTH halves of the commit clock from a SINGLE durable
+        // frontier. The one entry point every reopen restore path must funnel
+        // through, so the two halves can never disagree:
+        //   * current_timestamp_  → max(current, frontier + 1): the fetch_add source
+        //     of every new start_time/commit_id. Raising it past the frontier means
+        //     post-reopen INSERTs draw commit-ids ABOVE the durable band — they no
+        //     longer collide with already-published ids, so a reader that snapshots
+        //     them in-flight and later sees them published judges them visible (and
+        //     persisted added_at_commit_id stay in the past).
+        //   * published_horizon_  → max(current, frontier): post-recovery snapshots
+        //     see every persisted commit as published.
+        // Maintains the invariant current_timestamp_ >= published_horizon_ + 1.
+        // Idempotent — NEVER lowers either value. Called single-threaded at
+        // bootstrap, before schedulers start, so plain store(max(...)) under no
+        // contention suffices.
+        void restore_commit_clock(uint64_t frontier);
+
+        // Reopen restores the commit-id horizon so persisted catalog columns stay
+        // visible. pg_attribute stamps every column with an added_at_commit_id from
+        // the prior session's clock; a reopened manager starts its clock at {1,0},
+        // so without this seed every new txn's start_time would fall BELOW those
+        // persisted ids and resolve_table's visibility filter would judge all
+        // columns "added after my snapshot" → "column not found".
+        void seed_commit_clock(uint64_t high_water) { restore_commit_clock(high_water); }
+
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
     private:

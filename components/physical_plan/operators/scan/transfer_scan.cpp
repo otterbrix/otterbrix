@@ -36,7 +36,16 @@ namespace components::operators {
                                          scan_limit,
                                          projected_cols_,
                                          ctx->txn);
-        auto batches = co_await std::move(sf);
+        // The scan reply carries any buffer-pool OOM / data_corruption the table-layer scan
+        // surfaced; surface it as a clean error cursor (the executor turns has_error() into an
+        // error cursor).
+        auto scan_result = co_await std::move(sf);
+        if (scan_result.has_error()) {
+            set_error(scan_result.error());
+            mark_failed();
+            co_return;
+        }
+        auto batches = std::move(scan_result.value());
 
         // Skip offset rows across batches. Partial-copy the boundary batch.
         if (offset_val > 0) {

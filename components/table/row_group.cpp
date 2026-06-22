@@ -131,14 +131,23 @@ namespace components::table {
                 default_value.has_value() ? *default_value
                                           : types::logical_value_t{collection_->resource(), new_column.type()};
             column_append_state state;
-            added_column->initialize_append(state);
-            for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {
+            // DDL ADD COLUMN backfill path (synchronous, not an actor append boundary). The append
+            // chain reports out_of_memory; this constructor-style caller cannot return a
+            // result_wrapper_t, so assert and stop the backfill on exhaustion. (A graceful DDL abort
+            // would require the data_table ADD COLUMN constructors to be converted to return errors.)
+            auto init = added_column->initialize_append(state);
+            assert(!init.has_error() && "row_group::add_column: initialize_append OOM");
+            for (uint64_t i = 0; i < rows_to_write && !init.has_error(); i += vector::DEFAULT_VECTOR_CAPACITY) {
                 uint64_t rows_in_this_vector = std::min<uint64_t>(rows_to_write - i, vector::DEFAULT_VECTOR_CAPACITY);
                 result.reference(fill_value);
                 if (!default_value.has_value()) {
                     result.set_null(true);
                 }
-                added_column->append(state, result, rows_in_this_vector);
+                auto appended = added_column->append(state, result, rows_in_this_vector);
+                assert(!appended.has_error() && "row_group::add_column: append OOM");
+                if (appended.has_error()) {
+                    break;
+                }
             }
         }
 
@@ -179,13 +188,50 @@ namespace components::table {
         }
     }
 
-    bool row_group_t::check_predicate(int64_t row_id, const table_filter_t* filter) {
+    // A trailing subscript index into an ARRAY/LIST column (e.g. WHERE v[k] = x)
+    // addresses an element, not a STRUCT sub-column. Materialize the row's list
+    // value and compare the addressed (0-based) element against the filter. A
+    // NULL list, an out-of-range index, or a NULL element does not match.
+    static bool check_array_element_predicate(column_data_t& column,
+                                              int64_t row_id,
+                                              uint64_t element_index,
+                                              const table_filter_t* filter,
+                                              core::error_t& error) {
+        column_fetch_state fetch_state;
+        vector::vector_t result(column.resource(), column.type(), 1);
+        column.fetch_row(fetch_state, row_id, result, 0);
+        if (fetch_state.fetch_error.contains_error()) {
+            error = fetch_state.fetch_error;
+            return false;
+        }
+        if (!result.validity().row_is_valid(0)) {
+            return false;
+        }
+        auto list_value = result.value(0);
+        const auto& elements = list_value.children();
+        if (element_index >= elements.size()) {
+            return false;
+        }
+        const auto& element_value = elements[element_index];
+        if (element_value.is_null()) {
+            return false;
+        }
+        if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
+            return set->contains(element_value);
+        }
+        return filter->cast<constant_filter_t>().compare(element_value);
+    }
+
+    bool row_group_t::check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error) {
         switch (filter->filter_type) {
             case expressions::compare_type::union_or: {
                 auto& conjunction_or = filter->cast<conjunction_or_filter_t>();
                 for (auto& child_filter : conjunction_or.child_filters) {
-                    if (check_predicate(row_id, child_filter.get())) {
+                    if (check_predicate(row_id, child_filter.get(), error)) {
                         return true;
+                    }
+                    if (error.contains_error()) {
+                        return false;
                     }
                 }
                 return false;
@@ -193,7 +239,10 @@ namespace components::table {
             case expressions::compare_type::union_and: {
                 auto& conjunction_and = filter->cast<conjunction_and_filter_t>();
                 for (auto& child_filter : conjunction_and.child_filters) {
-                    if (!check_predicate(row_id, child_filter.get())) {
+                    if (!check_predicate(row_id, child_filter.get(), error)) {
+                        return false;
+                    }
+                    if (error.contains_error()) {
                         return false;
                     }
                 }
@@ -202,7 +251,10 @@ namespace components::table {
             case expressions::compare_type::union_not: {
                 auto& conjunction_not = filter->cast<conjunction_not_filter_t>();
                 for (auto& child_filter : conjunction_not.child_filters) {
-                    if (check_predicate(row_id, child_filter.get())) {
+                    if (check_predicate(row_id, child_filter.get(), error)) {
+                        return false;
+                    }
+                    if (error.contains_error()) {
                         return false;
                     }
                 }
@@ -228,9 +280,13 @@ namespace components::table {
                 const auto& indices = table_filter_table_indices(filter);
                 column_data_t* column = &get_column(indices.front());
                 for (size_t i = 1; i < indices.size(); i++) {
+                    if (column->type().type() == types::logical_type::ARRAY ||
+                        column->type().type() == types::logical_type::LIST) {
+                        return check_array_element_predicate(*column, row_id, indices[i], filter, error);
+                    }
                     column = static_cast<struct_column_data_t*>(column)->sub_columns[indices[i]].get();
                 }
-                return column->check_predicate(row_id, filter);
+                return column->check_predicate(row_id, filter, error);
             }
         }
     }
@@ -266,14 +322,20 @@ namespace components::table {
                                       uint64_t vector_index,
                                       vector::indexing_vector_t& indexing,
                                       const table_filter_t* filter,
-                                      uint64_t& approved_tuple_count) {
+                                      uint64_t& approved_tuple_count,
+                                      core::error_t& error) {
         vector::indexing_vector_t new_indexing(resource, approved_tuple_count);
         uint64_t result_count = 0;
         for (uint64_t i = 0; i < approved_tuple_count; i++) {
             auto idx = indexing.get_index(i);
             new_indexing.set_index(result_count, idx);
-            result_count +=
-                check_predicate(static_cast<int64_t>(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY), filter);
+            result_count += check_predicate(static_cast<int64_t>(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY),
+                                            filter,
+                                            error);
+            if (error.contains_error()) {
+                // OOM during predicate evaluation: stop; caller copies to scan_error.
+                return;
+            }
         }
         indexing = new_indexing;
         approved_tuple_count = result_count;
@@ -336,6 +398,13 @@ namespace components::table {
                     }
                 }
                 state.valid_indexing = vector::indexing_vector_t(result.resource(), 0, result.capacity());
+                // Aggregate any per-column pin OOM raised by the scans above.
+                for (auto& cs : state.column_scans) {
+                    if (cs.has_error()) {
+                        state.scan_error = cs.scan_error;
+                        return;
+                    }
+                }
             } else {
                 uint64_t approved_tuple_count = count;
                 vector::indexing_vector_t indexing(result.resource(), result.capacity());
@@ -350,7 +419,11 @@ namespace components::table {
                                     state.vector_index,
                                     indexing,
                                     filter,
-                                    approved_tuple_count);
+                                    approved_tuple_count,
+                                    state.scan_error);
+                    if (state.has_error()) {
+                        return;
+                    }
                 }
                 if (approved_tuple_count == 0) {
                     for (uint64_t i = 0; i < column_ids.size(); i++) {
@@ -400,6 +473,14 @@ namespace components::table {
                                                       approved_tuple_count,
                                                       ALLOW_UPDATES);
                         }
+                    }
+                }
+
+                // Aggregate any per-column pin OOM raised by select/select_committed.
+                for (auto& cs : state.column_scans) {
+                    if (cs.has_error()) {
+                        state.scan_error = cs.scan_error;
+                        return;
                     }
                 }
 
@@ -496,50 +577,64 @@ namespace components::table {
         }
     }
 
-    void row_group_t::initialize_append(row_group_append_state& append_state) {
+    core::result_wrapper_t<bool> row_group_t::initialize_append(row_group_append_state& append_state) {
         append_state.row_group = this;
         append_state.offset_in_row_group = count;
         append_state.states = std::make_unique<column_append_state[]>(get_column_count());
         for (uint64_t i = 0; i < get_column_count(); i++) {
             auto& col_data = get_column(i);
-            col_data.initialize_append(append_state.states[i]);
+            auto init = col_data.initialize_append(append_state.states[i]);
+            if (init.has_error()) {
+                return init; // out_of_memory
+            }
         }
+        return true;
     }
 
-    void row_group_t::append(row_group_append_state& state, vector::data_chunk_t& chunk, uint64_t append_count) {
+    core::result_wrapper_t<bool>
+    row_group_t::append(row_group_append_state& state, vector::data_chunk_t& chunk, uint64_t append_count) {
         assert(chunk.column_count() == get_column_count());
         for (uint64_t i = 0; i < get_column_count(); i++) {
             auto& col_data = get_column(i);
             auto prev_allocation_size = col_data.allocation_size();
-            col_data.append(state.states[i], chunk.data[i], append_count);
+            auto appended = col_data.append(state.states[i], chunk.data[i], append_count);
             allocation_size_ += col_data.allocation_size() - prev_allocation_size;
+            if (appended.has_error()) {
+                return appended; // out_of_memory
+            }
         }
         state.offset_in_row_group += append_count;
+        return true;
     }
 
-    void row_group_t::update(vector::data_chunk_t& update_chunk,
-                             int64_t* ids,
-                             uint64_t offset,
-                             uint64_t count,
-                             const std::vector<uint64_t>& column_ids) {
+    core::result_wrapper_t<bool> row_group_t::update(vector::data_chunk_t& update_chunk,
+                                                    int64_t* ids,
+                                                    uint64_t offset,
+                                                    uint64_t count,
+                                                    const std::vector<uint64_t>& column_ids) {
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             auto column = column_ids[i];
             assert(column != std::numeric_limits<uint64_t>::max());
             auto& col_data = get_column(column);
             assert(col_data.type().type() == update_chunk.data[i].type().type());
-            if (offset > 0) {
-                vector::vector_t sliced_vector(update_chunk.data[i], offset, count);
-                sliced_vector.flatten(count);
-                col_data.update(column, sliced_vector, ids + offset, count);
-            } else {
-                col_data.update(column, update_chunk.data[i], ids, count);
+            core::result_wrapper_t<bool> updated = [&]() -> core::result_wrapper_t<bool> {
+                if (offset > 0) {
+                    vector::vector_t sliced_vector(update_chunk.data[i], offset, count);
+                    sliced_vector.flatten(count);
+                    return col_data.update(column, sliced_vector, ids + offset, count);
+                }
+                return col_data.update(column, update_chunk.data[i], ids, count);
+            }();
+            if (updated.has_error()) {
+                return updated; // write_conflict / out_of_memory
             }
         }
+        return true;
     }
 
-    void row_group_t::update_column(vector::data_chunk_t& updates,
-                                    vector::vector_t& row_ids,
-                                    const std::vector<uint64_t>& column_path) {
+    core::result_wrapper_t<bool> row_group_t::update_column(vector::data_chunk_t& updates,
+                                                          vector::vector_t& row_ids,
+                                                          const std::vector<uint64_t>& column_path) {
         assert(updates.column_count() == 1);
         auto ids = row_ids.data<int64_t>();
 
@@ -547,7 +642,7 @@ namespace components::table {
         assert(primary_column_idx != std::numeric_limits<uint64_t>::max());
         assert(primary_column_idx < columns_.size());
         auto& col_data = get_column(primary_column_idx);
-        col_data.update_column(column_path, updates.data[0], ids, updates.size(), 1);
+        return col_data.update_column(column_path, updates.data[0], ids, updates.size(), 1);
     }
 
     uint64_t row_group_t::committed_row_count() {
@@ -578,6 +673,16 @@ namespace components::table {
         for (uint64_t col_idx = 0; col_idx < get_column_count(); col_idx++) {
             auto& col_data = get_column(col_idx);
             col_data.get_column_segment_info(row_group_index, {col_idx}, result);
+        }
+    }
+
+    void row_group_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) {
+        // Only walk columns already materialized in memory; an unloaded/disk-loaded column is iterated
+        // via columns_ lazily by get_column, which is what we want (its segments carry disk block ids).
+        for (auto& column : columns_) {
+            if (column) {
+                column->collect_disk_block_ids(out);
+            }
         }
     }
 
@@ -751,7 +856,8 @@ namespace components::table {
         delete_count += actual_delete_count;
         count = 0;
     }
-    storage::row_group_pointer_t row_group_t::write_to_disk(storage::partial_block_manager_t& partial_block_manager) {
+    core::result_wrapper_t<storage::row_group_pointer_t>
+    row_group_t::write_to_disk(storage::partial_block_manager_t& partial_block_manager) {
         storage::row_group_pointer_t pointer;
         pointer.row_start = static_cast<uint64_t>(start);
         pointer.tuple_count = count;
@@ -761,10 +867,28 @@ namespace components::table {
 
         for (uint64_t i = 0; i < col_count; i++) {
             auto persistent = columns_[i]->checkpoint(partial_block_manager);
-            pointer.data_pointers[i] = std::move(persistent.data_pointers);
+            if (persistent.has_error()) {
+                return persistent.convert_error<storage::row_group_pointer_t>(); // out_of_memory
+            }
+            pointer.data_pointers[i] = std::move(persistent.value().data_pointers);
         }
 
         return pointer;
+    }
+
+    core::result_wrapper_t<bool> row_group_t::transition_to_disk() {
+        // Only transition columns already materialized in memory (a freshly-appended row group). Disk-loaded /
+        // unloaded columns are already disk-backed (block_id < MAXIMUM) -> nothing to do; don't force a load.
+        for (uint64_t i = 0; i < columns_.size(); i++) {
+            if (!columns_[i]) {
+                continue;
+            }
+            auto transitioned = columns_[i]->transition_to_disk();
+            if (transitioned.has_error()) {
+                return transitioned; // io_error / out_of_memory
+            }
+        }
+        return true;
     }
 
     void row_group_t::create_from_pointer(const storage::row_group_pointer_t& pointer) {

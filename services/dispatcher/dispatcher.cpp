@@ -401,13 +401,19 @@ namespace services::dispatcher {
         co_return;
     }
 
-    void manager_dispatcher_t::set_replay_horizon_sync(uint64_t commit_id) {
-        // publish() takes the manager's own lock_ — safe even outside a started
-        // scheduler. publish() is monotonic (CAS keeps the max), so passing a
-        // stale id is a no-op.
-        if (commit_id > 0) {
-            txn_manager_.publish(commit_id);
-            trace(log_, "manager_dispatcher_t::set_replay_horizon_sync , advanced published_horizon to {}", commit_id);
+    void manager_dispatcher_t::seed_commit_clock_sync(uint64_t high_water) {
+        // Restore BOTH halves of the commit clock from the combined durable frontier,
+        // not just published_horizon_. Raising only the horizon while current_timestamp_
+        // restarts at 1 lets post-reopen INSERTs draw commit-ids that reuse the
+        // already-published band; a reader that snapshots them in-flight then judges them
+        // invisible forever (symptom: SSB q1-1 returned 0 rows on reopen).
+        // restore_commit_clock raises current_timestamp_ to frontier+1 in lockstep
+        // with published_horizon_, so fresh commits land strictly above the durable
+        // frontier. Monotonic / idempotent — never lowers either half. Single-threaded
+        // bootstrap; scheduler not yet started.
+        if (high_water > 0) {
+            txn_manager_.restore_commit_clock(high_water);
+            trace(log_, "manager_dispatcher_t::seed_commit_clock_sync , restored commit clock to frontier {}", high_water);
         }
     }
 

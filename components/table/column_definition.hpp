@@ -71,4 +71,17 @@ namespace components::table {
         std::unordered_map<std::string, std::string> tags_;
     };
 
+    // Reconcile a LIST/ARRAY value to a column's fixed ARRAY type for storage:
+    //   * cast each element to the target element type;
+    //   * if the value is longer than the array size, drop the trailing elements;
+    //   * if shorter, pad the missing trailing slots from the column DEFAULT array,
+    //     position-by-position; when the column has no usable default, pad with NULL
+    //     if the column is nullable, otherwise return an NA value to signal that the
+    //     short value cannot satisfy a NOT NULL fixed array.
+    // `column` must be an ARRAY-typed column.
+    types::logical_value_t reconcile_to_fixed_array(std::pmr::memory_resource* resource,
+                                                    const types::logical_value_t& value,
+                                                    const column_definition_t& column,
+                                                    core::date::timezone_offset_t session_tz);
+
 } // namespace components::table

@@ -1,5 +1,4 @@
 #include <components/logical_plan/node_create_sequence.hpp>
-#include <components/logical_plan/node_drop_sequence.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 

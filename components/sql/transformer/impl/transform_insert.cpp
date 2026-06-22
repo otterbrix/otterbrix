@@ -5,7 +5,10 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <sql/parser/pg_functions.h>
+
+#include <optional>
 
 using namespace components::expressions;
 
@@ -166,6 +169,73 @@ namespace {
                     return val;
             }
         }
+    }
+
+    // True when two array-like (ARRAY/LIST) column types differ in shape — different
+    // element type or, for fixed arrays, different declared size — so a single fixed-ARRAY
+    // column vector cannot hold both. Such a column is promoted to a variable-length LIST.
+    bool array_shapes_differ(const components::types::complex_logical_type& a,
+                             const components::types::complex_logical_type& b) {
+        using LT = components::types::logical_type;
+        const bool a_arrayish = a.type() == LT::ARRAY || a.type() == LT::LIST;
+        const bool b_arrayish = b.type() == LT::ARRAY || b.type() == LT::LIST;
+        return a_arrayish && b_arrayish && a != b;
+    }
+
+    // Converts an ARRAY/LIST logical value into a LIST value with the given element type.
+    components::types::logical_value_t to_list_value(std::pmr::memory_resource* resource,
+                                                     const components::types::logical_value_t& val,
+                                                     const components::types::complex_logical_type& elem_type) {
+        if (val.is_null()) {
+            return components::types::logical_value_t(
+                resource,
+                components::types::complex_logical_type{components::types::logical_type::NA});
+        }
+        return components::types::logical_value_t::create_list(resource, elem_type, val.children());
+    }
+
+    // Rebuilds a fixed-ARRAY column vector as a variable-length LIST(elem_type), converting
+    // the rows filled so far. Used when a later VALUES row carries a different array shape.
+    components::vector::vector_t promote_array_to_list(std::pmr::memory_resource* resource,
+                                                       const components::vector::vector_t& col,
+                                                       size_t num_rows,
+                                                       const components::types::complex_logical_type& elem_type,
+                                                       uint64_t capacity) {
+        auto list_type = components::types::complex_logical_type::create_list(elem_type);
+        list_type.set_alias(std::string(col.type().alias()));
+        components::vector::vector_t new_col(resource, list_type, capacity);
+
+        const auto stride =
+            static_cast<const components::types::array_logical_type_extension*>(col.type().extension())->size();
+
+        // The fixed-ARRAY child holds row r's elements contiguously at [r*stride, r*stride+stride).
+        // Cast that whole support vector to the LIST's element type once (a no-op when the physical
+        // types already match), then append each row's slice and point its (offset,length) list entry
+        // at it — no per-element logical_value_t round-trip.
+        const components::vector::vector_t& src_child = col.entry();
+        std::optional<components::vector::vector_t> casted;
+        const components::vector::vector_t* elems = &src_child;
+        if (src_child.type().to_physical_type() != elem_type.to_physical_type()) {
+            casted.emplace(
+                components::vector::vector_ops::cast_vector(resource, src_child, elem_type, num_rows * stride));
+            elems = &casted.value();
+        }
+
+        auto* row_entries = new_col.data<components::types::list_entry_t>();
+        new_col.set_list_size(0);
+        uint64_t offset = 0;
+        for (size_t row = 0; row < num_rows; ++row) {
+            if (col.is_null(row)) {
+                new_col.set_null(row, true);
+                row_entries[row] = components::types::list_entry_t{offset, 0};
+                continue;
+            }
+            new_col.append(*elems, row * stride + stride, row * stride);
+            row_entries[row] = components::types::list_entry_t{offset, stride};
+            offset += stride;
+        }
+        new_col.set_list_size(offset);
+        return new_col;
     }
 
     // Promotes an existing column vector to a wider numeric type, converting all stored values.
@@ -342,6 +412,20 @@ namespace components::sql::transform {
                                 chunk.set_value(column_index,
                                                 chunk_row,
                                                 numeric_widen(resource_, value.value(), promoted));
+                            } else if (array_shapes_differ(it->type(), value.value().type())) {
+                                // VALUES rows carry array literals of different shapes (e.g. ARRAY[1]
+                                // then ARRAY[2,3]): a single fixed-ARRAY vector can't hold both, so
+                                // promote the column to a variable-length LIST and store every row as
+                                // a list. The target column's reconciliation handles LIST -> fixed
+                                // ARRAY later if needed.
+                                auto elem_type = value.value().type().child_type();
+                                if (col_type == types::logical_type::ARRAY) {
+                                    chunk.data[column_index] =
+                                        promote_array_to_list(resource_, *it, chunk_row, elem_type, chunk.capacity());
+                                }
+                                chunk.set_value(column_index,
+                                                chunk_row,
+                                                to_list_value(resource_, value.value(), elem_type));
                             } else {
                                 chunk.set_value(column_index, chunk_row, std::move(value.value()));
                             }

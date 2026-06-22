@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#include <core/result_wrapper.hpp>
+
 #include "file_buffer.hpp"
 
 namespace components::table::storage {
@@ -30,7 +32,10 @@ namespace components::table::storage {
         virtual void mark_as_modified(uint64_t block_id) = 0;
         virtual void increase_block_ref_count(uint64_t block_id) = 0;
         virtual uint64_t meta_block() = 0;
-        virtual void read(block_t& block) = 0;
+        // Returns true on success, or core::error_code_t::data_corruption (checksum mismatch on disk reload) /
+        // io_error. Disk reload makes the checksum path reachable on the agent thread, so the failure must
+        // surface via result_wrapper_t rather than a throw.
+        [[nodiscard]] virtual core::result_wrapper_t<bool> read(block_t& block) = 0;
         virtual void read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t block_count) = 0;
         virtual void write(file_buffer_t& block, uint64_t block_id) = 0;
         void write(block_t& block) { write(block, block.id); }

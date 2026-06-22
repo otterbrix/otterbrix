@@ -3,9 +3,7 @@
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_view.hpp>
-#include <components/logical_plan/node_drop_macro.hpp>
-#include <components/logical_plan/node_drop_sequence.hpp>
-#include <components/logical_plan/node_drop_view.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>

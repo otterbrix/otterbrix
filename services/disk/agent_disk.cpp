@@ -87,6 +87,18 @@ namespace services::disk {
               otbx_path.string(),
               static_cast<uint64_t>(sidecar_wal_id));
         auto entry = std::make_unique<collection_storage_entry_t>(resource(), otbx_path);
+        // The DISK load ctor records io_error/data_corruption instead of throwing (this helper is noexcept
+        // and reachable on the agent thread). Drop a failed-construction entry so we never emplace a
+        // half-loaded storage; the manager-side probe drives .prev corrupt-recovery before this.
+        if (entry->table_storage.construction_failed()) {
+            warn(log_,
+                 "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] load oid={} path={} failed: {}",
+                 pool_idx_,
+                 static_cast<unsigned>(oid),
+                 otbx_path.string(),
+                 entry->table_storage.construction_error().what.c_str());
+            return false;
+        }
         if (sidecar_wal_id > wal::id_t{0}) {
             entry->table_storage.set_checkpoint_wal_id(sidecar_wal_id);
         }
@@ -111,6 +123,18 @@ namespace services::disk {
               static_cast<unsigned>(oid),
               otbx_path.string());
         auto entry = std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path);
+        // The DISK create ctor records io_error instead of throwing (this helper is noexcept and runs on
+        // the agent thread via create_storage_disk_inner). Drop a failed-construction entry rather than
+        // emplacing a storage with a null table_/block_manager_.
+        if (entry->table_storage.construction_failed()) {
+            warn(log_,
+                 "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] create oid={} path={} failed: {}",
+                 pool_idx_,
+                 static_cast<unsigned>(oid),
+                 otbx_path.string(),
+                 entry->table_storage.construction_error().what.c_str());
+            return false;
+        }
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
@@ -247,6 +271,49 @@ namespace services::disk {
         entry->storage->update(ids_vec, local);
     }
 
+    void agent_disk_t::direct_add_column_sync(components::catalog::oid_t table_oid,
+                                              const components::vector::data_chunk_t& schema_chunk) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr) {
+            trace(log_,
+                  "agent_disk[{}]::direct_add_column_sync: oid {} not owned by this agent — no-op",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            return;
+        }
+        auto& entry = it->second;
+        if (entry->storage == nullptr) {
+            return;
+        }
+        auto* s = entry->storage.get();
+        // For each schema column, add it unless a same-named column already exists
+        // (idempotent replay). The column type carries its alias = the column name.
+        for (uint64_t col = 0; col < schema_chunk.column_count(); ++col) {
+            const auto ctype = schema_chunk.data[col].type();
+            if (!ctype.has_alias()) {
+                continue;
+            }
+            const auto name = std::string(ctype.alias());
+            bool present = false;
+            for (const auto& tc : s->columns()) {
+                if (tc.name() == name) {
+                    present = true;
+                    break;
+                }
+            }
+            if (present) {
+                continue;
+            }
+            components::table::column_definition_t def(name, ctype);
+            entry->add_column(def, resource());
+            // add_column rebuilt the adapter; refresh the local pointer.
+            s = entry->storage.get();
+            if (s == nullptr) {
+                return;
+            }
+        }
+    }
+
     actor_zeta::behavior_t agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
         switch (msg->command()) {
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::fix_wal_id>: {
@@ -381,11 +448,12 @@ namespace services::disk {
     // Mutation fanout targets. The manager router pre-validates, but the agent
     // re-checks (not-owned / null no-op) because it owns its slice independently.
 
-    agent_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
-    agent_disk_t::storage_append_inner(components::catalog::oid_t table_oid,
-                                       std::unique_ptr<components::vector::data_chunk_t> data,
-                                       components::table::transaction_data txn,
-                                       core::date::timezone_offset_t session_tz) {
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
+    agent_disk_t::storage_append_inner(execution_context_t ctx,
+                                       components::catalog::oid_t table_oid,
+                                       std::unique_ptr<components::vector::data_chunk_t> data) {
+        const auto txn = ctx.txn;
+        const auto session_tz = ctx.session_tz;
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -406,6 +474,20 @@ namespace services::disk {
         if (!s || !data || data->size() == 0) {
             co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
+
+        // WAL-FIRST append. The whole body (preprocess -> WAL co_await -> materialize)
+        // runs as ONE agent mailbox handler. The agent is a cooperative_actor: it
+        // processes exactly one handler coroutine at a time, atomically across every
+        // internal co_await (it does NOT pop the next mailbox message while this one is
+        // suspended on the WAL future — see cooperative_actor::resume_impl). So no other
+        // same-oid append can interleave between the start_row read below and the
+        // materializing s->append: the start_row computed pre-append is still valid at
+        // append time.
+        //
+        // Columns added by the dynamic-schema-growth stage (1b) are recorded here so a
+        // PHYSICAL_ADD_COLUMN WAL record is emitted BEFORE the PHYSICAL_INSERT, keeping
+        // schema-then-rows order on replay.
+        std::vector<components::table::column_definition_t> wal_added_columns;
 
         // Full preprocessing pipeline (stages 1-5 below) runs on the owning agent so
         // its reads and the final write are mailbox-serialized with every same-oid access.
@@ -445,6 +527,8 @@ namespace services::disk {
             if (!new_columns.empty()) {
                 for (auto& col : new_columns) {
                     entry->add_column(col, resource());
+                    // Record for the PHYSICAL_ADD_COLUMN WAL record written below.
+                    wal_added_columns.push_back(col);
                 }
                 // add_column rebuilt the storage adapter; refresh our local
                 // storage_t* to point at the new adapter.
@@ -587,10 +671,35 @@ namespace services::disk {
                     if (src_vec.type().has_alias()) {
                         target_type.set_alias(src_vec.type().alias());
                     }
+                    const bool array_target = target_type.type() == components::types::logical_type::ARRAY;
+                    // A whole-column NULL literal arrives as an NA-typed source vector, which
+                    // carries no values (and no meaningful validity mask) — every row is null.
+                    const bool src_is_null_type = src_vec.type().type() == components::types::logical_type::NA;
                     components::vector::vector_t casted(resource(), target_type, data->size());
                     for (uint64_t row = 0; row < data->size(); row++) {
-                        if (src_vec.validity().row_is_valid(row)) {
-                            casted.set_value(row, src_vec.value(row).cast_as(target_type, session_tz));
+                        if (!src_is_null_type && src_vec.validity().row_is_valid(row)) {
+                            // A fixed ARRAY column reconciles a length mismatch against the
+                            // column DEFAULT (truncate / pad-with-default); other columns use
+                            // the plain value cast.
+                            auto reconciled = array_target
+                                                  ? components::table::reconcile_to_fixed_array(resource(),
+                                                                                                src_vec.value(row),
+                                                                                                table_columns[i],
+                                                                                                session_tz)
+                                                  : src_vec.value(row).cast_as(target_type, session_tz);
+                            // reconcile_to_fixed_array yields a NULL value only when a NOT NULL
+                            // fixed ARRAY column receives a too-short value with no default to
+                            // pad from. operator_check_constraint already rejects this with a
+                            // clean error before the append, so this is a defensive backstop.
+                            if (array_target && reconciled.is_null()) {
+                                trace(log_,
+                                      "agent_disk[{}]::storage_append_inner: NOT NULL fixed ARRAY column '{}' "
+                                      "cannot be padded from a too-short value",
+                                      pool_idx_,
+                                      table_columns[i].name());
+                                co_return std::make_pair(uint64_t{0}, uint64_t{0});
+                            }
+                            casted.set_value(row, reconciled);
                         } else {
                             casted.validity().set_invalid(row);
                         }
@@ -600,15 +709,120 @@ namespace services::disk {
             }
         }
 
-        // 5. Append — the canonical write.
-        auto actual_count = data->size();
-        uint64_t start_row;
-        if (txn.transaction_id != 0) {
-            start_row = s->append(*data, txn);
-        } else {
-            start_row = s->append(*data);
+        // 5. WAL-first: allocate the start_row WITHOUT materializing, write WAL,
+        //    then materialize. total_rows() is the next append position (the standard
+        //    append computes the same value). No other same-oid handler runs between
+        //    this read and the s->append below (mailbox-atomic handler), so the value
+        //    is stable.
+        const auto actual_count = data->size();
+        const uint64_t start_row = s->total_rows();
+
+        // 5a. WAL records (WAL-first), only for a real transaction. Replay filters
+        //     uncommitted txns, so a txn_id==0 (legacy / replay) append writes no WAL.
+        if (txn.transaction_id != 0 && manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+            const auto db_oid = (ctx.database_oid != components::catalog::INVALID_OID)
+                                    ? ctx.database_oid
+                                    : components::catalog::well_known_oid::main_database;
+
+            // 5a-i. Schema-growth record BEFORE the rows that depend on it. The
+            //       payload is a 0-row chunk whose columns ARE the new columns
+            //       (alias-tagged types); replay rebuilds the column defs and
+            //       re-applies add_column ahead of the PHYSICAL_INSERT.
+            //
+            //       Issued fire-and-forget (the future is intentionally dropped): we
+            //       MUST NOT co_await it here. This handler already co_awaits the
+            //       PHYSICAL_INSERT future below; a SECOND sequential cross-actor
+            //       co_await on the same agent coroutine triggers the cooperative_actor
+            //       lost-wakeup (the await re-suspends after the first resume, the
+            //       producer's flag-based readiness never unblocks the parked mailbox,
+            //       and resume_impl returns early on the blocked-check before reaching
+            //       the awaited-continuation drain — see docs/actor-zeta-lost-wakeup.md,
+            //       "the coroutine re-suspended after resume on the next co_await").
+            //       That hung the engine on the first schema-growth INSERT.
+            //
+            //       Durability + ordering are preserved without the await: both records
+            //       target the SAME single WAL worker, whose mailbox is FIFO, and the
+            //       manager allocates wal_id synchronously in send order, so the
+            //       ADD_COLUMN record (lower wal_id) is durably written ahead of its
+            //       dependent PHYSICAL_INSERT (higher wal_id). When the INSERT future
+            //       below resolves, the worker has necessarily already processed the
+            //       earlier ADD_COLUMN message. Replay applies records in ascending
+            //       wal_id order, so the column re-add precedes the row replay.
+            if (!wal_added_columns.empty()) {
+                std::pmr::vector<components::types::complex_logical_type> col_types(resource());
+                col_types.reserve(wal_added_columns.size());
+                for (const auto& col : wal_added_columns) {
+                    auto t = col.type();
+                    t.set_alias(col.name());
+                    col_types.push_back(t);
+                }
+                auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
+                schema_chunk->set_cardinality(0);
+                [[maybe_unused]] auto _sc =
+                    actor_zeta::send(manager_wal_addr_,
+                                     &wal::manager_wal_replicate_t::write_physical_add_column,
+                                     ctx.session,
+                                     table_oid,
+                                     std::move(schema_chunk),
+                                     static_cast<std::uint64_t>(wal_added_columns.size()),
+                                     txn.transaction_id,
+                                     db_oid);
+            }
+
+            // 5a-ii. PHYSICAL_INSERT carrying the FINAL preprocessed chunk + the
+            //        reserved start_row + count. Replay re-appends sequentially (it
+            //        ignores physical_row_start for placement) but CREATE INDEX
+            //        backfill-from-WAL uses start_row as the row-id base, so it must
+            //        equal the materialized start_row — which it does (computed above
+            //        and materialized below in the same atomic handler). This is the
+            //        ONE co_await of this handler (see 5a-i): awaiting it also confirms
+            //        the FIFO-earlier ADD_COLUMN record was durably written.
+            components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
+            data->copy(wal_chunk, 0);
+            std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
+            wal_chunks.emplace_back(std::move(wal_chunk));
+            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
+                                             &wal::manager_wal_replicate_t::write_physical_insert,
+                                             ctx.session,
+                                             table_oid,
+                                             std::move(wal_chunks),
+                                             start_row,
+                                             actual_count,
+                                             txn.transaction_id,
+                                             db_oid);
+            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+                trace(log_,
+                      "agent_disk[{}]::storage_append_inner: physical_insert WAL returned zero id for oid={}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid));
+            }
         }
-        co_return std::make_pair(start_row, actual_count);
+
+        // 5b. Materialize — the canonical write. Lands at total_rows() == start_row.
+        //     The txn path can surface a write_conflict (concurrent DDL re-rooted the
+        //     table) or out_of_memory (row-group/segment alloc) as a value; this is a plain
+        //     synchronous local call (no co_await), so reading the wrapper adds NO second
+        //     cross-actor await — the single co_await above (PHYSICAL_INSERT) stays this
+        //     handler's only one (a second sequential cross-actor await would risk a
+        //     lost-wakeup hang). The WAL record was already written; on a materialize failure
+        //     the txn aborts and storage_revert_appends unwinds it.
+        uint64_t materialized_start;
+        if (txn.transaction_id != 0) {
+            auto append_r = s->append(*data, txn);
+            if (append_r.has_error()) {
+                trace(log_,
+                      "agent_disk[{}]::storage_append_inner: materialize failed for oid={} — surfacing error",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid));
+                co_return append_r.convert_error<std::pair<uint64_t, uint64_t>>();
+            }
+            materialized_start = append_r.value();
+        } else {
+            materialized_start = s->append(*data);
+        }
+        assert(materialized_start == start_row &&
+               "WAL-first append: materialized start_row diverged from the reserved start_row");
+        co_return std::make_pair(materialized_start, actual_count);
     }
 
     agent_disk_t::unique_future<void>
@@ -697,7 +911,7 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<std::pair<int64_t, uint64_t>>
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
     agent_disk_t::storage_update_inner(components::catalog::oid_t table_oid,
                                        components::vector::vector_t row_ids,
                                        std::unique_ptr<components::vector::data_chunk_t> data,
@@ -722,7 +936,8 @@ namespace services::disk {
             co_return std::pair<int64_t, uint64_t>{0, 0};
         }
         // No preprocessing here: the manager body already aligned `data` with the
-        // canonical schema (the twin shares column defs via bootstrap_inner_sync).
+        // canonical schema (the twin shares column defs via bootstrap_inner_sync). The
+        // wrapper carries any write_conflict / out_of_memory as a value.
         co_return entry->storage->update(row_ids, *data, txn);
     }
 
@@ -793,7 +1008,7 @@ namespace services::disk {
         co_return std::move(out);
     }
 
-    std::pmr::vector<components::vector::data_chunk_t>
+    core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
     agent_disk_t::scan_local(components::catalog::oid_t table_oid,
                              components::table::table_filter_t* filter,
                              int64_t limit,
@@ -816,13 +1031,19 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid));
             return batches;
         }
-        entry->storage->scan_batched(batches, filter, limit, projected_cols, txn);
+        // The adapter surfaces any buffer-pool OOM / data_corruption the table-layer scan left
+        // in state.table_state.scan_error; propagate it up the wrapper.
+        auto scan_r = entry->storage->scan_batched(batches, filter, limit, projected_cols, txn);
+        if (scan_r.has_error()) {
+            return scan_r.convert_error<std::pmr::vector<components::vector::data_chunk_t>>();
+        }
         return batches;
     }
 
     // Thin mailbox wrapper over scan_local (D6: same-actor callers use the local
-    // helper directly; this exists for the manager→agent mailbox route).
-    agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    // helper directly; this exists for the manager→agent mailbox route). The reply carries the
+    // scan_error; the manager funnel / operators read has_error() before .value().
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_scan_inner(components::catalog::oid_t table_oid,
                                      std::unique_ptr<components::table::table_filter_t> filter,
                                      int64_t limit,
@@ -944,10 +1165,14 @@ namespace services::disk {
                                                                            std::move(idx_vec)));
             }
             std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
-            entry->storage->scan_batched(batches, filter.get(), int64_t{-1}, nullptr, txn);
-            for (auto& chunk : batches) {
-                for (uint64_t r = 0; r < chunk.size(); ++r) {
-                    row_ids.push_back(chunk.row_ids.data<std::int64_t>()[r]);
+            // Keyed catalog read: a scan_error leaves this key's match set empty
+            // (mirrors the not-owned fallback above); callers tolerate empty per-key entries.
+            auto scan_r = entry->storage->scan_batched(batches, filter.get(), int64_t{-1}, nullptr, txn);
+            if (!scan_r.has_error()) {
+                for (auto& chunk : batches) {
+                    for (uint64_t r = 0; r < chunk.size(); ++r) {
+                        row_ids.push_back(chunk.row_ids.data<std::int64_t>()[r]);
+                    }
                 }
             }
             result.emplace_back(std::move(row_ids));
@@ -1003,9 +1228,14 @@ namespace services::disk {
                                                                        std::move(idx_vec)));
         }
 
-        // All columns (projected = nullptr), no row limit (-1) — same as the prior
-        // manager-side storage_scan_inner call (it passed an empty projected list).
-        co_return scan_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
+        // All columns (projected = nullptr), no row limit (-1). Catalog-read path: a scan_error
+        // degrades to an empty result, matching the not-owned/record-only fallback (resolve
+        // callers handle empty).
+        auto scan_r = scan_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
+        if (scan_r.has_error()) {
+            co_return std::move(empty);
+        }
+        co_return std::move(scan_r.value());
     }
 
     agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
@@ -1074,7 +1304,14 @@ namespace services::disk {
                                                                            std::move(idx_vec)));
             }
             // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
-            result.emplace_back(scan_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn));
+            // Catalog-read path: a scan_error degrades this key's entry to empty, matching the
+            // not-owned/record-only fallback (callers handle empty entries).
+            auto scan_r = scan_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
+            if (scan_r.has_error()) {
+                result.emplace_back();
+            } else {
+                result.emplace_back(std::move(scan_r.value()));
+            }
         }
         co_return std::move(result);
     }
@@ -1199,7 +1436,30 @@ namespace services::disk {
                 }
             }
 
-            entry->table_storage.checkpoint(current_wal_id);
+            // checkpoint(wal_id) returns out_of_memory on a column flush pin failure; it
+            // aborts BEFORE the header swap and leaves the wal_id fields unchanged. On error,
+            // defer this entry to a later round (same as the MVCC-gate skip above): restore
+            // the .prev backup over any partial write, do NOT persist the sidecar or delete
+            // the backup, and feed the unchanged prev_checkpoint_wal_id into the min() so the
+            // WAL keeps this table's replay records.
+            auto cp_r = entry->table_storage.checkpoint(current_wal_id);
+            if (cp_r.has_error()) {
+                warn(log_,
+                     "agent_disk[{}]::checkpoint_inner oid={} checkpoint failed (rules 2/9) — deferring this round",
+                     pool_idx_,
+                     static_cast<unsigned>(tbl_oid));
+                if (std::filesystem::exists(prev_path)) {
+                    std::error_code restore_error;
+                    std::filesystem::copy_file(prev_path,
+                                               otbx_path,
+                                               std::filesystem::copy_options::overwrite_existing,
+                                               restore_error);
+                    std::error_code remove_error;
+                    std::filesystem::remove(prev_path, remove_error);
+                }
+                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                continue;
+            }
 
             // Persist sidecar wal_id atomically (tmp + rename).
             {
@@ -1597,7 +1857,19 @@ namespace services::disk {
                 }
             }
 
-            start_row = s->append(local, ctx.txn);
+            // The append chain can surface write_conflict / out_of_memory.
+            // append_pg_catalog_row_inner returns a pg_catalog_append_range_t with no error
+            // channel; on a failure leave start_row/count at 0 (no rows materialized) and
+            // log — the caller treats a zero-count range as a no-op append.
+            auto append_r = s->append(local, ctx.txn);
+            if (append_r.has_error()) {
+                warn(log_,
+                     "agent_disk[{}]::append_pg_catalog_row_inner: materialize failed for oid={} — no rows appended",
+                     pool_idx_,
+                     static_cast<unsigned>(table_oid));
+                co_return components::pg_catalog_append_range_t{table_oid, int64_t{0}, 0};
+            }
+            start_row = append_r.value();
         } else {
             trace(log_,
                   "agent_disk[{}]::append_pg_catalog_row_inner: oid {} not owned/empty — no storage append",

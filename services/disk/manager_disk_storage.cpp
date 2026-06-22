@@ -85,7 +85,17 @@ namespace services::disk {
             }
         }
 
-        return s->append(local, txn);
+        // WAL-replay only (txn{0,0}), single-threaded: a write_conflict / out_of_memory
+        // here is a hard recovery fault with no error channel — bind the wrapper and return
+        // 0 on failure (no rows materialized).
+        auto append_r = s->append(local, txn);
+        if (append_r.has_error()) {
+            warn(log_,
+                 "manager_disk_t::direct_append_sync: replay append failed for oid={} (rules 2/9)",
+                 static_cast<unsigned>(table_oid));
+            return 0;
+        }
+        return append_r.value();
     }
 
     void manager_disk_t::direct_delete_sync(catalog::oid_t table_oid,
@@ -105,6 +115,18 @@ namespace services::disk {
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             agents_[pool_idx]->direct_update_sync(table_oid, row_ids, new_data);
+        }
+    }
+
+    void manager_disk_t::direct_add_column_sync(catalog::oid_t table_oid,
+                                                const components::vector::data_chunk_t& schema_chunk) {
+        // Bootstrap / WAL-replay only; routes the schema-growth record to the owning
+        // agent so the new columns exist before the dependent PHYSICAL_INSERT replays.
+        if (!agents_.empty()) {
+            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+            if (agents_[pool_idx] != nullptr) {
+                agents_[pool_idx]->direct_add_column_sync(table_oid, schema_chunk);
+            }
         }
     }
 
@@ -296,13 +318,15 @@ namespace services::disk {
 
     // --- Storage data operations ---
 
-    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::storage_scan(session_id_t /*session*/,
                                  catalog::oid_t table_oid,
                                  std::unique_ptr<components::table::table_filter_t> filter,
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn) {
+        // Transparent router: the agent reply carries the scan_error; forward the wrapper
+        // unchanged so the scan operators turn it into an error cursor.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -363,16 +387,18 @@ namespace services::disk {
         co_return std::pmr::vector<components::vector::data_chunk_t>(resource());
     }
 
-    manager_disk_t::unique_future<std::pair<uint64_t, uint64_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
     manager_disk_t::storage_append(execution_context_t ctx,
                                    catalog::oid_t table_oid,
                                    std::pmr::vector<components::vector::data_chunk_t> data) {
         // The full preprocessing pipeline (schema adoption/growth, column
         // expansion, NOT NULL, dedup, type promotion) and the canonical write live
         // in the agent twin, so every same-oid access is serialized by the agent's
-        // mailbox — no borrowed-pointer access from the manager loop thread. The
-        // chunks append sequentially through the same mailbox, so the per-chunk
-        // segments stay contiguous and coalesce into one [range_start, total) range.
+        // mailbox — no borrowed-pointer access from the manager loop thread. The agent
+        // owns the WAL-first write; the chunks append sequentially through the same mailbox,
+        // so the per-chunk segments stay contiguous and coalesce into one [range_start, total)
+        // range. The agent reply wraps a write_conflict / out_of_memory; the first error aborts
+        // the batch (the wrapper is forwarded unchanged so operator_insert surfaces it).
         if (agents_.empty()) {
             co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
@@ -391,14 +417,17 @@ namespace services::disk {
             auto one = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                   &agent_disk_t::storage_append_inner,
+                                                                  ctx,
                                                                   table_oid,
-                                                                  std::move(one),
-                                                                  ctx.txn,
-                                                                  ctx.session_tz);
+                                                                  std::move(one));
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
-            auto [start_row, actual_count] = co_await std::move(fut);
+            auto append_r = co_await std::move(fut);
+            if (append_r.has_error()) {
+                co_return std::move(append_r);
+            }
+            auto [start_row, actual_count] = append_r.value();
             if (actual_count == 0) {
                 continue;
             }
@@ -411,14 +440,15 @@ namespace services::disk {
         co_return std::make_pair(range_start, total_count);
     }
 
-    manager_disk_t::unique_future<std::pair<int64_t, uint64_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
     manager_disk_t::storage_update(execution_context_t ctx,
                                    catalog::oid_t table_oid,
                                    std::pmr::vector<components::vector::vector_t> row_ids,
                                    std::pmr::vector<components::vector::data_chunk_t> data) {
-        // Pure router to the agent twin — the agent's mailbox serializes the canonical
-        // write with every other same-oid access. row_ids[i] pairs with data[i]; the
-        // per-chunk new-row segments are contiguous and coalesce into one range.
+        // Router to the agent twin — the agent's mailbox serializes the canonical write with
+        // every other same-oid access. row_ids[i] pairs with data[i]; the per-chunk new-row
+        // segments are contiguous and coalesce into one range. The agent reply wraps a
+        // write_conflict / out_of_memory; the first error aborts the batch.
         if (agents_.empty()) {
             co_return std::pair<int64_t, uint64_t>{0, 0};
         }
@@ -444,7 +474,11 @@ namespace services::disk {
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
-            auto [upd_start, upd_count] = co_await std::move(fut);
+            auto update_r = co_await std::move(fut);
+            if (update_r.has_error()) {
+                co_return std::move(update_r);
+            }
+            auto [upd_start, upd_count] = update_r.value();
             if (!have_range) {
                 range_start = upd_start;
                 have_range = true;

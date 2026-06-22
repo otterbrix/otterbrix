@@ -6,9 +6,8 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_drop_index.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_insert.hpp>
-#include <components/logical_plan/node_primitive_delete.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -114,7 +113,8 @@ constexpr int kDocuments = 100;
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         /* drop_index carries no names; wrap with resolve_table siblings so resolve stamps OIDs. */                    \
-        auto node = components::logical_plan::make_node_drop_index(dispatcher->resource());                            \
+        auto node = components::logical_plan::make_node_drop(dispatcher->resource(),                                   \
+                                                             components::logical_plan::drop_target_kind::index);       \
         std::vector<std::pair<std::string, std::string>> targets;                                                      \
         targets.emplace_back(database_name, collection_name);                                                          \
         targets.emplace_back(database_name, std::string{INDEX_NAME});                                                  \
@@ -794,9 +794,9 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
 // ----------------------------------------------------------------------------
 // DROP INDEX catalog-delete folding (physical-plan-generator unit test).
 //
-// rewrite_drop_index emits sequence_t(primitive_delete × N, drop_index_t) — N=4:
-// pg_index ×1, pg_depend ×2, pg_class ×1. create_plan_sequence's drop_index_t
-// branch must FOLD all N primitive_delete leaves into the single
+// rewrite_drop_index emits sequence_t(catalog-delete node_delete_t × N, drop_index_t)
+// — N=4: pg_index ×1, pg_depend ×2, pg_class ×1. create_plan_sequence's
+// drop_index_t branch must FOLD all N catalog-delete leaves into the single
 // operator_drop_index_t's catalog_deletes_ vector, so the operator can issue ONE
 // batched delete_pg_catalog_rows_many at runtime instead of N singular
 // delete_pg_catalog_rows sends.
@@ -804,13 +804,13 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
 // Observable invariant of a correct fold (no production accessor needed):
 //   - the lowered plan is a SINGLE leaf operator (no children) tagged
 //     operator_type::create_collection — the tag operator_drop_index_t reuses;
-//   - NO operator_type::primitive_delete operator survives anywhere in the tree.
+//   - NO operator_type::remove operator survives anywhere in the tree.
 // A regression that drops the fold makes the N leaves fall through to the generic
-// left-child chain, where each leaf lowers to a standalone
-// operator_primitive_delete_t (type primitive_delete) linked via left_. The
-// control sub-case below builds the SAME leaves WITHOUT the trailing drop_index_t
-// and asserts they DO produce N standalone primitive_delete operators, so the
-// fold is exactly what collapses them.
+// left-child chain, where each catalog-delete node_delete_t lowers to a standalone
+// operator_delete (type remove) in its catalog branch. The control sub-case below
+// builds the SAME leaves WITHOUT the trailing drop_index_t and asserts they DO
+// produce N standalone operator_delete operators, so the fold is exactly what
+// collapses them.
 // ----------------------------------------------------------------------------
 namespace {
 
@@ -856,14 +856,14 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
 
     auto append_delete_leaves = [&](const lp::node_sequence_ptr& seq) {
         for (const auto& [catalog_oid, col] : delete_specs) {
-            seq->append_child(boost::intrusive_ptr(new lp::node_primitive_delete_t(res, catalog_oid, col, index_oid)));
+            seq->append_child(lp::make_node_catalog_delete(res, catalog_oid, col, index_oid));
         }
     };
 
     INFO("trailing drop_index_t folds all N delete leaves into one operator_drop_index_t") {
         auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
         append_delete_leaves(seq);
-        auto di = lp::make_node_drop_index(res);
+        auto di = lp::make_node_drop(res, lp::drop_target_kind::index);
         di->set_index_oid(index_oid);
         di->set_runtime_index_name("idx_folded");
         seq->append_child(di); // trailing drop_index_t marker
@@ -880,18 +880,19 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
 
         // None of the N delete leaves leaked out as a standalone operator —
         // they were folded into the single drop_index operator's vector.
-        CHECK(count_ops_of_type(plan, ops::operator_type::primitive_delete) == 0u);
+        CHECK(count_ops_of_type(plan, ops::operator_type::remove) == 0u);
     }
 
     INFO("control: same delete leaves with NO trailing drop_index_t stay N standalone operators") {
         // Without the drop_index_t marker the leaves fall through to the generic
-        // left-child chain and each lowers to its own operator_primitive_delete_t.
-        // This is the un-folded baseline the drop_index branch collapses.
+        // left-child chain and each catalog-delete node_delete_t lowers to its own
+        // operator_delete (catalog branch). This is the un-folded baseline the
+        // drop_index branch collapses.
         auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
         append_delete_leaves(seq);
 
         auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
         REQUIRE(plan);
-        CHECK(count_ops_of_type(plan, ops::operator_type::primitive_delete) == delete_specs.size());
+        CHECK(count_ops_of_type(plan, ops::operator_type::remove) == delete_specs.size());
     }
 }

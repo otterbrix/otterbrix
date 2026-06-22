@@ -15,8 +15,7 @@
 #include <components/context/execution_context.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/logical_plan/node.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
-#include <components/logical_plan/node_catalog_resolve_type.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <core/result_wrapper.hpp>
 #include <memory_resource>
@@ -80,9 +79,9 @@ namespace services::catalog_resolve {
         components::cursor::cursor_t_ptr error;
     };
 
-    // Find the FIRST catalog_resolve_table_t with relkind='v' (and non-empty
-    // view_sql) in `root`'s direct children. Returns nullptr if none.
-    components::logical_plan::node_catalog_resolve_table_t*
+    // Find the FIRST table-kind catalog_resolve_t with relkind='v' (and
+    // non-empty view_sql) in `root`'s direct children. Returns nullptr if none.
+    components::logical_plan::node_catalog_resolve_t*
     find_first_view_resolve(components::logical_plan::node_t* root);
 
     // Parse view body SQL and transform it into a fresh logical plan. The

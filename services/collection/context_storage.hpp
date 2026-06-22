@@ -5,7 +5,7 @@
 #include <components/expressions/key.hpp>
 #include <components/index/forward.hpp>
 #include <components/log/log.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <unordered_map>

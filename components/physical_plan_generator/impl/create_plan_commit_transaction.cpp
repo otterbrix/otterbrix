@@ -1,6 +1,6 @@
 #include "create_plan_commit_transaction.hpp"
 
-#include <components/logical_plan/node_commit_transaction.hpp>
+#include <components/logical_plan/node_transaction.hpp>
 #include <components/physical_plan/operators/operator_commit_transaction.hpp>
 
 namespace services::planner::impl {
@@ -12,7 +12,7 @@ namespace services::planner::impl {
         // Propagate DDL-commit flag + WAL coordinates from the logical
         // node into the operator. DDL mode adds the flush + WAL commit_txn
         // prefix; RPC mode keeps the simpler commit.
-        auto* n = static_cast<components::logical_plan::node_commit_transaction_t*>(node.get());
+        auto* n = static_cast<components::logical_plan::node_transaction_t*>(node.get());
         if (n->is_ddl_commit()) {
             op->set_ddl_commit(n->txn_id(), n->database_oid());
         }

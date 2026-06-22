@@ -40,9 +40,12 @@ namespace {
                 chunk.set_value(0, i, logical_value_t{resource, static_cast<int64_t>(offset + i)});
             }
             table_append_state state(resource);
-            table.append_lock(state);
-            table.initialize_append(state);
-            table.append(chunk, state);
+            auto append_lock_result = table.append_lock(state);
+            REQUIRE_FALSE(append_lock_result.has_error());
+            auto initialize_append_result = table.initialize_append(state);
+            REQUIRE_FALSE(initialize_append_result.has_error());
+            auto append_result = table.append(chunk, state);
+            REQUIRE_FALSE(append_result.has_error());
             table.finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
@@ -95,7 +98,8 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
         append_int64_data(ts.table(), &resource, NUM_ROWS);
         REQUIRE(ts.table().calculate_size() == NUM_ROWS);
 
-        ts.checkpoint();
+        auto checkpoint_result = ts.checkpoint();
+        REQUIRE_FALSE(checkpoint_result.has_error());
     }
 
     // Load and verify
@@ -180,14 +184,18 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
                 chunk.set_value(1, i, logical_value_t{&resource, static_cast<double>(offset + i) * 1.5});
             }
             table_append_state state(&resource);
-            ts.table().append_lock(state);
-            ts.table().initialize_append(state);
-            ts.table().append(chunk, state);
+            auto append_lock_result = ts.table().append_lock(state);
+            REQUIRE_FALSE(append_lock_result.has_error());
+            auto initialize_append_result = ts.table().initialize_append(state);
+            REQUIRE_FALSE(initialize_append_result.has_error());
+            auto append_result = ts.table().append(chunk, state);
+            REQUIRE_FALSE(append_result.has_error());
             ts.table().finalize_append(state, transaction_data{0, 0});
             offset += batch;
         }
         REQUIRE(ts.table().calculate_size() == NUM_ROWS);
-        ts.checkpoint();
+        auto checkpoint_result = ts.checkpoint();
+        REQUIRE_FALSE(checkpoint_result.has_error());
     }
 
     // Load and verify both columns
@@ -243,9 +251,12 @@ TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
             chunk.set_value(2, i, logical_value_t{&resource, static_cast<int64_t>(i * 100)});
         }
         table_append_state state(&resource);
-        ts.table().append_lock(state);
-        ts.table().initialize_append(state);
-        ts.table().append(chunk, state);
+        auto append_lock_result = ts.table().append_lock(state);
+        REQUIRE_FALSE(append_lock_result.has_error());
+        auto initialize_append_result = ts.table().initialize_append(state);
+        REQUIRE_FALSE(initialize_append_result.has_error());
+        auto append_result = ts.table().append(chunk, state);
+        REQUIRE_FALSE(append_result.has_error());
         ts.table().finalize_append(state, transaction_data{0, 0});
     }
     REQUIRE(ts.table().calculate_size() == NUM_ROWS);

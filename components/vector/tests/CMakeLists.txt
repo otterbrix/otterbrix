@@ -6,6 +6,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_vector.cpp
         test_arrow_conversion.cpp
         test_validity_mask.cpp
+        test_arithmetic_empty.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

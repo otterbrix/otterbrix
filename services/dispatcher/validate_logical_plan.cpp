@@ -19,17 +19,10 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_alter_column_add.hpp>
-#include <components/logical_plan/node_alter_column_drop.hpp>
-#include <components/logical_plan/node_alter_column_rename.hpp>
+#include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
-#include <components/logical_plan/node_catalog_resolve_function.hpp>
-#include <components/logical_plan/node_catalog_resolve_namespace.hpp>
-#include <components/logical_plan/node_catalog_resolve_table.hpp>
-#include <components/logical_plan/node_catalog_resolve_type.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_check_constraint.hpp>
-#include <components/logical_plan/node_computed_field_register.hpp>
-#include <components/logical_plan/node_computed_field_unregister.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_constraint.hpp>
 #include <components/logical_plan/node_create_database.hpp>
@@ -39,12 +32,7 @@
 #include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_drop_collection.hpp>
-#include <components/logical_plan/node_drop_database.hpp>
-#include <components/logical_plan/node_drop_index.hpp>
-#include <components/logical_plan/node_drop_macro.hpp>
-#include <components/logical_plan/node_drop_sequence.hpp>
-#include <components/logical_plan/node_drop_view.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_fk_check.hpp>
 #include <components/logical_plan/node_function.hpp>
@@ -1151,13 +1139,7 @@ namespace services::dispatcher {
             // Their catalog_resolve_* children verify existence at parse time;
             // CASCADE/RESTRICT is enforced by the cascade-delete operator downstream.
             switch (node->type()) {
-                case node_type::drop_collection_t:
-                case node_type::drop_database_t:
-                case node_type::drop_index_t:
-                case node_type::drop_macro_t:
-                case node_type::drop_sequence_t:
-                case node_type::drop_type_t:
-                case node_type::drop_view_t:
+                case node_type::drop_t:
                     return true;
                 default:
                     break;
@@ -1361,13 +1343,11 @@ namespace services::dispatcher {
         named_schema result{resource};
 
         switch (node->type()) {
-            // SQL transaction-control leaves (BEGIN/COMMIT/ROLLBACK): no table
+            // SQL transaction-control leaf (BEGIN/COMMIT/ROLLBACK): no table
             // schema to validate — empty schema, like an all-resolve sequence_t.
             // Defensive mirror of the executor's validate break-group; without
-            // these the default arm below assert(false)s on the node type.
-            case node_type::begin_transaction_t:
-            case node_type::commit_transaction_t:
-            case node_type::abort_transaction_t:
+            // this the default arm below assert(false)s on the node type.
+            case node_type::transaction_t:
                 break;
             case node_type::aggregate_t: {
                 node_group_t* node_group = nullptr;
@@ -2631,8 +2611,9 @@ namespace services::dispatcher {
                 }
                 return named_schema{resource};
             }
-            case node_type::drop_index_t:
-                // nothing to check here
+            case node_type::drop_t:
+                // nothing to check here (only DROP INDEX reaches validate_schema;
+                // the cascade drops short-circuit in validate_types' check_node)
                 break;
             case node_type::create_matview_t:
             case node_type::refresh_matview_t:
@@ -2677,11 +2658,7 @@ namespace services::dispatcher {
                 // The catalog resolve children are leaves that don't carry a
                 // schema, so we descend to the last non-catalog_resolve_* child
                 // — the real consumer (insert_t/update_t/aggregate_t/...).
-                auto is_catalog_resolve = [](node_type t) {
-                    return t == node_type::catalog_resolve_namespace_t || t == node_type::catalog_resolve_table_t ||
-                           t == node_type::catalog_resolve_type_t || t == node_type::catalog_resolve_function_t ||
-                           t == node_type::catalog_resolve_constraint_t;
-                };
+                auto is_catalog_resolve = [](node_type t) { return t == node_type::catalog_resolve_t; };
                 for (auto it = node->children().rbegin(); it != node->children().rend(); ++it) {
                     if (!*it)
                         continue;

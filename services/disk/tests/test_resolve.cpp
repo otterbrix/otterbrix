@@ -221,8 +221,10 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                    components::table::transaction_data{0, 0},
                                                    {},
                                                    table_oid};
-        auto [start, count] =
+        auto append_r =
             fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        REQUIRE_FALSE(append_r.has_error());
+        auto [start, count] = append_r.value();
         REQUIRE(count == nrows);
         (void) start;
     }

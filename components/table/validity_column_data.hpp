@@ -12,7 +12,8 @@ namespace components::table {
                                column_data_t& parent);
 
         filter_propagate_result_t check_zonemap(column_scan_state& state, table_filter_t& filter) override;
-        void append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count) override;
+        [[nodiscard]] core::result_wrapper_t<bool>
+        append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count) override;
     };
 
 } // namespace components::table

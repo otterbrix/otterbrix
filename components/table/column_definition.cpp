@@ -81,4 +81,45 @@ namespace components::table {
         attoid_ = v;
     }
 
+    types::logical_value_t reconcile_to_fixed_array(std::pmr::memory_resource* resource,
+                                                    const types::logical_value_t& value,
+                                                    const column_definition_t& column,
+                                                    core::date::timezone_offset_t session_tz) {
+        using namespace components::types;
+        assert(column.type().type() == logical_type::ARRAY &&
+               "reconcile_to_fixed_array: column is not an ARRAY column");
+
+        const auto& elem_type = column.type().child_type();
+        const auto target_size = static_cast<const array_logical_type_extension*>(column.type().extension())->size();
+        const auto& src = value.children();
+
+        // The column DEFAULT, when present, supplies the per-position pad values; it is an
+        // ARRAY value whose children() line up with the column's element slots.
+        const std::vector<logical_value_t>* default_elems = nullptr;
+        if (column.has_default_value() && column.default_value().type().type() == logical_type::ARRAY) {
+            default_elems = &column.default_value().children();
+        }
+
+        std::vector<logical_value_t> elems;
+        elems.reserve(target_size);
+        for (uint64_t i = 0; i < target_size; ++i) {
+            if (i < src.size()) {
+                // Within the provided value: cast the element to the target type. Over-long
+                // values are truncated implicitly (the loop stops at target_size).
+                elems.emplace_back(src[i].cast_as(elem_type, session_tz));
+            } else if (default_elems && i < default_elems->size()) {
+                // Short value: pad slot i from the column DEFAULT at the same position.
+                elems.emplace_back((*default_elems)[i].cast_as(elem_type, session_tz));
+            } else if (!column.is_not_null()) {
+                // Nullable column with no usable default: pad with NULL.
+                elems.emplace_back(logical_value_t{resource, complex_logical_type{logical_type::NA}});
+            } else {
+                // NOT NULL column with no default to pad from: the short value cannot fill
+                // the fixed array. Signal the caller with an NA value.
+                return logical_value_t{resource, complex_logical_type{logical_type::NA}};
+            }
+        }
+        return logical_value_t::create_array(resource, elem_type, elems);
+    }
+
 } // namespace components::table

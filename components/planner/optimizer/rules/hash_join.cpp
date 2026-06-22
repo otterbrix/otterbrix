@@ -55,14 +55,15 @@ namespace components::planner::optimizer {
             return t == jt::inner || t == jt::left || t == jt::right || t == jt::full;
         }
 
-        // If `node` is a hash-eligible join, return its node_hash_join_t replacement
-        // (carrying the original children, ON-condition expressions, oid and alias);
-        // otherwise return `node` unchanged.
+        // If `node` is a hash-eligible join, stamp the hash-algo annotation (equi-key
+        // column indices) onto it in place and return it; otherwise return `node`
+        // unchanged. The node stays a node_join_t — the choice of hash vs nested-loop
+        // is an annotation, not a separate node type.
         lp::node_ptr try_rewrite_join(const lp::node_ptr& node) {
             if (node->type() != lp::node_type::join_t) {
                 return node;
             }
-            const auto* join = static_cast<const lp::node_join_t*>(node.get());
+            auto* join = static_cast<lp::node_join_t*>(node.get());
             if (!is_equi_joinable(join->type()) || node->expressions().empty()) {
                 return node;
             }
@@ -70,21 +71,10 @@ namespace components::planner::optimizer {
             if (!equi) {
                 return node;
             }
-            // Join nodes carry no dbname/relname (always empty — see transform_select);
-            // the equi-key indices are all the hash-join operator needs.
-            auto hj = lp::make_node_hash_join(node->resource(),
-                                              core::dbname_t{},
-                                              core::relname_t{},
-                                              join->type(),
-                                              equi->first,
-                                              equi->second);
-            for (const auto& child : node->children()) {
-                hj->append_child(child);
-            }
-            hj->append_expressions(node->expressions());
-            hj->set_table_oid(node->table_oid());
-            hj->set_result_alias(node->result_alias());
-            return hj;
+            // The equi-key indices are all the hash-join operator needs; set_equi_columns
+            // also flips algo() to hash so create_plan_join lowers it to operator_hash_join_t.
+            join->set_equi_columns(equi->first, equi->second);
+            return node;
         }
 
         lp::node_ptr walk(const lp::node_ptr& node) {

@@ -102,11 +102,11 @@ namespace components::storage {
             }
         }
 
-        void scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
-                          const table::table_filter_t* filter,
-                          int64_t limit,
-                          const std::vector<size_t>* projected_cols,
-                          table::transaction_data txn) override {
+        [[nodiscard]] core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
+                                                  const table::table_filter_t* filter,
+                                                  int64_t limit,
+                                                  const std::vector<size_t>* projected_cols,
+                                                  table::transaction_data txn) override {
             std::vector<table::storage_index_t> column_indices;
             if (projected_cols) {
                 column_indices.reserve(projected_cols->size());
@@ -127,6 +127,13 @@ namespace components::storage {
             state.local_state.txn = txn;
             auto types = table_.copy_types();
             table_.scan_batched(types, projected_cols, batches, state, resource_);
+            // data_table_t::scan_batched keeps its void shape and leaves any buffer-pool OOM /
+            // data_corruption in state.table_state.scan_error; surface it here as a value so the
+            // agent_disk scan reply can carry it across the mailbox. On error the partially-filled
+            // batches are discarded (the caller turns this into an error cursor).
+            if (state.table_state.has_error()) {
+                return state.table_state.scan_error;
+            }
             // Always emit at least one (possibly empty) chunk so downstream operators
             // can read types/column_count from chunks.front().
             if (batches.empty()) {
@@ -155,6 +162,7 @@ namespace components::storage {
                 // resize() doesn't compile.
                 batches.erase(batches.begin() + static_cast<std::ptrdiff_t>(keep), batches.end());
             }
+            return true;
         }
 
         void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) override {
@@ -194,36 +202,57 @@ namespace components::storage {
             return total_rows;
         }
 
+        // Replay/legacy path (no txn). The table-layer append chain returns result_wrapper_t
+        // (write_conflict / out_of_memory); replay records are already schema-aligned and
+        // single-threaded, so a failure here is a hard bug — bind the wrappers and assert success.
         uint64_t append(vector::data_chunk_t& data) override {
             table::table_append_state append_state(resource_);
-            table_.append_lock(append_state);
-            table_.initialize_append(append_state);
+            [[maybe_unused]] auto lock_r = table_.append_lock(append_state);
+            assert(!lock_r.has_error() && "replay append_lock conflict");
+            [[maybe_unused]] auto init_r = table_.initialize_append(append_state);
+            assert(!init_r.has_error() && "replay initialize_append OOM");
             auto start_row = static_cast<uint64_t>(append_state.current_row);
-            table_.append(data, append_state);
+            [[maybe_unused]] auto app_r = table_.append(data, append_state);
+            assert(!app_r.has_error() && "replay append OOM");
             table_.finalize_append(append_state, table::transaction_data{0, 0});
             return start_row;
         }
 
-        uint64_t append(vector::data_chunk_t& data, table::transaction_data txn) override {
+        // Returns the start_row on success, or write_conflict / out_of_memory surfaced by the
+        // table-layer append chain. The agent_disk append handler reads the wrapper and turns
+        // any error into a graceful txn abort.
+        [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data, table::transaction_data txn) override {
             table::table_append_state append_state(resource_);
-            table_.append_lock(append_state);
-            table_.initialize_append(append_state);
+            auto lock_r = table_.append_lock(append_state);
+            if (lock_r.has_error()) {
+                return lock_r.convert_error<uint64_t>();
+            }
+            auto init_r = table_.initialize_append(append_state);
+            if (init_r.has_error()) {
+                return init_r.convert_error<uint64_t>();
+            }
             auto start_row = static_cast<uint64_t>(append_state.current_row);
-            table_.append(data, append_state);
+            auto app_r = table_.append(data, append_state);
+            if (app_r.has_error()) {
+                return app_r.convert_error<uint64_t>();
+            }
             table_.finalize_append(append_state, txn);
             return start_row;
         }
 
         void update(vector::vector_t& row_ids, vector::data_chunk_t& data) override {
             auto update_state = table_.initialize_update({});
-            table_.update(*update_state, row_ids, data);
+            [[maybe_unused]] auto upd_r = table_.update(*update_state, row_ids, data);
+            assert(!upd_r.has_error() && "replay update conflict/OOM");
         }
 
-        std::pair<int64_t, uint64_t>
+        // Returns {start_row, count} on success, or write_conflict / out_of_memory surfaced by
+        // the table-layer delete+append MVCC update; agent_disk surfaces it.
+        [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data txn) override {
             auto count = static_cast<uint64_t>(data.size());
             if (count == 0)
-                return {0, 0};
+                return std::pair<int64_t, uint64_t>{0, 0};
 
             // Step 1: Mark old rows as deleted with txn_id
             auto delete_state = table_.initialize_delete({});
@@ -231,13 +260,22 @@ namespace components::storage {
 
             // Step 2: Append new rows with txn version stamps
             table::table_append_state append_state(resource_);
-            table_.append_lock(append_state);
-            table_.initialize_append(append_state);
+            auto lock_r = table_.append_lock(append_state);
+            if (lock_r.has_error()) {
+                return lock_r.convert_error<std::pair<int64_t, uint64_t>>();
+            }
+            auto init_r = table_.initialize_append(append_state);
+            if (init_r.has_error()) {
+                return init_r.convert_error<std::pair<int64_t, uint64_t>>();
+            }
             auto start_row = static_cast<int64_t>(append_state.current_row);
-            table_.append(data, append_state);
+            auto app_r = table_.append(data, append_state);
+            if (app_r.has_error()) {
+                return app_r.convert_error<std::pair<int64_t, uint64_t>>();
+            }
             table_.finalize_append(append_state, txn);
 
-            return {start_row, count};
+            return std::pair<int64_t, uint64_t>{start_row, count};
         }
 
         uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count) override {

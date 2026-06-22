@@ -15,7 +15,6 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_sort.cpp
         impl/create_plan_update.cpp
         impl/create_plan_join.cpp
-        impl/create_plan_hash_join.cpp
         impl/create_plan_union.cpp
         impl/create_plan_cte_scan.cpp
         impl/create_plan_recursive_cte.cpp
@@ -23,8 +22,6 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_fk_check.cpp
         impl/create_plan_fk_cascade.cpp
         impl/create_plan_sequence.cpp
-        impl/create_plan_primitive_write.cpp
-        impl/create_plan_primitive_delete.cpp
         impl/create_plan_dynamic_cascade_delete.cpp
         impl/create_plan_checkpoint.cpp
         impl/create_plan_set_timezone.cpp
@@ -39,7 +36,6 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_computed_field_unregister.cpp
         impl/create_plan_resolve_namespace.cpp
         impl/create_plan_resolve_database.cpp
-        impl/create_plan_resolve_function.cpp
         impl/create_plan_resolve_table.cpp
         impl/create_plan_resolve_type.cpp
         impl/create_plan_resolve_constraint.cpp

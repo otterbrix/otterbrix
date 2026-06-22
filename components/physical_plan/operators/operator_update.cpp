@@ -411,7 +411,16 @@ namespace components::operators {
                                          table_oid_,
                                          std::move(update_row_ids),
                                          std::move(update_data));
-        auto [range_start, total_count] = co_await std::move(uf);
+        // The update reply carries any write_conflict / out_of_memory the table-layer MVCC
+        // update surfaced; surface it as a clean error cursor (the executor turns has_error()
+        // into an error cursor) so the txn aborts gracefully.
+        auto update_result = co_await std::move(uf);
+        if (update_result.has_error()) {
+            set_error(update_result.error());
+            mark_failed();
+            co_return;
+        }
+        auto [range_start, total_count] = update_result.value();
 
         // 2. WAL physical_update: one record for the whole range.
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {

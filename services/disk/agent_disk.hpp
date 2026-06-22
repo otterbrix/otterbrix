@@ -156,21 +156,34 @@ namespace services::disk {
         void direct_update_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 components::vector::data_chunk_t& new_data);
+        // WAL-replay of PHYSICAL_ADD_COLUMN: re-apply the schema columns carried by
+        // `schema_chunk` (0-row; column j's alias-tagged type IS new column j) to the
+        // local slice ahead of the dependent PHYSICAL_INSERT. Idempotent by column name.
+        void direct_add_column_sync(components::catalog::oid_t table_oid,
+                                    const components::vector::data_chunk_t& schema_chunk);
 
         unique_future<void> fix_wal_id(wal::id_t wal_id);
 
         // Mutation handlers: these inner bodies are the SOLE owner of each mutation;
         // manager-side bodies are pure routers. Not-owned OIDs no-op.
         //
-        // storage_append_inner — canonical append. Owns the FULL preprocessing
-        //   pipeline (schema adoption/growth, column expansion, NOT NULL, dedup,
-        //   type promotion), so even the preprocessing reads are mailbox-serialized
-        //   with every same-oid access. Returns (start_row, count); (0,0) on no-op.
-        unique_future<std::pair<uint64_t, uint64_t>>
-        storage_append_inner(components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::vector::data_chunk_t> data,
-                             components::table::transaction_data txn,
-                             core::date::timezone_offset_t session_tz);
+        // storage_append_inner — canonical WAL-FIRST append. Owns the FULL
+        //   preprocessing pipeline (schema adoption/growth, column expansion,
+        //   NOT NULL, dedup, type promotion), then — because it runs on this agent's
+        //   mailbox (one handler coroutine at a time, atomic across the WAL co_await) —
+        //   it allocates the start_row WITHOUT materializing, writes the WAL records
+        //   (PHYSICAL_ADD_COLUMN for any dynamic schema growth, then PHYSICAL_INSERT
+        //   carrying the final start_row + count), and only THEN materializes the
+        //   append. User + catalog inserts share ONE write ordering. Returns
+        //   (start_row, count); (0,0) on no-op. Takes the full execution_context
+        //   (session/txn/tz/db_oid) because the agent owns the WAL write.
+        // Reply wraps the pair so a buffer-pool OOM or write_conflict surfaced by the
+        // table-layer append chain travels back to operator_insert as a value (no throw
+        // across the mailbox).
+        unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
+        storage_append_inner(execution_context_t ctx,
+                             components::catalog::oid_t table_oid,
+                             std::unique_ptr<components::vector::data_chunk_t> data);
 
         // storage_publish_commits_inner — MVCC visibility flip. Iterates
         //   `ranges` and calls commit_append per range against owned twins;
@@ -201,9 +214,10 @@ namespace services::disk {
         storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges);
 
         // storage_update_inner — single-OID UPDATE mutation against the
-        //   agent twin. Returns storage_t::update's (updated, appended)
-        //   pair; (0, 0) on no-op.
-        unique_future<std::pair<int64_t, uint64_t>>
+        //   agent twin. Reply wraps storage_t::update's (updated, appended) pair so a
+        //   write_conflict / out_of_memory travels back to operator_update as a value;
+        //   (0, 0) on no-op.
+        unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update_inner(components::catalog::oid_t table_oid,
                              components::vector::vector_t row_ids,
                              std::unique_ptr<components::vector::data_chunk_t> data,
@@ -225,9 +239,11 @@ namespace services::disk {
         // Read-path handlers (scan_batched / scan_segment / types / total_rows).
         // Not-owned OIDs return an empty/zero sentinel.
         //
-        // storage_scan_inner — projected scan; returns a PMR vector of
-        //   data_chunk_t chunks (≤ DEFAULT_VECTOR_CAPACITY rows each).
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        // storage_scan_inner — batched + projected scan; the reply wraps a PMR vector of
+        //   data_chunk_t batches (≤ DEFAULT_VECTOR_CAPACITY rows each), carrying any
+        //   buffer-pool OOM / data_corruption the table-layer scan left in scan_error as a
+        //   value (no throw across the mailbox).
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_scan_inner(components::catalog::oid_t table_oid,
                            std::unique_ptr<components::table::table_filter_t> filter,
                            int64_t limit,
@@ -474,14 +490,16 @@ namespace services::disk {
     private:
         // Non-mailbox committed-scan over an OWNED slice entry (D6: callers on the agent
         // thread — storage_scan_inner and read_chunks_by_keys_inner — read their own
-        // slice directly here, never by self-sending a mailbox message). Returns empty when
-        // the oid isn't owned or is a record-only marker. `filter` may be nullptr;
-        // `projected_cols` may be nullptr for all columns.
-        std::pmr::vector<components::vector::data_chunk_t> scan_local(components::catalog::oid_t table_oid,
-                                                                      components::table::table_filter_t* filter,
-                                                                      int64_t limit,
-                                                                      const std::vector<std::size_t>* projected_cols,
-                                                                      const components::table::transaction_data& txn);
+        // slice directly here, never by self-sending a mailbox message). Returns empty batches
+        // when the oid isn't owned or is a record-only marker. `filter` may be nullptr;
+        // `projected_cols` may be nullptr for all columns. The wrapper carries any buffer-pool
+        // OOM / data_corruption surfaced by the table-layer scan as a value.
+        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
+        scan_local(components::catalog::oid_t table_oid,
+                   components::table::table_filter_t* filter,
+                   int64_t limit,
+                   const std::vector<std::size_t>* projected_cols,
+                   const components::table::transaction_data& txn);
 
         // Canonical single-oid erase + .otbx removal, used by
         // drop_storage_many_inner. Synchronous; agent-thread callers only.

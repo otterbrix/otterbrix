@@ -20,14 +20,8 @@ namespace components::logical_plan {
                 return "data_t";
             case node_type::delete_t:
                 return "delete_t";
-            case node_type::drop_collection_t:
-                return "drop_collection_t";
-            case node_type::drop_database_t:
-                return "drop_database_t";
-            case node_type::drop_index_t:
-                return "drop_index_t";
-            case node_type::drop_type_t:
-                return "drop_type_t";
+            case node_type::drop_t:
+                return "drop_t";
             case node_type::function_t:
                 return "function_t";
             case node_type::insert_t:
@@ -50,16 +44,10 @@ namespace components::logical_plan {
                 return "union_t";
             case node_type::create_sequence_t:
                 return "create_sequence_t";
-            case node_type::drop_sequence_t:
-                return "drop_sequence_t";
             case node_type::create_view_t:
                 return "create_view_t";
-            case node_type::drop_view_t:
-                return "drop_view_t";
             case node_type::create_macro_t:
                 return "create_macro_t";
-            case node_type::drop_macro_t:
-                return "drop_macro_t";
             case node_type::create_matview_t:
                 return "create_matview_t";
             case node_type::refresh_matview_t:
@@ -82,44 +70,18 @@ namespace components::logical_plan {
                 return "fk_cascade_t";
             case node_type::sequence_t:
                 return "sequence_t";
-            case node_type::primitive_write_t:
-                return "primitive_write_t";
-            case node_type::primitive_delete_t:
-                return "primitive_delete_t";
-            case node_type::alter_column_add_t:
-                return "alter_column_add_t";
-            case node_type::alter_column_rename_t:
-                return "alter_column_rename_t";
-            case node_type::alter_column_drop_t:
-                return "alter_column_drop_t";
+            case node_type::alter_column_t:
+                return "alter_column_t";
             case node_type::dynamic_cascade_delete_t:
                 return "dynamic_cascade_delete_t";
             case node_type::register_udf_t:
                 return "register_udf_t";
             case node_type::unregister_udf_t:
                 return "unregister_udf_t";
-            case node_type::commit_transaction_t:
-                return "commit_transaction_t";
-            case node_type::abort_transaction_t:
-                return "abort_transaction_t";
-            case node_type::begin_transaction_t:
-                return "begin_transaction_t";
-            case node_type::computed_field_register_t:
-                return "computed_field_register_t";
-            case node_type::computed_field_unregister_t:
-                return "computed_field_unregister_t";
-            case node_type::catalog_resolve_table_t:
-                return "catalog_resolve_table_t";
-            case node_type::catalog_resolve_namespace_t:
-                return "catalog_resolve_namespace_t";
-            case node_type::catalog_resolve_database_t:
-                return "catalog_resolve_database_t";
-            case node_type::catalog_resolve_type_t:
-                return "catalog_resolve_type_t";
-            case node_type::catalog_resolve_function_t:
-                return "catalog_resolve_function_t";
-            case node_type::catalog_resolve_constraint_t:
-                return "catalog_resolve_constraint_t";
+            case node_type::transaction_t:
+                return "transaction_t";
+            case node_type::catalog_resolve_t:
+                return "catalog_resolve_t";
             case node_type::allocate_oids_t:
                 return "allocate_oids_t";
             case node_type::set_timezone_t:

@@ -13,7 +13,7 @@ namespace components::operators {
     // the pg_class/pg_index/pg_depend rows for the index oid.
     //
     // The catalog-row deletes are produced upstream by rewrite_drop_index from
-    // primitive_delete leaves. Co-locating them with the index-actor teardown
+    // catalog-delete node_delete_t leaves. Co-locating them with the index-actor teardown
     // keeps the failure boundary simple — a partial scrub surfaces as a single
     // operator error before the engine entry is removed (so a retry can find
     // and finish the cleanup).

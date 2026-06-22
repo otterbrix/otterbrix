@@ -6,7 +6,7 @@
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
-#include <components/logical_plan/node_catalog_resolve_type.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_buffer.hpp>
@@ -52,7 +52,7 @@ namespace components::operators {
                                                      log_t log,
                                                      std::string dbname,
                                                      std::string name,
-                                                     components::logical_plan::node_catalog_resolve_type_t* target_node)
+                                                     components::logical_plan::node_catalog_resolve_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_type)
         , namespace_oid_(catalog::INVALID_OID)
         , dbname_(std::move(dbname))
@@ -163,7 +163,7 @@ namespace components::operators {
                             }
                         }
                         target_node_->set_type_oid(md.type_oid);
-                        target_node_->set_resolved_metadata(std::move(md));
+                        target_node_->set_resolved_type_metadata(std::move(md));
                     }
                 }
             }

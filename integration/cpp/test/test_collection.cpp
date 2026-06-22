@@ -1,7 +1,7 @@
 #include "test_config.hpp"
 #include <catch2/catch.hpp>
 #include <components/expressions/compare_expression.hpp>
-#include <components/logical_plan/node_drop_collection.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
@@ -308,7 +308,8 @@ TEST_CASE("integration::cpp::test_collection") {
                 dispatcher->resource(),
                 database_name,
                 collection_name,
-                components::logical_plan::make_node_drop_collection(dispatcher->resource()));
+                components::logical_plan::make_node_drop(dispatcher->resource(),
+                                                         components::logical_plan::drop_target_kind::collection));
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), drop, nullptr});
@@ -320,7 +321,8 @@ TEST_CASE("integration::cpp::test_collection") {
                 dispatcher->resource(),
                 database_name,
                 collection_name,
-                components::logical_plan::make_node_drop_collection(dispatcher->resource()));
+                components::logical_plan::make_node_drop(dispatcher->resource(),
+                                                         components::logical_plan::drop_target_kind::collection));
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), drop, nullptr});

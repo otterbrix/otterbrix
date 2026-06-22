@@ -117,7 +117,7 @@ namespace components::table {
             }
             state.child_states[1].result_offset = prev_size;
             result.reserve(prev_size + child_scan_count);
-            child_column->scan_count(state.child_states[1], child_entry, child_scan_count);
+            child_column->scan_count_with_updates(state.child_states[1], child_entry, child_scan_count);
         }
         state.last_offset = current_offset;
 
@@ -148,19 +148,30 @@ namespace components::table {
         child_column->skip(state.child_states[1], child_scan_count);
     }
 
-    void list_column_data_t::initialize_append(column_append_state& state) {
-        column_data_t::initialize_append(state);
+    core::result_wrapper_t<bool> list_column_data_t::initialize_append(column_append_state& state) {
+        auto base = column_data_t::initialize_append(state);
+        if (base.has_error()) {
+            return base; // out_of_memory (rules 2/9)
+        }
 
         column_append_state validity_append_state;
-        validity.initialize_append(validity_append_state);
+        auto v = validity.initialize_append(validity_append_state);
+        if (v.has_error()) {
+            return v;
+        }
         state.child_appends.push_back(std::move(validity_append_state));
 
         column_append_state child_append_state;
-        child_column->initialize_append(child_append_state);
+        auto child = child_column->initialize_append(child_append_state);
+        if (child.has_error()) {
+            return child;
+        }
         state.child_appends.push_back(std::move(child_append_state));
+        return true;
     }
 
-    void list_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
+    core::result_wrapper_t<bool>
+    list_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
         assert(count > 0);
         vector::unified_vector_format list_data(vector.resource(), count);
         vector.to_unified_format(count, list_data);
@@ -210,11 +221,17 @@ namespace components::table {
         uvf.data = reinterpret_cast<std::byte*>(append_offsets.get());
 
         if (child_count > 0) {
-            child_column->append(state.child_appends[1], child_vector, child_count);
+            auto child = child_column->append(state.child_appends[1], child_vector, child_count);
+            if (child.has_error()) {
+                return child; // out_of_memory (rules 2/9)
+            }
         }
-        column_data_t::append_data(state, uvf, count);
+        auto base = column_data_t::append_data(state, uvf, count);
+        if (base.has_error()) {
+            return base;
+        }
         uvf.validity = append_mask;
-        validity.append_data(state.child_appends[0], uvf, count);
+        return validity.append_data(state.child_appends[0], uvf, count);
     }
 
     void list_column_data_t::revert_append(int64_t start_row) {
@@ -231,13 +248,91 @@ namespace components::table {
         throw std::logic_error("Function is not implemented: List fetch");
     }
 
-    void list_column_data_t::update(uint64_t, vector::vector_t&, int64_t*, uint64_t) {
-        throw std::logic_error("Function is not implemented: List update is not supported.");
+    std::pmr::vector<int64_t> list_column_data_t::gather_child_update(vector::vector_t& update_vector,
+                                                                      int64_t* row_ids,
+                                                                      uint64_t update_count,
+                                                                      vector::vector_t& child_update_out) {
+        update_vector.flatten(update_count);
+        const auto* update_entries = update_vector.data<types::list_entry_t>();
+        auto& update_validity = update_vector.validity();
+
+        std::pmr::vector<int64_t> child_ids(resource_);
+        uint64_t total = 0;
+        for (uint64_t r = 0; r < update_count; ++r) {
+            const auto row_id = row_ids[r];
+            const auto start_offset = row_id == start_ ? 0 : fetch_list_offset(row_id - 1);
+            const auto stored_length = fetch_list_offset(row_id) - start_offset;
+            const auto new_length = update_validity.row_is_valid(r) ? update_entries[r].length : 0;
+            if (new_length != stored_length) {
+                throw std::logic_error("list_column_data_t::update: in-place update cannot change a row's list length");
+            }
+            total += stored_length;
+        }
+
+        child_ids.reserve(total);
+        child_update_out = vector::vector_t(resource_, type_.child_type(), total == 0 ? 1 : total);
+        auto& update_child = update_vector.entry();
+        uint64_t k = 0;
+        for (uint64_t r = 0; r < update_count; ++r) {
+            const auto row_id = row_ids[r];
+            const auto start_offset = row_id == start_ ? 0 : fetch_list_offset(row_id - 1);
+            const auto length = update_entries[r].length;
+            for (uint64_t j = 0; j < length; ++j) {
+                child_update_out.set_value(k, update_child.value(update_entries[r].offset + j));
+                child_ids.push_back(start_ + static_cast<int64_t>(start_offset + j));
+                ++k;
+            }
+        }
+        return child_ids;
     }
 
-    void
-    list_column_data_t::update_column(const std::vector<uint64_t>&, vector::vector_t&, int64_t*, uint64_t, uint64_t) {
-        throw std::logic_error("Function is not implemented: List update Column is not supported");
+    core::result_wrapper_t<bool> list_column_data_t::update(uint64_t column_index,
+                                                          vector::vector_t& update_vector,
+                                                          int64_t* row_ids,
+                                                          uint64_t update_count) {
+        if (update_count == 0) {
+            return true;
+        }
+        vector::vector_t child_update(resource_, type_.child_type());
+        auto child_ids = gather_child_update(update_vector, row_ids, update_count, child_update);
+        uint64_t remaining_count = child_ids.size();
+        int64_t* remaining_child_ids = child_ids.data();
+        uint64_t remaining_column_index = column_index;
+        while (remaining_count > 0) {
+            const auto batch = std::min<uint64_t>(remaining_count, vector::DEFAULT_VECTOR_CAPACITY);
+            auto child = child_column->update(remaining_column_index, child_update, remaining_child_ids, batch);
+            if (child.has_error()) {
+                return child;
+            }
+            remaining_child_ids += batch;
+            remaining_count -= batch;
+            remaining_column_index++;
+        }
+        return true;
+    }
+
+    core::result_wrapper_t<bool> list_column_data_t::update_column(const std::vector<uint64_t>& column_path,
+                                                                vector::vector_t& update_vector,
+                                                                int64_t* row_ids,
+                                                                uint64_t update_count,
+                                                                uint64_t depth) {
+        if (update_count == 0) {
+            return true;
+        }
+        vector::vector_t child_update(resource_, type_.child_type());
+        auto child_ids = gather_child_update(update_vector, row_ids, update_count, child_update);
+        uint64_t remaining_count = child_ids.size();
+        int64_t* remaining_child_ids = child_ids.data();
+        while (remaining_count > 0) {
+            const auto batch = std::min<uint64_t>(remaining_count, vector::DEFAULT_VECTOR_CAPACITY);
+            auto child = child_column->update_column(column_path, child_update, remaining_child_ids, batch, depth);
+            if (child.has_error()) {
+                return child;
+            }
+            remaining_child_ids += batch;
+            remaining_count -= batch;
+        }
+        return true;
     }
 
     void list_column_data_t::fetch_row(column_fetch_state& state,
@@ -273,7 +368,7 @@ namespace components::table {
             assert(child_type.to_physical_type() == types::physical_type::STRUCT ||
                    static_cast<uint64_t>(child_state->row_index) + child_scan_count - static_cast<uint64_t>(start_) <=
                        child_column->max_entry());
-            child_column->scan_count(*child_state, child_scan, child_scan_count);
+            child_column->scan_count_with_updates(*child_state, child_scan, child_scan_count);
 
             result.append(child_scan, child_scan_count);
         }

@@ -73,8 +73,11 @@ namespace components::table {
                    uint64_t fetch_count,
                    column_fetch_state& state);
 
-        void initialize_append(table_append_state& state);
-        bool append(vector::data_chunk_t& chunk, table_append_state& state);
+        // The append chain returns out_of_memory when a row group / column segment allocation
+        // fails. initialize_append: true on success. append: on success the bool reports whether
+        // a new row group was started.
+        [[nodiscard]] core::result_wrapper_t<bool> initialize_append(table_append_state& state);
+        [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
         void revert_append(int64_t row_start, uint64_t count);
@@ -85,12 +88,19 @@ namespace components::table {
         void merge_storage(collection_t& data);
 
         uint64_t delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id);
-        void update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates);
-        void update_column(vector::vector_t& row_ids,
-                           const std::vector<uint64_t>& column_path,
-                           vector::data_chunk_t& updates);
+        // Update path returns write_conflict / out_of_memory; true on success.
+        [[nodiscard]] core::result_wrapper_t<bool>
+        update(int64_t* ids, const std::vector<uint64_t>& column_ids, vector::data_chunk_t& updates);
+        [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
+                                                                 const std::vector<uint64_t>& column_path,
+                                                                 vector::data_chunk_t& updates);
 
         std::vector<column_segment_info> get_column_segment_info();
+
+        // Append the ids of disk blocks exclusively owned by this collection's columns to `out`,
+        // so data_table_t::compact can free them after swapping the collection out for a compacted one.
+        void collect_disk_block_ids(std::pmr::vector<uint64_t>& out);
+
         const std::pmr::vector<types::complex_logical_type>& types() const;
         void adopt_types(std::pmr::vector<types::complex_logical_type> types);
 
@@ -100,7 +110,10 @@ namespace components::table {
         // std::shared_ptr<collection_t> alter_type(uint64_t changed_idx, const types::complex_logical_type &target_type,
         // std::vector<storage_index_t> bound_columns);
 
-        std::vector<storage::row_group_pointer_t> checkpoint(storage::partial_block_manager_t& partial_block_manager);
+        // The checkpoint chain returns out_of_memory when a column flush pin fails;
+        // the row group pointers on success.
+        [[nodiscard]] core::result_wrapper_t<std::vector<storage::row_group_pointer_t>>
+        checkpoint(storage::partial_block_manager_t& partial_block_manager);
 
         storage::block_manager_t& block_manager() { return block_manager_; }
 

@@ -107,6 +107,100 @@ namespace components::expressions {
         auto* col_vec = to.at(key_.path());
         auto* new_vec = left_->output_vec();
 
+        // Full-column assignment into an array-like column (e.g. UPDATE v = ARRAY[...]
+        // where v is a fixed ARRAY or a variadic LIST). The value is itself an
+        // array-like vector whose flat support vector (entry()) holds the actual
+        // elements, with each row carrying an (offset,length) slice into it. Rather
+        // than casting and writing each row through logical_value_t, cast that whole
+        // support vector to the column's element type once via cast_vector, then
+        // re-point the per-row entries: a wider element literal is narrowed in a
+        // single pass, a fixed ARRAY reconciles its length to the declared size, and
+        // a LIST grows/shrinks the row's flat-child slot to the new length.
+        const bool full_column_assignment = key_.path().size() == 1;
+        const bool array_like_target =
+            col_vec->type().type() == types::logical_type::ARRAY || col_vec->type().type() == types::logical_type::LIST;
+        if (full_column_assignment && array_like_target) {
+            const auto& target_elem_type = col_vec->type().child_type();
+            const vector_t& src_entry = new_vec->entry();
+
+            // Per-row (offset,length) slice of the value into its support vector. A
+            // LIST stores this explicitly; a fixed ARRAY derives it from the stride.
+            auto src_slice = [&](uint64_t row) -> types::list_entry_t {
+                if (new_vec->type().type() == types::logical_type::LIST) {
+                    return new_vec->data<types::list_entry_t>()[row];
+                }
+                auto stride =
+                    static_cast<const types::array_logical_type_extension*>(new_vec->type().extension())->size();
+                return types::list_entry_t{row * stride, stride};
+            };
+
+            // Cast only the populated prefix of the support vector to the column's
+            // element type. A matching physical type needs no cast and the source
+            // support vector is used directly (this also preserves string elements,
+            // which cast_vector does not handle).
+            uint64_t src_elem_count = 0;
+            for (uint64_t row = 0; row < count; ++row) {
+                auto slice = src_slice(row);
+                src_elem_count = std::max(src_elem_count, slice.offset + slice.length);
+            }
+            std::optional<vector_t> casted_elems;
+            const vector_t* elems = &src_entry;
+            if (src_entry.type().to_physical_type() != target_elem_type.to_physical_type()) {
+                casted_elems.emplace(vector_ops::cast_vector(resource, src_entry, target_elem_type, src_elem_count));
+                elems = &casted_elems.value();
+            }
+
+            if (col_vec->type().type() == types::logical_type::LIST) {
+                // Variadic LIST target: rebuild the column's flat child buffer by
+                // appending each row's (cast) element slice, then re-point the row's
+                // (offset,length) slot at the freshly appended segment.
+                auto* row_entries = col_vec->data<types::list_entry_t>();
+                col_vec->set_list_size(0);
+                uint64_t target_offset = 0;
+                for (uint64_t row = 0; row < count; ++row) {
+                    auto slice = src_slice(row);
+                    if (new_vec->is_null(row)) {
+                        col_vec->set_null(row, true);
+                        row_entries[row] = types::list_entry_t{target_offset, 0};
+                        modified[row] = true;
+                        continue;
+                    }
+                    col_vec->append(*elems, slice.offset + slice.length, slice.offset);
+                    row_entries[row] = types::list_entry_t{target_offset, slice.length};
+                    target_offset += slice.length;
+                    modified[row] = true;
+                }
+                col_vec->set_list_size(target_offset);
+                return modified;
+            }
+
+            // Fixed ARRAY target: write exactly stride elements per row, truncating a
+            // longer literal and NULL-padding a shorter one to the declared size.
+            auto target_stride =
+                static_cast<const types::array_logical_type_extension*>(col_vec->type().extension())->size();
+            auto& target_child = col_vec->entry();
+            for (uint64_t row = 0; row < count; ++row) {
+                auto slice = src_slice(row);
+                if (new_vec->is_null(row)) {
+                    col_vec->set_null(row, true);
+                    for (uint64_t j = 0; j < target_stride; ++j) {
+                        target_child.set_null(row * target_stride + j, true);
+                    }
+                    modified[row] = true;
+                    continue;
+                }
+                uint64_t copied = std::min<uint64_t>(slice.length, target_stride);
+                if (copied > 0) {
+                    vector_ops::copy(*elems, target_child, slice.offset + copied, slice.offset, row * target_stride);
+                }
+                for (uint64_t j = copied; j < target_stride; ++j) {
+                    target_child.set_null(row * target_stride + j, true);
+                }
+                modified[row] = true;
+            }
+            return modified;
+        }
+
         // Cast new_vec to col_vec's type if they differ (e.g. DOUBLE→FLOAT after arithmetic).
         std::optional<vector_t> casted;
         if (new_vec->type().to_physical_type() != col_vec->type().to_physical_type()) {
@@ -126,6 +220,21 @@ namespace components::expressions {
                     static_cast<const types::array_logical_type_extension*>(parent->type().extension())->size();
                 vector_ops::copy_strided_target(*new_vec, *col_vec, count, stride, key_.path().back());
                 std::fill(modified.begin(), modified.end(), true);
+                return modified;
+            }
+            if (parent->type().type() == types::logical_type::LIST) {
+                // LIST element j of row r lives at list_entry[r].offset + j in the flat
+                // child vector; offsets vary per row so we write each one individually.
+                // Rows whose list is shorter than j are left untouched.
+                const auto* offlen = parent->data<types::list_entry_t>();
+                const auto element_index = key_.path().back();
+                for (uint64_t row = 0; row < count; ++row) {
+                    if (element_index >= offlen[row].length) {
+                        continue;
+                    }
+                    col_vec->set_value(offlen[row].offset + element_index, new_vec->value(row));
+                    modified[row] = true;
+                }
                 return modified;
             }
         }

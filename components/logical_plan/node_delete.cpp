@@ -51,4 +51,18 @@ namespace components::logical_plan {
         return {new node_delete_t{resource, match, limit}};
     }
 
+    node_delete_ptr make_node_catalog_delete(std::pmr::memory_resource* resource,
+                                             components::catalog::oid_t catalog_table_oid,
+                                             std::int64_t oid_col_idx,
+                                             components::catalog::oid_t target_oid) {
+        // Empty match (null predicate) + unlimited limit satisfy the base ctor;
+        // the catalog branch of operator_delete never reads them.
+        auto match = make_node_match(resource, core::dbname_t{}, core::relname_t{}, nullptr);
+        auto limit = make_node_limit(resource, core::dbname_t{}, core::relname_t{}, limit_t::unlimit());
+        auto node = boost::intrusive_ptr(new node_delete_t{resource, match, limit});
+        node->set_table_oid(catalog_table_oid);
+        node->set_catalog_delete(oid_col_idx, target_oid);
+        return node;
+    }
+
 } // namespace components::logical_plan

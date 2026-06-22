@@ -985,3 +985,259 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 1000;", 0);
     }
 }
+
+// Large-table-scan segfault repro (SSB q1-1 shape), DISK-backed e2e guard.
+//
+// On pre-fix code a q1-1-style aggregate over a WIDE table (mirroring SSB
+// lineorder, 17 columns) SIGSEGVs mid-scan (EXC_BAD_ACCESS, null buffer in
+// standard_buffer_manager_t::pin). The fix has two parts the disk-backed path
+// here exercises: an eviction guard (managed, non-reloadable blocks can never
+// be unloaded, so re-pinning an evicted segment never derefs a null buffer) and
+// disk-backed write-through (a filled segment is flushed to the data file and
+// gets a real reloadable block_id, so the pool can evict + reload it and large
+// inserts stay BOUNDED instead of pinning the whole table resident). Post-fix
+// this must (a) accept every INSERT batch without OOM and (b) complete the large
+// scan with the CORRECT aggregate — prove COMPLETION, not just no-crash.
+//
+// DISK-backed (config.disk.on, storage = 'disk') so write-through is actually
+// exercised — an in-memory table would pin the whole working set and clean-OOM
+// by design, which cannot validate the write-through bound.
+//
+// Working-set / pool note: there is NO buffer-pool / memory-limit knob in
+// configuration::config — the pool size is hardcoded (4 GiB) inside the disk
+// service (services/disk/manager_disk.cpp) and is only overridable
+// programmatically (set_memory_limit), which production never calls and a test
+// at this e2e layer cannot reach. So we cannot shrink the pool to force
+// eviction at a small row count from here; that path is covered directly at the
+// unit layer (components/table/test/test_disk_backed_scan.cpp, which uses a tiny
+// pool). Here the row count is chosen as the largest WIDE-table scan that keeps
+// this Debug-build case to a few seconds while still meaningfully driving the
+// disk-backed append + full-scan path end to end.
+TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
+    auto config = test_create_config("/tmp/otterbrix/production/large_scan_segfault");
+    test_clear_directory(config);
+    // DISK-backed so write-through evicts filled segments and large inserts stay
+    // bounded.
+    config.disk.on = true;
+    config.wal.on = true;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    constexpr int batches = 50;
+    constexpr int rows_per_batch = 1000;
+    constexpr int64_t total_rows = int64_t(batches) * rows_per_batch;
+
+    // Mirror the row-generation formulas below to compute the EXPECTED q1-1
+    // aggregate and matching-row count up front, so the assertions prove the
+    // scan returned the right value (not merely "no crash").
+    int64_t expected_revenue = 0;
+    int64_t expected_match_rows = 0;
+    for (int64_t id = 0; id < total_rows; ++id) {
+        const int64_t year = 1992 + (id % 7);
+        const int64_t discount = id % 11;            // 0..10
+        const int64_t quantity = 1 + (id % 50);      // 1..50
+        const int64_t extprice = 1000 + (id % 9000); // 1000..9999
+        if (year == 1993 && discount >= 1 && discount <= 3 && quantity < 25) {
+            expected_revenue += extprice * discount;
+            ++expected_match_rows;
+        }
+    }
+    REQUIRE(expected_match_rows > 0); // the filter must select a non-trivial subset
+
+    INFO("initialization: WIDE DISK table mirroring SSB lineorder (17 columns)") {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            // Mirror the SSB lineorder shape: many wide bigint columns plus a few
+            // text columns, so a 1024-row row-group is a large working set.
+            // storage = 'disk' enables write-through for this table.
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session,
+                                    "CREATE TABLE TestDatabase.Lineorder ("
+                                    "lo_orderkey bigint, "
+                                    "lo_linenumber bigint, "
+                                    "lo_custkey bigint, "
+                                    "lo_partkey bigint, "
+                                    "lo_suppkey bigint, "
+                                    "lo_orderdate bigint, "
+                                    "lo_orderpriority string, "
+                                    "lo_shippriority string, "
+                                    "lo_quantity bigint, "
+                                    "lo_extendedprice bigint, "
+                                    "lo_ordtotalprice bigint, "
+                                    "lo_discount bigint, "
+                                    "lo_revenue bigint, "
+                                    "lo_supplycost bigint, "
+                                    "lo_tax bigint, "
+                                    "lo_commitdate bigint, "
+                                    "lo_shipmode string) "
+                                    "WITH (storage = 'disk');");
+        }
+    }
+
+    INFO("insert wide rows in batches of 1000") {
+        // Derive every column from the row index so the data is varied and the
+        // q1-1 filters select a non-trivial subset:
+        //   lo_orderdate  -> year, 1992..1998 (so d_year = 1993 selects ~1/7)
+        //   lo_discount   -> 0..10            (BETWEEN 1 AND 3 selects 3/11)
+        //   lo_quantity   -> 1..50            (< 25 selects ~half)
+        for (int batch = 0; batch < batches; ++batch) {
+            std::stringstream ss;
+            ss << "INSERT INTO TestDatabase.Lineorder ("
+                  "lo_orderkey, lo_linenumber, lo_custkey, lo_partkey, lo_suppkey, "
+                  "lo_orderdate, lo_orderpriority, lo_shippriority, lo_quantity, "
+                  "lo_extendedprice, lo_ordtotalprice, lo_discount, lo_revenue, "
+                  "lo_supplycost, lo_tax, lo_commitdate, lo_shipmode) VALUES ";
+            for (int i = 0; i < rows_per_batch; ++i) {
+                const int64_t id = int64_t(batch) * rows_per_batch + i;
+                const int64_t year = 1992 + (id % 7);
+                const int64_t discount = id % 11;            // 0..10
+                const int64_t quantity = 1 + (id % 50);      // 1..50
+                const int64_t extprice = 1000 + (id % 9000); // 1000..9999
+                if (i > 0)
+                    ss << ",";
+                ss << "(" << id                       // lo_orderkey
+                   << ", " << (1 + (id % 7))           // lo_linenumber
+                   << ", " << (id % 30000)             // lo_custkey
+                   << ", " << (id % 200000)            // lo_partkey
+                   << ", " << (id % 2000)              // lo_suppkey
+                   << ", " << year                     // lo_orderdate (== year here)
+                   << ", '1-URGENT'"                   // lo_orderpriority
+                   << ", '0'"                          // lo_shippriority
+                   << ", " << quantity                 // lo_quantity
+                   << ", " << extprice                 // lo_extendedprice
+                   << ", " << (extprice * quantity)    // lo_ordtotalprice
+                   << ", " << discount                 // lo_discount
+                   << ", " << (extprice * discount)    // lo_revenue
+                   << ", " << (extprice / 2)           // lo_supplycost
+                   << ", " << (id % 8)                 // lo_tax
+                   << ", " << year                     // lo_commitdate
+                   << ", 'MAIL')";                     // lo_shipmode
+            }
+            ss << ";";
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, ss.str());
+            // Write-through must keep each batch BOUNDED: a clean success is
+            // required. An OOM here means the bound is not working — do NOT
+            // weaken this; investigate instead.
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == rows_per_batch);
+        }
+    }
+
+    INFO("q1-1-style aggregate over the full WIDE table (the large scan)") {
+        // On pre-fix code the process SIGSEGVs during this scan. On the fixed
+        // code it must COMPLETE with the correct aggregate.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT SUM(lo_extendedprice * lo_discount) AS revenue "
+                                           "FROM TestDatabase.Lineorder "
+                                           "WHERE lo_orderdate = 1993 "
+                                           "AND lo_discount BETWEEN 1 AND 3 "
+                                           "AND lo_quantity < 25;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        // SUM over bigint expressions comes back as a signed scalar. Match the
+        // value computed from the same generation formulas above: proves the
+        // large scan COMPLETED with the correct result, not just no-crash.
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == expected_revenue);
+    }
+
+    INFO("sanity: full-table count scans cleanly and returns every row") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(lo_orderkey) AS cnt FROM TestDatabase.Lineorder;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == uint64_t(total_rows));
+    }
+}
+
+// REGRESSION: a disk-backed table that is CHECKPOINTed and then reopened must
+// still resolve its columns and run a q1-1-style aggregate. This exercises the
+// full bootstrap → resolve_table path after reopen, including the MVCC
+// commit-clock re-seed. Without that seed, a reopened instance whose persisted
+// pg_attribute columns carry a non-zero added_at_commit_id from the prior
+// session would judge every column "added after my snapshot" (start_time reset
+// to 1) and resolution would fail "<col> not found".
+//
+// WAL stays on so the user rows survive the reopen and the post-reopen
+// aggregate can be value-checked end to end.
+TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoint") {
+    auto config = test_create_config("/tmp/otterbrix/production/reopen_resolve_columns");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = true;
+
+    INFO("phase 1: disk-backed CREATE TABLE, INSERT, CHECKPOINT") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            // Disk-backed so the rows survive reopen and the aggregate below is
+            // value-checkable; the SSB lineorder column shape.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "CREATE TABLE TestDatabase.Lineorder ("
+                                               "lo_orderkey bigint, "
+                                               "lo_orderdate bigint, "
+                                               "lo_quantity bigint, "
+                                               "lo_extendedprice bigint, "
+                                               "lo_discount bigint) "
+                                               "WITH (storage = 'disk');");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.Lineorder "
+                "(lo_orderkey, lo_orderdate, lo_quantity, lo_extendedprice, lo_discount) VALUES "
+                "(1, 1993, 10, 1000, 2), (2, 1994, 30, 2000, 5), (3, 1993, 20, 1500, 1);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+        {
+            // CHECKPOINT folds the durable frontier into pg_attribute and the
+            // user table's row-groups into its .otbx.
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: REOPEN and resolve a column — must NOT fail 'not found'") {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        // The pre-fix failure was column resolution: SELECT <col> reported the
+        // column as not found. Assert the resolve path succeeds.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session, "SELECT lo_orderdate FROM TestDatabase.Lineorder WHERE lo_orderdate = 1993;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+        // And a q1-1-style aggregate over the reopened table resolves every
+        // referenced column and returns the correct value.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT SUM(lo_extendedprice * lo_discount) AS revenue "
+                                               "FROM TestDatabase.Lineorder "
+                                               "WHERE lo_orderdate = 1993 "
+                                               "AND lo_discount BETWEEN 1 AND 3 "
+                                               "AND lo_quantity < 25;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            // row 1: 1000*2=2000 (orderdate 1993, disc 2, qty 10<25) — matches
+            // row 3: 1500*1=1500 (orderdate 1993, disc 1, qty 20<25) — matches
+            // row 2: orderdate 1994 — excluded
+            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3500);
+        }
+    }
+}

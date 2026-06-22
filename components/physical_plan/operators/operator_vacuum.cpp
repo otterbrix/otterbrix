@@ -82,7 +82,13 @@ namespace components::operators {
                                                /*limit=*/int64_t{-1},
                                                std::vector<size_t>{},
                                                ctx->txn);
-            pg_class_batches = co_await std::move(scf);
+            auto scan_r = co_await std::move(scf);
+            if (scan_r.has_error()) {
+                set_error(scan_r.error());
+                mark_failed();
+                co_return;
+            }
+            pg_class_batches = std::move(scan_r.value());
         }
         if (pg_class_batches.empty()) {
             mark_executed();

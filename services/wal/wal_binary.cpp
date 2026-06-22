@@ -238,7 +238,19 @@ namespace services::wal {
                               const components::vector::data_chunk_t& schema_chunk,
                               uint64_t column_count) {
         buffer_t payload_buf(buffer.get_allocator());
-        components::vector::serialize_binary(schema_chunk, payload_buf);
+        // Frame the schema chunk as a one-element chunk batch so it uses the SAME
+        // [count][len][chunk] framing INSERT does — replay decodes ADD_COLUMN via
+        // deserialize_chunk_batch, which reads a leading count a bare serialize_binary
+        // would not write (the decoder would then read the chunk's first bytes as a
+        // garbage count and drop the record, losing the grown column on restart).
+        std::pmr::vector<components::vector::data_chunk_t> schema_batch{payload_buf.get_allocator().resource()};
+        components::vector::data_chunk_t schema_copy(schema_chunk.resource(),
+                                                     schema_chunk.types(),
+                                                     std::max<uint64_t>(schema_chunk.size(), 1));
+        schema_chunk.copy(schema_copy, 0);
+        schema_copy.set_cardinality(schema_chunk.size());
+        schema_batch.emplace_back(std::move(schema_copy));
+        serialize_chunk_batch(payload_buf, schema_batch);
 
         return write_dml_record(buffer,
                                 last_crc32,

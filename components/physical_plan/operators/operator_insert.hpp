@@ -23,13 +23,16 @@ namespace components::operators {
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-        // STREAMING DML (STEP 3b). The insert is a SINK on its scan input
-        // (INSERT...SELECT): push() folds each scan batch into a bounded
-        // accumulator and emits nothing; the executor then drives the async
-        // WAL->storage->index commit via await_async_and_resume after the pump
-        // (needs_async_finalize()==true). The VALUES / catalog-row form has a
-        // raw_data input (role()==none), so is_streaming_pipeline routes it to
-        // the legacy on_execute path automatically — only INSERT...SELECT streams.
+        // STREAMING DML (STEP 3b). The insert is a SINK on its input: push() folds
+        // each input batch into a bounded accumulator and emits nothing; the executor
+        // then drives the async WAL->storage->index commit via await_async_and_resume
+        // after the pump (needs_async_finalize()==true). This streams over BOTH a scan
+        // source (INSERT...SELECT) and a raw_data source (INSERT...VALUES, now that
+        // operator_raw_data_t is role()==source) — the VALUES rows are folded one
+        // chunk at a time instead of adopting left_->output() wholesale. The legacy
+        // on_execute path (adopt left_->output(), single append) remains as the
+        // materialized entry point for any sourceless caller; both share the SAME
+        // append core, so results are identical.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 

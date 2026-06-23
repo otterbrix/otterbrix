@@ -103,11 +103,13 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
     }
 }
 
-TEST_CASE("integration::cpp::streaming_dml::insert_values_stays_legacy") {
-    // The VALUES form has a raw_data (role()==none) input, so is_streaming_pipeline
-    // routes it to the legacy materialize path — the streaming counter must NOT
-    // bump for it. This guards the design invariant that only INSERT...SELECT
-    // (scan source) streams; catalog/VALUES inserts ride the legacy path.
+TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
+    // operator_raw_data_t is now a streaming SOURCE (role()==source), so the VALUES
+    // form is a sourced INSERT...VALUES pipeline: is_streaming_pipeline routes it
+    // through execute_pipeline, where the INSERT sink folds the VALUES batches via
+    // push() one chunk at a time. The streaming counter MUST bump, and the rows MUST
+    // still land identically (R6: the streaming sink and the legacy on_execute path
+    // share the same append core).
     auto config = test_create_config("/tmp/test_streaming_dml_values");
     test_clear_directory(config);
     config.disk.on = false;
@@ -125,7 +127,56 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_stays_legacy") {
         REQUIRE(cur->size() == 3);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    REQUIRE(runs_after == runs_before);
+    // PATH: routed through the push-based streaming pipeline (VALUES source).
+    REQUIRE(runs_after > runs_before);
+
+    // CORRECTNESS: every VALUES row landed with values intact.
+    {
+        auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 3);
+    }
+    {
+        auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 20);
+    }
+}
+
+TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
+    // INSERT...VALUES...RETURNING over the raw_data SOURCE: the streaming sink folds
+    // the VALUES batches via push(), commits in await_async_and_resume, then reads the
+    // appended segment back for the RETURNING projection. Proves the source -> sink ->
+    // readback path lands the right RETURNING rows when VALUES is a streaming source.
+    auto config = test_create_config("/tmp/test_streaming_dml_values_returning");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.t (id bigint, val bigint);")->is_success());
+
+    const auto runs_before = services::collection::executor::streaming_pipeline_runs();
+    {
+        auto cur = exec(dispatcher,
+                        "INSERT INTO StreamDb.t (id, val) VALUES (1, 10), (2, 20) RETURNING id, val * 2 AS d;");
+        INFO("INSERT VALUES RETURNING error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    const auto runs_after = services::collection::executor::streaming_pipeline_runs();
+    REQUIRE(runs_after > runs_before); // PATH: streamed through the VALUES source.
+
+    // The two rows landed (RETURNING readback is not order-guaranteed, spot-check via SELECT).
+    {
+        auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 10);
+    }
 }
 
 TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands") {

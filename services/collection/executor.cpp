@@ -1912,21 +1912,120 @@ namespace services::collection::executor {
             }
         }
 
-        // DML sink commit: the pump fed this sink's input via push(); now drive its
-        // async WAL->storage->index->swap-info commit. push()/finalize() are
-        // synchronous, so the commit runs HERE in the executor's coroutine (which owns
-        // the cross-actor await), exactly as the legacy await loop does for the
-        // materialize path. await_async_and_resume sets the operator's output_
-        // (RETURNING / affected-row count) and marks it executed.
-        ops::operator_t* root_op = chain.back();
-        if (root_op->needs_async_finalize()) {
-            co_await root_op->await_async_and_resume(ctx);
-            if (root_op->has_error()) {
-                co_return core::result_wrapper_t<ops::chunks_vector_t>(root_op->get_error());
+        // Async-finalize commit, BOTTOM-UP. The pump fed each sink's input via
+        // push(); now drive every operator whose finalize is an asynchronous
+        // cross-actor commit (DML: WAL->storage->index->swap-info). push()/finalize()
+        // are synchronous, so each commit runs HERE in the executor's coroutine
+        // (which owns the cross-actor await), exactly as the legacy await loop does
+        // for the materialize path. await_async_and_resume sets the operator's
+        // output_ (RETURNING / affected-row count) and marks it executed.
+        //
+        // Iterate over only the operators THIS pipeline drove ([op_start, end)) and
+        // go DEEPEST-FIRST: chain[op_start] is the bottom (closest to the source),
+        // chain.back() the root, so ascending index == bottom-up. Today at most one
+        // op per chain sets needs_async_finalize() (the DML sink at the root), so
+        // this is behavior-preserving — but it is the hook future phases (a
+        // constraint above a DML, multi-async chains) need. Stop on the first error.
+        for (std::size_t i = op_start; i < chain.size(); ++i) {
+            ops::operator_t* op = chain[i];
+            if (!op->needs_async_finalize()) {
+                continue;
+            }
+            co_await op->await_async_and_resume(ctx);
+            if (op->has_error()) {
+                co_return core::result_wrapper_t<ops::chunks_vector_t>(op->get_error());
             }
         }
 
         co_return output;
+    }
+
+    executor_t::unique_future<core::error_t>
+    executor_t::drive_subplan_(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
+        // THE routing seam, extracted so execute_sub_plan_ and run_subplan share
+        // one implementation (no duplication; behavior identical to the inline
+        // drive execute_sub_plan_ used before). The caller has already prepared
+        // `root`. Streaming pipeline -> execute_pipeline (bounded memory); every
+        // other shape -> materialized on_execute + async-await loop. Both reach the
+        // SAME per-operator core (see is_streaming_pipeline).
+        if (is_streaming_pipeline(root)) {
+            auto piped = co_await execute_pipeline(root, ctx);
+            if (piped.has_error()) {
+                co_return piped.error();
+            }
+            if (!root->is_executed()) { // a DML sink already set output_ + executed in execute_pipeline
+                root->set_output(components::operators::make_operator_data(resource(), std::move(piped.value())));
+                root->mark_executed();
+            }
+        }
+
+        // Execute the plan tree (scan operators send I/O requests and enter waiting state)
+        root->on_execute(ctx);
+        if (root->has_error()) {
+            co_return root->get_error();
+        }
+
+        // Await all waiting operators (multiple scans in a join, etc.)
+        while (!root->is_executed()) {
+            auto waiting_op = root->find_waiting_operator();
+            if (!waiting_op) {
+                error(log_, "Plan not executed and no waiting operator! plan type: {}", static_cast<int>(root->type()));
+                assert(root->has_error());
+                co_return root->get_error();
+            }
+            trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
+            // DML operators (insert/remove/update) self-contain
+            // WAL + storage + index I/O inside their await_async_and_resume.
+            // Every operator is dispatched uniformly via the same coroutine entry point.
+            co_await waiting_op->await_async_and_resume(ctx);
+            // Propagate errors set during async resume (fk_check, fk_cascade,
+            // DML on disk failure, etc.)
+            if (waiting_op->has_error()) {
+                co_return waiting_op->get_error();
+            }
+            trace(log_, "executor: after await completed");
+            // Re-execute: completed scan allows parent to proceed, may find next waiting scan
+            root->on_execute(ctx);
+        }
+
+        // Detect errors set asynchronously in operators (e.g. fk_cascade root with RESTRICT).
+        if (root->has_error()) {
+            co_return root->get_error();
+        }
+        co_return core::error_t::no_error();
+    }
+
+    executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
+    executor_t::run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
+        // subplan_runner_t entry point: run a prepared child sub-plan to completion
+        // through the shared drive seam and hand back its output chunks. Invoked
+        // INTRA-actor by an operator via ctx->runner; runs inside this executor
+        // actor's own coroutine (operators are not actors), so the cross-actor
+        // awaits inside drive_subplan_ are owned by the executor and lost-wakeup-safe.
+        namespace ops = components::operators;
+        if (!root) {
+            co_return core::result_wrapper_t<ops::chunks_vector_t>(
+                core::error_t{core::error_code_t::create_physical_plan_error,
+                              std::pmr::string{"run_subplan: null root", resource()}});
+        }
+        root->prepare();
+        auto err = co_await drive_subplan_(root, ctx);
+        if (err.contains_error()) {
+            co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+        }
+        // Copy (not move) the chunks out of output_: the root operator owns its
+        // output_ (a shared intrusive_ptr operator_data) and may be read again by
+        // the caller, so draining it would corrupt that reader. A drained sub-plan
+        // with no output_ returns an empty vector.
+        ops::chunks_vector_t out{resource()};
+        if (root->output()) {
+            const auto& chunks = root->output()->chunks();
+            out.reserve(chunks.size());
+            for (const auto& c : chunks) {
+                out.push_back(c.partial_copy(resource(), 0, c.size()));
+            }
+        }
+        co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(out));
     }
 
     executor_t::unique_future<sub_plan_result_t>
@@ -1965,75 +2064,26 @@ namespace services::collection::executor {
             // manager_disk_t::vacuum_all + manager_index_t::cleanup_all_versions.
             // The value arrives with the session context fetched at plan start.
             pipeline_context.lowest_active_start_time = lowest_active_start_time;
+            // Publish ourselves as the sub-plan runner: an operator that needs to
+            // run a child sub-plan through this SAME streaming executor reaches us
+            // via ctx->runner->run_subplan (intra-actor; see subplan_runner_t).
+            pipeline_context.runner = this;
 
             // Prepare the operator tree (connects children in aggregation, etc.)
             plan->prepare();
 
-            // Push-based streaming path: a sub-plan whose whole left-chain is
-            // streaming-capable (sourced pipeline) runs one batch at a time through
-            // execute_pipeline (bounded memory), writing its result into output_.
-            // Marking the root executed turns the on_execute()/await-loop below into
-            // no-ops, so the cursor + back-channel logic stays shared. A sub-plan
-            // that is NOT a streaming pipeline (sourceless: raw_data / recursive-CTE
-            // / no-FROM) skips this and takes the materialized on_execute path below;
-            // both reach the SAME operator core (see is_streaming_pipeline). This is
-            // the R6 single-implementation routing seam, not a transitional fallback.
-            if (is_streaming_pipeline(plan)) {
-                auto piped = co_await execute_pipeline(plan, &pipeline_context);
-                if (piped.has_error()) {
-                    cursor = make_cursor(resource(), piped.error());
+            // Drive the sub-plan to completion through the shared routing seam
+            // (streaming via execute_pipeline when is_streaming_pipeline, else the
+            // materialized on_execute + async-await loop). On success `plan` is
+            // executed with output_ set; the switch below reads plan->output().
+            // Both entry points reach the SAME per-operator core — the R6
+            // single-implementation routing seam, not a transitional fallback.
+            {
+                auto drive_err = co_await drive_subplan_(plan, &pipeline_context);
+                if (drive_err.contains_error()) {
+                    cursor = make_cursor(resource(), std::move(drive_err));
                     break;
                 }
-                if (!plan->is_executed()) { // a DML sink already set output_ + executed in execute_pipeline
-                    plan->set_output(
-                        components::operators::make_operator_data(resource(), std::move(piped.value())));
-                    plan->mark_executed();
-                }
-            }
-
-            // Execute the plan tree (scan operators send I/O requests and enter waiting state)
-            plan->on_execute(&pipeline_context);
-
-            if (plan->has_error()) {
-                cursor = make_cursor(resource(), plan->get_error());
-                break;
-            }
-
-            // Await all waiting operators (multiple scans in a join, etc.)
-            while (!plan->is_executed()) {
-                auto waiting_op = plan->find_waiting_operator();
-                if (!waiting_op) {
-                    error(log_,
-                          "Plan not executed and no waiting operator! session: {}, plan type: {}",
-                          session.data(),
-                          static_cast<int>(plan->type()));
-                    assert(plan->has_error());
-                    cursor = make_cursor(resource(), plan->get_error());
-                    break;
-                }
-                trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
-                // DML operators (insert/remove/update) self-contain
-                // WAL + storage + index I/O inside their await_async_and_resume.
-                // Every operator is dispatched uniformly via the same
-                // coroutine entry point.
-                co_await waiting_op->await_async_and_resume(&pipeline_context);
-                // Propagate errors set during async resume (fk_check, fk_cascade,
-                // DML on disk failure, etc.)
-                if (waiting_op->has_error()) {
-                    cursor = make_cursor(resource(), waiting_op->get_error());
-                    break;
-                }
-                trace(log_, "executor: after await completed");
-                // Re-execute: completed scan allows parent to proceed, may find next waiting scan
-                plan->on_execute(&pipeline_context);
-            }
-            if (cursor && cursor->is_error())
-                break;
-
-            // Detect errors set asynchronously in operators (e.g. fk_cascade root with RESTRICT).
-            if (plan->has_error()) {
-                cursor = make_cursor(resource(), plan->get_error());
-                break;
             }
 
             switch (plan->type()) {

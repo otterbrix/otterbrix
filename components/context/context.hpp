@@ -18,6 +18,12 @@ namespace components::compute {
 
 namespace components::pipeline {
 
+    // Forward-declared (NOT included): context_t holds only a raw, non-owning
+    // pointer to the runner, so an incomplete type suffices and we avoid the
+    // include cycle (subplan_runner.hpp -> operator_data.hpp; operator.hpp ->
+    // context.hpp). subplan_runner.hpp itself stays out of this header.
+    struct subplan_runner_t;
+
     class context_t {
     public:
         using disk_future_t = actor_zeta::unique_future<void>;
@@ -43,6 +49,17 @@ namespace components::pipeline {
         // mutations (begin/commit/abort) send txn_*_msg messages to
         // current_message_sender (the executor's parent — the dispatcher).
         uint64_t lowest_active_start_time{0};
+
+        // Sub-plan execution seam. The executor sets this to itself (it
+        // implements subplan_runner_t) right where it builds the context, before
+        // driving the plan. An operator that needs to run a child sub-plan
+        // through the SAME streaming executor calls runner->run_subplan(root,
+        // this). Non-owning raw pointer: the executor outlives every context it
+        // builds, and this is an INTRA-actor seam (the operator runs inside the
+        // executor actor's coroutine), not cross-actor shared state. nullptr when
+        // no executor is driving (e.g. a context built for a path that never runs
+        // operators); callers must null-check before use.
+        subplan_runner_t* runner{nullptr};
 
         // Aggregated by operators that touch pg_catalog. Drained by
         // execute_sub_plan_ into result_tracking after pipeline runs.

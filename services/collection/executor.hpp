@@ -4,6 +4,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
+#include <components/context/subplan_runner.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -141,7 +142,15 @@ namespace services::collection::executor {
         uint64_t commit_id{0};
     };
 
-    class executor_t final : public actor_zeta::basic_actor<executor_t> {
+    // Implements components::pipeline::subplan_runner_t so an operator (running
+    // INTRA-actor inside this executor's coroutine) can run a child sub-plan
+    // through the SAME streaming executor via ctx->runner->run_subplan(...). The
+    // executor publishes itself onto pipeline::context_t::runner before driving a
+    // plan. This is NOT cross-actor sharing: operators are owned by and run
+    // synchronously inside executor_t (operator_t is a boost::intrusive_ref_counter,
+    // not a basic_actor).
+    class executor_t final : public actor_zeta::basic_actor<executor_t>,
+                             public components::pipeline::subplan_runner_t {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
@@ -181,6 +190,15 @@ namespace services::collection::executor {
         // executor.cpp for the rationale).
         unique_future<void> poke_msg();
 
+        // subplan_runner_t override. Routes a prepared sub-plan root through the
+        // SAME seam execute_sub_plan_ uses (streaming via execute_pipeline when
+        // is_streaming_pipeline, else the materialized on_execute + async-await
+        // drive) and returns its output chunks. Called INTRA-actor by an operator
+        // through ctx->runner (never across the mailbox). NOT in dispatch_traits:
+        // it is a synchronous in-coroutine interface call, not a mailbox handler.
+        [[nodiscard]] unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
+        run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
+
         using dispatch_traits = actor_zeta::
             dispatch_traits<&executor_t::execute_plan_full, &executor_t::register_udf, &executor_t::poke_msg>;
 
@@ -210,6 +228,17 @@ namespace services::collection::executor {
         // True when `root`'s left-chain bottoms out in a pipeline source and every
         // operator on it is streaming-capable (role != none).
         static bool is_streaming_pipeline(const components::operators::operator_ptr& root) noexcept;
+
+        // Drive ONE prepared sub-plan root to completion through the routing seam:
+        // streaming (execute_pipeline) when is_streaming_pipeline, else the
+        // materialized on_execute + async-await loop. On return `root` is executed
+        // with its output_ set (unless an error occurred). Shared by
+        // execute_sub_plan_ (which then reads root->output()) and run_subplan
+        // (which copies the chunks out). Returns the first error encountered (no
+        // exceptions — rule 2/9); core::error_t::no_error() on success. The caller
+        // must have already called root->prepare().
+        unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
+                                                    components::pipeline::context_t* ctx);
 
         // THE unified commit publisher: builds node_transaction_t(commit)
         // (ddl_mode adds the flush/WAL prefix) and runs it through the same

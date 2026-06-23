@@ -27,7 +27,6 @@ namespace components::operators {
         full_scan,
         transfer_scan,
         index_scan,
-        primary_key_scan,
         insert,
         remove,
         update,
@@ -146,8 +145,7 @@ namespace components::operators {
     };
 
     inline bool is_scan(operator_type t) {
-        return t == operator_type::full_scan || t == operator_type::transfer_scan || t == operator_type::index_scan ||
-               t == operator_type::primary_key_scan;
+        return t == operator_type::full_scan || t == operator_type::transfer_scan || t == operator_type::index_scan;
     }
 
     enum class operator_state

@@ -33,6 +33,12 @@ namespace components::operators::aggregate {
         run_aggregation(pipeline_context);
     }
 
+    void operator_aggregate_t::compute(pipeline::context_t* ctx, const operator_ptr& source_batch) {
+        clear();
+        set_children(source_batch);
+        run_aggregation(ctx);
+    }
+
     // Mirror the classification operator_group performs for its vectorized fast
     // path: a single builtin aggregate (SUM/MIN/MAX/COUNT/AVG), no DISTINCT, over a
     // single plain column key whose type is supported by raw_agg_state_t — or

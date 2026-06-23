@@ -20,7 +20,6 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/scan/full_scan.cpp
         operators/scan/index_scan.cpp
-        operators/scan/primary_key_scan.cpp
         operators/scan/transfer_scan.cpp
 
         operators/sort/sort.cpp

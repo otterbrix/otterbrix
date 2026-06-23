@@ -601,9 +601,7 @@ namespace components::operators {
                 }
             } else {
                 auto& aggregator = values_[a].aggregator;
-                aggregator->clear();
-                aggregator->set_children(shared_batch);
-                aggregator->on_execute(pipeline_context);
+                aggregator->compute(pipeline_context, shared_batch);
                 if (aggregator->has_error()) {
                     set_error(aggregator->get_error());
                     return vector::data_chunk_t(resource_,
@@ -690,9 +688,7 @@ namespace components::operators {
         chunks_vector_t empty_chunks(resource_);
         auto shared_batch = make_operator_batch(resource_, std::move(empty_chunks));
         for (const auto& value : values_) {
-            value.aggregator->clear();
-            value.aggregator->set_children(shared_batch);
-            value.aggregator->on_execute(pipeline_context);
+            value.aggregator->compute(pipeline_context, shared_batch);
             if (value.aggregator->has_error()) {
                 set_error(value.aggregator->get_error());
                 return vector::data_chunk_t(resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 1);

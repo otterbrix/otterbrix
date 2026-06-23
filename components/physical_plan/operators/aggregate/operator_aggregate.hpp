@@ -12,6 +12,16 @@ namespace components::operators::aggregate {
         types::logical_value_t value() const;
         compute::datum_t take_batch_values();
 
+        // Synchronous per-group aggregation entry point for operator_group_t.
+        // operator_func_t aggregation is pure-CPU (no async_wait / await / cross-actor
+        // send), so the legacy on_execute() drive is unnecessary: this clears prior
+        // state, wires `source_batch` as the input child, and runs the SAME
+        // run_aggregation core on_execute_impl reaches — minus the on_execute
+        // recursion/state machinery (left_ is an already-executed operator_batch_t,
+        // so on_execute's child-drive is a no-op anyway). Read has_error() /
+        // take_batch_values() afterwards exactly as before.
+        void compute(pipeline::context_t* ctx, const operator_ptr& source_batch);
+
         // --- Push-based streaming pipeline (STEP 3 / phase C) ---
         // A scalar aggregate (no GROUP BY) folds an unbounded input into a single
         // bounded result, so it is a SINK that needs only O(1) running state.

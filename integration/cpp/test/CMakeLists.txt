@@ -40,6 +40,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_streaming_match.cpp
         test_streaming_index_scan.cpp
         test_streaming_join.cpp
+        test_streaming_ddl_leaf.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

@@ -15,9 +15,20 @@ namespace components::operators {
     public:
         operator_set_timezone_t(std::pmr::memory_resource* resource, log_t log, std::pmr::string timezone_name);
 
+        // Sourceless SINK leaf (no data pipeline, no children): the executor
+        // admits it as a streaming sink-root and drives await_async_and_resume via
+        // the bottom-up needs_async_finalize pass. push()/finalize() inherit the
+        // no-op defaults; replaces the legacy on_execute + find_waiting_operator
+        // drive. The sync timezone-name validation now runs at the TOP of
+        // await_async_and_resume (one place for both entry points — R6), so an
+        // invalid value still aborts before any disk write.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
+        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
+
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
-        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         std::pmr::string timezone_name_;
     };

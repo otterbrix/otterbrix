@@ -1798,7 +1798,20 @@ namespace services::collection::executor {
             }
             deepest = op;
         }
-        return deepest != nullptr && deepest->role() == ops::pipeline_role::source;
+        if (deepest == nullptr) {
+            return false;
+        }
+        // Normal case: the chain bottom is a scan SOURCE the pump pulls batches from.
+        if (deepest->role() == ops::pipeline_role::source) {
+            return true;
+        }
+        // SOURCELESS SINK-ROOT: a single leaf sink with no left child (a DDL/txn
+        // operator whose whole effect is its async await_async_and_resume). It has
+        // no source to pump; execute_pipeline runs its FLUSH + needs_async_finalize
+        // drive directly. Restricted to a true leaf (root == deepest, no left): a
+        // sink ABOVE a non-source bottom is not a valid streaming shape.
+        return deepest == root.get() && deepest->role() == ops::pipeline_role::sink &&
+               root->left() == nullptr;
     }
 
     executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
@@ -1824,7 +1837,19 @@ namespace services::collection::executor {
         while (start < chain.size() && chain[start]->is_executed()) {
             ++start;
         }
-        const std::size_t op_start = (start == 0) ? 1 : start;
+        // SOURCELESS SINK-ROOT: a leaf DDL/txn operator (create_collection,
+        // set_timezone, begin_transaction, ...) lowers to a single sink with no
+        // left child — no scan source at the chain bottom. is_streaming_pipeline
+        // admits it so the on_execute legacy path can be retired; here we skip the
+        // source pump entirely and drive the sink itself through FLUSH +
+        // needs_async_finalize below. All work lives in await_async_and_resume, so
+        // the bottom-most operator (chain[0]) MUST be in the [op_start, end) range
+        // the async-finalize drive iterates — hence op_start stays at 0 (not 1) for
+        // this shape. (chain[0]->role()==source is the normal pumped case; a NOT-
+        // executed non-source bottom is the sourceless sink.)
+        const bool sourceless_sink_root =
+            start == 0 && chain.front()->role() != ops::pipeline_role::source;
+        const std::size_t op_start = sourceless_sink_root ? 0 : ((start == 0) ? 1 : start);
 
         ops::chunks_vector_t output{resource()};
 
@@ -1851,7 +1876,12 @@ namespace services::collection::executor {
         };
 
         // PUMP.
-        if (start == 0) {
+        if (sourceless_sink_root) {
+            // No source at the bottom: nothing to pump. The sink leaf's entire
+            // effect is the async cross-actor commit driven by the bottom-up
+            // needs_async_finalize loop below (FLUSH over a sink-only chain emits
+            // nothing). Fall through.
+        } else if (start == 0) {
             ops::operator_t* source = chain.front();
             while (true) {
                 auto next = co_await source->source_next(ctx);

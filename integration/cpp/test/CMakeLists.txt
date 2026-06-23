@@ -37,6 +37,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_lost_wakeup_realpath.cpp
         test_bounded_execution.cpp
         test_streaming_dml.cpp
+        test_streaming_match.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

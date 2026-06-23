@@ -1764,6 +1764,139 @@ namespace services::collection::executor {
         return plan_t{std::move(sub_plans), &parameters, std::move(context_storage)};
     }
 
+    // Routing seam between the two operator entry points (R6 design intent — this
+    // is NOT a transitional fallback). A sub-plan whose whole left-chain is
+    // pipeline-capable and bottoms out in a scan SOURCE runs through the push-based
+    // STREAMING path (execute_pipeline below): operators' push()/finalize() fold one
+    // batch at a time into bounded sink state. A sub-plan that is NOT a streaming
+    // pipeline — a genuinely SOURCELESS shape with no scan source (raw_data joins,
+    // recursive-CTE working sets, no-FROM SELECT) — runs through the MATERIALIZED
+    // path (plan->on_execute -> each operator's on_execute_impl). Both entry points
+    // route through the SAME per-operator build/probe/accumulate core, so they
+    // produce identical results: two entry points to one implementation for two plan
+    // shapes, not a dual divergent path.
+    bool executor_t::is_streaming_pipeline(const components::operators::operator_ptr& root) noexcept {
+        namespace ops = components::operators;
+        const ops::operator_t* deepest = nullptr;
+        for (const ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
+            if (op->role() == ops::pipeline_role::none) {
+                return false; // an unconverted operator on the chain -> legacy materialize path
+            }
+            deepest = op;
+        }
+        return deepest != nullptr && deepest->role() == ops::pipeline_role::source;
+    }
+
+    executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
+    executor_t::execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
+        namespace ops = components::operators;
+        // Linearize the left-chain into pipeline order: chain[0] = source ... chain.back() = root.
+        std::pmr::vector<ops::operator_t*> chain{resource()};
+        for (ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
+            chain.push_back(op);
+        }
+        std::reverse(chain.begin(), chain.end());
+
+        // Everything below the bottom-most NOT-yet-executed operator is a materialized
+        // sub-plan: traverse_plan_ splits a join's build AND probe sides into their own
+        // sub-plans, which run (and mark_executed) before this one. Re-driving such an
+        // operator's source_next would read an already-drained cursor (0 rows). So drive
+        // source_next only when this pipeline owns its scan source (chain bottom); when
+        // the bottom is already executed, stream from that operator's materialized output_.
+        std::size_t start = 0;
+        while (start < chain.size() && chain[start]->is_executed()) {
+            ++start;
+        }
+        const std::size_t op_start = (start == 0) ? 1 : start;
+
+        ops::chunks_vector_t output{resource()};
+
+        // Push one batch up through chain[op_start..]: a streaming op transforms its input
+        // into the next stage; a sink op folds it into bounded state and emits nothing.
+        // Chunks that survive the top of a pure-streaming pipeline are collected as output.
+        auto pump_one = [&](components::vector::data_chunk_t&& batch) -> core::error_t {
+            ops::chunks_vector_t stage{resource()};
+            stage.push_back(std::move(batch));
+            for (std::size_t i = op_start; i < chain.size(); ++i) {
+                ops::chunks_vector_t produced{resource()};
+                for (auto& in : stage) {
+                    auto err = chain[i]->push(ctx, std::move(in), produced);
+                    if (err.contains_error()) {
+                        return err;
+                    }
+                }
+                stage = std::move(produced);
+            }
+            for (auto& c : stage) {
+                output.push_back(std::move(c));
+            }
+            return core::error_t::no_error();
+        };
+
+        // PUMP.
+        if (start == 0) {
+            ops::operator_t* source = chain.front();
+            while (true) {
+                auto next = co_await source->source_next(ctx);
+                if (next.has_error()) {
+                    co_return next.convert_error<ops::chunks_vector_t>();
+                }
+                auto batch = std::move(next.value());
+                if (batch.data.empty()) {
+                    break; // 0-column drain sentinel (a schema'd 0-row batch is real input, e.g.
+                           // the empty-guard a scalar aggregate needs to emit COUNT=0)
+                }
+                auto err = pump_one(std::move(batch));
+                if (err.contains_error()) {
+                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+                }
+            }
+        } else if (chain[start - 1]->output()) {
+            // Materialized input: stream the already-executed operator's output_ chunks through the
+            // remaining (un-executed) operators. COPY (not move) the chunks — this operator's
+            // output_ is a shared (intrusive_ptr) operator_data that may be read again elsewhere
+            // (e.g. a recursive CTE working set, or a build side reused across iterations), so
+            // moving its chunks out would empty it for the other reader.
+            for (const auto& c : chain[start - 1]->output()->chunks()) {
+                auto err = pump_one(c.partial_copy(resource(), 0, c.size()));
+                if (err.contains_error()) {
+                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+                }
+            }
+        }
+
+        // FLUSH: drain sink state bottom-up. A sink (group/agg/sort) emits its accumulated
+        // result here; that result must still flow through the operators ABOVE it in the chain
+        // (e.g. a projection on top of GROUP BY), so each finalized chunk is pushed through
+        // chain[i+1..]. A downstream sink absorbs it (and emits later when its own turn comes,
+        // since i < j is processed first). Streaming operators finalize to a no-op.
+        for (std::size_t i = op_start; i < chain.size(); ++i) {
+            ops::chunks_vector_t fin{resource()};
+            auto err = chain[i]->finalize(ctx, fin);
+            if (err.contains_error()) {
+                co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+            }
+            for (auto& c : fin) {
+                ops::chunks_vector_t stage{resource()};
+                stage.push_back(std::move(c));
+                for (std::size_t j = i + 1; j < chain.size(); ++j) {
+                    ops::chunks_vector_t produced{resource()};
+                    for (auto& in : stage) {
+                        auto e = chain[j]->push(ctx, std::move(in), produced);
+                        if (e.contains_error()) {
+                            co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(e));
+                        }
+                    }
+                    stage = std::move(produced);
+                }
+                for (auto& s : stage) {
+                    output.push_back(std::move(s));
+                }
+            }
+        }
+        co_return output;
+    }
+
     executor_t::unique_future<sub_plan_result_t>
     executor_t::execute_sub_plan_(components::session::session_id_t session,
                                   plan_t plan_data,
@@ -1803,6 +1936,26 @@ namespace services::collection::executor {
 
             // Prepare the operator tree (connects children in aggregation, etc.)
             plan->prepare();
+
+            // Push-based streaming path: a sub-plan whose whole left-chain is
+            // streaming-capable (sourced pipeline) runs one batch at a time through
+            // execute_pipeline (bounded memory), writing its result into output_.
+            // Marking the root executed turns the on_execute()/await-loop below into
+            // no-ops, so the cursor + back-channel logic stays shared. A sub-plan
+            // that is NOT a streaming pipeline (sourceless: raw_data / recursive-CTE
+            // / no-FROM) skips this and takes the materialized on_execute path below;
+            // both reach the SAME operator core (see is_streaming_pipeline). This is
+            // the R6 single-implementation routing seam, not a transitional fallback.
+            if (is_streaming_pipeline(plan)) {
+                auto piped = co_await execute_pipeline(plan, &pipeline_context);
+                if (piped.has_error()) {
+                    cursor = make_cursor(resource(), piped.error());
+                    break;
+                }
+                plan->set_output(
+                    components::operators::make_operator_data(resource(), std::move(piped.value())));
+                plan->mark_executed();
+            }
 
             // Execute the plan tree (scan operators send I/O requests and enter waiting state)
             plan->on_execute(&pipeline_context);

@@ -185,6 +185,20 @@ namespace services::collection::executor {
                                                            components::table::transaction_data txn,
                                                            uint64_t lowest_active_start_time);
 
+        // Push-based streaming driver. Pulls one batch at a time from the pipeline
+        // source (the chain bottom), pushes it up through the streaming operators into
+        // the sink, then finalizes — peak memory is one batch plus active sink state.
+        // Populates `root`'s output_, so the cursor/back-channel logic in
+        // execute_sub_plan_ is unchanged. Used only for a sub-plan whose whole
+        // left-chain is streaming-capable (is_streaming_pipeline); every other
+        // sub-plan keeps the legacy materialize (on_execute) path.
+        unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
+        execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx);
+
+        // True when `root`'s left-chain bottoms out in a pipeline source and every
+        // operator on it is streaming-capable (role != none).
+        static bool is_streaming_pipeline(const components::operators::operator_ptr& root) noexcept;
+
         // THE unified commit publisher: builds node_transaction_t(commit)
         // (ddl_mode adds the flush/WAL prefix) and runs it through the same
         // execute_plan pipeline every statement uses. The operator drains

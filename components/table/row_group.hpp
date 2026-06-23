@@ -113,6 +113,11 @@ namespace components::table {
         // Write-through: re-point every COMPLETE managed column segment of this row group to a
         // disk-backed segment (call once the row group is closed -> its segments are final). No-op for
         // in-memory tables. Returns io_error/out_of_memory on failure; true on success.
+        //
+        // Owns a short-lived partial_block_manager_t so this closed row group's column segments are PACKED
+        // into shared blocks (segment packing) and flushed to disk BEFORE returning -- the flush is the
+        // flush-before-evict guarantee: once transition_to_disk returns, every re-pointed segment's block is
+        // durable, so a later scan/eviction can safely load() it.
         [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk();
 
         uint64_t allocation_size() const { return allocation_size_; }

@@ -188,6 +188,15 @@ namespace components::table {
                           const std::vector<size_t>* projected_cols,
                           std::pmr::vector<vector::data_chunk_t>& batches,
                           std::pmr::memory_resource* resource);
+        // DORMANT: dormant foundation for the future buffer-pool bounded scan, not yet wired pending
+        // the actor-zeta await-core fix (scan sources reverted to whole-scan buffering; only the
+        // dormant data_table_t::fetch_next_batch calls this). Kept, not deleted.
+        // Single-batch iterator: fills ONE ≤DEFAULT_VECTOR_CAPACITY batch into `result` (one
+        // scan_batched iteration), advancing the cursor. Returns true if a non-empty batch was
+        // produced, false when the scan is drained (`result` left empty). Used by the fetch-next
+        // streaming source so the scan position persists across mailbox round-trips without
+        // materializing the whole table (unlike scan(), which drains everything into one chunk).
+        bool next_batch(vector::data_chunk_t& result);
         bool scan_committed(vector::data_chunk_t& result, table_scan_type type);
         bool scan_committed(vector::data_chunk_t& result, std::unique_lock<std::mutex>& l, table_scan_type type);
 

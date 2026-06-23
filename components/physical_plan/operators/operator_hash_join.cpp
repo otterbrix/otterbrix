@@ -1,51 +1,110 @@
 #include "operator_hash_join.hpp"
 #include "join_utils.hpp"
 
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
+#include <components/vector/vector.hpp>
+#include <core/operations_helper.hpp>
 
-#include <unordered_map>
-#include <utility>
-#include <vector>
+#include <cstdint>
+#include <type_traits>
 
 namespace components::operators {
 
     using join_detail::join_builder;
+    using hash_join_detail::right_index_t;
+    using hash_join_detail::row_ref;
 
     namespace {
-        struct lv_hash {
-            size_t operator()(const types::logical_value_t& v) const noexcept { return v.hash(); }
-        };
 
-        // Multimap from a right-side key value → (chunk_idx, row_idx). A multimap
-        // (not map) because equi-join keys need not be unique on the right side.
-        using right_index_t = std::unordered_multimap<types::logical_value_t,
-                                                      std::pair<size_t, uint64_t>,
-                                                      lv_hash,
-                                                      std::equal_to<types::logical_value_t>>;
+        // Typed cell == cell between two flat vectors, read directly from their
+        // physical buffers — no logical_value_t round-trip on the hot path. Used to
+        // CONFIRM a hash-bucket candidate (collision-safe verify). Callers have
+        // already excluded NULLs on both sides (NULL keys never equi-join).
+        template<typename T>
+        bool scalar_equal(const vector::vector_t& a, uint64_t ai, const vector::vector_t& b, uint64_t bi) {
+            if constexpr (std::is_floating_point_v<T>) {
+                return core::is_equals<T>(a.data<T>()[ai], b.data<T>()[bi]);
+            } else {
+                return a.data<T>()[ai] == b.data<T>()[bi];
+            }
+        }
 
-        // Build the probe table from `right_chunks[*][right_col]`. NULL right values
-        // are skipped — they never join under SQL equi-join semantics.
-        right_index_t build_right_hash_index(const chunks_vector_t& right_chunks, size_t right_col) {
-            right_index_t table;
-            size_t total = 0;
-            for (const auto& R : right_chunks) {
-                total += R.size();
+        bool cell_equal(const vector::vector_t& a, uint64_t ai, const vector::vector_t& b, uint64_t bi) {
+            switch (a.type().to_physical_type()) {
+                case types::physical_type::BOOL:
+                case types::physical_type::INT8:
+                    return scalar_equal<int8_t>(a, ai, b, bi);
+                case types::physical_type::INT16:
+                    return scalar_equal<int16_t>(a, ai, b, bi);
+                case types::physical_type::INT32:
+                    return scalar_equal<int32_t>(a, ai, b, bi);
+                case types::physical_type::INT64:
+                    return scalar_equal<int64_t>(a, ai, b, bi);
+                case types::physical_type::UINT8:
+                    return scalar_equal<uint8_t>(a, ai, b, bi);
+                case types::physical_type::UINT16:
+                    return scalar_equal<uint16_t>(a, ai, b, bi);
+                case types::physical_type::UINT32:
+                    return scalar_equal<uint32_t>(a, ai, b, bi);
+                case types::physical_type::UINT64:
+                    return scalar_equal<uint64_t>(a, ai, b, bi);
+                case types::physical_type::INT128:
+                    return scalar_equal<types::int128_t>(a, ai, b, bi);
+                case types::physical_type::UINT128:
+                    return scalar_equal<types::uint128_t>(a, ai, b, bi);
+                case types::physical_type::FLOAT:
+                    return scalar_equal<float>(a, ai, b, bi);
+                case types::physical_type::DOUBLE:
+                    return scalar_equal<double>(a, ai, b, bi);
+                case types::physical_type::STRING:
+                    return a.data<std::string_view>()[ai] == b.data<std::string_view>()[bi];
+                default:
+                    // The optimizer only stamps a scalar single-column equi-key, so a
+                    // nested/unknown physical type never reaches the probe verify.
+                    assert(false && "unhandled physical_type in hash-join key verify");
+                    return false;
             }
-            table.reserve(total);
-            for (size_t ci = 0; ci < right_chunks.size(); ++ci) {
-                const auto& R = right_chunks[ci];
-                if (right_col >= R.column_count()) {
-                    continue;
-                }
-                const auto& col = R.data[right_col];
-                for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                    if (!col.validity().row_is_valid(rj)) {
-                        continue;
-                    }
-                    table.emplace(col.value(rj), std::make_pair(ci, rj));
+        }
+
+        // Confirm a probe row against a candidate build row by a TYPED cell-by-cell
+        // comparison over every key column (uniform for single- and multi-column
+        // keys). A non-matching column short-circuits to false.
+        bool keys_verify(const vector::data_chunk_t& probe,
+                         const std::pmr::vector<uint64_t>& probe_cols,
+                         uint64_t probe_row,
+                         const vector::data_chunk_t& build,
+                         const std::pmr::vector<uint64_t>& build_cols,
+                         uint64_t build_row) {
+            for (size_t k = 0; k < probe_cols.size(); ++k) {
+                if (!cell_equal(probe.data[probe_cols[k]], probe_row, build.data[build_cols[k]], build_row)) {
+                    return false;
                 }
             }
-            return table;
+            return true;
+        }
+
+        // True iff every key cell of `row` is non-NULL — a row with any NULL key
+        // never participates in an equi-join match (build- or probe-side).
+        bool keys_all_valid(const vector::data_chunk_t& chunk,
+                            const std::pmr::vector<uint64_t>& key_cols,
+                            uint64_t row) {
+            for (uint64_t c : key_cols) {
+                if (c >= chunk.column_count() || !chunk.data[c].validity().row_is_valid(row)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Vectorized typed hash of the key columns of one chunk into `out_hashes`
+        // (one uint64 per row), via data_chunk_t::hash (per physical_type +
+        // combine_hash for multi-column). data_chunk_t::hash is non-const, but the
+        // hash is a pure read; the const_cast mirrors operator_group's fast path.
+        void hash_key_columns(const vector::data_chunk_t& chunk,
+                              const std::pmr::vector<uint64_t>& key_cols,
+                              vector::vector_t& out_hashes) {
+            std::vector<uint64_t> col_ids(key_cols.begin(), key_cols.end());
+            const_cast<vector::data_chunk_t&>(chunk).hash(col_ids, out_hashes);
         }
     } // namespace
 
@@ -55,15 +114,189 @@ namespace components::operators {
                                                size_t left_col,
                                                size_t right_col)
         : read_only_operator_t(resource, std::move(log), operator_type::hash_join)
-        , join_type_(join_type)
-        , left_col_(left_col)
-        , right_col_(right_col) {}
+        , join_type_(join_type) {
+        // Single-column equi-key today (the optimizer stamps one eq(left,right));
+        // stored as one-element lists so the build/probe path is arity-agnostic.
+        probe_key_cols_.push_back(static_cast<uint64_t>(left_col));
+        build_key_cols_.push_back(static_cast<uint64_t>(right_col));
+    }
 
-    void operator_hash_join_t::on_execute_impl(pipeline::context_t*) {
-        if (!left_ || !right_) {
+    void operator_hash_join_t::build_index_() {
+        right_index_.clear();
+        build_matched_.clear();
+        build_chunk_offsets_.clear();
+        if (!right_ || !right_->output()) {
             return;
         }
-        if (!left_->output() || !right_->output()) {
+        const auto& build_chunks = right_->output()->chunks();
+
+        const bool track_matched = (join_type_ == type::right || join_type_ == type::full);
+
+        // Per-chunk start offsets into the flat marker; total = #build rows.
+        build_chunk_offsets_.reserve(build_chunks.size());
+        uint64_t total = 0;
+        for (const auto& B : build_chunks) {
+            build_chunk_offsets_.push_back(total);
+            total += B.size();
+        }
+        right_index_.reserve(total);
+        if (track_matched) {
+            build_matched_.assign(total, 0);
+        }
+
+        for (size_t ci = 0; ci < build_chunks.size(); ++ci) {
+            const auto& B = build_chunks[ci];
+            if (B.size() == 0) {
+                continue;
+            }
+            vector::vector_t hashes(resource_, types::logical_type::UBIGINT, B.size());
+            hash_key_columns(B, build_key_cols_, hashes);
+            const auto* h = hashes.data<uint64_t>();
+            for (uint64_t rj = 0; rj < B.size(); ++rj) {
+                // Skip NULL build keys — they never equi-join.
+                if (!keys_all_valid(B, build_key_cols_, rj)) {
+                    continue;
+                }
+                right_index_.emplace(h[rj], row_ref{static_cast<uint32_t>(ci), static_cast<uint32_t>(rj)});
+            }
+        }
+    }
+
+    void operator_hash_join_t::probe_batch_(const vector::data_chunk_t& probe, chunks_vector_t& out) {
+        // build_chunks are needed to (a) verify a candidate and (b) copy matched
+        // build rows into the output; both reference the materialized snapshot.
+        const auto& build_chunks = right_->output()->chunks();
+        const bool left_outer = (join_type_ == type::left || join_type_ == type::full);
+        const bool mark_matched = (join_type_ == type::right || join_type_ == type::full);
+
+        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+
+        const uint64_t n = probe.size();
+        if (n == 0) {
+            builder.flush();
+            return;
+        }
+
+        vector::vector_t hashes(resource_, types::logical_type::UBIGINT, n);
+        hash_key_columns(probe, probe_key_cols_, hashes);
+        const auto* h = hashes.data<uint64_t>();
+
+        for (uint64_t li = 0; li < n; ++li) {
+            bool matched = false;
+            // A NULL probe key matches nothing (left-outer still emits the row).
+            if (keys_all_valid(probe, probe_key_cols_, li)) {
+                auto range = right_index_.equal_range(h[li]);
+                for (auto it = range.first; it != range.second; ++it) {
+                    const row_ref& ref = it->second;
+                    const auto& B = build_chunks[ref.chunk_index];
+                    // Collision-safe: confirm by a typed key comparison.
+                    if (!keys_verify(probe, probe_key_cols_, li, B, build_key_cols_, ref.row_index)) {
+                        continue;
+                    }
+                    builder.emit_matched(probe, li, B, ref.row_index);
+                    matched = true;
+                    if (mark_matched) {
+                        build_matched_[build_chunk_offsets_[ref.chunk_index] + ref.row_index] = 1;
+                    }
+                }
+            }
+            if (!matched && left_outer) {
+                builder.emit_left_only(probe, li);
+            }
+        }
+        builder.flush();
+    }
+
+    void operator_hash_join_t::emit_unmatched_build_(chunks_vector_t& out) {
+        if (join_type_ != type::right && join_type_ != type::full) {
+            return;
+        }
+        if (!right_ || !right_->output()) {
+            return;
+        }
+        const auto& build_chunks = right_->output()->chunks();
+        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+        for (size_t ci = 0; ci < build_chunks.size(); ++ci) {
+            const auto& B = build_chunks[ci];
+            const uint64_t base = build_chunk_offsets_[ci];
+            for (uint64_t rj = 0; rj < B.size(); ++rj) {
+                // A NULL-key build row is never marked matched, so it is correctly
+                // emitted here (right/full preserve every build row).
+                if (build_matched_[base + rj] == 0) {
+                    builder.emit_right_only(B, rj);
+                }
+            }
+        }
+        builder.flush();
+    }
+
+    core::error_t
+    operator_hash_join_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        // The build (right) side is materialized by a separate sub-plan before the
+        // first push and always holds at least one (possibly empty) chunk. A truly
+        // absent right_ is a degenerate plan: mirror on_execute_impl and emit
+        // nothing (no left layout to pad against, no build rows to preserve).
+        if (!right_ || !right_->output()) {
+            index_built_ = true;
+            return core::error_t::no_error();
+        }
+
+        // Build the index + derive the output layout once, lazily.
+        if (!index_built_) {
+            const auto& build_chunks = right_->output()->chunks();
+            // operator_data_t always holds at least one (possibly empty) chunk.
+            assert(!build_chunks.empty());
+            res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
+            join_detail::compute_join_layout(input,
+                                             build_chunks.front(),
+                                             res_types_,
+                                             indices_left_,
+                                             indices_right_);
+            build_index_();
+            index_built_ = true;
+        }
+
+        probe_batch_(input, out);
+        return core::error_t::no_error();
+    }
+
+    core::error_t operator_hash_join_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
+        // Right/full: drain build rows that no probe row matched, NULL-padded on the
+        // left side. Other join types finalize to a no-op.
+        //
+        // If push() never ran (the probe source emitted its drain sentinel before
+        // any schema'd batch), the index is unbuilt and res_types_ is empty. With no
+        // probe schema there is no left column layout to NULL-pad against, so the
+        // only safe action is to build the index (so build_matched_ is sized) and
+        // skip emission — there is genuinely no probe side to preserve rows next to.
+        // The common 0-row-probe case still pushes a schema'd batch, so res_types_
+        // is set there and this branch is not taken.
+        if (!index_built_) {
+            build_index_();
+            index_built_ = true;
+        }
+        if (res_types_.empty()) {
+            return core::error_t::no_error();
+        }
+        emit_unmatched_build_(out);
+        return core::error_t::no_error();
+    }
+
+    void operator_hash_join_t::on_execute_impl(pipeline::context_t*) {
+        // Legacy materialize path (taken when the left chain is not fully streaming,
+        // so is_streaming_pipeline() routes here). Reuses the SAME build+probe
+        // machinery as push()/finalize() — no separate per-join-type rebuild — so
+        // results are identical to the streaming path and to the nested-loop join.
+        //
+        // reset_for_reuse() does not clear the promoted index_built_/right_index_
+        // members, so a reused operator (e.g. each RECURSIVE CTE iteration) must
+        // rebuild from scratch against the current build side.
+        index_built_ = false;
+        right_index_.clear();
+        build_matched_.clear();
+        res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
+
+        if (!left_ || !right_ || !left_->output() || !right_->output()) {
             return;
         }
 
@@ -76,10 +309,9 @@ namespace components::operators {
         assert(!left_chunks.empty());
         assert(!right_chunks.empty());
 
-        std::pmr::vector<types::complex_logical_type> res_types{left_out->resource()};
         join_detail::compute_join_layout(left_chunks.front(),
                                          right_chunks.front(),
-                                         res_types,
+                                         res_types_,
                                          indices_left_,
                                          indices_right_);
 
@@ -88,188 +320,24 @@ namespace components::operators {
             trace(log(), "operator_hash_join::right_size(): {}", right_out->size());
         }
 
+        build_index_();
+        index_built_ = true;
+
         auto* res_resource = left_out->resource();
         chunks_vector_t out_chunks(res_resource);
-
-        switch (join_type_) {
-            case type::inner:
-                inner_join_hash_(res_types, out_chunks);
-                break;
-            case type::full:
-                outer_full_join_hash_(res_types, out_chunks);
-                break;
-            case type::left:
-                outer_left_join_hash_(res_types, out_chunks);
-                break;
-            case type::right:
-                outer_right_join_hash_(res_types, out_chunks);
-                break;
-            default:
-                // cross / invalid are never substituted with a hash join.
-                break;
+        for (const auto& L : left_chunks) {
+            probe_batch_(L, out_chunks);
         }
+        emit_unmatched_build_(out_chunks);
 
         if (out_chunks.empty()) {
-            out_chunks.emplace_back(res_resource, res_types, 0);
+            out_chunks.emplace_back(res_resource, res_types_, 0);
         }
         output_ = operators::make_operator_data(res_resource, std::move(out_chunks));
 
         if (log_.is_valid()) {
             trace(log(), "operator_hash_join::result_size(): {}", output_->size());
         }
-    }
-
-    void operator_hash_join_t::inner_join_hash_(const std::pmr::vector<types::complex_logical_type>& out_types,
-                                                chunks_vector_t& out_chunks) {
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        auto* resource = left_->output()->resource();
-        join_builder builder(resource, out_types, indices_left_, indices_right_, out_chunks);
-
-        auto table = build_right_hash_index(right_chunks, right_col_);
-        for (const auto& L : left_chunks) {
-            if (left_col_ >= L.column_count()) {
-                continue;
-            }
-            const auto& lcol = L.data[left_col_];
-            for (uint64_t li = 0; li < L.size(); ++li) {
-                if (!lcol.validity().row_is_valid(li)) {
-                    continue;
-                }
-                auto rng = table.equal_range(lcol.value(li));
-                for (auto it = rng.first; it != rng.second; ++it) {
-                    auto [ci, rj] = it->second;
-                    builder.emit_matched(L, li, right_chunks[ci], rj);
-                }
-            }
-        }
-        builder.flush();
-    }
-
-    void operator_hash_join_t::outer_left_join_hash_(const std::pmr::vector<types::complex_logical_type>& out_types,
-                                                     chunks_vector_t& out_chunks) {
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        auto* resource = left_->output()->resource();
-        join_builder builder(resource, out_types, indices_left_, indices_right_, out_chunks);
-
-        auto table = build_right_hash_index(right_chunks, right_col_);
-        for (const auto& L : left_chunks) {
-            if (left_col_ >= L.column_count()) {
-                // Probe column missing — every left row gets NULL on the right side.
-                for (uint64_t li = 0; li < L.size(); ++li) {
-                    builder.emit_left_only(L, li);
-                }
-                continue;
-            }
-            const auto& lcol = L.data[left_col_];
-            for (uint64_t li = 0; li < L.size(); ++li) {
-                bool matched = false;
-                if (lcol.validity().row_is_valid(li)) {
-                    auto rng = table.equal_range(lcol.value(li));
-                    for (auto it = rng.first; it != rng.second; ++it) {
-                        auto [ci, rj] = it->second;
-                        builder.emit_matched(L, li, right_chunks[ci], rj);
-                        matched = true;
-                    }
-                }
-                if (!matched) {
-                    builder.emit_left_only(L, li);
-                }
-            }
-        }
-        builder.flush();
-    }
-
-    void operator_hash_join_t::outer_right_join_hash_(const std::pmr::vector<types::complex_logical_type>& out_types,
-                                                      chunks_vector_t& out_chunks) {
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        auto* resource = left_->output()->resource();
-        join_builder builder(resource, out_types, indices_left_, indices_right_, out_chunks);
-
-        // Track which right rows got matched so unmatched ones can be NULL-padded.
-        std::vector<std::vector<bool>> visited(right_chunks.size());
-        for (size_t ci = 0; ci < right_chunks.size(); ++ci) {
-            visited[ci].assign(right_chunks[ci].size(), false);
-        }
-
-        auto table = build_right_hash_index(right_chunks, right_col_);
-        for (const auto& L : left_chunks) {
-            if (left_col_ >= L.column_count()) {
-                continue;
-            }
-            const auto& lcol = L.data[left_col_];
-            for (uint64_t li = 0; li < L.size(); ++li) {
-                if (!lcol.validity().row_is_valid(li)) {
-                    continue;
-                }
-                auto rng = table.equal_range(lcol.value(li));
-                for (auto it = rng.first; it != rng.second; ++it) {
-                    auto [ci, rj] = it->second;
-                    builder.emit_matched(L, li, right_chunks[ci], rj);
-                    visited[ci][rj] = true;
-                }
-            }
-        }
-        // Right rows without any left match (incl. those skipped at build time for NULL keys).
-        for (size_t ci = 0; ci < right_chunks.size(); ++ci) {
-            const auto& R = right_chunks[ci];
-            for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                if (!visited[ci][rj]) {
-                    builder.emit_right_only(R, rj);
-                }
-            }
-        }
-        builder.flush();
-    }
-
-    void operator_hash_join_t::outer_full_join_hash_(const std::pmr::vector<types::complex_logical_type>& out_types,
-                                                     chunks_vector_t& out_chunks) {
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        auto* resource = left_->output()->resource();
-        join_builder builder(resource, out_types, indices_left_, indices_right_, out_chunks);
-
-        std::vector<std::vector<bool>> visited(right_chunks.size());
-        for (size_t ci = 0; ci < right_chunks.size(); ++ci) {
-            visited[ci].assign(right_chunks[ci].size(), false);
-        }
-
-        auto table = build_right_hash_index(right_chunks, right_col_);
-        for (const auto& L : left_chunks) {
-            if (left_col_ >= L.column_count()) {
-                for (uint64_t li = 0; li < L.size(); ++li) {
-                    builder.emit_left_only(L, li);
-                }
-                continue;
-            }
-            const auto& lcol = L.data[left_col_];
-            for (uint64_t li = 0; li < L.size(); ++li) {
-                bool matched = false;
-                if (lcol.validity().row_is_valid(li)) {
-                    auto rng = table.equal_range(lcol.value(li));
-                    for (auto it = rng.first; it != rng.second; ++it) {
-                        auto [ci, rj] = it->second;
-                        builder.emit_matched(L, li, right_chunks[ci], rj);
-                        visited[ci][rj] = true;
-                        matched = true;
-                    }
-                }
-                if (!matched) {
-                    builder.emit_left_only(L, li);
-                }
-            }
-        }
-        for (size_t ci = 0; ci < right_chunks.size(); ++ci) {
-            const auto& R = right_chunks[ci];
-            for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                if (!visited[ci][rj]) {
-                    builder.emit_right_only(R, rj);
-                }
-            }
-        }
-        builder.flush();
     }
 
 } // namespace components::operators

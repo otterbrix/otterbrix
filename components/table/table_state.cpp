@@ -255,6 +255,43 @@ namespace components::table {
         }
     }
 
+    // Single-vector read for the streaming fetch-next source (data_table::fetch_next_batch). Unlike
+    // scan()/scan_batched() — which walk EVERY row_group with one persistent, cumulative state
+    // (vector_index and max_row_group_row grow across groups via the additive initialize_scan) —
+    // next_batch is driven from a TRANSIENT state re-seeked to an absolute position on every call.
+    // It must therefore read at most ONE vector from the seeked group and NOT transition to the next
+    // segment: the cumulative initialize_scan() of the continuous path would leave vector_index +
+    // max_row_group_row in cross-group accumulated space, and the caller's absolute-position advance
+    // (row_group->start + vector_index*CAP) would then skip a whole group. The caller re-seeks to the
+    // next absolute row itself; here we only read one vector and may skip empty vectors WITHIN the
+    // current group (a filter / all-deleted vector produces 0 rows but still advances vector_index).
+    bool collection_scan_state::next_batch(vector::data_chunk_t& result) {
+        while (row_group) {
+            for (auto& cs : column_scans) {
+                cs.result_offset = 0;
+            }
+            const uint64_t vector_index_before = vector_index;
+            row_group->scan(*this, result);
+            if (has_error()) {
+                row_group = nullptr;
+                return false;
+            }
+            if (result.size() > 0) {
+                return true;
+            }
+            // No rows from this vector (e.g. all-deleted / filtered-out). If row_group->scan did not
+            // advance, the group is exhausted — stop so the caller advances past it; otherwise retry
+            // the next vector within THIS group only.
+            const bool rg_exhausted =
+                static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= max_row_group_row;
+            if (rg_exhausted || vector_index == vector_index_before) {
+                row_group = nullptr;
+                return false;
+            }
+        }
+        return false;
+    }
+
     bool collection_scan_state::scan_committed(vector::data_chunk_t& result,
                                                std::unique_lock<std::mutex>& l,
                                                table_scan_type type) {

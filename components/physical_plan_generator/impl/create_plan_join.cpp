@@ -21,7 +21,14 @@ namespace services::planner::impl {
         auto left_oid = node->children().front()->table_oid();
         auto right_oid = node->children().back()->table_oid();
         bool known = context.has_table_oid(left_oid) || context.has_table_oid(right_oid);
-        auto* resource = known ? context.resource : nullptr;
+        // When neither side is a known table (both raw data), there is no table-actor
+        // context, but the operator still needs a VALID resource to allocate its working
+        // state (the typed hash index, the key-column lists built in the ctor, the
+        // output). Fall back to the logical node's own resource -- mirrors
+        // create_plan_aggregate. The pre-STEP-3 join stored plain key indices and never
+        // allocated here, so a nullptr was tolerated; the typed hash+verify hash-join
+        // allocates in its constructor, so nullptr now segfaults.
+        auto* resource = known ? context.resource : node->resource();
         auto log = known ? context.log.clone() : log_t{};
 
         using join_type = components::logical_plan::join_type;

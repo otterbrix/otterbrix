@@ -22,103 +22,56 @@ namespace components::operators {
         }
 
         template<typename T>
-        bool equals_typed(const vector::vector_t& vec, size_t row, const types::logical_value_t& val) {
+        bool cells_equal_typed(const vector::vector_t& a, size_t ra, const vector::vector_t& b, size_t rb) {
             if constexpr (std::is_floating_point_v<T>) {
-                T a = vec.data<T>()[row];
-                T b = val.value<T>();
-                return core::is_equals(a, b);
+                return core::is_equals(a.data<T>()[ra], b.data<T>()[rb]);
             } else {
-                return vec.data<T>()[row] == val.value<T>();
+                return a.data<T>()[ra] == b.data<T>()[rb];
             }
         }
 
-        bool value_equals_raw(const vector::vector_t& vec, size_t row, const types::logical_value_t& val) {
-            if (vec.is_null(row))
-                return val.is_null();
-            if (val.is_null())
-                return false;
-            switch (vec.type().to_physical_type()) {
+        // Typed cell-by-cell equality between two vectors (R1-b VERIFY). No
+        // logical_value_t round-trip: dispatches on physical_type like
+        // value_equals_raw but compares two raw cells directly.
+        bool cells_equal_raw(const vector::vector_t& a, size_t ra, const vector::vector_t& b, size_t rb) {
+            bool a_null = a.is_null(ra);
+            bool b_null = b.is_null(rb);
+            if (a_null || b_null)
+                return a_null == b_null;
+            switch (a.type().to_physical_type()) {
                 case types::physical_type::BOOL:
                 case types::physical_type::INT8:
-                    return equals_typed<int8_t>(vec, row, val);
+                    return cells_equal_typed<int8_t>(a, ra, b, rb);
                 case types::physical_type::INT16:
-                    return equals_typed<int16_t>(vec, row, val);
+                    return cells_equal_typed<int16_t>(a, ra, b, rb);
                 case types::physical_type::INT32:
-                    return equals_typed<int32_t>(vec, row, val);
+                    return cells_equal_typed<int32_t>(a, ra, b, rb);
                 case types::physical_type::INT64:
-                    return equals_typed<int64_t>(vec, row, val);
+                    return cells_equal_typed<int64_t>(a, ra, b, rb);
                 case types::physical_type::UINT8:
-                    return equals_typed<uint8_t>(vec, row, val);
+                    return cells_equal_typed<uint8_t>(a, ra, b, rb);
                 case types::physical_type::UINT16:
-                    return equals_typed<uint16_t>(vec, row, val);
+                    return cells_equal_typed<uint16_t>(a, ra, b, rb);
                 case types::physical_type::UINT32:
-                    return equals_typed<uint32_t>(vec, row, val);
+                    return cells_equal_typed<uint32_t>(a, ra, b, rb);
                 case types::physical_type::UINT64:
-                    return equals_typed<uint64_t>(vec, row, val);
+                    return cells_equal_typed<uint64_t>(a, ra, b, rb);
                 case types::physical_type::INT128:
-                    return equals_typed<types::int128_t>(vec, row, val);
+                    return cells_equal_typed<types::int128_t>(a, ra, b, rb);
                 case types::physical_type::UINT128:
-                    return equals_typed<types::uint128_t>(vec, row, val);
+                    return cells_equal_typed<types::uint128_t>(a, ra, b, rb);
                 case types::physical_type::FLOAT:
-                    return equals_typed<float>(vec, row, val);
+                    return cells_equal_typed<float>(a, ra, b, rb);
                 case types::physical_type::DOUBLE:
-                    return equals_typed<double>(vec, row, val);
+                    return cells_equal_typed<double>(a, ra, b, rb);
                 case types::physical_type::STRING:
-                    return vec.data<std::string_view>()[row] == val.value<std::string_view>();
-                case types::physical_type::STRUCT: {
-                    auto& vec_children = vec.entries();
-                    auto& val_children = val.children();
-                    assert(vec_children.size() == val_children.size());
-                    for (size_t field = 0; field < vec_children.size(); field++) {
-                        if (!value_equals_raw(*vec_children[field], row, val_children[field])) {
-                            return false;
-                        }
-                    }
-                    return true;
-                }
-                case types::physical_type::ARRAY: {
-                    assert(static_cast<const types::array_logical_type_extension*>(vec.type().extension())->size() ==
-                           static_cast<const types::array_logical_type_extension*>(val.type().extension())->size());
-                    auto& flat_array = vec.entry();
-                    auto& val_children = val.children();
-                    for (size_t i = 0; i < val_children.size(); i++) {
-                        if (!value_equals_raw(flat_array, row * val_children.size() + i, val_children[i])) {
-                            return false;
-                        }
-                    }
-                    return true;
-                }
-                case types::physical_type::LIST: {
-                    const auto& val_children = val.children();
-                    const auto& list_entry = *(vec.data<types::list_entry_t>() + row);
-                    const auto& flat_list = vec.entry();
-                    assert(flat_list.type().size() != 0);
-                    auto entry_size = flat_list.type().size();
-                    if (list_entry.length / entry_size != val_children.size()) {
-                        return false;
-                    }
-                    for (size_t i = 0; i < val_children.size(); i++) {
-                        if (!value_equals_raw(flat_list, list_entry.offset / entry_size + i, val_children[i])) {
-                            return false;
-                        }
-                    }
-                    return true;
-                }
+                    return a.data<std::string_view>()[ra] == b.data<std::string_view>()[rb];
                 default:
-                    assert(false && "unhandled type in value_equals_raw");
-                    return false;
+                    // Nested / unsupported physical types fall back to the typed
+                    // logical_value comparison (preserves struct/list/array
+                    // semantics; only reached for non-trivial group keys).
+                    return a.value(ra) == b.value(rb);
             }
-        }
-
-        bool keys_match(const vector::data_chunk_t& chunk,
-                        const std::pmr::vector<size_t>& col_indices,
-                        size_t row_idx,
-                        const std::pmr::vector<types::logical_value_t>& group_key) {
-            for (size_t k = 0; k < col_indices.size(); k++) {
-                if (!value_equals_raw(chunk.data[col_indices[k]], row_idx, group_key[k]))
-                    return false;
-            }
-            return true;
         }
 
         // Extract a key value from chunk for a given group_key_t definition
@@ -212,6 +165,41 @@ namespace components::operators {
             }
             return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
         }
+
+        // Row-wise concatenation of the per-batch gathers of ONE group into a single
+        // chunk (same schema, cardinality = sum of parts). The non-vectorizable
+        // aggregate path needs every row of a group in ONE batch entry: the
+        // operator_func_t batch path emits one aggregate value per chunk, so a group
+        // must map to exactly one chunk. fuse() is column-wise (appends columns,
+        // asserts equal row counts) and is wrong here; this appends rows with the same
+        // vector_ops::copy primitive the gather step itself uses (line copying input
+        // rows into grp), including row_ids, so results match the legacy single-batch
+        // materialize path exactly.
+        vector::data_chunk_t concat_parts_rowwise(std::pmr::memory_resource* resource, chunks_vector_t& parts) {
+            assert(!parts.empty());
+            uint64_t total = 0;
+            for (auto& part : parts) {
+                total += part.size();
+            }
+            auto types = parts.front().types();
+            uint64_t cap = total > 0 ? total : 1;
+            vector::data_chunk_t merged(resource, types, cap);
+            merged.set_cardinality(total);
+            size_t col_count = types.size();
+            uint64_t row_offset = 0;
+            for (auto& part : parts) {
+                uint64_t part_rows = part.size();
+                if (part_rows == 0) {
+                    continue;
+                }
+                for (size_t c = 0; c < col_count; c++) {
+                    vector::vector_ops::copy(part.data[c], merged.data[c], part_rows, 0, row_offset);
+                }
+                vector::vector_ops::copy(part.row_ids, merged.row_ids, part_rows, 0, row_offset);
+                row_offset += part_rows;
+            }
+            return merged;
+        }
     } // anonymous namespace
 
     operator_group_t::operator_group_t(std::pmr::memory_resource* resource,
@@ -225,9 +213,11 @@ namespace components::operators {
         , post_aggregates_(resource_)
         , having_(std::move(having))
         , internal_aggregate_count_(internal_aggregate_count)
-        , row_refs_per_group_(resource_)
-        , group_keys_(resource_)
-        , group_index_(resource_) {}
+        , agg_plan_(resource_)
+        , group_key_chunk_storage_(resource_)
+        , group_hash_index_(resource_)
+        , agg_states_(resource_)
+        , gathered_rows_per_group_(resource_) {}
 
     void operator_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }
 
@@ -250,144 +240,517 @@ namespace components::operators {
         post_aggregates_.emplace_back(std::move(col));
     }
 
+    core::error_t operator_group_t::build_plan(const vector::data_chunk_t& probe) {
+        // Resolve col_index for computed-column keys. In the streaming model the
+        // computed columns are appended at the end of every input chunk at a stable
+        // index; the probe chunk passed here already carries them, so the first
+        // computed column sits at (column_count - #computed_columns).
+        if (!computed_columns_.empty()) {
+            size_t first_computed_col = probe.column_count() - computed_columns_.size();
+            for (size_t ci = 0; ci < computed_columns_.size(); ci++) {
+                if (computed_columns_[ci].resolved_key_index != SIZE_MAX) {
+                    keys_[computed_columns_[ci].resolved_key_index].full_path.clear();
+                    keys_[computed_columns_[ci].resolved_key_index].full_path.emplace_back(first_computed_col + ci);
+                }
+            }
+        }
+
+        // Column keys must arrive with a resolved full_path.
+        for (const auto& key : keys_) {
+            if (key.type == group_key_t::kind::column && key.full_path.empty()) {
+                std::pmr::string msg{"group key '", resource_};
+                msg += key.name;
+                msg += "' has no resolved column path";
+                return core::error_t(core::error_code_t::schema_error, std::move(msg));
+            }
+        }
+
+        key_count_ = keys_.size();
+
+        // Per-aggregate plan: a builtin SUM/COUNT/MIN/MAX/AVG with a single numeric
+        // column arg (or COUNT(*)) folds incrementally into a typed accumulator;
+        // anything else (DISTINCT / custom funcs / non-numeric / multi-arg) keeps the
+        // gather-rows path. need_row_gather_ stays false in the common analytical
+        // case → state bounded by #groups.
+        agg_plan_.clear();
+        agg_plan_.reserve(values_.size());
+        need_row_gather_ = false;
+        for (const auto& value : values_) {
+            agg_plan_t plan(resource_);
+            auto* func_op = dynamic_cast<aggregate::operator_func_t*>(value.aggregator.get());
+            bool vectorizable = false;
+            if (func_op && func_op->func() && !func_op->distinct()) {
+                auto kind = aggregate::classify(func_op->func()->name());
+                if (kind != aggregate::builtin_agg::UNKNOWN) {
+                    bool count_star = (kind == aggregate::builtin_agg::COUNT && func_op->args().empty());
+                    if (count_star) {
+                        plan.kind = kind;
+                        plan.is_count_star = true;
+                        plan.col_type = types::logical_type::UBIGINT;
+                        vectorizable = true;
+                    } else if (func_op->args().size() == 1 &&
+                               std::holds_alternative<expressions::key_t>(func_op->args()[0])) {
+                        auto& key = std::get<expressions::key_t>(func_op->args()[0]);
+                        const auto& path = key.path();
+                        if (!path.empty() && path.front() != SIZE_MAX) {
+                            const auto* arg_vec = probe.at(path);
+                            if (arg_vec) {
+                                auto col_type = arg_vec->type().type();
+                                if (types::is_numeric(col_type)) {
+                                    plan.kind = kind;
+                                    plan.col_type = col_type;
+                                    plan.arg_path.assign(path.begin(), path.end());
+                                    vectorizable = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            plan.vectorizable = vectorizable;
+            if (!vectorizable) {
+                need_row_gather_ = true;
+            }
+            agg_plan_.push_back(std::move(plan));
+        }
+
+        plan_built_ = true;
+        return core::error_t::no_error();
+    }
+
+    vector::data_chunk_t operator_group_t::make_key_probe(const vector::data_chunk_t& input) {
+        // One uniform probe chunk holding exactly the group-key columns, in key order.
+        // Pure single-column keys reference the source column (zero copy); derived
+        // keys (coalesce / case_when / multi-part path) materialize a column. The
+        // result feeds typed hash + typed verify identically for single/multi keys.
+        uint64_t n = input.size();
+        std::pmr::vector<types::complex_logical_type> key_types(resource_);
+        key_types.reserve(keys_.size());
+        for (const auto& key : keys_) {
+            if (key.type == group_key_t::kind::column && key.full_path.size() == 1) {
+                key_types.push_back(input.data[key.full_path.front()].type());
+            } else if (key.type == group_key_t::kind::column && !key.full_path.empty()) {
+                const auto* v = input.at(key.full_path);
+                key_types.push_back(v ? v->type() : types::complex_logical_type{types::logical_type::NA});
+            } else {
+                // Derived key: resolve a single sample value to obtain the type.
+                key_types.push_back(types::complex_logical_type{types::logical_type::NA});
+            }
+        }
+
+        vector::data_chunk_t probe(resource_, key_types, n > 0 ? n : 1);
+        probe.set_cardinality(n);
+        for (size_t k = 0; k < keys_.size(); k++) {
+            const auto& key = keys_[k];
+            if (key.type == group_key_t::kind::column && key.full_path.size() == 1) {
+                probe.data[k].reference(input.data[key.full_path.front()]);
+            } else if (key.type == group_key_t::kind::column && !key.full_path.empty()) {
+                for (uint64_t r = 0; r < n; r++) {
+                    probe.set_value(k, r, input.value(key.full_path, r));
+                }
+            } else {
+                // Derived key: compute per-row via extract_key_value (rare path; not
+                // the hot column-key path). Re-type the column from the first value.
+                for (uint64_t r = 0; r < n; r++) {
+                    auto val = extract_key_value(resource_, key, input, r);
+                    if (r == 0) {
+                        probe.data[k].type() = val.type();
+                    }
+                    probe.set_value(k, r, val);
+                }
+            }
+        }
+        return probe;
+    }
+
+    core::error_t operator_group_t::accumulate(pipeline::context_t* pipeline_context, vector::data_chunk_t& input) {
+        // Pre-compute arithmetic key columns on this chunk (appended at the tail).
+        for (auto& comp : computed_columns_) {
+            auto result_vec = evaluate_arithmetic(resource_,
+                                                  comp.op,
+                                                  comp.operands,
+                                                  input,
+                                                  pipeline_context->parameters,
+                                                  pipeline_context->session_tz);
+            if (result_vec.has_error()) {
+                return result_vec.error();
+            }
+            if (result_vec.value().type().type() == types::logical_type::NA) {
+                return core::error_t(core::error_code_t::physical_plan_error,
+                                     std::pmr::string{"unknown error during evaluate_arithmetic", resource_});
+            }
+            result_vec.value().set_type_alias(std::string(comp.alias));
+            input.data.emplace_back(std::move(result_vec.value()));
+        }
+
+        if (!plan_built_) {
+            auto err = build_plan(input);
+            if (err.contains_error()) {
+                return err;
+            }
+        }
+
+        uint64_t n = input.size();
+
+        // Assign each row to a group id (find-or-create). With GROUP BY keys this
+        // is a typed HASH+VERIFY into the running group table; with no keys every
+        // row maps to the single implicit group 0.
+        std::pmr::vector<uint32_t> row_group(resource_);
+        row_group.assign(n, 0);
+
+        if (keys_.empty()) {
+            if (n > 0 && group_count_ == 0) {
+                group_count_ = 1;
+            }
+        } else {
+            auto probe = make_key_probe(input);
+            // Lazily create the per-group key chunk from the probe schema.
+            if (group_key_chunk_storage_.empty()) {
+                auto key_types = probe.types();
+                group_key_chunk_storage_.emplace_back(resource_, key_types, vector::DEFAULT_VECTOR_CAPACITY);
+            }
+            auto& key_chunk = group_key_chunk_storage_.front();
+
+            // Batch-hash all key columns of the probe.
+            vector::vector_t hash_vec(resource_, types::logical_type::UBIGINT, n > 0 ? n : 1);
+            std::vector<uint64_t> col_ids(keys_.size());
+            for (size_t k = 0; k < keys_.size(); k++) {
+                col_ids[k] = k;
+            }
+            if (n > 0) {
+                probe.hash(col_ids, hash_vec);
+            }
+            const auto* hashes = hash_vec.data<uint64_t>();
+
+            for (uint64_t row = 0; row < n; row++) {
+                uint64_t h = hashes[row];
+                uint32_t gid = UINT32_MAX;
+                auto it = group_hash_index_.find(h);
+                if (it != group_hash_index_.end()) {
+                    for (uint32_t cand : it->second) {
+                        bool match = true;
+                        for (size_t k = 0; k < keys_.size(); k++) {
+                            if (!cells_equal_raw(probe.data[k], row, key_chunk.data[k], cand)) {
+                                match = false;
+                                break;
+                            }
+                        }
+                        if (match) {
+                            gid = cand;
+                            break;
+                        }
+                    }
+                }
+                if (gid == UINT32_MAX) {
+                    gid = static_cast<uint32_t>(group_count_);
+                    if (group_count_ >= key_chunk.capacity()) {
+                        key_chunk.resize(key_chunk.capacity() * 2);
+                    }
+                    for (size_t k = 0; k < keys_.size(); k++) {
+                        vector::indexing_vector_t idx(resource_, 1);
+                        idx.data()[0] = static_cast<uint64_t>(row);
+                        vector::vector_ops::copy(probe.data[k], key_chunk.data[k], idx, 1, 0, group_count_);
+                    }
+                    group_hash_index_[h].push_back(gid);
+                    group_count_++;
+                    key_chunk.set_cardinality(group_count_);
+                }
+                row_group[row] = gid;
+            }
+        }
+
+        // Grow per-group accumulator storage to cover newly created groups.
+        if (agg_states_.empty() && !need_row_gather_) {
+            agg_states_.resize(values_.size(), std::pmr::vector<aggregate::raw_agg_state_t>(resource_));
+        }
+        for (size_t a = 0; a < values_.size(); a++) {
+            if (agg_plan_[a].vectorizable) {
+                if (agg_states_.size() <= a) {
+                    agg_states_.resize(values_.size(), std::pmr::vector<aggregate::raw_agg_state_t>(resource_));
+                }
+                agg_states_[a].resize(group_count_);
+            }
+        }
+        if (need_row_gather_) {
+            while (gathered_rows_per_group_.size() < group_count_) {
+                gathered_rows_per_group_.emplace_back();
+            }
+        }
+
+        // Fold this chunk's rows into the running aggregates.
+        const uint32_t* gids = row_group.data();
+        for (size_t a = 0; a < values_.size(); a++) {
+            if (!agg_plan_[a].vectorizable) {
+                continue;
+            }
+            auto& plan = agg_plan_[a];
+            auto& states = agg_states_[a];
+            if (plan.is_count_star) {
+                for (uint64_t i = 0; i < n; i++) {
+                    states[gids[i]].update_count();
+                }
+            } else {
+                const auto* arg_vec = input.at(plan.arg_path);
+                if (arg_vec) {
+                    aggregate::update_all(plan.kind, *arg_vec, gids, n, states);
+                }
+            }
+        }
+
+        // Non-vectorizable aggregates: gather the contributing rows per group so the
+        // general operator_func_t batch path can run once at finalize. Consecutive
+        // rows that share a group are copied in one indexed gather.
+        if (need_row_gather_ && n > 0) {
+            auto in_types = input.types();
+            size_t col_count = in_types.size();
+            // Stable per-group row lists for this chunk.
+            std::pmr::vector<std::pmr::vector<uint64_t>> rows_by_group(resource_);
+            rows_by_group.resize(group_count_, std::pmr::vector<uint64_t>(resource_));
+            for (uint64_t r = 0; r < n; r++) {
+                rows_by_group[gids[r]].push_back(r);
+            }
+            for (size_t g = 0; g < group_count_; g++) {
+                auto& rows = rows_by_group[g];
+                if (rows.empty()) {
+                    continue;
+                }
+                uint64_t cnt = static_cast<uint64_t>(rows.size());
+                vector::data_chunk_t grp(resource_, in_types, cnt);
+                grp.set_cardinality(cnt);
+                vector::indexing_vector_t indexing(resource_, cnt);
+                for (uint64_t i = 0; i < cnt; i++) {
+                    indexing.data()[i] = rows[i];
+                }
+                for (size_t c = 0; c < col_count; c++) {
+                    if (is_placeholder(input.data[c])) {
+                        continue;
+                    }
+                    vector::vector_ops::copy(input.data[c], grp.data[c], indexing, cnt, 0, 0);
+                }
+                vector::vector_ops::copy(input.row_ids, grp.row_ids, indexing, cnt, 0, 0);
+                gathered_rows_per_group_[g].emplace_back(std::move(grp));
+            }
+        }
+
+        // Strip the temporary computed-key columns appended above.
+        if (!computed_columns_.empty()) {
+            size_t first_computed_col = input.data.size() - computed_columns_.size();
+            input.data.erase(input.data.begin() + static_cast<std::ptrdiff_t>(first_computed_col), input.data.end());
+        }
+        return core::error_t::no_error();
+    }
+
+    vector::data_chunk_t operator_group_t::materialize_groups(pipeline::context_t* pipeline_context) {
+        size_t num_groups = group_count_;
+
+        // Output types: key column types (straight off the key chunk — always typed,
+        // never NA) + one column per aggregate.
+        std::pmr::vector<types::complex_logical_type> out_types(resource_);
+        out_types.reserve(key_count_ + values_.size());
+        for (size_t k = 0; k < key_count_; k++) {
+            out_types.push_back(group_key_chunk_storage_.empty()
+                                    ? types::complex_logical_type{types::logical_type::NA}
+                                    : group_key_chunk_storage_.front().data[k].type());
+        }
+
+        // Finalize aggregates into per-group value columns.
+        std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
+        agg_results.reserve(values_.size());
+
+        // Gather-once shared batch for the non-vectorizable aggregators: one fused
+        // chunk per group (each group = one batch entry), mirroring the old
+        // dual-path fallback exactly so multi-chunk/node_data semantics match.
+        boost::intrusive_ptr<operator_batch_t> shared_batch;
+        if (need_row_gather_) {
+            chunks_vector_t group_chunks(resource_);
+            group_chunks.reserve(num_groups);
+            for (size_t g = 0; g < num_groups; g++) {
+                auto& parts = gathered_rows_per_group_[g];
+                if (parts.empty()) {
+                    std::pmr::vector<types::complex_logical_type> empty_types(resource_);
+                    vector::data_chunk_t empty(resource_, empty_types, 1);
+                    empty.set_cardinality(0);
+                    group_chunks.emplace_back(std::move(empty));
+                    continue;
+                }
+                // ROW-WISE concat: one chunk per group holding ALL the group's rows
+                // (same schema, summed cardinality). The single-batch case (parts.size()
+                // == 1) just moves the lone part through. Column-wise fuse() was wrong:
+                // it appended the second batch's columns and asserted equal row counts.
+                vector::data_chunk_t merged =
+                    parts.size() == 1 ? std::move(parts.front()) : concat_parts_rowwise(resource_, parts);
+                group_chunks.emplace_back(std::move(merged));
+            }
+            shared_batch = make_operator_batch(resource_, std::move(group_chunks));
+        }
+
+        for (size_t a = 0; a < values_.size(); a++) {
+            std::pmr::vector<types::logical_value_t> results(resource_);
+            results.reserve(num_groups);
+            if (agg_plan_[a].vectorizable) {
+                auto& plan = agg_plan_[a];
+                for (size_t g = 0; g < num_groups; g++) {
+                    auto val =
+                        aggregate::finalize_state(resource_,
+                                                  plan.kind,
+                                                  g < agg_states_[a].size() ? agg_states_[a][g]
+                                                                            : aggregate::raw_agg_state_t{},
+                                                  plan.col_type);
+                    val.set_alias(std::string(values_[a].name));
+                    results.push_back(std::move(val));
+                }
+            } else {
+                auto& aggregator = values_[a].aggregator;
+                aggregator->clear();
+                aggregator->set_children(shared_batch);
+                aggregator->on_execute(pipeline_context);
+                if (aggregator->has_error()) {
+                    set_error(aggregator->get_error());
+                    return vector::data_chunk_t(resource_,
+                                                std::pmr::vector<types::complex_logical_type>{resource_},
+                                                1);
+                }
+                auto datum = aggregator->take_batch_values();
+                if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
+                    auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
+                    for (auto& v : vals) {
+                        v.set_alias(std::string(values_[a].name));
+                        results.push_back(std::move(v));
+                    }
+                } else {
+                    auto& result_chunk = std::get<vector::data_chunk_t>(datum);
+                    for (size_t i = 0; i < num_groups && i < result_chunk.size(); i++) {
+                        auto val = result_chunk.data.empty()
+                                       ? types::logical_value_t(resource_, types::logical_type::NA)
+                                       : result_chunk.value(0, i);
+                        val.set_alias(std::string(values_[a].name));
+                        results.push_back(std::move(val));
+                    }
+                }
+                while (results.size() < num_groups) {
+                    results.emplace_back(resource_, types::logical_type::NA);
+                }
+            }
+            agg_results.push_back(std::move(results));
+        }
+
+        // One column per aggregate, unconditionally (fixed position key_count + a).
+        for (size_t a = 0; a < values_.size(); a++) {
+            out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
+                                                       : agg_results[a][0].type());
+        }
+
+        uint64_t cap = num_groups > 0 ? static_cast<uint64_t>(num_groups) : 1;
+        vector::data_chunk_t result(resource_, out_types, cap);
+        result.set_cardinality(static_cast<uint64_t>(num_groups));
+
+        // Key columns: copy straight from the typed per-group key chunk.
+        if (num_groups > 0 && key_count_ > 0 && !group_key_chunk_storage_.empty()) {
+            auto& key_chunk = group_key_chunk_storage_.front();
+            for (size_t k = 0; k < key_count_; k++) {
+                vector::vector_ops::copy(key_chunk.data[k], result.data[k], num_groups, 0, 0);
+            }
+        }
+
+        // Aggregate columns.
+        for (size_t a = 0; a < values_.size(); a++) {
+            for (size_t g = 0; g < num_groups; g++) {
+                if (g < agg_results[a].size()) {
+                    result.set_value(key_count_ + a, g, std::move(agg_results[a][g]));
+                } else {
+                    result.set_value(key_count_ + a, g, types::logical_value_t(resource_, types::logical_type::NA));
+                }
+            }
+        }
+
+        // Post-aggregate arithmetic (columnar).
+        size_t size_before_post = result.data.size();
+        calc_post_aggregates(pipeline_context, result);
+
+        // Remove internal aggregate columns by position.
+        if (internal_aggregate_count_ > 0) {
+            auto it_end = result.data.begin() + static_cast<std::ptrdiff_t>(size_before_post);
+            auto it_begin = it_end - static_cast<std::ptrdiff_t>(internal_aggregate_count_);
+            result.data.erase(it_begin, it_end);
+        }
+
+        // HAVING filter (columnar).
+        if (having_) {
+            filter_having(pipeline_context, result);
+        }
+
+        return result;
+    }
+
+    vector::data_chunk_t operator_group_t::empty_aggregate_result(pipeline::context_t* pipeline_context) {
+        // Global aggregate over empty input (e.g. SELECT COUNT(*) FROM empty_table).
+        // Run each aggregator over zero rows and emit one result row.
+        std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
+        agg_results.reserve(values_.size());
+        chunks_vector_t empty_chunks(resource_);
+        auto shared_batch = make_operator_batch(resource_, std::move(empty_chunks));
+        for (const auto& value : values_) {
+            value.aggregator->clear();
+            value.aggregator->set_children(shared_batch);
+            value.aggregator->on_execute(pipeline_context);
+            if (value.aggregator->has_error()) {
+                set_error(value.aggregator->get_error());
+                return vector::data_chunk_t(resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 1);
+            }
+            auto datum = value.aggregator->take_batch_values();
+            std::pmr::vector<types::logical_value_t> results(resource_);
+            if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
+                auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
+                types::logical_value_t val =
+                    vals.empty() ? types::logical_value_t(resource_, types::logical_type::NA) : std::move(vals[0]);
+                val.set_alias(std::string(value.name));
+                results.push_back(std::move(val));
+            }
+            agg_results.push_back(std::move(results));
+        }
+
+        std::pmr::vector<types::complex_logical_type> out_types(resource_);
+        for (size_t a = 0; a < values_.size(); a++) {
+            out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
+                                                       : agg_results[a][0].type());
+        }
+        vector::data_chunk_t result(resource_, out_types, 1);
+        result.set_cardinality(1);
+        for (size_t a = 0; a < values_.size(); a++) {
+            result.set_value(a,
+                             0,
+                             agg_results[a].empty() ? types::logical_value_t(resource_, types::logical_type::NA)
+                                                    : std::move(agg_results[a][0]));
+        }
+        return result;
+    }
+
     void operator_group_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output()) {
             auto in = left_->output();
             auto& in_chunks = in->chunks();
 
-            // Phase 1: Pre-compute arithmetic columns on EACH input chunk (no concat).
-            // All chunks share the same schema, so the column index of each computed key
-            // is identical across chunks.
-            size_t first_computed_col = 0;
-            if (!in_chunks.empty()) {
-                first_computed_col = in_chunks.front().data.size();
-            }
             for (auto& chunk : in_chunks) {
-                for (auto& comp : computed_columns_) {
-                    auto result_vec = evaluate_arithmetic(resource_,
-                                                          comp.op,
-                                                          comp.operands,
-                                                          chunk,
-                                                          pipeline_context->parameters,
-                                                          pipeline_context->session_tz);
-                    if (result_vec.has_error()) {
-                        set_error(result_vec.error());
-                        return;
-                    } else if (result_vec.value().type().type() == types::logical_type::NA) {
-                        set_error(
-                            core::error_t(core::error_code_t::physical_plan_error,
-                                          std::pmr::string{"unknown error during evaluate_arithmetic", resource_}));
-                        return;
-                    }
-                    result_vec.value().set_type_alias(std::string(comp.alias));
-                    chunk.data.emplace_back(std::move(result_vec.value()));
-                }
-            }
-
-            // Resolve col_index for computed-column keys (they were appended at known positions).
-            if (!computed_columns_.empty()) {
-                for (size_t ci = 0; ci < computed_columns_.size(); ci++) {
-                    if (computed_columns_[ci].resolved_key_index != SIZE_MAX) {
-                        keys_[computed_columns_[ci].resolved_key_index].full_path.emplace_back(first_computed_col + ci);
-                    }
-                }
-            }
-
-            // Phase 2: Group by keys, or treat entire input as one group when there are no keys.
-            if (keys_.empty()) {
-                size_t total = 0;
-                for (const auto& c : in_chunks) total += c.size();
-                std::pmr::vector<row_ref_t> all_refs(resource_);
-                all_refs.reserve(total);
-                for (uint32_t ci = 0; ci < in_chunks.size(); ++ci) {
-                    auto sz = static_cast<uint32_t>(in_chunks[ci].size());
-                    for (uint32_t r = 0; r < sz; ++r) {
-                        all_refs.emplace_back(ci, r);
-                    }
-                }
-                row_refs_per_group_.push_back(std::move(all_refs));
-                group_keys_.push_back({});
-            } else {
-                create_list_rows(in_chunks);
-                if (has_error()) {
+                auto err = accumulate(pipeline_context, chunk);
+                if (err.contains_error()) {
+                    set_error(err);
                     return;
                 }
             }
-
-            // Phase 3: Aggregate per group + build result chunk
-            auto result = calc_aggregate_values(pipeline_context, in_chunks);
+            auto result = materialize_groups(pipeline_context);
             if (has_error()) {
                 return;
             }
 
-            // Post-aggregate arithmetic (columnar)
-            size_t size_before_post = result.data.size();
-            calc_post_aggregates(pipeline_context, result);
-
-            // Remove internal aggregate columns by position
-            if (internal_aggregate_count_ > 0) {
-                auto it_end = result.data.begin() + static_cast<std::ptrdiff_t>(size_before_post);
-                auto it_begin = it_end - static_cast<std::ptrdiff_t>(internal_aggregate_count_);
-                result.data.erase(it_begin, it_end);
-            }
-
-            // HAVING filter (columnar)
-            if (having_) {
-                filter_having(pipeline_context, result);
-            }
-
-            // Output. SELECT-order column reordering (formerly inline here via
-            // select_order_) is now handled by the downstream operator_select_t
-            // (PR #479 Projection lineage). Group emits columns in its internal
-            // order; the explicit SELECT operator picks/reorders them by name.
+            // Output. SELECT-order column reordering is handled by the downstream
+            // operator_select_t (PR #479). Group emits columns in internal order.
             output_ = operators::make_operator_data(in->resource(), std::move(result));
             output_ = operators::split_large_output(in->resource(), std::move(output_));
-
-            // Cleanup: strip the temporary computed-key columns from every input chunk.
-            if (!computed_columns_.empty()) {
-                for (auto& chunk : in_chunks) {
-                    if (chunk.data.size() > first_computed_col) {
-                        chunk.data.erase(chunk.data.begin() + static_cast<std::ptrdiff_t>(first_computed_col),
-                                         chunk.data.end());
-                    }
-                }
-            }
-
-            // Clear temporary grouping state
-            row_refs_per_group_.clear();
-            group_keys_.clear();
-            group_index_.clear();
         } else if (keys_.empty() && !values_.empty()) {
-            // Global aggregate over empty input (e.g. SELECT COUNT(*) FROM empty_table).
-            // Run each aggregator over zero rows and emit one result row.
-            std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
-            agg_results.reserve(values_.size());
-            // One shared zero-row batch for every aggregator — same sharing
-            // contract as the gather-once fallback below.
-            chunks_vector_t empty_chunks(resource_);
-            auto shared_batch = make_operator_batch(resource_, std::move(empty_chunks));
-            for (const auto& value : values_) {
-                value.aggregator->clear();
-                value.aggregator->set_children(shared_batch);
-                value.aggregator->on_execute(pipeline_context);
-                if (value.aggregator->has_error()) {
-                    set_error(value.aggregator->get_error());
-                    return;
-                }
-                auto datum = value.aggregator->take_batch_values();
-                std::pmr::vector<types::logical_value_t> results(resource_);
-                if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
-                    auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
-                    types::logical_value_t val =
-                        vals.empty() ? types::logical_value_t(resource_, types::logical_type::NA) : std::move(vals[0]);
-                    val.set_alias(std::string(value.name));
-                    results.push_back(std::move(val));
-                }
-                agg_results.push_back(std::move(results));
+            auto result = empty_aggregate_result(pipeline_context);
+            if (has_error()) {
+                return;
             }
-            group_keys_.push_back({});
-            chunks_vector_t empty_in_chunks(resource_);
-            auto result = build_result_chunk(1, 0, agg_results, empty_in_chunks);
             output_ = operators::make_operator_data(resource_, std::move(result));
         } else if (!computed_columns_.empty()) {
             // Constants-only query (no FROM clause): evaluate arithmetic on a virtual single row
@@ -414,465 +777,6 @@ namespace components::operators {
         }
     }
 
-    void operator_group_t::create_list_rows(const chunks_vector_t& in_chunks) {
-        if (in_chunks.empty()) {
-            return;
-        }
-
-        // Column keys must arrive with a resolved full_path: extract_key_value
-        // reads chunk.value(key.full_path, ...) and an empty path is UB there
-        // (its assert is compiled out in Release). Surface a clean operator
-        // error instead of relying on the assert.
-        for (const auto& key : keys_) {
-            if (key.type == group_key_t::kind::column && key.full_path.empty()) {
-                std::pmr::string msg{"group key '", resource_};
-                msg += key.name;
-                msg += "' has no resolved column path";
-                set_error(core::error_t(core::error_code_t::schema_error, std::move(msg)));
-                return;
-            }
-        }
-
-        // Try fast path: all keys are simple column type with resolved col_index
-        bool use_fast_path = true;
-        std::pmr::vector<size_t> key_col_indices(resource_);
-        for (const auto& key : keys_) {
-            if (key.type != group_key_t::kind::column || key.full_path.size() != 1) {
-                use_fast_path = false;
-                break;
-            }
-            key_col_indices.push_back(key.full_path.front());
-        }
-
-        if (use_fast_path && !key_col_indices.empty()) {
-            std::vector<uint64_t> col_ids(key_col_indices.begin(), key_col_indices.end());
-
-            for (uint32_t chunk_idx = 0; chunk_idx < in_chunks.size(); ++chunk_idx) {
-                const auto& chunk = in_chunks[chunk_idx];
-                auto num_rows = chunk.size();
-                if (num_rows == 0) {
-                    continue;
-                }
-
-                // Batch hash rows of this chunk.
-                vector::vector_t hash_vec(resource_, types::logical_type::UBIGINT, num_rows);
-                const_cast<vector::data_chunk_t&>(chunk).hash(col_ids, hash_vec);
-                auto* hashes = hash_vec.data<uint64_t>();
-
-                for (size_t row_idx = 0; row_idx < num_rows; row_idx++) {
-                    auto hash_val = static_cast<size_t>(hashes[row_idx]);
-                    auto it = group_index_.find(hash_val);
-                    bool is_new = true;
-                    if (it != group_index_.end()) {
-                        for (size_t idx : it->second) {
-                            if (keys_match(chunk, key_col_indices, row_idx, group_keys_[idx])) {
-                                row_refs_per_group_[idx].emplace_back(chunk_idx, static_cast<uint32_t>(row_idx));
-                                is_new = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (is_new) {
-                        // Only extract key values when creating a new group
-                        std::pmr::vector<types::logical_value_t> key_vals(resource_);
-                        for (size_t ki = 0; ki < key_col_indices.size(); ki++) {
-                            auto val = chunk.value(key_col_indices[ki], row_idx);
-                            val.set_alias(std::string{keys_[ki].name});
-                            key_vals.push_back(std::move(val));
-                        }
-                        size_t idx = group_keys_.size();
-                        group_index_[hash_val].push_back(idx);
-                        group_keys_.push_back(std::move(key_vals));
-                        std::pmr::vector<row_ref_t> refs(resource_);
-                        refs.emplace_back(chunk_idx, static_cast<uint32_t>(row_idx));
-                        row_refs_per_group_.push_back(std::move(refs));
-                    }
-                }
-            }
-        } else {
-            // Slow path: handles coalesce, case_when, wildcards, nested paths
-            for (uint32_t chunk_idx = 0; chunk_idx < in_chunks.size(); ++chunk_idx) {
-                const auto& chunk = in_chunks[chunk_idx];
-                auto num_rows = chunk.size();
-                for (size_t row_idx = 0; row_idx < num_rows; row_idx++) {
-                    std::pmr::vector<types::logical_value_t> key_vals(resource_);
-
-                    for (const auto& key : keys_) {
-                        auto val = extract_key_value(resource_, key, chunk, row_idx);
-                        key_vals.push_back(std::move(val));
-                    }
-
-                    size_t hash_val = types::hash_row(key_vals);
-                    auto it = group_index_.find(hash_val);
-                    bool is_new = true;
-                    if (it != group_index_.end()) {
-                        for (size_t idx : it->second) {
-                            if (key_vals == group_keys_[idx]) {
-                                row_refs_per_group_[idx].emplace_back(chunk_idx, static_cast<uint32_t>(row_idx));
-                                is_new = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (is_new) {
-                        size_t idx = group_keys_.size();
-                        group_index_[hash_val].push_back(idx);
-                        group_keys_.push_back(std::move(key_vals));
-                        std::pmr::vector<row_ref_t> refs(resource_);
-                        refs.emplace_back(chunk_idx, static_cast<uint32_t>(row_idx));
-                        row_refs_per_group_.push_back(std::move(refs));
-                    }
-                }
-            }
-        }
-    }
-
-    vector::data_chunk_t operator_group_t::calc_aggregate_values(pipeline::context_t* pipeline_context,
-                                                                 chunks_vector_t& in_chunks) {
-        size_t num_groups = group_keys_.size();
-        size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
-
-        size_t total_rows = 0;
-        for (const auto& c : in_chunks) total_rows += c.size();
-
-        // Try vectorized path: check if all aggregators are builtin with simple column args
-        bool can_vectorize = num_groups > 0 && total_rows > 0;
-        struct agg_info_t {
-            aggregate::builtin_agg kind;
-            std::pmr::vector<size_t> full_path;
-            types::logical_type col_type;
-            bool is_count_star = false;
-        };
-        std::pmr::vector<agg_info_t> agg_infos(resource_);
-
-        if (can_vectorize) {
-            agg_infos.reserve(values_.size());
-            // Use the first non-empty chunk to resolve column types. All chunks share schema.
-            const vector::data_chunk_t* schema_chunk = nullptr;
-            for (const auto& c : in_chunks) {
-                if (c.size() > 0) {
-                    schema_chunk = &c;
-                    break;
-                }
-            }
-            if (!schema_chunk) {
-                schema_chunk = in_chunks.empty() ? nullptr : &in_chunks.front();
-            }
-
-            for (const auto& value : values_) {
-                auto* func_op = dynamic_cast<aggregate::operator_func_t*>(value.aggregator.get());
-                if (!func_op || !func_op->func()) {
-                    can_vectorize = false;
-                    break;
-                }
-                auto kind = aggregate::classify(func_op->func()->name());
-                if (kind == aggregate::builtin_agg::UNKNOWN) {
-                    can_vectorize = false;
-                    break;
-                }
-                if (func_op->distinct()) {
-                    can_vectorize = false;
-                    break;
-                }
-
-                std::pmr::vector<size_t> col_path{{SIZE_MAX}, resource_};
-                types::logical_type col_type = types::logical_type::NA;
-
-                bool count_star = (kind == aggregate::builtin_agg::COUNT && func_op->args().empty());
-                if (count_star) {
-                    col_type = types::logical_type::UBIGINT;
-                } else if (func_op->args().size() == 1 &&
-                           std::holds_alternative<expressions::key_t>(func_op->args()[0])) {
-                    auto& key = std::get<expressions::key_t>(func_op->args()[0]);
-                    assert(!key.path().empty());
-                    col_path = key.path();
-                    if (col_path.empty() || col_path.front() == SIZE_MAX || !schema_chunk) {
-                        can_vectorize = false;
-                        break;
-                    }
-                    col_type = schema_chunk->at(col_path)->type().type();
-                    if (!types::is_numeric(col_type)) {
-                        can_vectorize = false;
-                        break;
-                    }
-                } else {
-                    can_vectorize = false;
-                    break;
-                }
-                agg_infos.push_back({kind, col_path, col_type, count_star});
-            }
-        }
-
-        if (can_vectorize) {
-            // Build group_ids per chunk: group_ids_per_chunk[ci][row_in_chunk] = group_id.
-            std::vector<std::pmr::vector<uint32_t>> group_ids_per_chunk;
-            group_ids_per_chunk.reserve(in_chunks.size());
-            for (const auto& chunk : in_chunks) {
-                std::pmr::vector<uint32_t> ids(resource_);
-                ids.assign(chunk.size(), UINT32_MAX);
-                group_ids_per_chunk.push_back(std::move(ids));
-            }
-            for (size_t g = 0; g < num_groups; g++) {
-                for (const auto& ref : row_refs_per_group_[g]) {
-                    group_ids_per_chunk[ref.first][ref.second] = static_cast<uint32_t>(g);
-                }
-            }
-
-            // For each aggregate, run vectorized update across all input chunks,
-            // accumulating `states` incrementally.
-            std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
-            agg_results.reserve(values_.size());
-
-            for (size_t a = 0; a < values_.size(); a++) {
-                std::pmr::vector<aggregate::raw_agg_state_t> states(resource_);
-                states.resize(num_groups);
-
-                auto& info = agg_infos[a];
-                for (size_t ci = 0; ci < in_chunks.size(); ++ci) {
-                    auto& chunk = in_chunks[ci];
-                    auto n = chunk.size();
-                    if (n == 0)
-                        continue;
-                    const auto* gids = group_ids_per_chunk[ci].data();
-                    if (info.is_count_star) {
-                        for (uint64_t i = 0; i < n; i++) {
-                            if (gids[i] != UINT32_MAX) {
-                                states[gids[i]].update_count();
-                            }
-                        }
-                    } else {
-                        aggregate::update_all(info.kind, *chunk.at(info.full_path), gids, n, states);
-                    }
-                }
-
-                // Finalize states to logical_value_t
-                std::pmr::vector<types::logical_value_t> results(resource_);
-                results.reserve(num_groups);
-                for (size_t g = 0; g < num_groups; g++) {
-                    auto val = aggregate::finalize_state(resource_, info.kind, states[g], info.col_type);
-                    val.set_alias(std::string(values_[a].name));
-                    results.push_back(std::move(val));
-                }
-                agg_results.push_back(std::move(results));
-            }
-
-            return build_result_chunk(num_groups, key_count, agg_results, in_chunks);
-        }
-
-        // Fallback: gather per-group subchunk from multi-chunk source.
-        return calc_aggregate_values_fallback(pipeline_context, in_chunks);
-    }
-
-    vector::data_chunk_t operator_group_t::calc_aggregate_values_fallback(pipeline::context_t* pipeline_context,
-                                                                          chunks_vector_t& in_chunks) {
-        size_t num_groups = group_keys_.size();
-        size_t key_count = num_groups > 0 ? group_keys_[0].size() : 0;
-
-        // All chunks share the same schema — take types from the first one.
-        std::pmr::vector<types::complex_logical_type> result_types{resource_};
-        if (!in_chunks.empty()) {
-            result_types = in_chunks.front().types();
-        }
-        size_t col_count = result_types.size();
-
-        // Build per-group subchunk by gathering (chunk_idx, row_idx) pairs from the
-        // multi-chunk source. Consecutive rows from the same source chunk are copied
-        // in a single vector_ops::copy() to keep the cost close to a flat memcpy.
-        // Group refs by source chunk, then issue one indexing-based copy per (chunk, column).
-        // This collapses N small per-row copies into N_chunks bulk copies and is much cheaper
-        // when refs are scattered (e.g. typical GROUP BY where each group's rows are spread
-        // across many source chunks).
-        auto gather_group = [&](const std::pmr::vector<row_ref_t>& refs) {
-            uint64_t cnt = static_cast<uint64_t>(refs.size());
-            vector::data_chunk_t grp(resource_, result_types, cnt > 0 ? cnt : 1);
-            grp.set_cardinality(cnt);
-            if (cnt == 0) {
-                return grp;
-            }
-            // refs are inserted in (chunk_idx, row_idx) order during create_list_rows,
-            // so all refs for a given chunk form one contiguous span.
-            uint64_t pos = 0;
-            while (pos < cnt) {
-                uint32_t src_chunk = refs[pos].first;
-                uint64_t span_start = pos;
-                while (pos < cnt && refs[pos].first == src_chunk) {
-                    ++pos;
-                }
-                uint64_t span_len = pos - span_start;
-                const auto& src = in_chunks[src_chunk];
-
-                // Build indexing into source chunk's row_idx values for this span.
-                vector::indexing_vector_t indexing(resource_, span_len);
-                auto* idx_data = indexing.data();
-                for (uint64_t i = 0; i < span_len; ++i) {
-                    idx_data[i] = refs[span_start + i].second;
-                }
-
-                for (size_t c = 0; c < col_count; ++c) {
-                    if (is_placeholder(src.data[c]))
-                        continue;
-                    vector::vector_ops::copy(src.data[c], grp.data[c], indexing, span_len, 0, span_start);
-                }
-                vector::vector_ops::copy(src.row_ids, grp.row_ids, indexing, span_len, 0, span_start);
-            }
-            return grp;
-        };
-
-        // Compute aggregate results: agg_results[agg_idx][group_idx]
-        std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
-        agg_results.reserve(values_.size());
-
-        // Gather the per-group subchunks ONCE and share a single batch operator
-        // across all aggregators. Every group aggregator is an operator_func_t
-        // whose aggregate_batch_impl reads the batch without consuming it
-        // (build_arg_chunk references the argument columns; appended expression
-        // columns are removed after use), and aggregator->clear() only drops the
-        // aggregator's own child pointer — the batch itself stays intact. This
-        // collapses the per-aggregate regather from
-        // O(aggregates × groups × rows) copies down to O(groups × rows).
-        chunks_vector_t group_chunks(resource_);
-        group_chunks.reserve(num_groups);
-        for (size_t i = 0; i < num_groups; i++) {
-            group_chunks.emplace_back(gather_group(row_refs_per_group_[i]));
-        }
-        auto shared_batch = make_operator_batch(resource_, std::move(group_chunks));
-
-        for (const auto& value : values_) {
-            auto& aggregator = value.aggregator;
-            std::pmr::vector<types::logical_value_t> results(resource_);
-            results.reserve(num_groups);
-
-            aggregator->clear();
-            aggregator->set_children(shared_batch);
-            aggregator->on_execute(pipeline_context);
-            if (aggregator->has_error()) {
-                set_error(aggregator->get_error());
-                return vector::data_chunk_t(resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 1);
-            }
-
-            auto datum = aggregator->take_batch_values();
-
-            if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
-                auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
-                for (auto& v : vals) {
-                    v.set_alias(std::string(value.name));
-                    results.push_back(std::move(v));
-                }
-                while (results.size() < num_groups) {
-                    results.emplace_back(resource_, types::logical_type::NA);
-                }
-            } else {
-                // data_chunk_t — each row corresponds to a group
-                auto& result_chunk = std::get<vector::data_chunk_t>(datum);
-                for (size_t i = 0; i < num_groups && i < result_chunk.size(); i++) {
-                    auto val = result_chunk.data.empty() ? types::logical_value_t(resource_, types::logical_type::NA)
-                                                         : result_chunk.value(0, i);
-                    val.set_alias(std::string(value.name));
-                    results.push_back(std::move(val));
-                }
-                while (results.size() < num_groups) {
-                    results.emplace_back(resource_, types::logical_type::NA);
-                }
-            }
-
-            agg_results.push_back(std::move(results));
-        }
-
-        return build_result_chunk(num_groups, key_count, agg_results, in_chunks);
-    }
-
-    vector::data_chunk_t
-    operator_group_t::build_result_chunk(size_t num_groups,
-                                         size_t key_count,
-                                         std::pmr::vector<std::pmr::vector<types::logical_value_t>>& agg_results,
-                                         const chunks_vector_t& in_chunks) {
-        // Build result types: key types + aggregate types.
-        // Source key types from the incoming chunk's column schema (stable across
-        // NULL handling), not from group_keys_[0][k] — a NULL value in the first
-        // group would otherwise set out_types[k] = logical_type::NA, and any later
-        // group with a typed key would trip vector_t::set_value's cast_as path
-        // (NA has no cast handler → assert in logical_value.cpp).
-        std::pmr::vector<types::complex_logical_type> out_types(resource_);
-        if (num_groups > 0) {
-            for (size_t k = 0; k < key_count; k++) {
-                const auto& key = keys_[k];
-                bool got = false;
-                if (key.type == group_key_t::kind::column && !key.full_path.empty() && !in_chunks.empty()) {
-                    const auto col_idx = key.full_path.front();
-                    if (col_idx < in_chunks.front().column_count()) {
-                        // Walk the remaining path components through the nested
-                        // type (STRUCT fields by index, ARRAY/LIST element type)
-                        // so multi-part paths get their source type too; fall
-                        // back to the value type when a component cannot be
-                        // resolved.
-                        const auto* walked = &in_chunks.front().data[col_idx].type();
-                        bool ok = true;
-                        for (auto it = std::next(key.full_path.begin()); ok && it != key.full_path.end(); ++it) {
-                            switch (walked->type()) {
-                                case types::logical_type::ARRAY:
-                                case types::logical_type::LIST:
-                                    walked = &walked->child_type();
-                                    break;
-                                case types::logical_type::STRUCT:
-                                    if (*it < walked->child_types().size()) {
-                                        walked = &walked->child_types()[*it];
-                                    } else {
-                                        ok = false;
-                                    }
-                                    break;
-                                default:
-                                    ok = false;
-                                    break;
-                            }
-                        }
-                        if (ok) {
-                            out_types.push_back(*walked);
-                            got = true;
-                        }
-                    }
-                }
-                if (!got) {
-                    out_types.push_back(group_keys_[0][k].type());
-                }
-            }
-        }
-        // One column per aggregate, unconditionally: the fill loop below writes
-        // every aggregate at the fixed position key_count + agg_idx, so a
-        // skipped type here would shift all later columns and write past the
-        // chunk's column array. An aggregate with no results gets an NA-typed
-        // column filled with NULLs.
-        for (size_t a = 0; a < values_.size(); a++) {
-            out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
-                                                       : agg_results[a][0].type());
-        }
-
-        // Create result chunk
-        uint64_t cap = num_groups > 0 ? static_cast<uint64_t>(num_groups) : 1;
-        vector::data_chunk_t result(resource_, out_types, cap);
-        result.set_cardinality(static_cast<uint64_t>(num_groups));
-
-        // Fill key columns
-        for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
-            for (size_t key_idx = 0; key_idx < key_count; key_idx++) {
-                result.set_value(key_idx, group_idx, std::move(group_keys_[group_idx][key_idx]));
-            }
-        }
-
-        // Fill aggregate columns
-        for (size_t agg_idx = 0; agg_idx < values_.size(); agg_idx++) {
-            for (size_t group_idx = 0; group_idx < num_groups; group_idx++) {
-                if (group_idx < agg_results[agg_idx].size()) {
-                    result.set_value(key_count + agg_idx, group_idx, std::move(agg_results[agg_idx][group_idx]));
-                } else {
-                    result.set_value(key_count + agg_idx,
-                                     group_idx,
-                                     types::logical_value_t(resource_, types::logical_type::NA));
-                }
-            }
-        }
-
-        return result;
-    }
 
     void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result) {
         auto num_groups = result.size();
@@ -1081,6 +985,64 @@ namespace components::operators {
             result.slice(idx, keep_count);
             result.flatten();
         }
+    }
+
+    core::error_t
+    operator_group_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        // SINK: fold this batch INCREMENTALLY into the running group table. State is
+        // bounded by #groups (typed per-group accumulators), not by input size. The
+        // batch is discarded once folded; append nothing to `out`.
+        if (input.size() > 0) {
+            any_input_ = true;
+        }
+        return accumulate(ctx, input);
+    }
+
+    core::error_t operator_group_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
+        if (any_input_) {
+            // Materialize the accumulated group table into the result chunk(s).
+            auto result = materialize_groups(ctx);
+            if (has_error()) {
+                return get_error();
+            }
+            // Match split_large_output: keep each emitted chunk within DEFAULT_VECTOR_CAPACITY.
+            auto batches = operators::split_chunk_into_batches(resource_, std::move(result));
+            for (auto& c : batches) {
+                out.emplace_back(std::move(c));
+            }
+            return core::error_t::no_error();
+        }
+
+        // No input rows were pushed (source drained immediately). Mirror the
+        // no-left-output branches of on_execute_impl.
+        if (keys_.empty() && !values_.empty()) {
+            // Global aggregate over empty input — e.g. SELECT COUNT(*) FROM empty.
+            auto result = empty_aggregate_result(ctx);
+            if (has_error()) {
+                return get_error();
+            }
+            out.emplace_back(std::move(result));
+        } else if (!computed_columns_.empty()) {
+            // Constants-only query (no FROM): evaluate arithmetic on a virtual row.
+            std::pmr::vector<types::complex_logical_type> empty_types(resource_);
+            vector::data_chunk_t chunk(resource_, empty_types, 1);
+            chunk.set_cardinality(1);
+            for (auto& comp : computed_columns_) {
+                auto result_vec = evaluate_arithmetic(resource_,
+                                                      comp.op,
+                                                      comp.operands,
+                                                      chunk,
+                                                      ctx->parameters,
+                                                      ctx->session_tz);
+                if (result_vec.has_error()) {
+                    return result_vec.error();
+                }
+                result_vec.value().set_type_alias(std::string(comp.alias));
+                chunk.data.emplace_back(std::move(result_vec.value()));
+            }
+            out.emplace_back(std::move(chunk));
+        }
+        return core::error_t::no_error();
     }
 
 } // namespace components::operators

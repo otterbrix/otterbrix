@@ -321,4 +321,181 @@ namespace components::operators {
         co_return;
     }
 
+    vector::data_chunk_t
+    full_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
+        std::pmr::vector<types::complex_logical_type> projected_types(resource_);
+        if (projected_cols_.empty()) {
+            projected_types = types;
+        } else {
+            projected_types.reserve(projected_cols_.size());
+            for (auto idx : projected_cols_) {
+                if (idx < types.size()) {
+                    projected_types.push_back(types[idx]);
+                }
+            }
+        }
+        return vector::data_chunk_t{resource_, projected_types, 0};
+    }
+
+    // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
+    // FIRST call: one-time setup (short-circuits, build the filter, the storage_types await for the
+    //   empty-guard schema), then OPEN the cursor (storage_fetch_next_batch, cursor_id==0, passing
+    //   the filter + offset+limit head cap) and return its first batch.
+    // SUBSEQUENT calls: ADVANCE the SAME cursor (cursor_id_!=0, no filter) and return one batch.
+    // Each call does at most ONE cross-actor fetch await; the N awaits are sequential across calls
+    // in this nested operator coroutine (driven by execute_pipeline), so the single-slot awaited
+    // continuation is republished+cleared between awaits — no lost-wakeup (same shape as
+    // await_async_and_resume's two sequential awaits). Peak scan memory = one batch (zero pins
+    // survive a round-trip; the agent re-seeks a transient scan state from a stored position).
+    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    full_scan::source_next(pipeline::context_t* ctx) {
+        if (drained_) {
+            co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+        }
+
+        if (!opened_) {
+            opened_ = true;
+
+            // Short-circuit: all_false → empty result, immediately drained.
+            if (expression_ && expression_->type() == expressions::compare_type::all_false) {
+                drained_ = true;
+                co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+            }
+
+            // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
+            // col OP NULL → always false → empty. col OP ALL(empty) is vacuously true → scan all.
+            bool null_param_skip_filter = false;
+            if (expression_ && !expression_->is_union() &&
+                expression_->type() != expressions::compare_type::is_null &&
+                expression_->type() != expressions::compare_type::is_not_null &&
+                std::holds_alternative<core::parameter_id_t>(expression_->right())) {
+                auto pid = std::get<core::parameter_id_t>(expression_->right());
+                auto it = ctx->parameters.parameters.find(pid);
+                if (it != ctx->parameters.parameters.end() && it->second.is_null()) {
+                    if (expression_->type() != expressions::compare_type::all) {
+                        drained_ = true;
+                        co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+                    }
+                    null_param_skip_filter = true;
+                }
+            }
+
+            // Get types to build the filter (await 1). Cached for the no-data empty-guard below.
+            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_types,
+                                             ctx->session,
+                                             table_oid_);
+            guard_types_ = co_await std::move(tf);
+
+            std::unique_ptr<table::table_filter_t> filter;
+            if (!null_param_skip_filter) {
+                auto filter_result =
+                    transform_predicate(resource_, expression_, guard_types_, &ctx->parameters, ctx->session_tz);
+                if (filter_result.has_error()) {
+                    set_error(filter_result.error());
+                    mark_failed();
+                    co_return core::result_wrapper_t<vector::data_chunk_t>(filter_result.error());
+                }
+                filter = std::move(filter_result.value());
+            }
+
+            // OPEN the cursor: offset+limit pushed down as the agent's post-filter matched-row cap;
+            // the head OFFSET rows are skipped per-batch below (the agent caps but does not skip).
+            const int64_t offset_val = limit_.offset();
+            const int64_t limit_val = limit_.limit();
+            const int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
+            remaining_offset_ = offset_val > 0 ? static_cast<uint64_t>(offset_val) : 0;
+
+            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                             ctx->session,
+                                             table_oid_,
+                                             cursor_id_, // 0 == OPEN
+                                             std::move(filter),
+                                             scan_limit,
+                                             projected_cols_,
+                                             ctx->txn);
+            auto fetch_result = co_await std::move(sf);
+            if (fetch_result.has_error()) {
+                set_error(fetch_result.error());
+                mark_failed();
+                co_return fetch_result.convert_error<vector::data_chunk_t>();
+            }
+            auto reply = std::move(fetch_result.value());
+            cursor_id_ = reply.cursor_id;
+            co_return co_await emit_or_skip(ctx, std::move(reply.batch));
+        }
+
+        // ADVANCE: read one more batch from the open cursor (filter dropped — the agent owns it).
+        auto [_s, sf] = actor_zeta::send(ctx->disk_address,
+                                         &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                         ctx->session,
+                                         table_oid_,
+                                         cursor_id_,
+                                         std::unique_ptr<table::table_filter_t>(nullptr),
+                                         int64_t{-1},
+                                         projected_cols_,
+                                         ctx->txn);
+        auto fetch_result = co_await std::move(sf);
+        if (fetch_result.has_error()) {
+            set_error(fetch_result.error());
+            mark_failed();
+            co_return fetch_result.convert_error<vector::data_chunk_t>();
+        }
+        auto reply = std::move(fetch_result.value());
+        co_return co_await emit_or_skip(ctx, std::move(reply.batch));
+    }
+
+    // Apply per-batch OFFSET skip and the drained empty-guard to one fetched batch. A re-fetch is
+    // needed only while OFFSET still consumes whole batches, so this loops over ADVANCE fetches.
+    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    full_scan::emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch) {
+        while (true) {
+            const uint64_t sz = batch ? batch->size() : 0;
+
+            // Drained: the agent replied a cardinality-0 batch (and erased its cursor).
+            if (sz == 0) {
+                drained_ = true;
+                // Emit ONE schema'd 0-row guard the first time the source produces nothing, so a
+                // scalar aggregate emits COUNT=0 and an OUTER join NULL-pads.
+                if (!emitted_any_) {
+                    emitted_any_ = true;
+                    co_return make_drain_chunk(guard_types_);
+                }
+                co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+            }
+
+            // Skip OFFSET rows from the head of the stream.
+            if (remaining_offset_ > 0) {
+                if (sz <= remaining_offset_) {
+                    remaining_offset_ -= sz; // whole batch consumed by OFFSET — fetch the next one
+                    auto [_s, sf] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                     ctx->session,
+                                                     table_oid_,
+                                                     cursor_id_,
+                                                     std::unique_ptr<table::table_filter_t>(nullptr),
+                                                     int64_t{-1},
+                                                     projected_cols_,
+                                                     ctx->txn);
+                    auto fetch_result = co_await std::move(sf);
+                    if (fetch_result.has_error()) {
+                        set_error(fetch_result.error());
+                        mark_failed();
+                        co_return fetch_result.convert_error<vector::data_chunk_t>();
+                    }
+                    batch = std::move(fetch_result.value().batch);
+                    continue;
+                }
+                auto trimmed = batch->partial_copy(resource_, remaining_offset_, sz - remaining_offset_);
+                remaining_offset_ = 0;
+                emitted_any_ = true;
+                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(trimmed));
+            }
+
+            emitted_any_ = true;
+            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(*batch));
+        }
+    }
+
 } // namespace components::operators

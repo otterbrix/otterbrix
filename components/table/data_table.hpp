@@ -40,6 +40,24 @@ namespace components::table {
                           table_scan_state& state,
                           std::pmr::memory_resource* resource);
 
+        // DORMANT: dormant foundation for the future buffer-pool bounded scan, not yet wired pending
+        // the actor-zeta await-core fix (scan sources reverted to whole-scan buffering). Kept, not
+        // deleted — the buffer-pool effort revives it.
+        // Streaming fetch-next (STEP 3 / index-resume). Reads ONE ≤DEFAULT_VECTOR_CAPACITY batch
+        // into `result`, RESUMING from absolute source row `next_row` (capped at `max_row`). Builds
+        // a TRANSIENT table_scan_state, seeks to next_row, reads one batch, then advances `next_row`
+        // past the SOURCE rows consumed (independent of how many the filter matched, so no row is
+        // re-read) and sets `drained` once the scan reaches `max_row`. The scan state (and its
+        // buffer pins) is local to this call and destroyed before return — ZERO pins survive.
+        // Returns a buffer-pool OOM / data_corruption surfaced by the table-layer scan, else true.
+        [[nodiscard]] core::result_wrapper_t<bool> fetch_next_batch(vector::data_chunk_t& result,
+                                                                    const std::vector<storage_index_t>& column_ids,
+                                                                    const table_filter_t* filter,
+                                                                    transaction_data txn,
+                                                                    int64_t& next_row,
+                                                                    int64_t max_row,
+                                                                    bool& drained);
+
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_ids,

@@ -228,6 +228,13 @@ namespace components::table {
                 auto& entry = nodes_[index];
                 assert(entry.row_start == entry.node->start);
                 if (row_number < entry.row_start) {
+                    // Half-open guard: index 0 cannot move `upper` lower without underflowing the
+                    // unsigned cursor (index - 1 wraps to UINT64_MAX). A row_number below the first
+                    // segment's row_start has no containing segment — stop instead of looping into
+                    // an out-of-range index.
+                    if (index == 0) {
+                        break;
+                    }
                     upper = index - 1;
                 } else if (row_number >= entry.row_start + static_cast<int64_t>(entry.node->count)) {
                     lower = index + 1;

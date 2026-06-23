@@ -51,8 +51,23 @@ namespace {
             if (std::holds_alternative<expressions::key_t>(arg)) {
                 const auto& key = std::get<expressions::key_t>(arg);
                 assert(!key.path().empty() && "aggregate key path must be resolved");
-                assert(key.path().front() < chunk.data.size() && "aggregate key path out of range");
-                columns.emplace_back(chunk.data.begin() + static_cast<std::ptrdiff_t>(key.path().front()));
+                // Empty-input path: the global-aggregate-over-empty branch
+                // (operator_group_t::empty_aggregate_result / operator_batch_t's
+                // defence-in-depth) hands a 0-column, 0-row chunk when no source rows
+                // were ever produced, so a column-key path indexes past the (zero)
+                // columns. Append a 0-row numeric placeholder column and reference it:
+                // over zero rows the aggregate value is type-independent (COUNT→0,
+                // SUM/MIN/MAX/AVG→NULL), so this yields the exact materialize-path empty
+                // result. Only reachable when the chunk carries no rows.
+                if (key.path().front() >= chunk.data.size()) {
+                    assert(chunk.size() == 0 && "out-of-range aggregate key on a non-empty chunk");
+                    chunk.data.emplace_back(chunk.resource(),
+                                            types::complex_logical_type{types::logical_type::BIGINT},
+                                            uint64_t{0});
+                    columns.emplace_back(chunk.data.end() - 1);
+                } else {
+                    columns.emplace_back(chunk.data.begin() + static_cast<std::ptrdiff_t>(key.path().front()));
+                }
             } else if (std::holds_alternative<core::parameter_id_t>(arg)) {
                 const auto& id = std::get<core::parameter_id_t>(arg);
                 columns.emplace_back(pipeline_context->parameters.parameters.at(id));

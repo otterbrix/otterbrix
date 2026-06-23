@@ -59,9 +59,24 @@ namespace components::operators {
 
         void add_column(select_column_t&& col);
 
+        // --- Push-based streaming pipeline (STEP 3 / phase C) ---
+        // A SELECT is a pure 1-batch-in -> 1-batch-out projection: each input
+        // chunk maps to exactly one output chunk via evaluate_projection(), with
+        // no cross-batch accumulation, so it is a streaming operator. finalize()
+        // keeps the default no-op. on_execute_impl is the materialized entry
+        // point (see its note below) and shares the same evaluate_projection core.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::streaming; }
+        [[nodiscard]] core::error_t
+        push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
+
     private:
         std::pmr::vector<select_column_t> columns_;
 
+        // Design intent (NOT an R6 transitional fallback): push() = streaming path
+        // (sourced pipelines); on_execute_impl = materialized path for sourceless
+        // sub-plans (raw_data / recursive-CTE working sets / no-FROM SELECT) that
+        // have no streaming source. Both route through the SAME evaluate_projection
+        // core — two entry points to one implementation for two plan shapes.
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         // Build result chunk row-by-row.

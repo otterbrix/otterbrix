@@ -393,3 +393,54 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
         REQUIRE(cur->is_error());
     }
 }
+
+// A scalar aggregate over a COLUMN argument (not count(*)) over an EMPTY table must
+// emit COUNT=0 (SUM/MIN/MAX/AVG=NULL), not crash. The global-aggregate empty path
+// (operator_group_t::empty_aggregate_result) drives the aggregator over a batch with
+// no chunks; operator_func_t::aggregate_batch_impl must not assert resolving the
+// column key against a 0-column chunk. This is the deterministic, single-threaded
+// reproduction of the integration::cpp::production::concurrent_read_write abort.
+TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/aggregate_column_arg_empty_table");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.empty_tbl (id bigint, value bigint);")->is_success());
+    }
+
+    SECTION("COUNT(column) over empty table is 0") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM t.empty_tbl;");
+        INFO("COUNT(id) empty error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 0);
+    }
+
+    SECTION("SUM(column) over empty table is NULL") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT SUM(value) AS s FROM t.empty_tbl;");
+        INFO("SUM(value) empty error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).is_null());
+    }
+
+    SECTION("MIN(column) over empty table is NULL") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT MIN(value) AS m FROM t.empty_tbl;");
+        INFO("MIN(value) empty error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).is_null());
+    }
+}

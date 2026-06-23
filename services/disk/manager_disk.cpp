@@ -49,6 +49,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_total_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_batched>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch_next_batch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_segment>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>,
@@ -418,6 +419,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_scan_batched>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_scan_batched, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch_next_batch>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_fetch_next_batch, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>: {

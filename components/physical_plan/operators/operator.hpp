@@ -160,6 +160,18 @@ namespace components::operators {
         failed
     };
 
+    // Push-based streaming execution (SELECT read-path). execute_pipeline() drives
+    // Source -> streaming operators -> Sink one batch at a time, so peak memory is
+    // a single batch plus active sink state instead of the sum of materialized
+    // intermediates. An operator's role selects how the driver pulls/pushes it.
+    enum class pipeline_role
+    {
+        none,      // not on the streaming path (DML/DDL, legacy materialize via on_execute)
+        source,    // produces batches via source_next() (scans)
+        streaming, // 1 batch in -> 0+ out, no accumulation (filter/projection, join probe)
+        sink       // accumulates bounded state in push(), emits in finalize() (hash build, group/agg, sort)
+    };
+
     class operator_t : public boost::intrusive_ref_counter<operator_t> {
     public:
         using ptr = boost::intrusive_ptr<operator_t>;
@@ -183,6 +195,30 @@ namespace components::operators {
         void async_wait();
 
         virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
+
+        // --- Push-based streaming pipeline interface (SELECT read-path) ---
+        // execute_pipeline() inspects role() to drive the operator; operators not yet
+        // converted keep role()==none and stay on the legacy on_execute() path.
+        [[nodiscard]] virtual pipeline_role role() const noexcept { return pipeline_role::none; }
+
+        // SOURCE: fetch the next batch via an async storage round-trip
+        // (storage_fetch_next_batch). A drained source returns an EMPTY chunk
+        // (cardinality 0). Buffer-pool OOM / data_corruption ride the result_wrapper,
+        // never a throw. Only the executor's nested coroutine drives these awaits
+        // (not an agent handler), so N sequential fetches are lost-wakeup-safe.
+        [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        source_next(pipeline::context_t* ctx);
+
+        // STREAMING / SINK: consume exactly one input batch. A streaming operator
+        // transforms `input` and appends 0+ chunks to `out`; a sink operator folds
+        // `input` into bounded internal state and appends nothing. Synchronous: the
+        // executor owns the cross-actor await drive, operators never self-send.
+        [[nodiscard]] virtual core::error_t
+        push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out);
+
+        // SINK: once the upstream pipeline is drained, emit the accumulated result
+        // into `out`. Streaming operators have nothing to finalize (default no-op).
+        [[nodiscard]] virtual core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out);
 
         bool is_executed() const;
         bool is_wait_sync_disk() const;

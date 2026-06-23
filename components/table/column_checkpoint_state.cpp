@@ -298,7 +298,17 @@ namespace components::table {
         auto allocation = partial_block_manager_.get_block_allocation(segment_size);
 
         if (data && segment_size > 0) {
-            partial_block_manager_.write_to_block(allocation.block_id, allocation.offset_in_block, data, segment_size);
+            // Read from the segment's OWN payload within its (possibly shared) block. A segment that the
+            // write-through re-pointed via partial-block packing (B2) lives at a NON-ZERO block_offset in a
+            // block shared with other segments; reading from data (offset 0) would copy a neighbour's bytes
+            // into the checkpoint (reopen corruption). The compressed and fixed-size branches above already
+            // add block_offset(); this UNCOMPRESSED branch (BIT/validity, STRING, single-tuple fixed-size)
+            // must too. Pre-B2 every re-pointed segment was at offset 0 so this was latent.
+            auto* segment_data = data + segment.block_offset();
+            partial_block_manager_.write_to_block(allocation.block_id,
+                                                  allocation.offset_in_block,
+                                                  segment_data,
+                                                  segment_size);
         }
 
         storage::data_pointer_t dp;

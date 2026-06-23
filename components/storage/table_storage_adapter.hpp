@@ -165,6 +165,40 @@ namespace components::storage {
             return true;
         }
 
+        // Streaming fetch-next (STEP 3 / index-resume). Re-seeks a TRANSIENT table_scan_state to
+        // pos.next_row, reads ONE batch, advances pos, then lets the scan state (and its column
+        // pins) destruct on return — so nothing crosses the mailbox but the position. The source
+        // row consumed is tracked by the scan state's (row_group->start + vector_index*CAP),
+        // independent of how many rows the filter matched, so the cursor never re-reads a row.
+        [[nodiscard]] core::result_wrapper_t<bool> fetch_next_batch(vector::data_chunk_t& output,
+                                                                    scan_position_t& pos,
+                                                                    const table::table_filter_t* filter,
+                                                                    const std::vector<size_t>* projected_cols,
+                                                                    table::transaction_data txn) override {
+            if (pos.drained || pos.next_row >= pos.max_row) {
+                pos.drained = true;
+                return true;
+            }
+            std::vector<table::storage_index_t> column_indices;
+            if (projected_cols) {
+                column_indices.reserve(projected_cols->size());
+                for (size_t idx : *projected_cols) {
+                    if (idx < table_.column_count()) {
+                        column_indices.emplace_back(static_cast<int64_t>(idx));
+                    }
+                }
+            } else {
+                column_indices.reserve(table_.column_count());
+                for (size_t i = 0; i < table_.column_count(); i++) {
+                    column_indices.emplace_back(static_cast<int64_t>(i));
+                }
+            }
+            // data_table_t owns the transient-scan-state seek + single-batch read + position
+            // advance (it has row_group.hpp; the scan state and its pins live and die inside that
+            // call, so nothing pinned survives this round-trip).
+            return table_.fetch_next_batch(output, column_indices, filter, txn, pos.next_row, pos.max_row, pos.drained);
+        }
+
         void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) override {
             table::column_fetch_state state;
             std::vector<table::storage_index_t> column_indices;

@@ -74,13 +74,26 @@ namespace components::table {
     bool row_group_t::initialize_scan_with_offset(collection_scan_state& state, uint64_t vector_offset) {
         auto& column_ids = state.column_ids();
         state.row_group = this;
-        state.vector_index = vector_offset;
-        state.max_row_group_row =
-            start > state.max_row ? 0 : std::min(static_cast<int64_t>(count.load()), state.max_row - start);
+        // The absolute row this seek lands on. `vector_offset` is group-relative; `start` is the
+        // group's collection-absolute origin in the CURRENT (post-checkpoint) segment tree.
         auto row_number = start + static_cast<int64_t>(vector_offset * vector::DEFAULT_VECTOR_CAPACITY);
-        if (state.max_row_group_row == 0) {
+        // vector_index and max_row_group_row use the SAME cumulative collection-absolute convention as
+        // the continuous initialize_scan() path: vector_index*CAP is an absolute collection row, and
+        // max_row_group_row is the absolute end-of-scan row. This keeps every downstream
+        // `vector_index*CAP` / `current_row` computation in templated_scan and filter_indexing
+        // (row-id assignment AND the check_predicate column lookups) addressing absolute rows the live
+        // tree brackets — instead of group-relative positions that, after a checkpoint re-bases the
+        // groups, would seek a column segment by a row below its row_start and underflow the segment
+        // search. Geometry-agnostic: derived purely from `start`/`count` of the resolved group, never
+        // from a fixed row_group_size.
+        state.vector_index = static_cast<uint64_t>(row_number) / vector::DEFAULT_VECTOR_CAPACITY;
+        const int64_t group_count = static_cast<int64_t>(count.load());
+        // Nothing to scan if the group ends at/before the seek floor or is past the scan ceiling.
+        if (group_count == 0 || start >= state.max_row) {
+            state.max_row_group_row = static_cast<int64_t>(state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
             return false;
         }
+        state.max_row_group_row = std::min(start + group_count, state.max_row);
         assert(!state.column_scans.empty());
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             const auto& column = column_ids[i];
@@ -877,17 +890,27 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> row_group_t::transition_to_disk() {
+        // Own ONE partial_block_manager for this closed row group: ALL its columns' (and validity children's)
+        // segments are PACKED together into shared blocks, so a row group of narrow columns shares a handful
+        // of blocks instead of one block per segment (the ~127x over-allocation B2 fixes). In-memory tables
+        // buffer nothing (transition_segment_to_disk early-returns), so the flush below is a harmless no-op.
+        storage::partial_block_manager_t pbm(block_manager());
         // Only transition columns already materialized in memory (a freshly-appended row group). Disk-loaded /
         // unloaded columns are already disk-backed (block_id < MAXIMUM) -> nothing to do; don't force a load.
         for (uint64_t i = 0; i < columns_.size(); i++) {
             if (!columns_[i]) {
                 continue;
             }
-            auto transitioned = columns_[i]->transition_to_disk();
+            auto transitioned = columns_[i]->transition_to_disk(pbm);
             if (transitioned.has_error()) {
                 return transitioned; // io_error / out_of_memory
             }
         }
+        // Flush BEFORE returning: this runs synchronously on the single disk-agent thread (like checkpoint),
+        // so once it returns every re-pointed segment's packed block is durable on disk and a subsequent scan
+        // or eviction can safely load() it. THIS is the flush-before-evict point for the per-row-group-close
+        // append path (and, transitively, for compact, which rebuilds via this same append path).
+        pbm.flush_partial_blocks();
         return true;
     }
 

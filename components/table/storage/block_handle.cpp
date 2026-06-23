@@ -80,19 +80,29 @@ namespace components::table::storage {
     }
 
     block_handle_t::~block_handle_t() {
-        unswizzled_ = nullptr;
-        assert(!buffer_ || buffer_->buffer_type() == buffer_type_);
-        if (buffer_ && buffer_type_ != file_buffer_type::TINY_BUFFER) {
-            auto& buffer_manager = block_manager.buffer_manager;
-            buffer_manager.buffer_pool().increment_dead_nodes(*this);
-        }
+        // Serialize the buffer_/state_/memory_charge_ teardown against a concurrent unload() /
+        // unload_and_take_block() running under lock_ on the eviction path of the OTHER disk-agent thread.
+        // Without this lock, the dtor's buffer_.reset() / memory_charge_.resize(0) can race a concurrent
+        // unload(), double-freeing the block buffer and corrupting the shared pmr pool freelist (BUG A).
+        // Deadlock-safe: no code path holds lock_ while dropping the last shared_ptr that triggers this dtor
+        // (the eviction / pin / reallocate paths all keep a strong reference while lock_ is held, so the
+        // refcount is >= 1 there and the dtor cannot run concurrently with the same handle's lock holder).
+        {
+            std::unique_lock<std::mutex> lock(lock_);
+            unswizzled_ = nullptr;
+            assert(!buffer_ || buffer_->buffer_type() == buffer_type_);
+            if (buffer_ && buffer_type_ != file_buffer_type::TINY_BUFFER) {
+                auto& buffer_manager = block_manager.buffer_manager;
+                buffer_manager.buffer_pool().increment_dead_nodes(*this);
+            }
 
-        if (buffer_ && state_ == block_state::LOADED) {
-            assert(memory_charge_.size > 0);
-            buffer_.reset();
-            memory_charge_.resize(0);
-        } else {
-            assert(memory_charge_.size == 0);
+            if (buffer_ && state_ == block_state::LOADED) {
+                assert(memory_charge_.size > 0);
+                buffer_.reset();
+                memory_charge_.resize(0);
+            } else {
+                assert(memory_charge_.size == 0);
+            }
         }
 
         block_manager.unregister_block(*this);

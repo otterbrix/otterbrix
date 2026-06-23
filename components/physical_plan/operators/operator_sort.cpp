@@ -19,13 +19,24 @@ namespace components::operators {
 
     void operator_sort_t::add_computed(computed_sort_key_t&& key) { computed_keys_.push_back(std::move(key)); }
 
-    void operator_sort_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        if (!left_ || !left_->output()) {
-            return;
-        }
-        auto in = left_->output();
-        auto& in_chunks = in->chunks();
+    core::error_t
+    operator_sort_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        // Blocking sink: accumulate the batch, emit nothing. The sort cannot
+        // produce any ordered output until finalize() has seen every input chunk.
+        buffered_input_.emplace_back(std::move(input));
+        return core::error_t::no_error();
+    }
 
+    core::error_t operator_sort_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
+        // Upstream is drained; run the same Phase 1 / Phase 2 logic the legacy
+        // on_execute_impl runs over left_->output()->chunks(), but sourcing the
+        // accumulated buffer and writing into the pipeline sink `out`.
+        return sort_merge(ctx, buffered_input_, out);
+    }
+
+    core::error_t operator_sort_t::sort_merge(pipeline::context_t* pipeline_context,
+                                              chunks_vector_t& in_chunks,
+                                              chunks_vector_t& out_chunks) {
         // All input chunks share the same schema. Capture original (pre-computed) column count
         // and types from the first chunk.
         size_t first_computed_col = 0;
@@ -53,8 +64,7 @@ namespace components::operators {
                                                       pipeline_context->parameters,
                                                       pipeline_context->session_tz);
                 if (result_vec.has_error()) {
-                    set_error(result_vec.error());
-                    return;
+                    return result_vec.error();
                 }
                 if (!computed_added) {
                     sorter_.add(chunk.data.size(), ck.order_);
@@ -108,7 +118,6 @@ namespace components::operators {
         uint64_t skip = offset_val > 0 ? static_cast<uint64_t>(offset_val) : 0;
         uint64_t take = (limit_val >= 0) ? static_cast<uint64_t>(limit_val) : std::numeric_limits<uint64_t>::max();
 
-        chunks_vector_t out_chunks(resource_);
         vector::data_chunk_t cur(resource_, out_types, vector::DEFAULT_VECTOR_CAPACITY);
         uint64_t cur_filled = 0;
         uint64_t produced = 0;
@@ -164,6 +173,23 @@ namespace components::operators {
 
         if (out_chunks.empty()) {
             out_chunks.emplace_back(resource_, out_types, 0);
+        }
+        return core::error_t::no_error();
+    }
+
+    void operator_sort_t::on_execute_impl(pipeline::context_t* pipeline_context) {
+        // Legacy materialize path (removed in phase E). Source from the
+        // already-materialized left output and stash the merged chunks into
+        // output_; shares the Phase 1 / Phase 2 core with the streaming sink.
+        if (!left_ || !left_->output()) {
+            return;
+        }
+        auto in = left_->output();
+        chunks_vector_t out_chunks(resource_);
+        auto err = sort_merge(pipeline_context, in->chunks(), out_chunks);
+        if (err.contains_error()) {
+            set_error(std::move(err));
+            return;
         }
         output_ = operators::make_operator_data(in->resource(), std::move(out_chunks));
     }

@@ -63,18 +63,18 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().column_count() == 2);
+            REQUIRE(cur->column_count() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT *, * FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().column_count() == 4);
-            REQUIRE(cur->chunk_data().data[0].type().alias() == "name");
-            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
-            REQUIRE(cur->chunk_data().data[2].type().alias() == "name");
-            REQUIRE(cur->chunk_data().data[3].type().alias() == "count");
+            REQUIRE(cur->column_count() == 4);
+            REQUIRE(cur->chunks().front().data[0].type().alias() == "name");
+            REQUIRE(cur->chunks().front().data[1].type().alias() == "count");
+            REQUIRE(cur->chunks().front().data[2].type().alias() == "name");
+            REQUIRE(cur->chunks().front().data[3].type().alias() == "count");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -83,13 +83,13 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 "SELECT *, TestCollection.name, count, TestCollection.* FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().column_count() == 6);
-            REQUIRE(cur->chunk_data().data[0].type().alias() == "name");
-            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
-            REQUIRE(cur->chunk_data().data[2].type().alias() == "name");
-            REQUIRE(cur->chunk_data().data[3].type().alias() == "count");
-            REQUIRE(cur->chunk_data().data[4].type().alias() == "name");
-            REQUIRE(cur->chunk_data().data[5].type().alias() == "count");
+            REQUIRE(cur->column_count() == 6);
+            REQUIRE(cur->chunks().front().data[0].type().alias() == "name");
+            REQUIRE(cur->chunks().front().data[1].type().alias() == "count");
+            REQUIRE(cur->chunks().front().data[2].type().alias() == "name");
+            REQUIRE(cur->chunks().front().data[3].type().alias() == "count");
+            REQUIRE(cur->chunks().front().data[4].type().alias() == "name");
+            REQUIRE(cur->chunks().front().data[5].type().alias() == "count");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -98,13 +98,13 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 "SELECT *, table_alias.name, count, table_alias.* FROM TestDatabase.TestCollection AS table_alias;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().column_count() == 6);
-            REQUIRE(cur->chunk_data().data[0].type().alias() == "name");
-            REQUIRE(cur->chunk_data().data[1].type().alias() == "count");
-            REQUIRE(cur->chunk_data().data[2].type().alias() == "name");
-            REQUIRE(cur->chunk_data().data[3].type().alias() == "count");
-            REQUIRE(cur->chunk_data().data[4].type().alias() == "name");
-            REQUIRE(cur->chunk_data().data[5].type().alias() == "count");
+            REQUIRE(cur->column_count() == 6);
+            REQUIRE(cur->chunks().front().data[0].type().alias() == "name");
+            REQUIRE(cur->chunks().front().data[1].type().alias() == "count");
+            REQUIRE(cur->chunks().front().data[2].type().alias() == "name");
+            REQUIRE(cur->chunks().front().data[3].type().alias() == "count");
+            REQUIRE(cur->chunks().front().data[4].type().alias() == "name");
+            REQUIRE(cur->chunks().front().data[5].type().alias() == "count");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -124,11 +124,11 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 0);
-            REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 1);
-            REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 2);
-            REQUIRE(cur->chunk_data().value(1, 3).value<int64_t>() == 3);
-            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 4);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 0);
+            REQUIRE(cur->value(1, 1).value<int64_t>() == 1);
+            REQUIRE(cur->value(1, 2).value<int64_t>() == 2);
+            REQUIRE(cur->value(1, 3).value<int64_t>() == 3);
+            REQUIRE(cur->value(1, 4).value<int64_t>() == 4);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -137,11 +137,11 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count DESC;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 99);
-            REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 98);
-            REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 97);
-            REQUIRE(cur->chunk_data().value(1, 3).value<int64_t>() == 96);
-            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 95);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 99);
+            REQUIRE(cur->value(1, 1).value<int64_t>() == 98);
+            REQUIRE(cur->value(1, 2).value<int64_t>() == 97);
+            REQUIRE(cur->value(1, 3).value<int64_t>() == 96);
+            REQUIRE(cur->value(1, 4).value<int64_t>() == 95);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -150,11 +150,11 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY name;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 0);
-            REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 1);
-            REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 10);
-            REQUIRE(cur->chunk_data().value(1, 3).value<int64_t>() == 11);
-            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 12);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 0);
+            REQUIRE(cur->value(1, 1).value<int64_t>() == 1);
+            REQUIRE(cur->value(1, 2).value<int64_t>() == 10);
+            REQUIRE(cur->value(1, 3).value<int64_t>() == 11);
+            REQUIRE(cur->value(1, 4).value<int64_t>() == 12);
         }
     }
 
@@ -191,7 +191,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(count) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 100);
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == 100);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -199,7 +199,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT MIN(count) AS min_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 0);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 0);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -207,7 +207,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT MAX(count) AS max_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 99);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 99);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -215,7 +215,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT SUM(count) AS sum_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 4950);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 4950);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -223,7 +223,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT AVG(count) AS avg_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 49);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 49);
         }
     }
 
@@ -235,7 +235,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count <= 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 11);
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == 11);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -244,7 +244,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count > 80;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 81);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 81);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -253,7 +253,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 20;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 19);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 19);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -262,7 +262,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 45);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 45);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -271,7 +271,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 4);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
         }
     }
 
@@ -303,8 +303,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count LIMIT 5 OFFSET 0;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 5);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 0);
-            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 4);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 0);
+            REQUIRE(cur->value(1, 4).value<int64_t>() == 4);
         }
         {
             // Skip first 5 rows, take next 5: count values 5..9
@@ -314,8 +314,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count LIMIT 5 OFFSET 5;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 5);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 5);
-            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 9);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 5);
+            REQUIRE(cur->value(1, 4).value<int64_t>() == 9);
         }
         {
             // Last 5 rows: count values 95..99
@@ -325,8 +325,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count LIMIT 5 OFFSET 95;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 5);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 95);
-            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 99);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 95);
+            REQUIRE(cur->value(1, 4).value<int64_t>() == 99);
         }
         {
             // Offset past end of result set
@@ -442,14 +442,14 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
         for (size_t number = 0; number < 10; ++number) {
-            REQUIRE(cur->chunk_data().value(0, number).value<std::string_view>() == "Name " + std::to_string(number));
-            REQUIRE(cur->chunk_data().value(1, number).value<uint64_t>() == 10);
-            REQUIRE(cur->chunk_data().value(2, number).value<int64_t>() ==
+            REQUIRE(cur->value(0, number).value<std::string_view>() == "Name " + std::to_string(number));
+            REQUIRE(cur->value(1, number).value<uint64_t>() == 10);
+            REQUIRE(cur->value(2, number).value<int64_t>() ==
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(cur->chunk_data().value(3, number).value<int64_t>() ==
+            REQUIRE(cur->value(3, number).value<int64_t>() ==
                     static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
-            REQUIRE(cur->chunk_data().value(4, number).value<int64_t>() == static_cast<int64_t>(number) % 20);
-            REQUIRE(cur->chunk_data().value(5, number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
+            REQUIRE(cur->value(4, number).value<int64_t>() == static_cast<int64_t>(number) % 20);
+            REQUIRE(cur->value(5, number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
         }
     }
 
@@ -466,13 +466,13 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->size() == 10);
         for (size_t row = 0; row < 10; ++row) {
             int number = 9 - static_cast<int>(row);
-            REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() == "Name " + std::to_string(number));
-            REQUIRE(cur->chunk_data().value(1, row).value<uint64_t>() == 10);
-            REQUIRE(cur->chunk_data().value(2, row).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(cur->chunk_data().value(3, row).value<int64_t>() ==
+            REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(number));
+            REQUIRE(cur->value(1, row).value<uint64_t>() == 10);
+            REQUIRE(cur->value(2, row).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
+            REQUIRE(cur->value(3, row).value<int64_t>() ==
                     static_cast<int64_t>((number % 20 + (number + 10) % 20)) / 2);
-            REQUIRE(cur->chunk_data().value(4, row).value<int64_t>() == number % 20);
-            REQUIRE(cur->chunk_data().value(5, row).value<int64_t>() == (number + 10) % 20);
+            REQUIRE(cur->value(4, row).value<int64_t>() == number % 20);
+            REQUIRE(cur->value(5, row).value<int64_t>() == (number + 10) % 20);
         }
     }
 
@@ -625,8 +625,8 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
                                                "WHERE count > 90 ORDER BY count LIMIT 3 OFFSET 2;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 93);
-            REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 95);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 93);
+            REQUIRE(cur->value(1, 2).value<int64_t>() == 95);
         }
         {
             // count > 90 → 9 rows (91..99); skip 8 (91..98), take 5 → only 1 remaining (99)
@@ -636,7 +636,7 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
                                                "WHERE count > 90 ORDER BY count LIMIT 5 OFFSET 8;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 99);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 99);
         }
     }
 
@@ -770,7 +770,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             for (size_t i = 0; i < 100; ++i) {
-                REQUIRE(cur->chunk_data().value(0, i).children()[0] ==
+                REQUIRE(cur->value(0, i).children()[0] ==
                         types::logical_value_t{dispatcher->resource(), static_cast<int32_t>(99 - i)});
             }
         }
@@ -782,7 +782,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             for (size_t i = 0; i < 100; ++i) {
-                REQUIRE(cur->chunk_data().value(0, i).children()[0] ==
+                REQUIRE(cur->value(0, i).children()[0] ==
                         types::logical_value_t{dispatcher->resource(), static_cast<int32_t>(i)});
             }
         }
@@ -802,8 +802,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
                                                "WHERE (custom_type).f1 > 90;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 9);
-            REQUIRE(cur->chunk_data().column_count() == 2);
-            REQUIRE(cur->chunk_data().value(0, 0).children()[0] == types::logical_value_t{dispatcher->resource(), 91});
+            REQUIRE(cur->column_count() == 2);
+            REQUIRE(cur->value(0, 0).children()[0] == types::logical_value_t{dispatcher->resource(), 91});
         }
         {
             auto session = otterbrix::session_id_t();
@@ -812,11 +812,11 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
                                                "WHERE (custom_type).f1 > 90;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 9);
-            REQUIRE(cur->chunk_data().column_count() == 3);
-            REQUIRE(cur->chunk_data().data[0].type().alias() == "f1");
-            REQUIRE(cur->chunk_data().data[1].type().alias() == "f2");
-            REQUIRE(cur->chunk_data().data[2].type().alias() == "f3");
-            REQUIRE(cur->chunk_data().value(0, 0) == types::logical_value_t{dispatcher->resource(), 91});
+            REQUIRE(cur->column_count() == 3);
+            REQUIRE(cur->chunks().front().data[0].type().alias() == "f1");
+            REQUIRE(cur->chunks().front().data[1].type().alias() == "f2");
+            REQUIRE(cur->chunks().front().data[2].type().alias() == "f3");
+            REQUIRE(cur->value(0, 0) == types::logical_value_t{dispatcher->resource(), 91});
         }
         {
             auto session = otterbrix::session_id_t();
@@ -825,11 +825,11 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
                                                "WHERE ((custom_type).f3).f2 > 90;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 54);
-            REQUIRE(cur->chunk_data().column_count() == 3);
-            REQUIRE(cur->chunk_data().data[0].type().alias() == "f1");
-            REQUIRE(cur->chunk_data().data[1].type().alias() == "f2");
-            REQUIRE(cur->chunk_data().data[2].type().alias() == "f3");
-            REQUIRE(cur->chunk_data().value(2, 0).children()[1] == types::logical_value_t{dispatcher->resource(), 92});
+            REQUIRE(cur->column_count() == 3);
+            REQUIRE(cur->chunks().front().data[0].type().alias() == "f1");
+            REQUIRE(cur->chunks().front().data[1].type().alias() == "f2");
+            REQUIRE(cur->chunks().front().data[2].type().alias() == "f3");
+            REQUIRE(cur->value(2, 0).children()[1] == types::logical_value_t{dispatcher->resource(), 92});
         }
     }
     INFO("update") {
@@ -847,10 +847,9 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
                 dispatcher->execute_sql(session, "SELECT ((custom_type).f3).f1 FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->chunk_data().column_count() == 1);
+            REQUIRE(cur->column_count() == 1);
             for (size_t num = 0; num < 100; ++num) {
-                REQUIRE(core::is_equals(cur->chunk_data().value(0, num).value<float>(),
-                                        (static_cast<float>(num) + 0.5f) * 3.0f));
+                REQUIRE(core::is_equals(cur->value(0, num).value<float>(), (static_cast<float>(num) + 0.5f) * 3.0f));
             }
         }
     }

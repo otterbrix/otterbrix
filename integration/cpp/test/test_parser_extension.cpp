@@ -28,7 +28,7 @@ TEST_CASE("integration::cpp::parser_extension_demo") {
         auto cur = dispatcher->execute_sql(session, "DEMO 1 + 20");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 21);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 21);
     }
 
     INFO("precedence") {
@@ -36,7 +36,7 @@ TEST_CASE("integration::cpp::parser_extension_demo") {
         auto cur = dispatcher->execute_sql(session, "DEMO 2 + 3 * 4");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 14);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 14);
     }
 }
 
@@ -59,7 +59,7 @@ TEST_CASE("integration::cpp::parser_extension_is_per_instance") {
     INFO("instance A (registered) correctly runs DEMO") {
         auto cur = space_a.dispatcher()->execute_sql(session, "DEMO 1 + 20");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 21);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 21);
     }
 
     INFO("instance B (no extension) rejects") {

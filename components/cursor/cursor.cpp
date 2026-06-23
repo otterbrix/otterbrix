@@ -3,7 +3,7 @@
 namespace components::cursor {
 
     namespace {
-        // An empty (0-column, 0-row) chunk so chunk_data() always has a valid front.
+        // An empty (0-column, 0-row) chunk so chunks().front() is always valid.
         vector::data_chunk_t empty_chunk(std::pmr::memory_resource* resource) {
             return vector::data_chunk_t(resource, std::pmr::vector<types::complex_logical_type>{resource});
         }
@@ -74,15 +74,17 @@ namespace components::cursor {
         chunks_.emplace_back(empty_chunk(resource));
     }
 
-    // chunk_data() exposes the first chunk — its column shape/types are shared by every
-    // chunk, and for a single-chunk result it is the whole result. Row access that may
-    // span chunks must go through value()/row(), which locate the owning chunk.
-    vector::data_chunk_t& cursor_t::chunk_data() { return chunks_.front(); }
-    const vector::data_chunk_t& cursor_t::chunk_data() const { return chunks_.front(); }
+    // Column shape/types are shared by every chunk; row access that may span chunks goes
+    // through value()/row(), which locate the owning chunk. chunks() is for callers that
+    // genuinely need raw per-chunk column vectors (and must iterate chunks themselves).
+    std::pmr::vector<vector::data_chunk_t>& cursor_t::chunks() { return chunks_; }
+    const std::pmr::vector<vector::data_chunk_t>& cursor_t::chunks() const { return chunks_; }
     std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() { return type_data_; }
     const std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() const { return type_data_; }
 
     std::size_t cursor_t::size() const { return size_; }
+    std::size_t cursor_t::column_count() const { return type_data_.size(); }
+    std::size_t cursor_t::column_index(std::string_view key) const { return chunks_.front().column_index(key); }
     bool cursor_t::has_next() const { return static_cast<std::size_t>(current_index_ + 1) < size_; }
     void cursor_t::advance() { ++current_index_; }
     index_t cursor_t::current_index() const { return current_index_; }

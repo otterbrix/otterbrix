@@ -65,7 +65,7 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 100000);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 100000);
     }
 
     INFO("GROUP BY with COUNT") {
@@ -78,7 +78,7 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
         REQUIRE(cur->size() == 50);
         // Each group should have exactly 2000 rows
         for (size_t i = 0; i < cur->size(); ++i) {
-            REQUIRE(cur->chunk_data().value(1, i).value<uint64_t>() == 2000);
+            REQUIRE(cur->value(1, i).value<uint64_t>() == 2000);
         }
     }
 }
@@ -168,7 +168,7 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 20); // 20 customers, each with 10 orders
         for (size_t i = 0; i < cur->size(); ++i) {
-            REQUIRE(cur->chunk_data().value(1, i).value<uint64_t>() == 10);
+            REQUIRE(cur->value(1, i).value<uint64_t>() == 10);
         }
     }
 
@@ -182,7 +182,7 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5); // 5 countries, each with 4 customers
         for (size_t i = 0; i < cur->size(); ++i) {
-            REQUIRE(cur->chunk_data().value(1, i).value<uint64_t>() == 4);
+            REQUIRE(cur->value(1, i).value<uint64_t>() == 4);
         }
     }
 }
@@ -428,7 +428,7 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 1000);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 1000);
     }
 
     INFO("verify thread 1 rows") {
@@ -438,7 +438,7 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
                                            "WHERE thread_id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 500);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
     }
 
     INFO("verify thread 2 rows") {
@@ -448,7 +448,7 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
                                            "WHERE thread_id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 500);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
     }
 }
 
@@ -501,7 +501,7 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
                 auto cur =
                     dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
                 if (cur->is_success() && cur->size() == 1) {
-                    auto count = cur->chunk_data().value(0, 0).value<uint64_t>();
+                    auto count = cur->value(0, 0).value<uint64_t>();
                     auto prev_max = max_count_seen.load();
                     if (count > prev_max) {
                         max_count_seen.store(count);
@@ -524,7 +524,7 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 500);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
     }
 }
 
@@ -576,7 +576,7 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == uint64_t(expected_count));
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == uint64_t(expected_count));
         }
 
         // Checkpoint
@@ -596,7 +596,7 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == uint64_t(expected_count));
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == uint64_t(expected_count));
         }
 
         // Spot-check specific values
@@ -851,7 +851,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 500);
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
         }
     }
 
@@ -886,7 +886,7 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 500);
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
         }
 
         // Spot-check
@@ -975,7 +975,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 200);
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == 200);
         }
 
         // Verify boundary values
@@ -1142,7 +1142,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
         // SUM over bigint expressions comes back as a signed scalar. Match the
         // value computed from the same generation formulas above: proves the
         // large scan COMPLETED with the correct result, not just no-crash.
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == expected_revenue);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == expected_revenue);
     }
 
     INFO("sanity: full-table count scans cleanly and returns every row") {
@@ -1150,7 +1150,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(lo_orderkey) AS cnt FROM TestDatabase.Lineorder;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == uint64_t(total_rows));
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == uint64_t(total_rows));
     }
 }
 
@@ -1238,7 +1238,7 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
             // row 1: 1000*2=2000 (orderdate 1993, disc 2, qty 10<25) — matches
             // row 3: 1500*1=1500 (orderdate 1993, disc 1, qty 20<25) — matches
             // row 2: orderdate 1994 — excluded
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3500);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 3500);
         }
     }
 }

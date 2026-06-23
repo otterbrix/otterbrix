@@ -232,7 +232,7 @@ TEST_CASE("integration::cpp::test_udfs") {
                                                R"_(ORDER BY count DESC;)_");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
-            auto& chunk = cur->chunk_data();
+            auto& chunk = cur->chunks().front();
             REQUIRE(chunk.column_count() == 2);
             for (size_t i = 0; i < chunk.size(); i++) {
                 REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(kNumInserts - i));
@@ -249,7 +249,7 @@ TEST_CASE("integration::cpp::test_udfs") {
                                                R"_(ORDER BY count ASC;)_");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
-            auto& chunk = cur->chunk_data();
+            auto& chunk = cur->chunks().front();
             REQUIRE(chunk.column_count() == 2);
             for (size_t i = 0; i < chunk.size(); i++) {
                 REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
@@ -266,7 +266,7 @@ TEST_CASE("integration::cpp::test_udfs") {
                                                R"_(ORDER BY count ASC;)_");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == kNumInserts);
-            auto& chunk = cur->chunk_data();
+            auto& chunk = cur->chunks().front();
             REQUIRE(chunk.column_count() == 2);
             for (size_t i = 0; i < chunk.size(); i++) {
                 REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
@@ -294,7 +294,7 @@ TEST_CASE("integration::cpp::test_udfs") {
             // Two sets of kNumInserts were inserted, half of each set is even,
             // so total = kNumInserts even rows.
             REQUIRE(cur->size() == kNumInserts);
-            auto& chunk = cur->chunk_data();
+            auto& chunk = cur->chunks().front();
             REQUIRE(chunk.column_count() == 1);
             for (size_t i = 0; i < cur->size(); i++) {
                 REQUIRE(chunk.data[0].data<int64_t>()[i] % 2 == 0);
@@ -317,8 +317,8 @@ TEST_CASE("integration::cpp::test_udfs") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == expected_result);
             for (size_t i = 0, mult = 0, mod = 1; i < expected_result; i += 2) {
-                REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(mult * 7 + mod));
-                REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i + 1] == static_cast<int64_t>(mult * 7 + mod));
+                REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(mult * 7 + mod));
+                REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i + 1] == static_cast<int64_t>(mult * 7 + mod));
                 if (mod % 7 == 2) {
                     mod = 0;
                     mult++;

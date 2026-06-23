@@ -2,6 +2,7 @@
 
 #include <core/result_wrapper.hpp>
 
+#include <string_view>
 #include <vector>
 
 #include <components/base/collection_full_name.hpp>
@@ -26,12 +27,16 @@ namespace components::cursor {
         explicit cursor_t(std::pmr::memory_resource* resource,
                           std::pmr::vector<components::types::complex_logical_type>&& types);
 
-        vector::data_chunk_t& chunk_data();
-        const vector::data_chunk_t& chunk_data() const;
+        // Raw access to the result batch. Row access that may span chunks must go
+        // through value()/row() — never index a single chunk by a global row id.
+        std::pmr::vector<vector::data_chunk_t>& chunks();
+        const std::pmr::vector<vector::data_chunk_t>& chunks() const;
         std::pmr::vector<components::types::complex_logical_type>& type_data();
         const std::pmr::vector<components::types::complex_logical_type>& type_data() const;
 
         std::size_t size() const;
+        std::size_t column_count() const;
+        std::size_t column_index(std::string_view key) const;
 
         bool has_next() const;
         void advance();
@@ -49,7 +54,7 @@ namespace components::cursor {
     private:
         // Result rows as a batch of ≤DEFAULT_VECTOR_CAPACITY chunks (never combined into
         // one oversized chunk). Always holds at least one (possibly empty) chunk so
-        // chunk_data() / column metadata have a valid front to return.
+        // chunks().front() / column metadata have a valid front to return.
         std::size_t size_{};
         index_t current_index_{start_index};
         std::pmr::vector<vector::data_chunk_t> chunks_;

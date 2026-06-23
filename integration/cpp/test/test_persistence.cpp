@@ -599,7 +599,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
-            REQUIRE(cur->chunk_data().column_count() == 3);
+            REQUIRE(cur->column_count() == 3);
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 100;", 1);
     }
@@ -618,7 +618,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
-            REQUIRE(cur->chunk_data().column_count() == 3);
+            REQUIRE(cur->column_count() == 3);
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 100;", 1);
 

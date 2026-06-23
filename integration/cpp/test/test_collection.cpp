@@ -244,7 +244,7 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -267,7 +267,7 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 10);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -298,7 +298,7 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 99);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 99);
         }
     }
     INFO("drop_collection") {

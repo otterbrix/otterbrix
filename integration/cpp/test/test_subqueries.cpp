@@ -113,7 +113,7 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
                                            "WHERE salary = (SELECT MAX(salary) FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Alice");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
     }
 
     INFO("scalar subquery in WHERE with greater-than") {
@@ -214,7 +214,7 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
             ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Engineering");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
     }
 
     INFO("NOT EXISTS correlated subquery") {
@@ -229,7 +229,7 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
             ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "HR");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "HR");
     }
 
     INFO("correlated subquery comparing to own-department average") {
@@ -267,7 +267,7 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
                                            "WHERE budget > ALL (SELECT salary FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Engineering");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
     }
 
     INFO("scalar subquery returning NULL (empty result)") {
@@ -309,8 +309,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
             "WHERE e.dept_id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).value<std::string_view>() == "Engineering");
-        REQUIRE(cur->chunk_data().value(1, 1).value<std::string_view>() == "Engineering");
+        REQUIRE(cur->value(1, 0).value<std::string_view>() == "Engineering");
+        REQUIRE(cur->value(1, 1).value<std::string_view>() == "Engineering");
     }
 
     INFO("aggregate correlated subquery in SELECT list") {
@@ -325,7 +325,7 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         for (size_t row = 0; row < 5; ++row) {
-            REQUIRE(cur->chunk_data().value(1, row).value<int64_t>() == 2);
+            REQUIRE(cur->value(1, row).value<int64_t>() == 2);
         }
     }
 
@@ -341,8 +341,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         // dept_max for Engineering = 90000 for both rows
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 90000);
-        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 90000);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 90000);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 90000);
     }
     */
 
@@ -600,7 +600,7 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
             ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Grace");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Grace");
     }
 
     INFO("4-level nested: top earner in each of the best departments") {
@@ -794,7 +794,7 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*) AS cnt FROM TestDatabase.Employees;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 8);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 8);
         }
     }
 
@@ -845,7 +845,7 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             // Only Alice and Bob remain (dept 1 = Engineering)
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 2);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
         }
     }
 }
@@ -877,7 +877,7 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
                                            "SELECT name FROM above_avg ORDER BY salary DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Alice");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
     }
 
     INFO("CTE joined with base table") {
@@ -897,7 +897,7 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         // Highest avg: Engineering (85000)
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Engineering");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
     }
 
     INFO("multiple CTEs chained") {
@@ -940,7 +940,7 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
                                            "WHERE dt.top_sal = (SELECT MAX(top_sal) FROM dept_tops);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Engineering");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
     }
 
     INFO("CTE with subquery in its own WHERE clause") {
@@ -962,7 +962,7 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         // All 5 departments represented, each with 2 employees
         REQUIRE(cur->size() == 5);
         for (size_t row = 0; row < 5; ++row) {
-            REQUIRE(cur->chunk_data().value(1, row).value<int64_t>() == 2);
+            REQUIRE(cur->value(1, row).value<int64_t>() == 2);
         }
     }
 }
@@ -991,7 +991,7 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         // UNION ALL keeps each branch's rows as its own chunk, so the 4 rows span two
-        // chunks — read through the cursor's chunk-spanning accessor, not chunk_data().
+        // chunks — read through the cursor's chunk-spanning accessor, not chunks().front().
         for (size_t row = 0; row < 4; ++row) {
             REQUIRE(cur->value(0, row).value<int64_t>() == 1);
         }
@@ -1031,7 +1031,7 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 
     INFO("UNION ALL three operands") {
@@ -1230,9 +1230,9 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
                                            "SELECT name FROM hierarchy ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "CEO");
-        REQUIRE(cur->chunk_data().value(0, 1).value<std::string_view>() == "VP Eng");
-        REQUIRE(cur->chunk_data().value(0, 4).value<std::string_view>() == "Designer");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "CEO");
+        REQUIRE(cur->value(0, 1).value<std::string_view>() == "VP Eng");
+        REQUIRE(cur->value(0, 4).value<std::string_view>() == "Designer");
     }
 
     INFO("subtree rooted at VP Eng") {
@@ -1249,8 +1249,8 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
                                            "SELECT name FROM subtree ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "VP Eng");
-        REQUIRE(cur->chunk_data().value(0, 1).value<std::string_view>() == "Engineer");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "VP Eng");
+        REQUIRE(cur->value(0, 1).value<std::string_view>() == "Engineer");
     }
 
     INFO("hierarchy with depth") {
@@ -1269,9 +1269,9 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
                                     "SELECT name, depth FROM hierarchy ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 0); // CEO
-        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 1); // VP Eng
-        REQUIRE(cur->chunk_data().value(1, 3).value<int64_t>() == 2); // Engineer
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 0); // CEO
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 1); // VP Eng
+        REQUIRE(cur->value(1, 3).value<int64_t>() == 2); // Engineer
     }
 
     INFO("filter by depth in outer query") {
@@ -1289,7 +1289,7 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
                                     "SELECT name FROM hierarchy WHERE depth = 2 ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Engineer");
-        REQUIRE(cur->chunk_data().value(0, 1).value<std::string_view>() == "Designer");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineer");
+        REQUIRE(cur->value(0, 1).value<std::string_view>() == "Designer");
     }
 }

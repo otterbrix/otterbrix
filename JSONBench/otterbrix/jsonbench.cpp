@@ -147,7 +147,7 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
         std::cout << "  ERROR: " << cur->get_error().what << "\n";
         return;
     }
-    auto& chunk = cur->chunk_data();
+    auto& chunk = cur->chunks().front();
     size_t ncols = chunk.column_count();
 
     // Header: use type aliases as column names

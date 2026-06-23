@@ -69,11 +69,10 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->size() == 26);
 
             for (size_t num = 0; num < 26; ++num) {
-                REQUIRE(cur->chunk_data().value(1, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2);
-                REQUIRE(cur->chunk_data().value(4, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2);
-                REQUIRE(cur->chunk_data().value(3, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2 * 10);
-                REQUIRE(cur->chunk_data().value(0, num).value<std::string_view>() ==
-                        "Name " + std::to_string((num + 25) * 2));
+                REQUIRE(cur->value(1, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2);
+                REQUIRE(cur->value(4, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2);
+                REQUIRE(cur->value(3, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2 * 10);
+                REQUIRE(cur->value(0, num).value<std::string_view>() == "Name " + std::to_string((num + 25) * 2));
             }
         }
     }
@@ -93,30 +92,28 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->size() == 101);
 
             for (size_t num = 0; num < 50; ++num) {
-                REQUIRE(cur->chunk_data().value(1, num).value<int64_t>() == static_cast<int64_t>(num));
-                REQUIRE(cur->chunk_data().value(4, num).is_null());
-                REQUIRE(cur->chunk_data().value(3, num).is_null());
-                REQUIRE(cur->chunk_data().value(0, num).value<std::string_view>() == "Name " + std::to_string(num));
+                REQUIRE(cur->value(1, num).value<int64_t>() == static_cast<int64_t>(num));
+                REQUIRE(cur->value(4, num).is_null());
+                REQUIRE(cur->value(3, num).is_null());
+                REQUIRE(cur->value(0, num).value<std::string_view>() == "Name " + std::to_string(num));
             }
             size_t row = 50;
             for (int num = 0; num < 50; num += 2) {
-                REQUIRE(cur->chunk_data().value(1, row).value<int64_t>() == num + 50);
-                REQUIRE(cur->chunk_data().value(4, row).value<int64_t>() == num + 50);
-                REQUIRE(cur->chunk_data().value(3, row).value<int64_t>() == (num + 50) * 10);
-                REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() ==
-                        "Name " + std::to_string(num + 50));
+                REQUIRE(cur->value(1, row).value<int64_t>() == num + 50);
+                REQUIRE(cur->value(4, row).value<int64_t>() == num + 50);
+                REQUIRE(cur->value(3, row).value<int64_t>() == (num + 50) * 10);
+                REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(num + 50));
                 ++row;
-                REQUIRE(cur->chunk_data().value(1, row).value<int64_t>() == num + 51);
-                REQUIRE(cur->chunk_data().value(4, row).is_null());
-                REQUIRE(cur->chunk_data().value(3, row).is_null());
-                REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() ==
-                        "Name " + std::to_string(num + 51));
+                REQUIRE(cur->value(1, row).value<int64_t>() == num + 51);
+                REQUIRE(cur->value(4, row).is_null());
+                REQUIRE(cur->value(3, row).is_null());
+                REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(num + 51));
                 ++row;
             }
-            REQUIRE(cur->chunk_data().value(1, 100).value<int64_t>() == 100);
-            REQUIRE(cur->chunk_data().value(4, 100).value<int64_t>() == 100);
-            REQUIRE(cur->chunk_data().value(3, 100).value<int64_t>() == 1000);
-            REQUIRE(cur->chunk_data().value(0, 100).value<std::string_view>() == "Name 100");
+            REQUIRE(cur->value(1, 100).value<int64_t>() == 100);
+            REQUIRE(cur->value(4, 100).value<int64_t>() == 100);
+            REQUIRE(cur->value(3, 100).value<int64_t>() == 1000);
+            REQUIRE(cur->value(0, 100).value<std::string_view>() == "Name 100");
         }
     }
 
@@ -135,18 +132,17 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->size() == 100);
 
             for (size_t num = 0; num < 26; ++num) {
-                REQUIRE(cur->chunk_data().value(1, num).value<int64_t>() == static_cast<int64_t>(num) * 2 + 50);
-                REQUIRE(cur->chunk_data().value(4, num).value<int64_t>() == static_cast<int64_t>(num) * 2 + 50);
-                REQUIRE(cur->chunk_data().value(3, num).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 50) * 10);
-                REQUIRE(cur->chunk_data().value(0, num).value<std::string_view>() ==
-                        "Name " + std::to_string(num * 2 + 50));
+                REQUIRE(cur->value(1, num).value<int64_t>() == static_cast<int64_t>(num) * 2 + 50);
+                REQUIRE(cur->value(4, num).value<int64_t>() == static_cast<int64_t>(num) * 2 + 50);
+                REQUIRE(cur->value(3, num).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 50) * 10);
+                REQUIRE(cur->value(0, num).value<std::string_view>() == "Name " + std::to_string(num * 2 + 50));
             }
             for (size_t num = 0; num < 74; ++num) {
                 size_t row = 26 + num;
-                REQUIRE(cur->chunk_data().value(1, row).is_null());
-                REQUIRE(cur->chunk_data().value(4, row).value<int64_t>() == static_cast<int64_t>(num) * 2 + 102);
-                REQUIRE(cur->chunk_data().value(3, row).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 102) * 10);
-                REQUIRE(cur->chunk_data().value(0, row).is_null());
+                REQUIRE(cur->value(1, row).is_null());
+                REQUIRE(cur->value(4, row).value<int64_t>() == static_cast<int64_t>(num) * 2 + 102);
+                REQUIRE(cur->value(3, row).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 102) * 10);
+                REQUIRE(cur->value(0, row).is_null());
             }
         }
     }
@@ -166,36 +162,34 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->size() == 175);
 
             for (size_t num = 0; num < 50; ++num) {
-                REQUIRE(cur->chunk_data().value(1, num).value<int64_t>() == static_cast<int64_t>(num));
-                REQUIRE(cur->chunk_data().value(4, num).is_null());
-                REQUIRE(cur->chunk_data().value(3, num).is_null());
-                REQUIRE(cur->chunk_data().value(0, num).value<std::string_view>() == "Name " + std::to_string(num));
+                REQUIRE(cur->value(1, num).value<int64_t>() == static_cast<int64_t>(num));
+                REQUIRE(cur->value(4, num).is_null());
+                REQUIRE(cur->value(3, num).is_null());
+                REQUIRE(cur->value(0, num).value<std::string_view>() == "Name " + std::to_string(num));
             }
             size_t row = 50;
             for (int num = 0; num < 50; num += 2) {
-                REQUIRE(cur->chunk_data().value(1, row).value<int64_t>() == num + 50);
-                REQUIRE(cur->chunk_data().value(4, row).value<int64_t>() == num + 50);
-                REQUIRE(cur->chunk_data().value(3, row).value<int64_t>() == (num + 50) * 10);
-                REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() ==
-                        "Name " + std::to_string(num + 50));
+                REQUIRE(cur->value(1, row).value<int64_t>() == num + 50);
+                REQUIRE(cur->value(4, row).value<int64_t>() == num + 50);
+                REQUIRE(cur->value(3, row).value<int64_t>() == (num + 50) * 10);
+                REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(num + 50));
                 ++row;
-                REQUIRE(cur->chunk_data().value(1, row).value<int64_t>() == num + 51);
-                REQUIRE(cur->chunk_data().value(4, row).is_null());
-                REQUIRE(cur->chunk_data().value(3, row).is_null());
-                REQUIRE(cur->chunk_data().value(0, row).value<std::string_view>() ==
-                        "Name " + std::to_string(num + 51));
+                REQUIRE(cur->value(1, row).value<int64_t>() == num + 51);
+                REQUIRE(cur->value(4, row).is_null());
+                REQUIRE(cur->value(3, row).is_null());
+                REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(num + 51));
                 ++row;
             }
-            REQUIRE(cur->chunk_data().value(1, 100).value<int64_t>() == 100);
-            REQUIRE(cur->chunk_data().value(4, 100).value<int64_t>() == 100);
-            REQUIRE(cur->chunk_data().value(3, 100).value<int64_t>() == 1000);
-            REQUIRE(cur->chunk_data().value(0, 100).value<std::string_view>() == "Name 100");
+            REQUIRE(cur->value(1, 100).value<int64_t>() == 100);
+            REQUIRE(cur->value(4, 100).value<int64_t>() == 100);
+            REQUIRE(cur->value(3, 100).value<int64_t>() == 1000);
+            REQUIRE(cur->value(0, 100).value<std::string_view>() == "Name 100");
             for (size_t num = 0; num < 74; ++num) {
                 row = 101 + num;
-                REQUIRE(cur->chunk_data().value(1, row).is_null());
-                REQUIRE(cur->chunk_data().value(4, row).value<int64_t>() == static_cast<int64_t>(num) * 2 + 102);
-                REQUIRE(cur->chunk_data().value(3, row).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 102) * 10);
-                REQUIRE(cur->chunk_data().value(0, row).is_null());
+                REQUIRE(cur->value(1, row).is_null());
+                REQUIRE(cur->value(4, row).value<int64_t>() == static_cast<int64_t>(num) * 2 + 102);
+                REQUIRE(cur->value(3, row).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 102) * 10);
+                REQUIRE(cur->value(0, row).is_null());
             }
         }
     }

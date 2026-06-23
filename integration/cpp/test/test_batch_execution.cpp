@@ -220,7 +220,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 25); // rows 26..50
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 26));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 26));
         }
     }
 
@@ -233,7 +233,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 20); // rows 31..50
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 31));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 31));
         }
     }
 
@@ -246,7 +246,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 20); // rows 31..50
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 31));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 31));
         }
     }
 
@@ -259,7 +259,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10); // rows 11..20
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 11));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 11));
         }
     }
 }
@@ -328,7 +328,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                                            R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == N);
-        auto& chunk = cur->chunk_data();
+        auto& chunk = cur->chunks().front();
         for (size_t i = 0; i < chunk.size(); i++) {
             auto val = static_cast<int64_t>(i + 1);
             REQUIRE(chunk.data[0].data<int64_t>()[i] == val);
@@ -345,7 +345,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                                            R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == N);
-        auto& chunk = cur->chunk_data();
+        auto& chunk = cur->chunks().front();
         for (size_t i = 0; i < chunk.size(); i++) {
             REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
             REQUIRE(chunk.data[1].data<int64_t>()[i] == 2);
@@ -361,7 +361,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                                            R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == N);
-        auto& chunk = cur->chunk_data();
+        auto& chunk = cur->chunks().front();
         for (size_t i = 0; i < chunk.size(); i++) {
             auto val = static_cast<double>(i + 1);
             REQUIRE(chunk.data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
@@ -379,7 +379,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                                            R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 30); // row 21..50
-        auto& chunk = cur->chunk_data();
+        auto& chunk = cur->chunks().front();
         for (size_t i = 0; i < chunk.size(); i++) {
             auto val = static_cast<int64_t>(i + 21);
             REQUIRE(chunk.data[0].data<int64_t>()[i] == val);
@@ -397,7 +397,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                                            R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 40); // rows 11..50
-        auto& chunk = cur->chunk_data();
+        auto& chunk = cur->chunks().front();
         for (size_t i = 0; i < chunk.size(); i++) {
             auto val = static_cast<int64_t>(i + 11);
             REQUIRE(chunk.data[0].data<int64_t>()[i] == val);
@@ -412,7 +412,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                                            R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 2550); // over all 100 rows: 2*(1+2+...+50) = 2550
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 2550); // over all 100 rows: 2*(1+2+...+50) = 2550
     }
 
     INFO("COUNT(*) without GROUP BY") {
@@ -422,7 +422,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                                            R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == N * 2); // same as COUNT(*)
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == N * 2); // same as COUNT(*)
     }
 
     INFO("GROUP BY with arithmetic in aggregate") {
@@ -434,7 +434,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                                            R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == N);
-        auto& chunk = cur->chunk_data();
+        auto& chunk = cur->chunks().front();
         for (size_t i = 0; i < chunk.size(); i++) {
             auto val = static_cast<int64_t>(i + 1);
             REQUIRE(chunk.data[0].data<int64_t>()[i] == val);
@@ -449,7 +449,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
                                            R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 2);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 2);
     }
 }
 
@@ -530,7 +530,7 @@ TEST_CASE("integration::cpp::test_batch_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 11));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 11));
         }
     }
 
@@ -546,7 +546,7 @@ TEST_CASE("integration::cpp::test_batch_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == JOIN_RIGHT_SIZE);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 16));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 16));
         }
     }
 
@@ -563,8 +563,8 @@ TEST_CASE("integration::cpp::test_batch_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == JOIN_RIGHT_SIZE);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i));
-            REQUIRE(core::is_equals(cur->chunk_data().data[1].data<double>()[i], expected_ss[i]));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i));
+            REQUIRE(core::is_equals(cur->chunks().front().data[1].data<double>()[i], expected_ss[i]));
         }
     }
 
@@ -586,7 +586,7 @@ TEST_CASE("integration::cpp::test_batch_join") {
 
         // each group produced exactly 4 rows
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == 4);
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == 4);
         }
 
         // Batch semantics: each group is aggregated independently — its chunks are folded
@@ -645,8 +645,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
                                            R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 1);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 1);
     }
 
     INFO("GROUP BY on single row") {
@@ -658,8 +658,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
                                            R"_(ORDER BY count ASC;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 1);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 1);
     }
 
     INFO("WHERE that filters everything") {
@@ -691,9 +691,9 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
             R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 1);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[0] == 1);
-        REQUIRE(cur->chunk_data().data[2].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[2].data<int64_t>()[0] == 1);
     }
 }
 
@@ -742,7 +742,7 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == row_count);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == row_count);
     }
 
     INFO("WHERE filter preserving all rows") {
@@ -768,7 +768,7 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         for (size_t i = 0; i < 5; ++i) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i));
         }
     }
 
@@ -778,7 +778,7 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         int64_t expected = static_cast<int64_t>(row_count) * (static_cast<int64_t>(row_count) - 1) / 2;
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == expected);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == expected);
     }
 
     INFO("ORDER BY without LIMIT emits sorted output across chunk boundaries") {
@@ -815,6 +815,6 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == row_count - expected_removed);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == row_count - expected_removed);
     }
 }

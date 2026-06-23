@@ -45,7 +45,7 @@ namespace {
 
     // Index of the column whose alias matches `name`, or column_count() if absent.
     uint64_t column_index(const cursor_t_ptr& cur, const std::string& name) {
-        const auto& chunk = cur->chunk_data();
+        const auto& chunk = cur->chunks().front();
         for (uint64_t col = 0; col < chunk.column_count(); ++col) {
             if (chunk.data[col].type().alias() == name) {
                 return col;
@@ -104,18 +104,18 @@ TEST_CASE("integration::cpp::params::bind_each_type") {
             const uint64_t d_col = column_index(cur, "d");
             const uint64_t s_col = column_index(cur, "s");
             const uint64_t b_col = column_index(cur, "b");
-            REQUIRE(i_col < cur->chunk_data().column_count());
-            REQUIRE(u_col < cur->chunk_data().column_count());
-            REQUIRE(d_col < cur->chunk_data().column_count());
-            REQUIRE(s_col < cur->chunk_data().column_count());
-            REQUIRE(b_col < cur->chunk_data().column_count());
+            REQUIRE(i_col < cur->column_count());
+            REQUIRE(u_col < cur->column_count());
+            REQUIRE(d_col < cur->column_count());
+            REQUIRE(s_col < cur->column_count());
+            REQUIRE(b_col < cur->column_count());
 
-            REQUIRE(cur->chunk_data().value(i_col, 0).value<int64_t>() == -42);
-            REQUIRE(cur->chunk_data().value(u_col, 0).value<uint64_t>() == 7);
-            REQUIRE(cur->chunk_data().value(d_col, 0).value<double>() == Approx(3.5));
-            const auto s_cell = cur->chunk_data().value(s_col, 0);
+            REQUIRE(cur->value(i_col, 0).value<int64_t>() == -42);
+            REQUIRE(cur->value(u_col, 0).value<uint64_t>() == 7);
+            REQUIRE(cur->value(d_col, 0).value<double>() == Approx(3.5));
+            const auto s_cell = cur->value(s_col, 0);
             REQUIRE(s_cell.value<std::string_view>() == "hello");
-            REQUIRE(cur->chunk_data().value(b_col, 0).value<bool>() == true);
+            REQUIRE(cur->value(b_col, 0).value<bool>() == true);
         }
     }
 }
@@ -151,8 +151,8 @@ TEST_CASE("integration::cpp::params::uint64_max") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             const uint64_t v_col = column_index(cur, "v");
-            REQUIRE(v_col < cur->chunk_data().column_count());
-            REQUIRE(cur->chunk_data().value(v_col, 0).value<uint64_t>() == std::numeric_limits<uint64_t>::max());
+            REQUIRE(v_col < cur->column_count());
+            REQUIRE(cur->value(v_col, 0).value<uint64_t>() == std::numeric_limits<uint64_t>::max());
         }
     }
 }
@@ -187,10 +187,10 @@ TEST_CASE("integration::cpp::params::placeholders") {
             REQUIRE(cur->size() == 1);
             const uint64_t a_col = column_index(cur, "a");
             const uint64_t b_col = column_index(cur, "b");
-            REQUIRE(a_col < cur->chunk_data().column_count());
-            REQUIRE(b_col < cur->chunk_data().column_count());
-            REQUIRE(cur->chunk_data().value(a_col, 0).value<int64_t>() == 99);
-            REQUIRE(cur->chunk_data().value(b_col, 0).value<int64_t>() == 99);
+            REQUIRE(a_col < cur->column_count());
+            REQUIRE(b_col < cur->column_count());
+            REQUIRE(cur->value(a_col, 0).value<int64_t>() == 99);
+            REQUIRE(cur->value(b_col, 0).value<int64_t>() == 99);
         }
     }
 
@@ -212,8 +212,8 @@ TEST_CASE("integration::cpp::params::placeholders") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             const uint64_t name_col = column_index(cur, "name");
-            REQUIRE(name_col < cur->chunk_data().column_count());
-            const auto name_cell = cur->chunk_data().value(name_col, 0);
+            REQUIRE(name_col < cur->column_count());
+            const auto name_cell = cur->value(name_col, 0);
             REQUIRE(name_cell.value<std::string_view>() == "row7");
         }
     }
@@ -261,8 +261,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         const uint64_t name_col = column_index(cur, "name");
-        REQUIRE(name_col < cur->chunk_data().column_count());
-        const auto name_cell = cur->chunk_data().value(name_col, 0);
+        REQUIRE(name_col < cur->column_count());
+        const auto name_cell = cur->value(name_col, 0);
         REQUIRE(name_cell.value<std::string_view>() == "c");
     }
 
@@ -292,8 +292,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             const uint64_t count_col = column_index(cur, "count");
-            REQUIRE(count_col < cur->chunk_data().column_count());
-            REQUIRE(cur->chunk_data().value(count_col, 0).value<int64_t>() == 777);
+            REQUIRE(count_col < cur->column_count());
+            REQUIRE(cur->value(count_col, 0).value<int64_t>() == 777);
         }
     }
 
@@ -383,8 +383,8 @@ TEST_CASE("integration::cpp::params::injection_quote_in_string_stored_verbatim")
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         const uint64_t name_col = column_index(cur, "name");
-        REQUIRE(name_col < cur->chunk_data().column_count());
-        const auto name_cell = cur->chunk_data().value(name_col, 0);
+        REQUIRE(name_col < cur->column_count());
+        const auto name_cell = cur->value(name_col, 0);
         REQUIRE(name_cell.value<std::string_view>() == nasty);
     }
 }
@@ -465,8 +465,8 @@ TEST_CASE("integration::cpp::params::injection_semicolon_does_not_chain") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         const uint64_t name_col = column_index(cur, "name");
-        REQUIRE(name_col < cur->chunk_data().column_count());
-        const auto name_cell = cur->chunk_data().value(name_col, 0);
+        REQUIRE(name_col < cur->column_count());
+        const auto name_cell = cur->value(name_col, 0);
         REQUIRE(name_cell.value<std::string_view>() == payload);
     }
 }
@@ -499,8 +499,8 @@ TEST_CASE("integration::cpp::params::injection_int_param_type_safety") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         const uint64_t name_col = column_index(cur, "name");
-        REQUIRE(name_col < cur->chunk_data().column_count());
-        const auto name_cell = cur->chunk_data().value(name_col, 0);
+        REQUIRE(name_col < cur->column_count());
+        const auto name_cell = cur->value(name_col, 0);
         REQUIRE(name_cell.value<std::string_view>() == "a");
     }
 }

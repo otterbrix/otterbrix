@@ -150,7 +150,7 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
     // group has COUNT == 1 and AVG(price) == that row's own price. ORDER BY
     // product_count DESC leaves the order between equal counts unspecified —
     // assert per key, not per row position.
-    auto& chunk = cursor->chunk_data();
+    auto& chunk = cursor->chunks().front();
     REQUIRE(chunk.column_count() == 3); // campaign_name, product_count, avg_product_price
     bool seen_campaign[2] = {false, false};
     for (uint64_t row = 0; row < cursor->size(); ++row) {

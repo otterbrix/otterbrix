@@ -50,9 +50,9 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 2);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[2] == 3);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 2);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[2] == 3);
     }
 
     INFO("SELECT two columns") {
@@ -60,8 +60,8 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
         auto cur = dispatcher->execute_sql(s, "SELECT a, c FROM db.wide ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 1);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[0] == 100);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 100);
     }
 
     INFO("SELECT middle column") {
@@ -69,9 +69,9 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
         auto cur = dispatcher->execute_sql(s, "SELECT c FROM db.wide ORDER BY c ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 100);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 200);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[2] == 300);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 100);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 200);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[2] == 300);
     }
 
     INFO("SELECT * still works") {
@@ -79,7 +79,7 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
         auto cur = dispatcher->execute_sql(s, "SELECT * FROM db.wide ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().column_count() == 5);
+        REQUIRE(cur->column_count() == 5);
     }
 }
 
@@ -114,7 +114,7 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE a > 1 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 2);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 2);
     }
 
     INFO("WHERE references NON-SELECT column — must still read it") {
@@ -122,8 +122,8 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE e > 20000 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 3);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 4);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 3);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 4);
     }
 
     INFO("WHERE references multiple NON-SELECT columns with AND") {
@@ -131,8 +131,8 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE b > 15 AND d < 4000 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 2);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 3);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 2);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 3);
     }
 
     INFO("WHERE references columns via OR") {
@@ -140,8 +140,8 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE b = 10 OR d = 4000 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 4);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 4);
     }
 }
 
@@ -180,8 +180,8 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         // kind A: 10+20+50 = 80, kind B: 30+40 = 70
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[0] == 80);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[1] == 70);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 80);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[1] == 70);
     }
 
     INFO("GROUP BY with COUNT(*) only — no columns needed beyond key") {
@@ -190,8 +190,8 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
             dispatcher->execute_sql(s, "SELECT kind, COUNT(*) AS n FROM db.events GROUP BY kind ORDER BY kind ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().data[1].data<uint64_t>()[0] == 3);
-        REQUIRE(cur->chunk_data().data[1].data<uint64_t>()[1] == 2);
+        REQUIRE(cur->chunks().front().data[1].data<uint64_t>()[0] == 3);
+        REQUIRE(cur->chunks().front().data[1].data<uint64_t>()[1] == 2);
     }
 
     INFO("GROUP BY + WHERE on non-select column") {
@@ -202,8 +202,8 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         // kind A (amount>=20): rows 2, 5 = 2. kind B: rows 3, 4 = 2
-        REQUIRE(cur->chunk_data().data[1].data<uint64_t>()[0] == 2);
-        REQUIRE(cur->chunk_data().data[1].data<uint64_t>()[1] == 2);
+        REQUIRE(cur->chunks().front().data[1].data<uint64_t>()[0] == 2);
+        REQUIRE(cur->chunks().front().data[1].data<uint64_t>()[1] == 2);
     }
 }
 
@@ -255,9 +255,9 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         // Expected: (Alice,100),(Alice,200),(Bob,300),(Carol,400),(Alice,500)
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[0] == 100);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[1] == 200);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[4] == 500);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 100);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[1] == 200);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[4] == 500);
     }
 
     INFO("inner JOIN + GROUP BY") {
@@ -269,9 +269,9 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // Alice: 100+200+500 = 800, Bob: 300, Carol: 400
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[0] == 800);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[1] == 300);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[2] == 400);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 800);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[1] == 300);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[2] == 400);
     }
 
     INFO("inner JOIN + GROUP BY with WHERE on non-select column (numeric)") {
@@ -287,7 +287,7 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
         // Orders with amount>150: 2(Alice,200), 3(Bob,300), 4(Carol,400), 5(Alice,500)
         // Grouped by name: Alice=2, Bob=1, Carol=1 → 3 groups
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().data[1].data<uint64_t>()[0] == 2);
+        REQUIRE(cur->chunks().front().data[1].data<uint64_t>()[0] == 2);
     }
 
     INFO("inner JOIN + GROUP BY on joined-side column") {
@@ -301,7 +301,7 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
         // Sum of all group counts must equal total orders (5).
         uint64_t total = 0;
         for (size_t i = 0; i < cur->size(); ++i) {
-            total += cur->chunk_data().data[1].data<uint64_t>()[i];
+            total += cur->chunks().front().data[1].data<uint64_t>()[i];
         }
         REQUIRE(total == 5);
     }
@@ -362,7 +362,7 @@ TEST_CASE("integration::cpp::column_projection::three_table_join") {
         // 3 cities → 3 groups, one customer per city.
         REQUIRE(cur->size() == 3);
         for (size_t i = 0; i < cur->size(); ++i) {
-            REQUIRE(cur->chunk_data().data[1].data<uint64_t>()[i] == 1);
+            REQUIRE(cur->chunks().front().data[1].data<uint64_t>()[i] == 1);
         }
     }
 }
@@ -397,8 +397,8 @@ TEST_CASE("integration::cpp::column_projection::subquery") {
                                            "ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 2);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 3);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 2);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 3);
     }
 }
 
@@ -464,9 +464,9 @@ TEST_CASE("integration::cpp::column_projection::order_by_non_select") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // Sorted by b: (2,10),(3,20),(1,30) → a = 2, 3, 1
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 2);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 3);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[2] == 1);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 2);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 3);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[2] == 1);
     }
 }
 
@@ -498,7 +498,7 @@ TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection"
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.t ORDER BY a ASC LIMIT 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 2);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 1);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 2);
     }
 }

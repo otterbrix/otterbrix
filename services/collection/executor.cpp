@@ -1,6 +1,7 @@
 #include "executor.hpp"
 
 #include <array>
+#include <atomic>
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/context/execution_context.hpp>
@@ -50,6 +51,19 @@
 using namespace components::cursor;
 
 namespace services::collection::executor {
+
+    // Test-observable streaming-path counter (see executor.hpp). Bumped once per
+    // execute_pipeline() entry; relaxed because it is an instrumentation read, not a
+    // happens-before edge. DEV_MODE-only: production binaries carry nothing (the
+    // integration test target compiles with -DDEV_MODE).
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_streaming_pipeline_runs{0};
+    } // namespace
+
+    uint64_t streaming_pipeline_runs() noexcept { return g_streaming_pipeline_runs.load(std::memory_order_relaxed); }
+    void reset_streaming_pipeline_runs() noexcept { g_streaming_pipeline_runs.store(0, std::memory_order_relaxed); }
+#endif
 
     // ---- behavior/dispatch_traits sync check ----
     // Ensures behavior() handles every method registered in dispatch_traits
@@ -1790,6 +1804,9 @@ namespace services::collection::executor {
     executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
     executor_t::execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
         namespace ops = components::operators;
+#ifdef DEV_MODE
+        g_streaming_pipeline_runs.fetch_add(1, std::memory_order_relaxed);
+#endif
         // Linearize the left-chain into pipeline order: chain[0] = source ... chain.back() = root.
         std::pmr::vector<ops::operator_t*> chain{resource()};
         for (ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
@@ -1894,6 +1911,21 @@ namespace services::collection::executor {
                 }
             }
         }
+
+        // DML sink commit: the pump fed this sink's input via push(); now drive its
+        // async WAL->storage->index->swap-info commit. push()/finalize() are
+        // synchronous, so the commit runs HERE in the executor's coroutine (which owns
+        // the cross-actor await), exactly as the legacy await loop does for the
+        // materialize path. await_async_and_resume sets the operator's output_
+        // (RETURNING / affected-row count) and marks it executed.
+        ops::operator_t* root_op = chain.back();
+        if (root_op->needs_async_finalize()) {
+            co_await root_op->await_async_and_resume(ctx);
+            if (root_op->has_error()) {
+                co_return core::result_wrapper_t<ops::chunks_vector_t>(root_op->get_error());
+            }
+        }
+
         co_return output;
     }
 
@@ -1952,9 +1984,11 @@ namespace services::collection::executor {
                     cursor = make_cursor(resource(), piped.error());
                     break;
                 }
-                plan->set_output(
-                    components::operators::make_operator_data(resource(), std::move(piped.value())));
-                plan->mark_executed();
+                if (!plan->is_executed()) { // a DML sink already set output_ + executed in execute_pipeline
+                    plan->set_output(
+                        components::operators::make_operator_data(resource(), std::move(piped.value())));
+                    plan->mark_executed();
+                }
             }
 
             // Execute the plan tree (scan operators send I/O requests and enter waiting state)

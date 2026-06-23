@@ -220,6 +220,12 @@ namespace components::operators {
         // into `out`. Streaming operators have nothing to finalize (default no-op).
         [[nodiscard]] virtual core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out);
 
+        // A SINK whose finalize is an asynchronous cross-actor commit (DML: WAL ->
+        // storage -> index -> swap-info). push()/finalize() stay synchronous; the
+        // executor drives this operator's await_async_and_resume after the pump (it
+        // owns the cross-actor await, so it is lost-wakeup-safe). Default false.
+        [[nodiscard]] virtual bool needs_async_finalize() const noexcept { return false; }
+
         bool is_executed() const;
         bool is_wait_sync_disk() const;
         bool is_root() const noexcept;

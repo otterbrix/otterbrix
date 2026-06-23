@@ -2,7 +2,6 @@
 #include "predicates/predicate.hpp"
 #include <components/vector/vector_operations.hpp>
 
-#include <algorithm>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -38,6 +37,119 @@ namespace components::operators {
             table_oid_ = metadata.table_oid;
         }
         resolved_metadata_ = std::move(metadata);
+    }
+
+    void operator_delete::ensure_simple_init_() {
+        if (simple_init_done_) {
+            return;
+        }
+        modified_ = operators::make_operator_write_data(resource_);
+        simple_init_done_ = true;
+    }
+
+    core::error_t operator_delete::consume_batch_(pipeline::context_t* pipeline_context,
+                                                  const vector::data_chunk_t& chunk) {
+        using components::vector::data_chunk_t;
+        ensure_simple_init_();
+        if (chunk.size() == 0) {
+            return core::error_t::no_error();
+        }
+        const bool collect_returning = !returning_.empty();
+        auto types = chunk.types();
+
+        // Match each row. expression_ is null for the simple predicate-scan DELETE
+        // (the scan already pushed the WHERE), so create_all_true_predicate matches
+        // every scan row; a non-null expression_ (legacy callers) is honored too.
+        auto predicate = expression_ ? predicates::create_predicate(resource_,
+                                                                    pipeline_context->function_registry,
+                                                                    expression_,
+                                                                    types,
+                                                                    types,
+                                                                    &pipeline_context->parameters,
+                                                                    pipeline_context->session_tz)
+                                     : predicates::create_all_true_predicate(resource_);
+
+        // Matched ABSOLUTE row-ids of THIS batch (kept separate so the index mirror
+        // pairs each staged old-row with its own id, regardless of batch order).
+        vector::vector_t batch_ids(resource_, types::logical_type::BIGINT, chunk.size());
+        // Indexing of matched rows into `chunk`, for the gathered old-row / RETURNING copies.
+        vector::indexing_vector_t matched_indexing(resource_);
+        matched_indexing.reset(chunk.size());
+
+        size_t index = 0;
+        for (size_t i = 0; i < chunk.size(); i++) {
+            auto check_result = predicate->check(chunk, i);
+            if (check_result.has_error()) {
+                return check_result.error();
+            }
+            if (!check_result.value()) {
+                continue;
+            }
+            int64_t abs_id;
+            if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
+                abs_id = static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
+            } else {
+                abs_id = chunk.row_ids.data<int64_t>()[i];
+            }
+            batch_ids.data<int64_t>()[index] = abs_id;
+            matched_indexing.set_index(index, i);
+            index++;
+        }
+        if (index == 0) {
+            return core::error_t::no_error();
+        }
+
+        for (size_t i = 0; i < index; i++) {
+            modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
+        }
+        for (const auto& type : types) {
+            modified_->updated_types_map()[{std::pmr::string(type.alias(), resource_), type}] += index;
+        }
+
+        // Stage the matched OLD scan rows + their absolute ids for the index mirror
+        // (bounded: only matched rows). The merged staged chunk row k pairs with
+        // index_old_row_ids_[k], so manager_index_t::delete_rows reads them aligned.
+        {
+            data_chunk_t old_matched(resource_, types, index);
+            chunk.copy(old_matched, matched_indexing, index);
+            old_matched.set_cardinality(index);
+            index_old_chunks_.emplace_back(std::move(old_matched));
+            for (size_t i = 0; i < index; i++) {
+                index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
+            }
+        }
+
+        // Stage matched RETURNING rows: gather the matched subset, then project the
+        // requested columns straight into capacity-bounded chunks.
+        if (collect_returning) {
+            data_chunk_t affected(resource_, types, index);
+            chunk.copy(affected, matched_indexing, index);
+            affected.set_cardinality(index);
+            auto batches = split_chunk_into_batches(resource_, std::move(affected));
+            for (auto& batch : batches) {
+                if (batch.size() == 0) {
+                    continue;
+                }
+                auto proj = evaluate_projection(resource_,
+                                                returning_,
+                                                &batch,
+                                                pipeline_context->parameters,
+                                                pipeline_context->session_tz);
+                if (proj.has_error()) {
+                    return proj.error();
+                }
+                returning_staged_.emplace_back(std::move(proj.value()));
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t
+    operator_delete::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        // STREAMING DML SINK: fold one scan batch into the matched-id / index-old /
+        // RETURNING staging. Emits nothing (out stays empty); await_async_and_resume
+        // drains the staged state into the single WAL->storage->index commit.
+        return consume_batch_(ctx, input);
     }
 
     void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
@@ -115,54 +227,29 @@ namespace components::operators {
                     index;
             }
         } else if (left_ && left_->output()) {
+            // SIMPLE predicate-scan DELETE (no USING): the materialized entry point.
+            // Stream each scan chunk through the SAME consume_batch_ core push()
+            // uses (R6: one implementation, two entry points), so matching, modified_
+            // accumulation, index-old staging and RETURNING staging are identical.
             output_ = left_->output(); // pass-through for downstream fk_cascade operators
-            modified_ = operators::make_operator_write_data(left_->output()->resource());
-            auto& chunk = left_->output()->data_chunk();
-            if (collect_returning) {
-                returning_source = &chunk;
-                returning_indexing.reset(chunk.size());
-            }
-            auto types = chunk.types();
-
-            vector::vector_t ids(left_->output()->resource(), types::logical_type::BIGINT, chunk.size());
-            auto predicate = expression_ ? predicates::create_predicate(left_->output()->resource(),
-                                                                        pipeline_context->function_registry,
-                                                                        expression_,
-                                                                        types,
-                                                                        types,
-                                                                        &pipeline_context->parameters,
-                                                                        pipeline_context->session_tz)
-                                         : predicates::create_all_true_predicate(left_->output()->resource());
-
-            size_t index = 0;
-            for (size_t i = 0; i < chunk.size(); i++) {
-                auto check_result = predicate->check(chunk, i);
-                if (!check_result.has_error() && check_result.value()) {
-                    if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                        ids.data<int64_t>()[index++] = static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
-                    } else {
-                        ids.data<int64_t>()[index++] = chunk.row_ids.data<int64_t>()[i];
-                    }
-                    if (collect_returning) {
-                        returning_indexing.set_index(returning_count++, i);
-                    }
+            for (const auto& chunk : left_->output()->chunks()) {
+                auto err = consume_batch_(pipeline_context, chunk);
+                if (err.contains_error()) {
+                    set_error(err);
+                    return;
                 }
             }
-            ids.resize(chunk.size(), index);
-            for (size_t i = 0; i < index; i++) {
-                size_t id = static_cast<size_t>(ids.data<int64_t>()[i]);
-                modified_->append(id);
-            }
-            for (const auto& type : types) {
-                modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=
-                    index;
+            // Drain staged RETURNING into output_ (the streaming entry point does
+            // the same in await_async_and_resume's tail). Skip when this is a
+            // fk_cascade pass-through (no RETURNING) so output_ keeps the scan rows.
+            if (collect_returning) {
+                set_output(make_operator_data(resource_, std::move(returning_staged_)));
             }
         }
 
-        // RETURNING: gather the matched rows from the scan chunk in one
-        // vectorized copy, then project the requested columns straight into
-        // output_ (split to honor the vector capacity bound). Done here, before
-        // the storage delete, while the scan data is still in memory.
+        // RETURNING gather for the USING-join path only (the simple path staged its
+        // RETURNING via consume_batch_ above). Gather the matched left + right rows
+        // in lockstep and project them, splitting to honor the vector capacity bound.
         if (collect_returning && returning_source != nullptr) {
             chunks_vector_t projected(resource_);
             if (returning_count > 0) {
@@ -305,9 +392,25 @@ namespace components::operators {
                                          static_cast<uint64_t>(modified_size));
         co_await std::move(df);
 
-        // 4. Mirror to index (uses scan output for old data).
+        // 4. Mirror to index (old data). The SIMPLE path (consume_batch_, whether it
+        //    ran via push() OR on_execute_impl) staged the matched OLD scan rows +
+        //    their absolute ids into index_old_chunks_/index_old_row_ids_, so the
+        //    mirror works even when streaming leaves left_->output() empty. The
+        //    USING-join path has no staging and reads left_->output() as before.
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            if (auto scan_out = left_ ? left_->output() : nullptr) {
+            if (!index_old_chunks_.empty()) {
+                auto old_data = make_operator_data(resource_, std::move(index_old_chunks_));
+                auto& merged = old_data->data_chunk();
+                auto idx_data = std::make_unique<data_chunk_t>(resource_, merged.types(), merged.size());
+                merged.copy(*idx_data, 0);
+                auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
+                                                   &services::index::manager_index_t::delete_rows,
+                                                   exec_ctx,
+                                                   table_oid_,
+                                                   std::move(idx_data),
+                                                   std::move(index_old_row_ids_));
+                co_await std::move(ixf);
+            } else if (auto scan_out = left_ ? left_->output() : nullptr) {
                 auto& sc = scan_out->data_chunk();
                 auto idx_data = std::make_unique<data_chunk_t>(resource_, sc.types(), sc.size());
                 sc.copy(*idx_data, 0);
@@ -330,10 +433,17 @@ namespace components::operators {
         ctx->dml_delete_txn_id = ctx->txn.transaction_id;
         ctx->dml_table_oid = table_oid_;
 
-        // 6. Build result chunk. With RETURNING, output_ already holds the
-        // projected deleted rows (set by on_execute_impl); otherwise emit a
-        // typed chunk whose cardinality carries the affected-row count.
-        if (returning_.empty()) {
+        // 6. Build result chunk. With RETURNING: the materialized simple path and
+        // the USING path drained their projected rows into output_ in
+        // on_execute_impl; the STREAMING path did not run on_execute_impl, so drain
+        // the staged RETURNING here (returning_staged_ is non-empty only then).
+        // Without RETURNING, emit a typed chunk whose cardinality carries the
+        // affected-row count.
+        if (!returning_.empty()) {
+            if (!returning_staged_.empty()) {
+                set_output(make_operator_data(resource_, std::move(returning_staged_)));
+            }
+        } else {
             auto [_t, tf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_types,
                                              ctx->session,

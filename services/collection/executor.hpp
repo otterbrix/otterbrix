@@ -24,6 +24,18 @@
 
 namespace services::collection::executor {
 
+    // Test-observable streaming-path counter. execute_pipeline() bumps it once per
+    // entry, so a test can assert a statement actually routed through the push-based
+    // streaming path (vs the legacy materialize path) rather than only that its
+    // result is correct. Process-global + relaxed: a coarse instrumentation hook,
+    // not a synchronization primitive. Not on any hot path (one bump per sub-plan).
+    // DEV_MODE-only: the integration test target compiles with -DDEV_MODE; production
+    // binaries carry neither the counter nor these accessors.
+#ifdef DEV_MODE
+    uint64_t streaming_pipeline_runs() noexcept;
+    void reset_streaming_pipeline_runs() noexcept;
+#endif
+
     // One range per (table, DML fragment), accumulated across sub-plans.
     // Must accumulate, not overwrite: FK cascade DELETE on >=2 tables emits a
     // range per child table, and a single last-wins field would silently drop

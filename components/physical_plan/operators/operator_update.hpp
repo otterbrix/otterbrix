@@ -24,6 +24,22 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
+        // STREAMING DML (STEP 3b). The SIMPLE predicate-scan UPDATE (no FROM join)
+        // is a SINK on its scan input: push() folds each scan batch via
+        // consume_batch_ — matching, applying the SET expressions into out_chunks
+        // accumulated in output_, accumulating modified_/no_modified_, and staging
+        // the matched OLD scan rows (for the index mirror, since left_->output() is
+        // empty when streaming). The UPDATE...FROM (right_) form stays on the legacy
+        // on_execute path (role()==none). needs_async_finalize drives the async
+        // commit after the pump.
+        [[nodiscard]] pipeline_role role() const noexcept override {
+            return (right_ == nullptr) ? pipeline_role::sink : pipeline_role::none;
+        }
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
+        [[nodiscard]] core::error_t
+        push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
+
         // Self-contained DML side-effects. Performs storage_update +
         // WAL physical_update + index::update_rows, populates ctx->dml_*
         // swap-info, then mark_executed.
@@ -38,6 +54,17 @@ namespace components::operators {
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
+        // Shared SIMPLE-path core (R6: one implementation, two entry points).
+        // Matches expr_ (all-true when null — the scan already filtered) over ONE
+        // scan chunk; builds the updated out_chunk (matched rows, SET applied),
+        // appends it to output_, accumulates modified_/no_modified_, and stages the
+        // matched OLD scan rows for the index mirror. push() calls it per batch;
+        // on_execute_impl's simple path loops left_->output()->chunks() through it.
+        core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
+        // Lazily create modified_/no_modified_/output_ accumulator + staging so
+        // push() and on_execute_impl share the same per-operator init.
+        void ensure_simple_init_();
+
         components::catalog::oid_t table_oid_;
         std::pmr::vector<expressions::update_expr_ptr> updates_;
         expressions::expression_ptr expr_;
@@ -47,6 +74,12 @@ namespace components::operators {
         // UPDATE ... FROM RETURNING: the matched FROM rows, gathered in lockstep
         // with the updated rows so a joined RETURNING column reads the right chunk.
         chunks_vector_t returning_from_chunks_;
+        // SIMPLE-path index-mirror staging (filled by consume_batch_): the matched
+        // OLD scan rows, aligned row-for-row with the NEW updated rows accumulated
+        // in output_, so update_rows gets old/new/row_id triples without
+        // left_->output() (empty when streaming).
+        chunks_vector_t index_old_chunks_{resource_};
+        bool simple_init_done_{false};
     };
 
 } // namespace components::operators

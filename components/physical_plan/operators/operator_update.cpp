@@ -64,6 +64,97 @@ namespace components::operators {
         }
     } // anonymous namespace
 
+    void operator_update::ensure_simple_init_() {
+        if (simple_init_done_) {
+            return;
+        }
+        modified_ = operators::make_operator_write_data(resource_);
+        no_modified_ = operators::make_operator_write_data(resource_);
+        // Accumulator for the NEW updated rows; consume_batch_ appends one out_chunk
+        // per matched batch. await_async_and_resume reads output_->data_chunk().
+        output_ = operators::make_operator_data(resource_, chunks_vector_t{resource_});
+        simple_init_done_ = true;
+    }
+
+    core::error_t operator_update::consume_batch_(pipeline::context_t* pipeline_context,
+                                                  const vector::data_chunk_t& chunk) {
+        using components::vector::data_chunk_t;
+        ensure_simple_init_();
+        if (chunk.size() == 0) {
+            return core::error_t::no_error();
+        }
+        auto* resource = resource_;
+        auto types = chunk.types();
+
+        // expr_ is null for the simple predicate-scan UPDATE (the scan pushed the
+        // WHERE), so create_all_true_predicate matches every scan row; a non-null
+        // expr_ is honored for completeness.
+        auto predicate = expr_ ? predicates::create_predicate(resource,
+                                                              pipeline_context->function_registry,
+                                                              expr_,
+                                                              types,
+                                                              types,
+                                                              &pipeline_context->parameters,
+                                                              pipeline_context->session_tz)
+                               : predicates::create_all_true_predicate(resource);
+
+        data_chunk_t out_chunk(resource, types, chunk.size());
+        size_t index = 0;
+        for (size_t i = 0; i < chunk.size(); ++i) {
+            auto res = predicate->check(chunk, i);
+            if (res.has_error()) {
+                return res.error();
+            }
+            if (!res.value()) {
+                continue;
+            }
+            if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
+                out_chunk.row_ids.data<int64_t>()[index] =
+                    static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
+            } else {
+                out_chunk.row_ids.data<int64_t>()[index] = chunk.row_ids.data<int64_t>()[i];
+            }
+            for (size_t k = 0; k < chunk.column_count(); ++k) {
+                vector::vector_ops::copy(chunk.data[k], out_chunk.data[k], i + 1, i, index);
+            }
+            vector::validate_chunk_capacity(out_chunk, ++index);
+        }
+        out_chunk.set_cardinality(index);
+        if (index == 0) {
+            return core::error_t::no_error();
+        }
+
+        // Capture the matched OLD rows BEFORE apply_updates mutates out_chunk in
+        // place — these are the pre-update rows for the index mirror, aligned
+        // row-for-row (and by row_id) with the NEW rows appended to output_.
+        // out_chunk.copy() copies both the columns and row_ids for out_chunk.size()
+        // (== index) rows and sets old_chunk's cardinality.
+        data_chunk_t old_chunk(resource, types, index);
+        out_chunk.copy(old_chunk, 0);
+        index_old_chunks_.emplace_back(std::move(old_chunk));
+
+        apply_updates(resource,
+                      updates_,
+                      out_chunk,
+                      out_chunk,
+                      index,
+                      pipeline_context->parameters,
+                      pipeline_context->session_tz,
+                      modified_,
+                      no_modified_);
+        output_->append_chunk(std::move(out_chunk));
+        return core::error_t::no_error();
+    }
+
+    core::error_t
+    operator_update::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        // STREAMING DML SINK: fold one scan batch into the updated-rows accumulator
+        // (output_), modified_/no_modified_, and the index-old staging. Emits
+        // nothing; await_async_and_resume drains the staged state into the single
+        // WAL->storage->index commit.
+        return consume_batch_(ctx, input);
+    }
+
     void operator_update::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output() && right_ && right_->output()) {
             auto* resource = left_->output()->resource();
@@ -185,6 +276,11 @@ namespace components::operators {
                 }
             }
         } else if (left_ && left_->output()) {
+            // SIMPLE predicate-scan UPDATE (no FROM): the materialized entry point.
+            // Stream each scan chunk through the SAME consume_batch_ core push()
+            // uses (R6: one implementation, two entry points), so matching, SET
+            // application, modified_/no_modified_ accumulation and index-old staging
+            // are identical.
             auto* resource = left_->output()->resource();
             const auto& in_chunks = left_->output()->chunks();
             std::pmr::vector<types::complex_logical_type> types(resource);
@@ -197,65 +293,17 @@ namespace components::operators {
                     output_ = operators::make_operator_data(resource, types);
                 }
             } else {
-                modified_ = operators::make_operator_write_data(resource);
-                no_modified_ = operators::make_operator_write_data(resource);
-
-                auto predicate = expr_ ? predicates::create_predicate(resource,
-                                                                      pipeline_context->function_registry,
-                                                                      expr_,
-                                                                      types,
-                                                                      types,
-                                                                      &pipeline_context->parameters,
-                                                                      pipeline_context->session_tz)
-                                       : predicates::create_all_true_predicate(resource);
-
-                chunks_vector_t out_chunks(resource);
-                out_chunks.reserve(in_chunks.size());
-
-                for (auto& chunk : in_chunks) {
-                    if (chunk.size() == 0) {
-                        continue;
-                    }
-                    vector::data_chunk_t out_chunk(resource, types, chunk.size());
-                    size_t index = 0;
-                    for (size_t i = 0; i < chunk.size(); ++i) {
-                        auto res = predicate->check(chunk, i);
-                        if (res.has_error()) {
-                            set_error(res.error());
-                            return;
-                        }
-                        if (!res.value()) {
-                            continue;
-                        }
-                        if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                            out_chunk.row_ids.data<int64_t>()[index] =
-                                static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
-                        } else {
-                            out_chunk.row_ids.data<int64_t>()[index] = chunk.row_ids.data<int64_t>()[i];
-                        }
-                        for (size_t k = 0; k < chunk.column_count(); ++k) {
-                            vector::vector_ops::copy(chunk.data[k], out_chunk.data[k], i + 1, i, index);
-                        }
-                        vector::validate_chunk_capacity(out_chunk, ++index);
-                    }
-                    out_chunk.set_cardinality(index);
-                    if (index > 0) {
-                        apply_updates(resource,
-                                      updates_,
-                                      out_chunk,
-                                      out_chunk,
-                                      index,
-                                      pipeline_context->parameters,
-                                      pipeline_context->session_tz,
-                                      modified_,
-                                      no_modified_);
-                        out_chunks.emplace_back(std::move(out_chunk));
+                for (const auto& chunk : in_chunks) {
+                    auto err = consume_batch_(pipeline_context, chunk);
+                    if (err.contains_error()) {
+                        set_error(err);
+                        return;
                     }
                 }
-                if (out_chunks.empty()) {
+                // No matched rows: keep output_ as a typed empty result (matches the
+                // legacy "out_chunks.empty()" shape) rather than the empty accumulator.
+                if (output_ && output_->size() == 0) {
                     output_ = operators::make_operator_data(resource, types, 0);
-                } else {
-                    output_ = operators::make_operator_data(resource, std::move(out_chunks));
                 }
             }
         }
@@ -289,6 +337,15 @@ namespace components::operators {
                           std::string(out_chunk.data[i].type().alias()));
                 }
             }
+        }
+
+        // No matched rows (e.g. a streaming UPDATE whose predicate selected
+        // nothing): the executor drives await unconditionally for an async-finalize
+        // sink, so guard the empty case here — nothing to write, output_ already
+        // carries the 0-row affected count.
+        if (out_chunk.size() == 0) {
+            mark_executed();
+            co_return;
         }
 
         // 1. Capture WAL data: row_ids + updated chunk.
@@ -344,12 +401,25 @@ namespace components::operators {
             ctx->add_pending_disk_future(std::move(dff));
         }
 
-        // 4. Mirror to index (old + new data).
+        // 4. Mirror to index (old + new data). The SIMPLE path (consume_batch_,
+        //    whether via push() OR on_execute_impl) staged the matched OLD scan rows
+        //    into index_old_chunks_, aligned row-for-row + by row_id with the NEW
+        //    rows (out_chunk), so the mirror works when streaming leaves
+        //    left_->output() empty. The UPDATE...FROM path has no staging and reads
+        //    left_->output() as before.
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            if (auto scan_out = left_ ? left_->output() : nullptr) {
+            std::unique_ptr<data_chunk_t> old_data;
+            if (!index_old_chunks_.empty()) {
+                auto staged = make_operator_data(resource_, std::move(index_old_chunks_));
+                auto& merged = staged->data_chunk();
+                old_data = std::make_unique<data_chunk_t>(resource_, merged.types(), merged.size());
+                merged.copy(*old_data, 0);
+            } else if (auto scan_out = left_ ? left_->output() : nullptr) {
                 auto& sc = scan_out->data_chunk();
-                auto old_data = std::make_unique<data_chunk_t>(resource_, sc.types(), sc.size());
+                old_data = std::make_unique<data_chunk_t>(resource_, sc.types(), sc.size());
                 sc.copy(*old_data, 0);
+            }
+            if (old_data) {
                 auto new_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
                 out_chunk.copy(*new_data, 0);
                 auto idx_ids = std::pmr::vector<int64_t>(resource_);

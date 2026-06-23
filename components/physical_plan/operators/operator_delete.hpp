@@ -29,6 +29,22 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
+        // STREAMING DML (STEP 3b). The SIMPLE predicate-scan DELETE (no USING join,
+        // no catalog spec) is a SINK on its scan input: push() folds each scan batch
+        // via consume_batch_ — appending matched absolute row-ids to modified_,
+        // staging matched RETURNING rows AND the matched OLD scan rows (for the
+        // index mirror, since left_->output() is empty when streaming). The
+        // USING-join (right_) and catalog (oid_col_idx_>=0) forms stay on the legacy
+        // on_execute path (role()==none). needs_async_finalize drives the async
+        // commit after the pump.
+        [[nodiscard]] pipeline_role role() const noexcept override {
+            return (right_ == nullptr && oid_col_idx_ < 0) ? pipeline_role::sink : pipeline_role::none;
+        }
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
+        [[nodiscard]] core::error_t
+        push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
+
         // Self-contained DML side-effects. Performs storage_delete_rows +
         // WAL physical_delete + index::delete_rows, populates ctx->dml_*
         // swap-info, then mark_executed.
@@ -43,10 +59,31 @@ namespace components::operators {
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
+        // Shared SIMPLE-path core (R6: one implementation, two entry points).
+        // Matches expression_ (all-true when null — the scan already filtered)
+        // over ONE scan chunk; appends matched ABSOLUTE row-ids to modified_
+        // (dictionary-index branch + chunk.row_ids exactly as the legacy path),
+        // stages matched RETURNING rows, and stages the matched OLD scan rows +
+        // their absolute row-ids for the index mirror. push() calls it per batch;
+        // on_execute_impl's simple path loops left_->output()->chunks() through it.
+        core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
+        // Lazily create modified_ + the staging buffers so push() and
+        // on_execute_impl share the same per-operator init.
+        void ensure_simple_init_();
+
         components::catalog::oid_t table_oid_;
         expressions::expression_ptr expression_;
         std::optional<resolved_table_metadata_t> resolved_metadata_;
         std::pmr::vector<select_column_t> returning_;
+        // SIMPLE-path staging (filled by consume_batch_, drained in
+        // await_async_and_resume). returning_staged_ holds the projected RETURNING
+        // chunks; index_old_chunks_ + index_old_row_ids_ hold the matched OLD scan
+        // rows (aligned: index_old_chunks_ merged row i pairs with
+        // index_old_row_ids_[i]) so the index mirror does not need left_->output().
+        chunks_vector_t returning_staged_{resource_};
+        chunks_vector_t index_old_chunks_{resource_};
+        std::pmr::vector<int64_t> index_old_row_ids_{resource_};
+        bool simple_init_done_{false};
         // Catalog-delete spec (set only by the catalog constructor). oid_col_idx_
         // < 0 marks "not a catalog delete" → the predicate-scan path runs.
         std::int64_t oid_col_idx_{-1};

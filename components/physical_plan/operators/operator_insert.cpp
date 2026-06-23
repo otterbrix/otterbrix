@@ -29,6 +29,24 @@ namespace components::operators {
         resolved_metadata_ = std::move(metadata);
     }
 
+    core::error_t
+    operator_insert::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        // STREAMING DML SINK: fold each scan batch into a bounded accumulator and
+        // emit nothing (out stays empty). await_async_and_resume reads
+        // output_->data_chunk() (which merges the accumulated chunks) and runs the
+        // single WAL->storage->index commit — exactly the legacy VALUES path's
+        // append target, just filled one batch at a time instead of adopting
+        // left_->output() wholesale. modified_ mirrors on_execute_impl's setup.
+        if (!output_) {
+            output_ = make_operator_data(resource_, chunks_vector_t{resource_});
+            modified_ = make_operator_write_data(resource());
+        }
+        if (input.size() > 0) {
+            output_->append_chunk(std::move(input));
+        }
+        return core::error_t::no_error();
+    }
+
     void operator_insert::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
         if (left_ && left_->output()) {
             output_ = left_->output();
@@ -42,7 +60,11 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_insert::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 
-        if (!output_) {
+        // Legacy on_execute gated async_wait on output_->size() > 0; the streaming
+        // executor drives await unconditionally for an async-finalize sink, so guard
+        // the empty case here too (no rows to append — e.g. an INSERT...SELECT whose
+        // scan returned nothing). Mirrors the legacy guard exactly.
+        if (!output_ || output_->size() == 0) {
             mark_executed();
             co_return;
         }

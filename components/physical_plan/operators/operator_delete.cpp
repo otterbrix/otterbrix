@@ -198,12 +198,30 @@ namespace components::operators {
                                                                         pipeline_context->session_tz)
                                          : predicates::create_all_true_predicate(output_->resource());
 
+            // Index into chunk_left of each matched target row (loop-relative), so
+            // the matched OLD rows can be gathered for the index mirror in lockstep
+            // with their absolute ids — the same staging the simple path uses.
+            vector::indexing_vector_t matched_indexing(left_->output()->resource());
+            matched_indexing.reset(chunk_left.size());
             size_t index = 0;
             for (size_t i = 0; i < chunk_left.size(); i++) {
                 for (size_t j = 0; j < chunk_right.size(); j++) {
                     auto check_result = predicate->check(chunk_left, chunk_right, i, j);
                     if (!check_result.has_error() && check_result.value()) {
-                        ids.data<int64_t>()[index++] = static_cast<int64_t>(i);
+                        // Storage / index delete keys on the ABSOLUTE table row id of
+                        // the matched left row, NOT the left-chunk loop index — the two
+                        // diverge once the table has gaps, multiple row groups, or a
+                        // non-zero row-group start. Mirror the simple branch's
+                        // DICTIONARY fallback.
+                        int64_t abs_id;
+                        if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
+                            abs_id = static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
+                        } else {
+                            abs_id = chunk_left.row_ids.data<int64_t>()[i];
+                        }
+                        ids.data<int64_t>()[index] = abs_id;
+                        matched_indexing.set_index(index, i);
+                        index++;
                         if (collect_returning) {
                             returning_indexing.set_index(returning_count, i);
                             returning_indexing_right.set_index(returning_count, j);
@@ -225,6 +243,21 @@ namespace components::operators {
             for (const auto& type : types_left) {
                 modified_->updated_types_map()[{std::pmr::string(type.alias(), left_->output()->resource()), type}] +=
                     index;
+            }
+
+            // Stage the matched OLD left rows + their absolute ids for the index
+            // mirror, exactly as the simple (consume_batch_) path does, so the
+            // index delete_rows receives the MATCHED rows aligned with their own
+            // ids — not the first-N scan rows. Routing the join path through the
+            // shared index-mirror arm in await_async_and_resume.
+            if (index > 0) {
+                vector::data_chunk_t old_matched(left_->output()->resource(), types_left, index);
+                chunk_left.copy(old_matched, matched_indexing, index);
+                old_matched.set_cardinality(index);
+                index_old_chunks_.emplace_back(std::move(old_matched));
+                for (size_t i = 0; i < index; i++) {
+                    index_old_row_ids_.push_back(ids.data<int64_t>()[i]);
+                }
             }
         } else if (left_ && left_->output()) {
             // SIMPLE predicate-scan DELETE (no USING): the materialized entry point.
@@ -392,41 +425,25 @@ namespace components::operators {
                                          static_cast<uint64_t>(modified_size));
         co_await std::move(df);
 
-        // 4. Mirror to index (old data). The SIMPLE path (consume_batch_, whether it
-        //    ran via push() OR on_execute_impl) staged the matched OLD scan rows +
-        //    their absolute ids into index_old_chunks_/index_old_row_ids_, so the
-        //    mirror works even when streaming leaves left_->output() empty. The
-        //    USING-join path has no staging and reads left_->output() as before.
-        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            if (!index_old_chunks_.empty()) {
-                auto old_data = make_operator_data(resource_, std::move(index_old_chunks_));
-                auto& merged = old_data->data_chunk();
-                auto idx_data = std::make_unique<data_chunk_t>(resource_, merged.types(), merged.size());
-                merged.copy(*idx_data, 0);
-                auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::delete_rows,
-                                                   exec_ctx,
-                                                   table_oid_,
-                                                   std::move(idx_data),
-                                                   std::move(index_old_row_ids_));
-                co_await std::move(ixf);
-            } else if (auto scan_out = left_ ? left_->output() : nullptr) {
-                auto& sc = scan_out->data_chunk();
-                auto idx_data = std::make_unique<data_chunk_t>(resource_, sc.types(), sc.size());
-                sc.copy(*idx_data, 0);
-                auto idx_ids = std::pmr::vector<int64_t>(resource_);
-                idx_ids.reserve(modified_size);
-                for (size_t i = 0; i < modified_size; i++) {
-                    idx_ids.emplace_back(sc.row_ids.data<int64_t>()[i]);
-                }
-                auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::delete_rows,
-                                                   exec_ctx,
-                                                   table_oid_,
-                                                   std::move(idx_data),
-                                                   std::move(idx_ids));
-                co_await std::move(ixf);
-            }
+        // 4. Mirror to index (old data). BOTH paths stage the MATCHED old rows +
+        //    their absolute ids into index_old_chunks_/index_old_row_ids_: the
+        //    SIMPLE path via consume_batch_ (push() OR on_execute_impl), the
+        //    USING-join path in on_execute_impl's match loop. So the index
+        //    delete_rows always receives the matched rows paired with their own
+        //    ids — never the first-N scan rows — even when streaming leaves
+        //    left_->output() empty.
+        if (ctx->index_address != actor_zeta::address_t::empty_address() && !index_old_chunks_.empty()) {
+            auto old_data = make_operator_data(resource_, std::move(index_old_chunks_));
+            auto& merged = old_data->data_chunk();
+            auto idx_data = std::make_unique<data_chunk_t>(resource_, merged.types(), merged.size());
+            merged.copy(*idx_data, 0);
+            auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
+                                               &services::index::manager_index_t::delete_rows,
+                                               exec_ctx,
+                                               table_oid_,
+                                               std::move(idx_data),
+                                               std::move(index_old_row_ids_));
+            co_await std::move(ixf);
         }
 
         // 5. Record swap-info on context.

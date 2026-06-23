@@ -64,6 +64,17 @@ namespace components::pipeline {
         uint64_t dml_append_row_count{0};
         uint64_t dml_delete_txn_id{0};
         catalog::oid_t dml_table_oid{catalog::INVALID_OID};
+        // FK cascade back-channel. operator_fk_cascade_t mutates a DIFFERENT table
+        // (the child) than the single-slot dml_* fields above (which the parent
+        // operator_delete already claimed), so its child delete / SET NULL-DEFAULT
+        // update ranges cannot ride the single-slot fields without clobbering the
+        // parent's. They are pushed here under the PARENT txn id so the executor
+        // lifts them into the same dml_deletes / dml_appends vectors the parent's
+        // ranges land in — COMMIT publishes the child mutation and ABORT
+        // (revert_all_deletes(parent_txn_id) / storage_revert_appends) reverts it,
+        // making cascade child mutations transactionally atomic with the parent.
+        std::vector<table::dml_delete_range_t> cascade_dml_deletes;
+        std::vector<table::dml_append_range_t> cascade_dml_appends;
         // DROP back-channel: operator_dynamic_cascade_delete_t records each
         // storage oid it dropped (alongside the mark_storage_dropped_many send). The
         // executor lifts these into execute_result_t.dropped_storage_oids and

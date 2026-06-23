@@ -2148,6 +2148,21 @@ namespace services::collection::executor {
                 result_tracking.dml_deletes.push_back(
                     {pipeline_context.dml_table_oid, pipeline_context.dml_delete_txn_id});
             }
+            // Lift FK cascade child-table ranges. operator_fk_cascade_t touches a
+            // DIFFERENT table than the parent operator_delete (which owns the
+            // single-slot dml_* fields above), so its child delete / SET NULL-
+            // DEFAULT update ranges arrive on the dedicated cascade channels.
+            // Fold them into the SAME dml_deletes / dml_appends vectors the
+            // parent's ranges land in so the commit/abort tail publishes / reverts
+            // the child mutation under the parent txn — atomic with the parent.
+            for (const auto& del : pipeline_context.cascade_dml_deletes) {
+                result_tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
+            }
+            for (const auto& app : pipeline_context.cascade_dml_appends) {
+                result_tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});
+            }
+            pipeline_context.cascade_dml_deletes.clear();
+            pipeline_context.cascade_dml_appends.clear();
             // Lift the DROP storage-scrub oids: cascade-delete operators record
             // every storage whose backing files they tore down. Accumulate (not
             // overwrite) so a multi-table DROP keeps every dropped oid; the

@@ -96,6 +96,67 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::alter_column_add_drop_rename_st
     }
 }
 
+TEST_CASE("integration::cpp::streaming_ddl_leaf::multi_clause_alter_streams") {
+    auto config = test_create_config("/tmp/test_streaming_ddl_multi_alter");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
+    exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint, name text);");
+
+    // A 2-clause ALTER TABLE lowers to an all-sink left-chain whose DEEPEST op is a
+    // sourceless sink (alter_column_add) with a second alter_column sink ABOVE it.
+    // The extended is_streaming_pipeline gate admits this multi-node all-sink chain;
+    // the bottom-up needs_async_finalize drive runs the deepest clause first.
+    exec_streamed(dispatcher, "ALTER TABLE D.t ADD COLUMN a bigint, ADD COLUMN b text;");
+
+    // CORRECTNESS: both new columns are usable.
+    REQUIRE(exec(dispatcher, "INSERT INTO D.t (id, name, a, b) VALUES (1, 'x', 10, 'y');")->is_success());
+    {
+        auto cur = exec(dispatcher, "SELECT id, a, b FROM D.t WHERE id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+}
+
+TEST_CASE("integration::cpp::streaming_ddl_leaf::create_index_chain_streams") {
+    auto config = test_create_config("/tmp/test_streaming_ddl_createidx");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
+    exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint, count bigint);");
+    // Pre-load rows so the backfill step has existing data to scan + insert_rows.
+    REQUIRE(
+        exec(dispatcher, "INSERT INTO D.t (id, count) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
+
+    // CREATE INDEX lowers to a 2-node all-sink chain [backfill(root) -> metadata(leaf)].
+    // metadata is the sourceless chain bottom; the extended gate admits the chain and
+    // the bottom-up async-finalize drive commits metadata (pg_catalog rows) BEFORE the
+    // backfill scans/populates/flips indisvalid=true.
+    exec_streamed(dispatcher, "CREATE INDEX idx_t_count ON D.t (count);");
+
+    // CORRECTNESS: the index serves lookups over the pre-existing (backfilled) rows.
+    {
+        auto cur = exec(dispatcher, "SELECT id FROM D.t WHERE count = 20;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+    // And a fresh insert post-index is also visible through the index.
+    REQUIRE(exec(dispatcher, "INSERT INTO D.t (id, count) VALUES (4, 40);")->is_success());
+    {
+        auto cur = exec(dispatcher, "SELECT id FROM D.t WHERE count = 40;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+}
+
 TEST_CASE("integration::cpp::streaming_ddl_leaf::drop_index_streams") {
     auto config = test_create_config("/tmp/test_streaming_ddl_dropidx");
     test_clear_directory(config);
@@ -106,8 +167,9 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::drop_index_streams") {
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
     exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint, name text);");
-    // CREATE INDEX is a 2-node chain (metadata -> backfill) and stays on the
-    // legacy path; it is exercised here only to set up the DROP.
+    // CREATE INDEX is a 2-node all-sink chain (backfill(root) -> metadata(leaf))
+    // and now streams via the sourceless-sink-chain gate; exercised here to set up
+    // the DROP. (Its own streaming assertion lives in create_index_chain_streams.)
     REQUIRE(exec(dispatcher, "CREATE INDEX idx_t_id ON D.t (id);")->is_success());
 
     // DROP INDEX -> operator_drop_index_t sourceless sink-root.

@@ -60,6 +60,17 @@ namespace components::operators {
         // the race causes user-visible problems): introduce per-table_oid
         // lock via a disk-actor message pair held across the
         // read/classify/allocate/append/depend sequence below.
+
+        // Propagate the INSERT's output up (same as on_execute_impl does for the
+        // materialized entry point). On the streaming path on_execute_impl never
+        // runs; the bottom-up async-finalize drive runs left_ (insert).await FIRST,
+        // so left_->output() (the affected-row count chunk) is populated by now.
+        // Without this the executor's cursor-build path sees cur->size()==0 for a
+        // relkind='g' INSERT.
+        if (left_ && left_->output()) {
+            output_ = left_->output();
+        }
+
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;

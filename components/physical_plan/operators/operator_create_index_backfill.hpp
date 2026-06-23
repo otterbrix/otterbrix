@@ -31,6 +31,18 @@ namespace components::operators {
                                          components::catalog::oid_t index_oid,
                                          std::string indkey);
 
+        // SINK with an async commit. CREATE INDEX lowers to a 2-node all-sink
+        // chain [backfill(root) -> metadata(left leaf)] (see create_plan_sequence).
+        // The metadata leaf is the sourceless chain bottom; is_streaming_pipeline
+        // admits the chain and the executor drives metadata.await then backfill.await
+        // BOTTOM-UP via the needs_async_finalize pass — so the pg_catalog rows are
+        // durable before this operator scans + backfills + flips indisvalid=true.
+        // push()/finalize() inherit the no-op defaults (no pipeline data flows);
+        // all work lives in await_async_and_resume. Replaces the legacy on_execute +
+        // find_waiting_operator drive.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;

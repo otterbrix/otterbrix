@@ -1792,9 +1792,13 @@ namespace services::collection::executor {
     bool executor_t::is_streaming_pipeline(const components::operators::operator_ptr& root) noexcept {
         namespace ops = components::operators;
         const ops::operator_t* deepest = nullptr;
+        bool all_sink = true;
         for (const ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
             if (op->role() == ops::pipeline_role::none) {
                 return false; // an unconverted operator on the chain -> legacy materialize path
+            }
+            if (op->role() != ops::pipeline_role::sink) {
+                all_sink = false;
             }
             deepest = op;
         }
@@ -1805,13 +1809,20 @@ namespace services::collection::executor {
         if (deepest->role() == ops::pipeline_role::source) {
             return true;
         }
-        // SOURCELESS SINK-ROOT: a single leaf sink with no left child (a DDL/txn
-        // operator whose whole effect is its async await_async_and_resume). It has
-        // no source to pump; execute_pipeline runs its FLUSH + needs_async_finalize
-        // drive directly. Restricted to a true leaf (root == deepest, no left): a
-        // sink ABOVE a non-source bottom is not a valid streaming shape.
-        return deepest == root.get() && deepest->role() == ops::pipeline_role::sink &&
-               root->left() == nullptr;
+        // SOURCELESS SINK CHAIN: the chain bottom is a sourceless sink (no left
+        // child), and every operator on the chain is a sink. There is no scan
+        // source to pump; execute_pipeline skips the pump and drives each sink's
+        // FLUSH + needs_async_finalize await BOTTOM-UP (deepest first). This admits
+        //   - a single leaf DDL/txn sink (create_collection, set_timezone,
+        //     begin_transaction, resolve_*), and
+        //   - a multi-node all-sink async chain with sink(s) ABOVE the sourceless
+        //     bottom: CREATE INDEX = [backfill(root) -> metadata(left leaf)], and a
+        //     multi-resolve front-pass = [resolve_table(root) -> resolve_ns(leaf)].
+        // The bottom-up async-finalize drive runs the deepest sink's commit first,
+        // exactly as the legacy on_execute / find_waiting_operator path did (left
+        // child awaited before its parent). A streaming op ABOVE the sourceless
+        // bottom would have no input to transform, so the chain must be all-sink.
+        return deepest->role() == ops::pipeline_role::sink && deepest->left() == nullptr && all_sink;
     }
 
     executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
@@ -1837,16 +1848,18 @@ namespace services::collection::executor {
         while (start < chain.size() && chain[start]->is_executed()) {
             ++start;
         }
-        // SOURCELESS SINK-ROOT: a leaf DDL/txn operator (create_collection,
-        // set_timezone, begin_transaction, ...) lowers to a single sink with no
-        // left child — no scan source at the chain bottom. is_streaming_pipeline
-        // admits it so the on_execute legacy path can be retired; here we skip the
-        // source pump entirely and drive the sink itself through FLUSH +
-        // needs_async_finalize below. All work lives in await_async_and_resume, so
-        // the bottom-most operator (chain[0]) MUST be in the [op_start, end) range
-        // the async-finalize drive iterates — hence op_start stays at 0 (not 1) for
-        // this shape. (chain[0]->role()==source is the normal pumped case; a NOT-
-        // executed non-source bottom is the sourceless sink.)
+        // SOURCELESS SINK CHAIN: a DDL/txn/catalog-read operator (create_collection,
+        // set_timezone, begin_transaction, resolve_*, ...) lowers to a sink whose
+        // chain bottom has no left child — no scan source. is_streaming_pipeline
+        // admits both the single-leaf shape AND a multi-node all-sink chain (CREATE
+        // INDEX = backfill->metadata; a multi-resolve front-pass = resolve_table->
+        // resolve_namespace). is_streaming_pipeline admits these so the on_execute
+        // legacy path can be retired; here we skip the source pump entirely and drive
+        // every sink through FLUSH + needs_async_finalize below. All work lives in
+        // await_async_and_resume, so the bottom-most operator (chain[0]) MUST be in
+        // the [op_start, end) range the async-finalize drive iterates — hence op_start
+        // stays at 0 (not 1) for this shape. (chain[0]->role()==source is the normal
+        // pumped case; a NOT-executed non-source bottom is the sourceless sink.)
         const bool sourceless_sink_root =
             start == 0 && chain.front()->role() != ops::pipeline_role::source;
         const std::size_t op_start = sourceless_sink_root ? 0 : ((start == 0) ? 1 : start);

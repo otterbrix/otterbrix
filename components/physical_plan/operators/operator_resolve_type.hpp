@@ -57,6 +57,17 @@ namespace components::operators {
                                 std::string name,
                                 components::logical_plan::node_catalog_resolve_t* target_node);
 
+        // Sourceless SINK leaf (catalog read, no data pipeline, no children).
+        // is_streaming_pipeline admits the resolve front-pass as an all-sink chain
+        // and drives await_async_and_resume via the bottom-up needs_async_finalize
+        // pass. The async pg_namespace + pg_type scan emits the resolved row into
+        // output_ and stamps type_oid/resolved_type_metadata onto target_node_;
+        // push()/finalize() inherit the no-op defaults (the metadata handoff is the
+        // node stamp, read later via plan_resolve_index). Replaces the legacy
+        // on_execute drive.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 

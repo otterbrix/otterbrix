@@ -38,6 +38,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_bounded_execution.cpp
         test_streaming_dml.cpp
         test_streaming_match.cpp
+        test_streaming_index_scan.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

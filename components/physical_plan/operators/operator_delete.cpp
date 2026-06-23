@@ -357,6 +357,22 @@ namespace components::operators {
             co_return;
         }
 
+        // Snapshot the matched OLD (about-to-be-deleted) rows for a parent
+        // fk_cascade BEFORE index_old_chunks_ is moved into the index mirror. On the
+        // streaming path the scan SOURCE's output_ is empty, so fk_cascade — which
+        // looks up child rows referencing the deleted parent keys — reads these
+        // staged values instead of left_->left()->output(). The drive runs this
+        // DML's await first, then the cascade's, so the snapshot is ready in time.
+        // Copy (not move): the same chunks still feed the index mirror below.
+        if (!index_old_chunks_.empty()) {
+            chunks_vector_t cascade_rows(resource_);
+            cascade_rows.reserve(index_old_chunks_.size());
+            for (const auto& c : index_old_chunks_) {
+                cascade_rows.emplace_back(c.partial_copy(resource_, 0, c.size()));
+            }
+            constraint_input_ = make_operator_data(resource_, std::move(cascade_rows));
+        }
+
         auto& ids = modified_->ids();
         const size_t modified_size = modified_->size();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};

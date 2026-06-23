@@ -321,6 +321,12 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
+        // Snapshot the NEW (post-SET) updated rows for a parent fk_check /
+        // check_constraint BEFORE a RETURNING projection replaces output_. The
+        // streaming async-finalize drive runs this DML's await first, then the
+        // constraint's; the constraint validates these new values against the
+        // parent table / NOT-NULL rules.
+        constraint_input_ = output_;
         auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 

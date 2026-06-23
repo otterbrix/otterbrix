@@ -16,31 +16,47 @@ namespace components::operators {
         : read_write_operator_t(resource, log, operator_type::fk_cascade)
         , fk_(std::move(fk)) {}
 
+    namespace {
+        // Resolve the deleted parent rows fk_cascade looks up referencing children
+        // for. The DELETE child snapshots its matched OLD (pre-delete) rows into
+        // constraint_input() at the top of its await_async_and_resume, so prefer
+        // that — it is populated in BOTH paths (fk_cascade always runs after the
+        // delete's await). Fall back to the scan's output_ (the pre-delete row
+        // values, materialized path) then the delete's pass-through output_, so the
+        // materialized entry point keeps working unchanged.
+        const operator_data_ptr& resolve_fk_cascade_source(const operator_ptr& left) {
+            if (left->constraint_input() && left->constraint_input()->size() > 0) {
+                return left->constraint_input();
+            }
+            if (left->left() && left->left()->output() && left->left()->output()->size() > 0) {
+                return left->left()->output();
+            }
+            return left->output();
+        }
+    } // namespace
+
     void operator_fk_cascade_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
         if (!left_)
             return;
-        // The delete operator's output is schema-typed but has no actual values
-        // (intercept_dml_io_ clears the data while keeping the column types).
-        // Prefer the scan operator's output (left_->left()) which holds the
-        // pre-delete row values needed to look up referencing child rows.
-        output_ = nullptr;
-        if (left_->left() && left_->left()->output() && left_->left()->output()->size() > 0) {
-            output_ = left_->left()->output();
-        }
-        if (!output_) {
-            output_ = left_->output();
-        }
+        output_ = resolve_fk_cascade_source(left_);
         if (output_ && output_->size() > 0) {
             async_wait();
         }
     }
 
     actor_zeta::unique_future<void> operator_fk_cascade_t::await_async_and_resume(pipeline::context_t* ctx) {
-        if (!output_ || output_->size() == 0) {
+        // Streaming drive skips on_execute_impl, so resolve the source here directly;
+        // materialized callers set output_ to the same source. fk_cascade is the plan
+        // ROOT, so output_ becomes the DELETE result cursor — set it to the deleted
+        // (matched) rows, matching the legacy on_execute resolution (the cursor count
+        // equals the number of deleted parent rows regardless of cascade outcome).
+        const auto& source = resolve_fk_cascade_source(left_);
+        output_ = source;
+        if (!source || source->size() == 0) {
             mark_executed();
             co_return;
         }
-        const auto& chunk = output_->data_chunk();
+        const auto& chunk = source->data_chunk();
         execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz};
 
         const auto& par_indices = fk_.parent_col_indices;

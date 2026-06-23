@@ -222,16 +222,46 @@ namespace components::operators {
     }
 
     void operator_check_constraint_t::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
+        // Materialized entry point: same validation as the streaming async step.
+        validate_();
+    }
+
+    actor_zeta::unique_future<void> operator_check_constraint_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
+        // SYNCHRONOUS validation routed through the async-finalize drive so it runs
+        // AFTER the DML child's await (which snapshots the written rows into
+        // constraint_input()). No cross-actor await — completes immediately.
+        validate_();
+        if (has_error()) {
+            co_return;
+        }
+        mark_executed();
+        co_return;
+    }
+
+    void operator_check_constraint_t::validate_() {
         if (!left_)
             return;
 
-        operator_data_ptr data_src = left_->output();
+        // Prefer the DML child's snapshot of the just-written rows (populated in
+        // BOTH paths, the only source available when streaming). Fall back to the
+        // legacy lookup (the DML's output_, then its data source) for any caller
+        // that did not snapshot, so the materialized entry point is unchanged.
+        operator_data_ptr data_src = nullptr;
+        if (left_->constraint_input() && left_->constraint_input()->size() > 0) {
+            data_src = left_->constraint_input();
+        }
+        if (!data_src || data_src->data_chunk().column_count() == 0) {
+            data_src = left_->output();
+        }
         if (!data_src || data_src->data_chunk().column_count() == 0) {
             if (left_->left() && left_->left()->output()) {
                 data_src = left_->left()->output();
             }
         }
 
+        // check_constraint is the plan ROOT, so output_ becomes the result cursor:
+        // surface the DML child's final result (RETURNING / affected-count chunk),
+        // exactly as the legacy on_execute did.
         output_ = left_->output();
 
         if (!data_src || data_src->data_chunk().size() == 0)

@@ -241,6 +241,16 @@ namespace components::operators {
         const operator_data_ptr& output() const;
         const operator_write_data_ptr& modified() const;
         const operator_write_data_ptr& no_modified() const;
+
+        // Rows a PARENT constraint operator (fk_check / fk_cascade /
+        // check_constraint) must validate against. A DML operator (insert /
+        // update / delete) snapshots them at the TOP of its
+        // await_async_and_resume — BEFORE it overwrites output_ with the
+        // RETURNING / affected-count chunk — so a constraint driven AFTER the DML
+        // (the streaming bottom-up async-finalize drive) can still read the
+        // written rows even though the scan SOURCE's output_ is empty on the
+        // streaming path. Default: null (non-DML operators expose nothing).
+        const operator_data_ptr& constraint_input() const noexcept { return constraint_input_; }
         void set_children(ptr left, ptr right = nullptr);
         void set_output(operator_data_ptr data);
         void take_output(ptr& src);
@@ -249,6 +259,7 @@ namespace components::operators {
         void reset_for_reuse() noexcept {
             state_ = operator_state::created;
             output_ = nullptr;
+            constraint_input_ = nullptr;
         }
         void clear(); //todo: replace by copy
 
@@ -279,6 +290,9 @@ namespace components::operators {
         operator_data_ptr output_{nullptr};
         operator_write_data_ptr modified_{nullptr};
         operator_write_data_ptr no_modified_{nullptr};
+        // Snapshot of the written rows for a parent constraint operator (see
+        // constraint_input()). Populated by DML operators only.
+        operator_data_ptr constraint_input_{nullptr};
 
     private:
         virtual void on_execute_impl(pipeline::context_t* pipeline_context) = 0;

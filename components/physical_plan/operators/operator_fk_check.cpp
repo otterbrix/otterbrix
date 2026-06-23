@@ -14,28 +14,67 @@ namespace components::operators {
         : read_write_operator_t(resource, log, operator_type::fk_check)
         , fk_(std::move(fk)) {}
 
+    namespace {
+        // Resolve the rows fk_check validates. The DML child snapshots the
+        // just-written rows into constraint_input() at the top of its
+        // await_async_and_resume (BEFORE replacing its output_ with the
+        // RETURNING / affected-count chunk), so prefer that — it is populated in
+        // BOTH the streaming and materialized paths, since fk_check always runs
+        // after the DML's await. Fall back to the legacy lookup for any caller
+        // that did not snapshot (left_->output() then the DML's data source) so
+        // the materialized entry point keeps working unchanged.
+        const operator_data_ptr& resolve_fk_check_source(const operator_ptr& left) {
+            if (left->constraint_input() && left->constraint_input()->size() > 0) {
+                return left->constraint_input();
+            }
+            if (left->output() && left->output()->data_chunk().column_count() > 0) {
+                return left->output();
+            }
+            if (left->left() && left->left()->output()) {
+                return left->left()->output();
+            }
+            static const operator_data_ptr empty{nullptr};
+            return empty;
+        }
+
+        // The constraint operator is the plan ROOT, so its output_ becomes the
+        // result cursor (executor reads plan->output() in the is_root default case).
+        // Surface the DML child's final result: its RETURNING projection
+        // (column_count > 0) when present, else the raw written rows so the cursor
+        // reports the affected-row count — matching the legacy on_execute resolution.
+        const operator_data_ptr& resolve_cursor_output(const operator_ptr& left,
+                                                       const operator_data_ptr& validation_source) {
+            if (left->output() && left->output()->data_chunk().column_count() > 0) {
+                return left->output();
+            }
+            return validation_source;
+        }
+    } // namespace
+
     void operator_fk_check_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
         if (!left_)
             return;
-        // After intercept_dml_io_, the DML operator's output is replaced with a
-        // zero-column result chunk. Fall back to the DML op's data source.
-        output_ = left_->output();
-        if (!output_ || output_->data_chunk().column_count() == 0) {
-            if (left_->left() && left_->left()->output()) {
-                output_ = left_->left()->output();
-            }
-        }
+        // Materialized entry point: resolve the validation source (the DML's
+        // snapshot, or the legacy fallbacks) and defer to the async step. output_ is
+        // (re)assigned to the cursor result in await_async_and_resume.
+        output_ = resolve_fk_check_source(left_);
         if (output_ && output_->size() > 0) {
             async_wait();
         }
     }
 
     actor_zeta::unique_future<void> operator_fk_check_t::await_async_and_resume(pipeline::context_t* ctx) {
-        if (!output_ || output_->size() == 0) {
+        // Streaming drive does not run on_execute_impl (the executor marks the root
+        // executed after the pump), so resolve the source here directly. Materialized
+        // callers set output_ in on_execute_impl to the same source.
+        const auto& source = resolve_fk_check_source(left_);
+        if (!source || source->size() == 0) {
+            // Nothing to validate; still surface the DML result as the cursor.
+            output_ = resolve_cursor_output(left_, source);
             mark_executed();
             co_return;
         }
-        const auto& chunk = output_->data_chunk();
+        const auto& chunk = source->data_chunk();
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         const auto& indices = fk_.child_col_indices;
@@ -98,6 +137,7 @@ namespace components::operators {
         }
 
         if (qcount == 0) {
+            output_ = resolve_cursor_output(left_, source);
             mark_executed();
             co_return;
         }
@@ -135,6 +175,7 @@ namespace components::operators {
                 co_return;
             }
         }
+        output_ = resolve_cursor_output(left_, source);
         mark_executed();
     }
 

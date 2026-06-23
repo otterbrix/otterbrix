@@ -134,6 +134,7 @@ namespace components::operators {
         left_ = nullptr;
         right_ = nullptr;
         output_ = nullptr;
+        constraint_input_ = nullptr;
     }
 
     void operator_t::on_resume_impl(pipeline::context_t*) {}

@@ -68,6 +68,12 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
+        // Snapshot the to-be-inserted rows for a parent fk_check / check_constraint
+        // BEFORE output_ is replaced with the RETURNING / affected-count chunk. The
+        // streaming async-finalize drive runs this DML's await first, then the
+        // constraint's — by which point output_ no longer holds the input rows. The
+        // intrusive_ptr alias is cheap; the constraint only reads it.
+        constraint_input_ = output_;
         auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 

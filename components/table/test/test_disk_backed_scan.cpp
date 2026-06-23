@@ -85,6 +85,47 @@ namespace {
         }
     }
 
+    // Deterministic per-row string content. Long enough (and unique enough) that
+    // the dictionary of each segment carries real bytes -- so the FLAT string
+    // scan must materialise the payload, not a sequence-style placeholder.
+    std::string expected_string(uint64_t row) {
+        std::string s = "row_string_value_";
+        std::string n = std::to_string(row);
+        // Zero-pad to a fixed width so lengths are uniform and easy to reason about.
+        if (n.size() < 8) {
+            s.append(8 - n.size(), '0');
+        }
+        s += n;
+        return s; // e.g. "row_string_value_00000042"
+    }
+
+    // STRING-column analogue of append_int64_data. Appends `count` rows whose
+    // single STRING column holds expected_string(row) for the absolute row index.
+    void append_string_data(components::table::data_table_t& table,
+                            std::pmr::memory_resource* resource,
+                            uint64_t count) {
+        using namespace components::types;
+        using namespace components::vector;
+        using namespace components::table;
+
+        auto types = table.copy_types();
+        uint64_t offset = 0;
+        while (offset < count) {
+            uint64_t batch = std::min(count - offset, uint64_t(DEFAULT_VECTOR_CAPACITY));
+            data_chunk_t chunk(resource, types, batch);
+            chunk.set_cardinality(batch);
+            for (uint64_t i = 0; i < batch; i++) {
+                chunk.set_value(0, i, logical_value_t{resource, expected_string(offset + i)});
+            }
+            table_append_state state(resource);
+            REQUIRE_FALSE(table.append_lock(state).has_error());
+            REQUIRE_FALSE(table.initialize_append(state).has_error());
+            REQUIRE_FALSE(table.append(chunk, state).has_error());
+            table.finalize_append(state, transaction_data{0, 0});
+            offset += batch;
+        }
+    }
+
     // Full scan that verifies value[i] == i for every row and returns the count.
     uint64_t scan_and_verify_sequential(components::table::data_table_t& table, uint64_t expected_rows) {
         using namespace components::vector;
@@ -575,6 +616,125 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
     // The bound must actually separate the two regimes (sanity on the test itself).
     REQUIRE(bound < pre_b2_floor);
     REQUIRE(blocks <= bound);
+
+    cleanup_test_file();
+}
+
+// ----------------------------------------------------------------------------
+// STRING-column streaming use-after-free guard.
+// ----------------------------------------------------------------------------
+//
+// The FLAT-fast-path string scan (impl::string_scan_partial) writes each cell as
+// a std::string_view that BORROWS directly into the buffer-pool-pinned block
+// (fetch_string -> base_ptr + dict.end - offset). The streaming source
+// (data_table_t::fetch_next_batch) scopes its table_scan_state -- hence its
+// buffer_handle PIN -- per batch and releases it the moment the call returns.
+// The produced chunk, carrying those borrowed views, OUTLIVES the pin and is
+// handed back to the caller.
+//
+// On a disk-backed table under memory pressure the borrowed block is then
+// evicted and RELOADED at a NEW address, so every held string_view dangles:
+// reading the held chunk's STRING cell yields garbage / a wrong string / a
+// crash. (The INT64 / gap / DICTIONARY paths are safe because they copy bytes;
+// only this FLAT string fast path borrows.)
+//
+// Reproducer (deterministic without ASAN -- the reload-at-new-address makes the
+// dangle observable as a value mismatch):
+//   1. Build a disk-backed STRING table whose working set far exceeds the pool.
+//   2. fetch ONE batch and HOLD the chunk (do NOT copy its strings out).
+//   3. Drain the REST of the table through throwaway fetches under a 1 MiB pool
+//      so the held batch's block is evicted, then reloaded at a new address.
+//   4. Read the held chunk's STRING cells -- they must still equal the original
+//      values. Today they dangle -> RED. After the fix (payload interned into
+//      the result vector's string_vector_buffer_t) -> GREEN.
+TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no UAF)", "[step2]") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    cleanup_test_file();
+
+    test_env_t env;
+    meta_block_pointer_t table_pointer;
+
+    // Build + checkpoint a disk-backed STRING table under a generous pool. The
+    // write-through string append transiently pins per-segment dictionary blocks,
+    // so the tiny SMALL_POOL_LIMIT used by the int64 eviction cases OOMs it; build
+    // under a roomy pool, persist to disk, then REOPEN under SMALL_POOL_LIMIT so
+    // the segments are clean reloadable disk blocks (no pinned append-time state),
+    // exactly the e2e disk-backed streaming-scan shape. Mirrors the existing
+    // "streaming fetch_next_batch over reopened checkpointed table" case.
+    {
+        std::pmr::synchronized_pool_resource big_resource;
+        core::filesystem::local_file_system_t big_fs;
+        buffer_pool_t big_pool(&big_resource, uint64_t(256) << 20, false, uint64_t(1) << 24); // 256 MiB
+        standard_buffer_manager_t big_bm_mgr(&big_resource, big_fs, big_pool);
+
+        single_file_block_manager_t bm(big_bm_mgr, big_fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("value", logical_type::STRING_LITERAL);
+        auto table = std::make_unique<data_table_t>(&big_resource, bm, std::move(columns), "disk_backed");
+        append_string_data(*table, &big_resource, LARGE_ROW_COUNT);
+        REQUIRE(table->calculate_size() == LARGE_ROW_COUNT);
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
+        table_pointer = writer.get_block_pointer();
+        database_header_t header;
+        header.initialize();
+        bm.write_header(header);
+    }
+
+    // Reopen under the SMALL pool and stream a single held batch under eviction.
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.load_existing_database().has_error());
+    metadata_manager_t meta_mgr(bm);
+    metadata_reader_t reader(meta_mgr, table_pointer);
+    auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+    REQUIRE(!loaded_result.has_error());
+    auto& loaded = loaded_result.value();
+
+    // Force eviction so a re-seek to an evicted, reloadable segment must reload it
+    // at a FRESH address -- the trigger that makes a borrowed view dangle.
+    REQUIRE(!env.buffer_pool.set_limit(uint64_t(1) << 20).has_error()); // 1 MiB
+
+    std::vector<storage_index_t> column_ids;
+    column_ids.emplace_back(static_cast<int64_t>(0));
+    auto types = loaded->copy_types();
+
+    int64_t next_row = 0;
+    const int64_t max_row = static_cast<int64_t>(LARGE_ROW_COUNT);
+    bool drained = false;
+
+    // (2) Fetch the FIRST batch and HOLD it -- the chunk outlives its source pin.
+    data_chunk_t held(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+    {
+        auto r = loaded->fetch_next_batch(held, column_ids, nullptr, transaction_data{0, 0},
+                                          next_row, max_row, drained);
+        REQUIRE_FALSE(r.has_error());
+    }
+    REQUIRE(held.size() > 0);
+    const uint64_t held_count = held.size();
+
+    // (3) Drain the rest of the table through throwaway batches. With a 1 MiB pool
+    // the held batch's block is forced out and later reloaded at a new address.
+    while (!drained) {
+        data_chunk_t scratch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+        auto r = loaded->fetch_next_batch(scratch, column_ids, nullptr, transaction_data{0, 0},
+                                          next_row, max_row, drained);
+        REQUIRE_FALSE(r.has_error());
+    }
+
+    // (4) The held chunk's STRING cells must still read back the ORIGINAL values.
+    // value() materialises a std::string FROM the stored string_view: if that
+    // view dangles into an evicted/reloaded block, this reads garbage -> RED.
+    for (uint64_t i = 0; i < held_count; i++) {
+        auto val = held.data[0].value(i);
+        REQUIRE(val.type().type() == logical_type::STRING_LITERAL);
+        std::string got = *val.value<std::string*>();
+        REQUIRE(got == expected_string(i));
+    }
 
     cleanup_test_file();
 }

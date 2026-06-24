@@ -15,7 +15,7 @@ namespace components::operators {
                          const expressions::expression_ptr& expression,
                          logical_plan::limit_t limit);
 
-        // --- Push-based streaming pipeline (filter operator) — SHAPE-BASED role ---
+        // --- Push-based streaming pipeline (filter operator) — UNCONDITIONALLY streaming ---
         // A match is a pure per-batch filter+projection: each input chunk yields the
         // surviving (predicate-true) rows of that same chunk, with no cross-batch
         // accumulation of OUTPUT, so per batch it IS a streaming transform. The ONLY
@@ -25,25 +25,39 @@ namespace components::operators {
         // wrong). finalize() keeps the default no-op (no deferred rows: every surviving
         // row is emitted in the push() that produced it).
         //
-        // But role() is SHAPE-BASED (like operator_delete): match streams ONLY when it
-        // sits DIRECTLY on a scan SOURCE (the create_plan_match_ "full_scan under a
-        // non-pure-compare predicate" shape). The OTHER shapes stay role()==none and run
-        // the legacy materialized on_execute path:
-        //   - no-table match (sourceless sub-plan, left_ == nullptr);
-        //   - HAVING / post-JOIN match (left_ is an aggregate/group SINK or a JOIN) —
-        //     streaming a filter ABOVE a sink/join would re-route the join's emission
-        //     through a streaming combination that is out of scope for this phase and
-        //     regresses join/subquery plans, so those keep materializing.
+        // role() is now streaming WHENEVER there is an input (left_ != nullptr),
+        // independent of whether the input is a scan SOURCE or a SINK (group/join).
+        // The two operator_match-specific defects that previously made match-over-sink
+        // unsafe to stream are fixed in this operator:
+        //   (a) row_ids: filter_batch_ only propagates the input row_id when it is real
+        //       (row_ids_meaningful_(): left_ is a scan source); over a sink it leaves
+        //       the zero sentinel so no bogus absolute id reaches a downstream consumer.
+        //   (b) predicate resource: build_predicate_ allocates the predicate + the types
+        //       working copy on the operator's STABLE resource_, not the (foreign /
+        //       transient) sink chunk's arena, so the cached predicate's value-getter
+        //       closures stay valid across the second finalize chunk.
+        // The executor FLUSH/PUMP path itself already streams a filter above a sink
+        // correctly (select-over-sink works), so with both defects fixed the filter
+        // streams in every shape. Only the sourceless no-table match (left_ == nullptr,
+        // no input to transform) stays role()==none and runs the legacy on_execute path.
         // Both entry points route through the SAME filter_batch_ core (R6).
         [[nodiscard]] pipeline_role role() const noexcept override {
-            return (left_ && is_scan(left_->type()) && left_->role() == pipeline_role::source)
-                       ? pipeline_role::streaming
-                       : pipeline_role::none;
+            return left_ != nullptr ? pipeline_role::streaming : pipeline_role::none;
         }
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
 
     private:
+        // The input chunks carry REAL absolute row_ids ONLY when this match sits
+        // directly on a scan SOURCE (full_scan / transfer_scan / index_scan stamp
+        // them). Over a SINK (group/join) — or the sourceless no-table shape — the
+        // input's row_ids are zero-filled, so they MUST NOT be propagated forward
+        // (see filter_batch_ defect fix (a)). Computed from left_, which is fixed
+        // once the plan is built, so it is stable across batches.
+        [[nodiscard]] bool row_ids_meaningful_() const noexcept {
+            return left_ != nullptr && is_scan(left_->type());
+        }
+
         const expressions::expression_ptr expression_;
         const logical_plan::limit_t limit_;
 
@@ -64,10 +78,19 @@ namespace components::operators {
         // and on_execute_impl (per materialized chunk, local counter). `predicate` and
         // the populated-column projection are passed in so the predicate is built ONCE
         // per execution, not per chunk.
+        //
+        // `row_ids_meaningful`: whether the input chunk carries REAL absolute row_ids
+        // (true ONLY when left_ is a scan SOURCE, which stamps them). A SINK output
+        // (group/join) never writes row_ids — they stay zero-filled — so propagating
+        // them forward would hand a downstream DML/index consumer a bogus absolute id
+        // 0. When false the surviving rows' row_ids are left at the chunk's own
+        // zero-initialized sentinel (the same value the materialized path produced
+        // over a sink), and NO foreign id is copied in.
         [[nodiscard]] core::error_t filter_batch_(std::pmr::memory_resource* resource,
                                                   predicates::predicate_ptr& predicate,
                                                   const std::vector<size_t>& populated_cols,
                                                   bool sparse,
+                                                  bool row_ids_meaningful,
                                                   const std::pmr::vector<types::complex_logical_type>& types,
                                                   const vector::data_chunk_t& chunk,
                                                   int64_t& limit_total,
@@ -76,17 +99,25 @@ namespace components::operators {
         // Build the predicate + projection metadata (populated_cols / sparse / types)
         // for an input chunk schema. Shared one-time setup for both entry points; the
         // predicate depends only on the (stable) chunk schema, so push() rebuilds it
-        // only on the first batch it sees.
+        // only on the first batch it sees. `resource` is the STABLE resource to allocate
+        // the predicate (and the types working copy) on — the caller chooses it (the
+        // operator's resource_ for a scan-source match, the captured input-chunk
+        // resource for a sink match whose resource_ is null).
         [[nodiscard]] core::error_t build_predicate_(pipeline::context_t* ctx,
                                                      const vector::data_chunk_t& sample,
+                                                     std::pmr::memory_resource* resource,
                                                      std::pmr::vector<types::complex_logical_type>& types,
                                                      std::vector<size_t>& populated_cols,
                                                      bool& sparse,
                                                      predicates::predicate_ptr& predicate);
 
         // Streaming-path predicate cache: built lazily on the first push() batch and
-        // reused for every subsequent batch (schema is stable across a scan's batches).
+        // reused for every subsequent batch (schema is stable across batches).
         predicates::predicate_ptr stream_predicate_{nullptr};
+        // The stable resource the streaming run allocates on (resource_ when non-null,
+        // else the first batch's resource — captured once). stream_types_ is rebound to
+        // it in push() before first use, so it is never left bound to a null resource_.
+        std::pmr::memory_resource* stream_resource_{nullptr};
         std::pmr::vector<types::complex_logical_type> stream_types_{resource_};
         std::vector<size_t> stream_populated_cols_;
         bool stream_sparse_{false};

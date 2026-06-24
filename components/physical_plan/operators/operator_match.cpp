@@ -23,18 +23,35 @@ namespace components::operators {
 
     // Build the predicate + the populated-column projection metadata for one input
     // chunk schema. Shared one-time setup for both the materialized and the streaming
-    // entry point: the predicate depends only on the (stable) chunk schema, so each
-    // entry point builds it once. The predicate is allocated on the INPUT chunk's
-    // resource (the left-output resource in the materialized path, the pushed batch's
-    // resource in the streaming path), mirroring the prior on_execute_impl behavior.
+    // entry point: the predicate depends only on the (stable) chunk SCHEMA, not its
+    // arena, so each entry point builds it once.
+    //
+    // DEFECT FIX (b): the predicate and the `types` working copy are allocated on the
+    // caller-chosen STABLE `resource`, NOT on the per-batch sample.resource(). The
+    // caller passes effective_resource_(sample) — the operator's own resource_ when it
+    // has one, else the input chunk's resource captured once for the whole streaming
+    // run (see push()). Over a SCAN source this is the operator's resource exactly as
+    // before; over a SINK (a group/join output) it is the sink operator's stable
+    // resource, which outlives every batch — so a predicate whose value-getter closures
+    // were allocated here does NOT dangle on the second finalize chunk (the prior code
+    // rebuilt against each batch's arena). The types are COPIED element-wise from the
+    // sample's column types (never move-assigned from sample.types(), whose vector is
+    // allocated on the foreign/null sink arena — that move-assign compares allocators
+    // and dereferences the dangling sink resource).
     core::error_t operator_match_t::build_predicate_(pipeline::context_t* ctx,
                                                      const vector::data_chunk_t& sample,
+                                                     std::pmr::memory_resource* resource,
                                                      std::pmr::vector<types::complex_logical_type>& types,
                                                      std::vector<size_t>& populated_cols,
                                                      bool& sparse,
                                                      predicates::predicate_ptr& predicate) {
-        std::pmr::memory_resource* resource = sample.resource();
-        types = sample.types();
+        // `types` is already constructed on `resource` by the caller (so its allocator
+        // is the stable resource, never null), so an in-place fill is safe.
+        types.clear();
+        types.reserve(sample.column_count());
+        for (size_t j = 0; j < sample.column_count(); j++) {
+            types.push_back(sample.data[j].type());
+        }
 
         // populated_cols: only slots with real data flow downstream. A projected scan
         // leaves the un-projected slots as placeholders (no buffer) so column indices
@@ -71,6 +88,7 @@ namespace components::operators {
                                                   predicates::predicate_ptr& predicate,
                                                   const std::vector<size_t>& populated_cols,
                                                   bool sparse,
+                                                  bool row_ids_meaningful,
                                                   const std::pmr::vector<types::complex_logical_type>& types,
                                                   const vector::data_chunk_t& chunk,
                                                   int64_t& limit_total,
@@ -95,7 +113,16 @@ namespace components::operators {
                     for (size_t j : populated_cols) {
                         out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));
                     }
-                    out_chunk.row_ids.data<int64_t>()[out_count] = chunk.row_ids.data<int64_t>()[i];
+                    // DEFECT FIX (a): only propagate the input row_id when it is a REAL
+                    // absolute id (input is a scan source's batch). Over a SINK
+                    // (group/join) the input's row_ids are zero-filled placeholders; the
+                    // out_chunk's row_ids are likewise zero-initialized, so leaving them
+                    // (no copy) reproduces exactly what the materialized path produced
+                    // over a sink — and crucially never hands a downstream DML/index
+                    // consumer the bogus absolute id 0.
+                    if (row_ids_meaningful) {
+                        out_chunk.row_ids.data<int64_t>()[out_count] = chunk.row_ids.data<int64_t>()[i];
+                    }
                     ++out_count;
                 }
                 ++limit_total;
@@ -120,8 +147,23 @@ namespace components::operators {
         // the total emitted across ALL batches and an OFFSET skips the head of the
         // stream — exactly as the materialized loop does over its chunk vector.
         if (!stream_ready_) {
+            // Stable resource for the whole streaming run: the operator's own resource_
+            // when it has one (scan-source matches), else the input chunk's resource —
+            // captured ONCE here. Over a sink (group/join) the match is built with a
+            // null resource_ (the create_plan "no table_oid" fallback), so it must fall
+            // back to the sink output's resource, which is the sink operator's stable
+            // resource and outlives every batch. The cached predicate is allocated on
+            // it, so it stays valid across all batches (defect fix (b)).
+            stream_resource_ = resource_ ? resource_ : input.resource();
+            // Rebind stream_types_ to the stable resource (it was member-initialized
+            // with the possibly-null resource_). Destroy + placement-construct so its
+            // allocator is the chosen resource — a plain assignment would compare the
+            // old (null) allocator and crash.
+            stream_types_.~vector();
+            new (&stream_types_) std::pmr::vector<types::complex_logical_type>(stream_resource_);
             auto err = build_predicate_(ctx,
                                         input,
+                                        stream_resource_,
                                         stream_types_,
                                         stream_populated_cols_,
                                         stream_sparse_,
@@ -131,10 +173,11 @@ namespace components::operators {
             }
             stream_ready_ = true;
         }
-        return filter_batch_(resource_,
+        return filter_batch_(stream_resource_,
                              stream_predicate_,
                              stream_populated_cols_,
                              stream_sparse_,
+                             row_ids_meaningful_(),
                              stream_types_,
                              input,
                              stream_limit_total_,
@@ -163,7 +206,13 @@ namespace components::operators {
         bool sparse = false;
         predicates::predicate_ptr predicate{nullptr};
         if (!in_chunks.empty()) {
-            auto err = build_predicate_(pipeline_context, in_chunks.front(), types, populated_cols, sparse, predicate);
+            auto err = build_predicate_(pipeline_context,
+                                        in_chunks.front(),
+                                        resource,
+                                        types,
+                                        populated_cols,
+                                        sparse,
+                                        predicate);
             if (err.contains_error()) {
                 set_error(err);
                 return;
@@ -177,8 +226,15 @@ namespace components::operators {
             if (!limit_.check(limit_total)) {
                 break;
             }
-            auto err =
-                filter_batch_(resource, predicate, populated_cols, sparse, types, chunk, limit_total, out_chunks);
+            auto err = filter_batch_(resource,
+                                     predicate,
+                                     populated_cols,
+                                     sparse,
+                                     row_ids_meaningful_(),
+                                     types,
+                                     chunk,
+                                     limit_total,
+                                     out_chunks);
             if (err.contains_error()) {
                 set_error(err);
                 return;

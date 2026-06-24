@@ -129,7 +129,8 @@ namespace components::operators {
         // Streaming projection: apply the per-chunk transform to the single
         // batch handed in via `input`. No accumulation, no read of left_->output().
         // A SELECT over a JOIN receives one merged chunk holding both sides'
-        // columns, so the chunk doubles as right_input (mirrors evaluate()).
+        // columns, so the chunk doubles as right_input: its full_path indexes the
+        // merged chunk regardless of a key's resolved side.
         auto result = evaluate_projection(resource_,
                                           columns_,
                                           &input,
@@ -239,25 +240,6 @@ namespace components::operators {
 
         result.set_cardinality(num_rows);
         return result;
-    }
-
-    vector::data_chunk_t operator_select_t::evaluate(pipeline::context_t* pipeline_context,
-                                                     vector::data_chunk_t& input) {
-        // A SELECT over a JOIN receives one merged chunk holding both sides'
-        // columns, yet projection keys keep their resolved side. Pass that chunk as
-        // both input and right_input so a right-side key has a chunk to read from
-        // (its full_path indexes the merged chunk either way).
-        auto result = evaluate_projection(resource_,
-                                          columns_,
-                                          &input,
-                                          pipeline_context->parameters,
-                                          pipeline_context->session_tz,
-                                          &input);
-        if (result.has_error()) {
-            set_error(result.error());
-            return vector::data_chunk_t(resource_, {}, 0);
-        }
-        return std::move(result.value());
     }
 
 } // namespace components::operators

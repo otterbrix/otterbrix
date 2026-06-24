@@ -70,9 +70,6 @@ namespace components::operators {
 
     private:
         std::pmr::vector<select_column_t> columns_;
-
-        // Build result chunk row-by-row.
-        vector::data_chunk_t evaluate(pipeline::context_t* pipeline_context, vector::data_chunk_t& input);
     };
 
 } // namespace components::operators

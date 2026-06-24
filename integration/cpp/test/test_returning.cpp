@@ -534,7 +534,7 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
             REQUIRE(cur->size() == 2);
             for (std::size_t row = 0; row < cur->size(); ++row) {
                 auto id = cur->chunk_data().value(0, row).value<int64_t>();
-                auto name = cur->chunk_data().value(1, row).value<std::string_view>();
+                auto name = std::string(cur->chunk_data().value(1, row).value<std::string_view>());
                 auto qty = cur->chunk_data().value(2, row).value<int64_t>();
                 ins += "(" + std::to_string(id) + ", '" + std::string(name) + "', " + std::to_string(qty) + ")";
                 ins += (row + 1 < cur->size()) ? "," : ";";

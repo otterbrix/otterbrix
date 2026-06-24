@@ -29,16 +29,22 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-        // STREAMING DML (STEP 3b). The SIMPLE predicate-scan DELETE (no USING join,
-        // no catalog spec) is a SINK on its scan input: push() folds each scan batch
-        // via consume_batch_ — appending matched absolute row-ids to modified_,
-        // staging matched RETURNING rows AND the matched OLD scan rows (for the
-        // index mirror, since left_->output() is empty when streaming). The
-        // USING-join (right_) and catalog (oid_col_idx_>=0) forms stay on the legacy
-        // on_execute path (role()==none). needs_async_finalize drives the async
-        // commit after the pump.
+        // STREAMING DML (STEP 3b). Both DELETE shapes that have a scan source are
+        // SINKs on the LEFT (target) scan input:
+        //   - SIMPLE predicate-scan DELETE (no USING): push() folds each scan batch
+        //     via consume_batch_ — matched absolute row-ids into modified_, matched
+        //     RETURNING rows, and the matched OLD scan rows (index mirror).
+        //   - DELETE ... USING (right_ = the materialized USING scan): push() probes
+        //     each LEFT batch against right_->output() via consume_join_batch_ —
+        //     same semi-join match, modified_, index-old staging and per-batch joined
+        //     RETURNING the legacy on_execute USING branch produced.
+        // Only the catalog form (oid_col_idx_>=0) has no scan source, so it stays on
+        // the legacy on_execute path (role()==none). The LEFT scan streams; the RIGHT
+        // (USING) build side is fully materialized before the first push (the executor
+        // materializes join build sides — traverse_plan_ split / materialize_build_sides_).
+        // needs_async_finalize drives the async commit after the pump.
         [[nodiscard]] pipeline_role role() const noexcept override {
-            return (right_ == nullptr && oid_col_idx_ < 0) ? pipeline_role::sink : pipeline_role::none;
+            return (oid_col_idx_ < 0) ? pipeline_role::sink : pipeline_role::none;
         }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -67,6 +73,17 @@ namespace components::operators {
         // their absolute row-ids for the index mirror. push() calls it per batch;
         // on_execute_impl's simple path loops left_->output()->chunks() through it.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
+        // Shared DELETE...USING core (R6: one implementation, two entry points).
+        // Probes ONE LEFT (target) scan chunk against the fully-materialized RIGHT
+        // (USING) build chunk as a semi-join, and stages the SAME bounded state
+        // consume_batch_ does — matched ABSOLUTE row-ids (DICTIONARY fallback) into
+        // modified_, the matched OLD left rows + their ids for the index mirror, and
+        // the per-batch joined RETURNING projection (matched left+right pair gathered
+        // in lockstep). push() calls it per LEFT batch; on_execute_impl loops the
+        // materialized left chunks through it. await_async_and_resume drains it.
+        core::error_t consume_join_batch_(pipeline::context_t* ctx,
+                                          const vector::data_chunk_t& chunk_left,
+                                          const vector::data_chunk_t& chunk_right);
         // Lazily create modified_ + the staging buffers so push() and
         // on_execute_impl share the same per-operator init.
         void ensure_simple_init_();

@@ -146,28 +146,147 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
+    core::error_t operator_update::consume_join_batch_(pipeline::context_t* pipeline_context,
+                                                       const vector::data_chunk_t& chunk_left,
+                                                       const chunks_vector_t& right_chunks) {
+        // UPDATE ... FROM shared core (R6: one implementation, two entry points).
+        // Probes ONE LEFT (target) scan batch against the fully-materialized RIGHT
+        // (FROM) build chunks: a semi-join (a target row is updated once regardless
+        // of how many FROM rows it matches). Per matched LEFT row it builds the
+        // updated out_chunk (matched columns, SET applied), accumulates it into
+        // output_ + modified_/no_modified_, stages the matched OLD rows for the index
+        // mirror (aligned by row_id with the NEW rows), and — for RETURNING — keeps
+        // the matched FROM rows in lockstep so a joined RETURNING column reads them.
+        // push() calls it per LEFT batch; on_execute_impl loops the materialized left
+        // chunks through it. await_async_and_resume drains it all.
+        using components::vector::data_chunk_t;
+        ensure_simple_init_();
+        if (chunk_left.size() == 0) {
+            return core::error_t::no_error();
+        }
+        auto* resource = resource_;
+        auto types_left = chunk_left.types();
+        std::pmr::vector<types::complex_logical_type> types_right(resource);
+        for (const auto& rc : right_chunks) {
+            if (rc.size() > 0) {
+                types_right = rc.types();
+                break;
+            }
+        }
+
+        auto predicate = expr_ ? predicates::create_predicate(resource,
+                                                              pipeline_context->function_registry,
+                                                              expr_,
+                                                              types_left,
+                                                              types_right,
+                                                              &pipeline_context->parameters,
+                                                              pipeline_context->session_tz)
+                               : predicates::create_all_true_predicate(resource);
+
+        data_chunk_t out_chunk(resource, types_left, chunk_left.size());
+        data_chunk_t right_chunk(resource, types_right, chunk_left.size());
+        size_t index = 0;
+        for (size_t i = 0; i < chunk_left.size(); ++i) {
+            bool row_matched = false;
+            for (const auto& chunk_right : right_chunks) {
+                if (chunk_right.size() == 0) {
+                    continue;
+                }
+                auto results = predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
+                if (results.has_error()) {
+                    return results.error();
+                }
+                for (size_t j = 0; j < chunk_right.size(); ++j) {
+                    if (!results.value()[j]) {
+                        continue;
+                    }
+                    // Storage / index update keys on the ABSOLUTE table row id of the
+                    // matched left row; mirror the simple path's DICTIONARY fallback.
+                    if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
+                        out_chunk.row_ids.data<int64_t>()[index] =
+                            static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
+                    } else {
+                        out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
+                    }
+                    for (size_t k = 0; k < chunk_left.column_count(); ++k) {
+                        vector::vector_ops::copy(chunk_left.data[k], out_chunk.data[k], i + 1, i, index);
+                    }
+                    for (size_t k = 0; k < chunk_right.column_count(); ++k) {
+                        vector::vector_ops::copy(chunk_right.data[k], right_chunk.data[k], j + 1, j, index);
+                    }
+                    ++index;
+                    vector::validate_chunk_capacity(out_chunk, index);
+                    vector::validate_chunk_capacity(right_chunk, index);
+                    // UPDATE ... FROM is a semi-join: a target row is updated once
+                    // regardless of how many FROM rows it matches. Stop after the
+                    // first matching FROM row.
+                    row_matched = true;
+                    break;
+                }
+                if (row_matched) {
+                    break;
+                }
+            }
+        }
+        out_chunk.set_cardinality(index);
+        right_chunk.set_cardinality(index);
+        if (index == 0) {
+            return core::error_t::no_error();
+        }
+
+        // Capture the matched OLD rows BEFORE apply_updates mutates out_chunk in
+        // place — pre-update rows for the index mirror, aligned row-for-row (and by
+        // row_id) with the NEW rows accumulated in output_.
+        data_chunk_t old_chunk(resource, types_left, index);
+        out_chunk.copy(old_chunk, 0);
+        index_old_chunks_.emplace_back(std::move(old_chunk));
+
+        apply_updates(resource,
+                      updates_,
+                      out_chunk,
+                      right_chunk,
+                      index,
+                      pipeline_context->parameters,
+                      pipeline_context->session_tz,
+                      modified_,
+                      no_modified_);
+        output_->append_chunk(std::move(out_chunk));
+        // Keep the matched FROM rows aligned with the updated rows so RETURNING can
+        // project joined (right-side) columns.
+        if (!returning_.empty()) {
+            returning_from_chunks_.emplace_back(std::move(right_chunk));
+        }
+        return core::error_t::no_error();
+    }
+
     core::error_t
     operator_update::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
         // STREAMING DML SINK: fold one scan batch into the updated-rows accumulator
         // (output_), modified_/no_modified_, and the index-old staging. Emits
         // nothing; await_async_and_resume drains the staged state into the single
-        // WAL->storage->index commit.
+        // WAL->storage->index commit. FROM-join shape: probe the LEFT batch against
+        // the materialized RIGHT (FROM) build chunks; otherwise the simple fold.
+        if (right_ && right_->output()) {
+            return consume_join_batch_(ctx, input, right_->output()->chunks());
+        }
         return consume_batch_(ctx, input);
     }
 
     void operator_update::on_execute_impl(pipeline::context_t* pipeline_context) {
         if (left_ && left_->output() && right_ && right_->output()) {
+            // UPDATE ... FROM (materialized entry point): loop each LEFT (target)
+            // scan chunk through the SAME consume_join_batch_ core push() uses
+            // (R6: one implementation, two entry points), probing it against the
+            // materialized RIGHT (FROM) build chunks. Matching, SET application,
+            // modified_/no_modified_, the index-old staging and the lockstep FROM
+            // rows for RETURNING are identical.
             auto* resource = left_->output()->resource();
             const auto& left_chunks = left_->output()->chunks();
             const auto& right_chunks = right_->output()->chunks();
 
             std::pmr::vector<types::complex_logical_type> types_left(resource);
-            std::pmr::vector<types::complex_logical_type> types_right(resource);
             if (!left_chunks.empty()) {
                 types_left = left_chunks.front().types();
-            }
-            if (!right_chunks.empty()) {
-                types_right = right_chunks.front().types();
             }
 
             const uint64_t left_size = left_->output()->size();
@@ -177,6 +296,10 @@ namespace components::operators {
                 if (upsert_) {
                     output_ = operators::make_operator_data(resource, types_left);
                     // upsert path: synthesise a row by running update exprs against an empty context.
+                    std::pmr::vector<types::complex_logical_type> types_right(resource);
+                    if (!right_chunks.empty()) {
+                        types_right = right_chunks.front().types();
+                    }
                     vector::data_chunk_t empty_left(resource, types_left);
                     vector::data_chunk_t empty_right(resource, types_right);
                     for (const auto& expr : updates_) {
@@ -190,89 +313,17 @@ namespace components::operators {
                     modified_ = operators::make_operator_write_data(resource);
                 }
             } else {
-                modified_ = operators::make_operator_write_data(resource);
-                no_modified_ = operators::make_operator_write_data(resource);
-
-                auto predicate = expr_ ? predicates::create_predicate(resource,
-                                                                      pipeline_context->function_registry,
-                                                                      expr_,
-                                                                      types_left,
-                                                                      types_right,
-                                                                      &pipeline_context->parameters,
-                                                                      pipeline_context->session_tz)
-                                       : predicates::create_all_true_predicate(resource);
-
-                chunks_vector_t out_chunks(resource);
-                out_chunks.reserve(left_chunks.size());
-
-                for (auto& chunk_left : left_chunks) {
-                    if (chunk_left.size() == 0) {
-                        continue;
-                    }
-                    vector::data_chunk_t out_chunk(resource, types_left, chunk_left.size());
-                    vector::data_chunk_t right_chunk(resource, types_right, chunk_left.size());
-                    size_t index = 0;
-                    for (size_t i = 0; i < chunk_left.size(); ++i) {
-                        bool row_matched = false;
-                        for (const auto& chunk_right : right_chunks) {
-                            if (chunk_right.size() == 0) {
-                                continue;
-                            }
-                            auto results =
-                                predicates::batch_check_1vN(predicate, chunk_left, chunk_right, i, chunk_right.size());
-                            if (results.has_error()) {
-                                set_error(results.error());
-                                return;
-                            }
-                            for (size_t j = 0; j < chunk_right.size(); ++j) {
-                                if (!results.value()[j]) {
-                                    continue;
-                                }
-                                out_chunk.row_ids.data<int64_t>()[index] = chunk_left.row_ids.data<int64_t>()[i];
-                                for (size_t k = 0; k < chunk_left.column_count(); ++k) {
-                                    vector::vector_ops::copy(chunk_left.data[k], out_chunk.data[k], i + 1, i, index);
-                                }
-                                for (size_t k = 0; k < chunk_right.column_count(); ++k) {
-                                    vector::vector_ops::copy(chunk_right.data[k], right_chunk.data[k], j + 1, j, index);
-                                }
-                                ++index;
-                                vector::validate_chunk_capacity(out_chunk, index);
-                                vector::validate_chunk_capacity(right_chunk, index);
-                                // UPDATE ... FROM is a semi-join: a target row is
-                                // updated once regardless of how many FROM rows it
-                                // matches. Stop after the first matching FROM row.
-                                row_matched = true;
-                                break;
-                            }
-                            if (row_matched) {
-                                break;
-                            }
-                        }
-                    }
-                    out_chunk.set_cardinality(index);
-                    right_chunk.set_cardinality(index);
-                    if (index > 0) {
-                        apply_updates(resource,
-                                      updates_,
-                                      out_chunk,
-                                      right_chunk,
-                                      index,
-                                      pipeline_context->parameters,
-                                      pipeline_context->session_tz,
-                                      modified_,
-                                      no_modified_);
-                        out_chunks.emplace_back(std::move(out_chunk));
-                        // Keep the matched FROM rows aligned with the updated rows
-                        // so RETURNING can project joined (right-side) columns.
-                        if (!returning_.empty()) {
-                            returning_from_chunks_.emplace_back(std::move(right_chunk));
-                        }
+                for (const auto& chunk_left : left_chunks) {
+                    auto err = consume_join_batch_(pipeline_context, chunk_left, right_chunks);
+                    if (err.contains_error()) {
+                        set_error(err);
+                        return;
                     }
                 }
-                if (out_chunks.empty()) {
+                // No matched rows: keep output_ as a typed empty result (matches the
+                // legacy "out_chunks.empty()" shape) rather than the empty accumulator.
+                if (output_ && output_->size() == 0) {
                     output_ = operators::make_operator_data(resource, types_left, 0);
-                } else {
-                    output_ = operators::make_operator_data(resource, std::move(out_chunks));
                 }
             }
         } else if (left_ && left_->output()) {

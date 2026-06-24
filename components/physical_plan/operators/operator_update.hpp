@@ -24,17 +24,21 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-        // STREAMING DML (STEP 3b). The SIMPLE predicate-scan UPDATE (no FROM join)
-        // is a SINK on its scan input: push() folds each scan batch via
-        // consume_batch_ — matching, applying the SET expressions into out_chunks
-        // accumulated in output_, accumulating modified_/no_modified_, and staging
-        // the matched OLD scan rows (for the index mirror, since left_->output() is
-        // empty when streaming). The UPDATE...FROM (right_) form stays on the legacy
-        // on_execute path (role()==none). needs_async_finalize drives the async
-        // commit after the pump.
-        [[nodiscard]] pipeline_role role() const noexcept override {
-            return (right_ == nullptr) ? pipeline_role::sink : pipeline_role::none;
-        }
+        // STREAMING DML (STEP 3b). Both UPDATE shapes are SINKs on the LEFT (target)
+        // scan input:
+        //   - SIMPLE predicate-scan UPDATE (no FROM): push() folds each scan batch
+        //     via consume_batch_ — matching, applying the SET expressions into
+        //     out_chunks accumulated in output_, modified_/no_modified_, and staging
+        //     the matched OLD scan rows for the index mirror.
+        //   - UPDATE ... FROM (right_ = the materialized FROM scan): push() probes
+        //     each LEFT batch against right_->output() via consume_join_batch_ —
+        //     same semi-join match, SET application, modified_/no_modified_, index-old
+        //     staging and lockstep FROM rows for joined RETURNING.
+        // The LEFT scan streams; the RIGHT (FROM) build side is fully materialized
+        // before the first push (the executor materializes join build sides —
+        // traverse_plan_ split / materialize_build_sides_). needs_async_finalize
+        // drives the async commit after the pump.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t
@@ -61,6 +65,17 @@ namespace components::operators {
         // matched OLD scan rows for the index mirror. push() calls it per batch;
         // on_execute_impl's simple path loops left_->output()->chunks() through it.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
+        // Shared UPDATE...FROM core (R6: one implementation, two entry points).
+        // Probes ONE LEFT (target) scan chunk against the fully-materialized RIGHT
+        // (FROM) build chunks as a semi-join, and stages the SAME bounded state
+        // consume_batch_ does — the updated out_chunk (matched columns, DICTIONARY
+        // row-id fallback, SET applied) appended to output_, modified_/no_modified_,
+        // the matched OLD rows for the index mirror, and (for RETURNING) the matched
+        // FROM rows in lockstep. push() calls it per LEFT batch; on_execute_impl loops
+        // the materialized left chunks through it. await_async_and_resume drains it.
+        core::error_t consume_join_batch_(pipeline::context_t* ctx,
+                                          const vector::data_chunk_t& chunk_left,
+                                          const chunks_vector_t& right_chunks);
         // Lazily create modified_/no_modified_/output_ accumulator + staging so
         // push() and on_execute_impl share the same per-operator init.
         void ensure_simple_init_();

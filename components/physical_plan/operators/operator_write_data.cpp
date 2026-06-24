@@ -2,15 +2,6 @@
 
 namespace components::operators {
 
-    operator_write_data_t::ptr operator_write_data_t::copy() const {
-        auto copy_data = make_operator_write_data(resource_);
-        copy_data->ids_.reserve(ids_.size());
-        for (const auto& id : ids_) {
-            copy_data->ids_.push_back(id);
-        }
-        return copy_data;
-    }
-
     std::size_t operator_write_data_t::size() const { return ids_.size(); }
 
     operator_write_data_t::ids_t& operator_write_data_t::ids() { return ids_; }

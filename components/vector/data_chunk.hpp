@@ -91,7 +91,7 @@ namespace components::vector {
         std::pmr::memory_resource* resource() const;
 
     private:
-        std::pmr::memory_resource* resource_;
+        std::pmr::memory_resource* resource_ = nullptr;
         uint64_t count_ = 0;
         uint64_t capacity_ = DEFAULT_VECTOR_CAPACITY;
 

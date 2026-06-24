@@ -30,6 +30,13 @@ using namespace components::types;
 
 namespace catalog = components::catalog;
 
+// write_physical_insert/update now take the whole chunk batch; wrap a single chunk.
+inline std::pmr::vector<data_chunk_t> to_batch(std::unique_ptr<data_chunk_t> chunk) {
+    std::pmr::vector<data_chunk_t> batch(chunk->resource());
+    batch.emplace_back(std::move(*chunk));
+    return batch;
+}
+
 #if defined(OTTERBRIX_TSAN_ENABLED)
 // TSAN can't see through synchronized_pool_resource's internal mutex and
 // false-positives on cross-thread memory reuse (manager loop vs scheduler
@@ -125,7 +132,7 @@ struct test_wal_manager {
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      table_oid,
-                                                     std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                     to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                      row_start,
                                                      row_count,
                                                      txn_id,
@@ -341,7 +348,7 @@ TEST_CASE("wal_manager::disabled") {
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      kTestTableOidA,
-                                                     std::make_unique<data_chunk_t>(std::move(chunk)),
+                                                     to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                      uint64_t{0},
                                                      uint64_t{5},
                                                      uint64_t{800},

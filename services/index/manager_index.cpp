@@ -797,9 +797,9 @@ namespace services::index {
     // --- Txn-aware DML ---
 
     void manager_index_t::bootstrap_repopulate_sync(components::catalog::oid_t table_oid,
-                                                    std::unique_ptr<components::vector::data_chunk_t> chunk,
+                                                    std::pmr::vector<components::vector::data_chunk_t> chunks,
                                                     uint64_t row_count) {
-        if (!chunk || row_count == 0) {
+        if (chunks.empty() || row_count == 0) {
             return;
         }
         auto it = engines_.find(table_oid);
@@ -815,11 +815,15 @@ namespace services::index {
                 idx->clean_memory_to_new_elements(0);
             }
         }
-        // Re-insert each row with its current physical row_id (post-checkpoint
-        // scan chunks are 0-based contiguous).
+        // Re-insert each row with its current physical row_id. Post-checkpoint scan
+        // chunks are 0-based contiguous and concatenate in batch order, so the global
+        // row index (= row_id) runs continuously across the chunks.
         const core::date::timezone_offset_t bootstrap_tz{};
-        for (uint64_t i = 0; i < row_count; ++i) {
-            engine->insert_row(*chunk, i, static_cast<int64_t>(i), /*txn_id=*/0, bootstrap_tz);
+        uint64_t global_row = 0;
+        for (const auto& chunk : chunks) {
+            for (uint64_t i = 0; i < chunk.size() && global_row < row_count; ++i, ++global_row) {
+                engine->insert_row(chunk, i, static_cast<int64_t>(global_row), /*txn_id=*/0, bootstrap_tz);
+            }
         }
         trace(log_,
               "manager_index_t::bootstrap_repopulate_sync: oid={} rows={}",
@@ -830,10 +834,10 @@ namespace services::index {
     manager_index_t::unique_future<void>
     manager_index_t::insert_rows(execution_context_t ctx,
                                  components::catalog::oid_t table_oid,
-                                 std::unique_ptr<components::vector::data_chunk_t> data,
+                                 std::pmr::vector<components::vector::data_chunk_t> data,
                                  uint64_t start_row_id,
                                  uint64_t count) {
-        if (!data || count == 0)
+        if (count == 0)
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
@@ -842,8 +846,14 @@ namespace services::index {
             co_return;
 
         auto& engine = it->second;
-        for (uint64_t i = 0; i < count; i++) {
-            engine->insert_row(*data, i, static_cast<int64_t>(start_row_id + i), txn_id, ctx.session_tz);
+        // Index every chunk's rows in vector order with contiguous row-ids based at
+        // start_row_id, stopping after `count` rows (the committed/appended total).
+        uint64_t inserted = 0;
+        for (const auto& chunk : data) {
+            for (uint64_t i = 0; i < chunk.size() && inserted < count; i++) {
+                engine->insert_row(chunk, i, static_cast<int64_t>(start_row_id + inserted), txn_id, ctx.session_tz);
+                ++inserted;
+            }
         }
         // No disk mirroring — uncommitted entries don't go to disk
 
@@ -853,9 +863,9 @@ namespace services::index {
     manager_index_t::unique_future<void>
     manager_index_t::delete_rows(execution_context_t ctx,
                                  components::catalog::oid_t table_oid,
-                                 std::unique_ptr<components::vector::data_chunk_t> data,
+                                 std::pmr::vector<components::vector::data_chunk_t> data,
                                  std::pmr::vector<int64_t> row_ids) {
-        if (!data || row_ids.empty())
+        if (row_ids.empty())
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
@@ -864,8 +874,14 @@ namespace services::index {
             co_return;
 
         auto& engine = it->second;
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->mark_delete_row(*data, i, row_ids[i], txn_id, ctx.session_tz);
+        // Walk the chunks in lockstep with the flat row_ids (row_ids[k] is the storage
+        // row-id of the k-th row across the concatenated chunks).
+        size_t deleted = 0;
+        for (const auto& chunk : data) {
+            for (uint64_t i = 0; i < chunk.size() && deleted < row_ids.size(); i++) {
+                engine->mark_delete_row(chunk, i, row_ids[deleted], txn_id, ctx.session_tz);
+                ++deleted;
+            }
         }
         // No disk mirroring — uncommitted deletes don't go to disk
 
@@ -875,11 +891,11 @@ namespace services::index {
     manager_index_t::unique_future<void>
     manager_index_t::update_rows(execution_context_t ctx,
                                  components::catalog::oid_t table_oid,
-                                 std::unique_ptr<components::vector::data_chunk_t> old_data,
-                                 std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                 std::pmr::vector<components::vector::data_chunk_t> old_data,
+                                 std::pmr::vector<components::vector::data_chunk_t> new_data,
                                  std::pmr::vector<int64_t> row_ids,
                                  int64_t new_start_row_id) {
-        if (!old_data || !new_data || row_ids.empty())
+        if (row_ids.empty())
             co_return;
 
         auto txn_id = ctx.txn.transaction_id;
@@ -889,14 +905,23 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        // Mark old entries as deleted
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->mark_delete_row(*old_data, i, row_ids[i], txn_id, ctx.session_tz);
+        // Mark old entries as deleted — walk the old chunks in lockstep with row_ids.
+        size_t deleted = 0;
+        for (const auto& chunk : old_data) {
+            for (uint64_t i = 0; i < chunk.size() && deleted < row_ids.size(); i++) {
+                engine->mark_delete_row(chunk, i, row_ids[deleted], txn_id, ctx.session_tz);
+                ++deleted;
+            }
         }
 
-        // Insert new entries
-        for (size_t i = 0; i < row_ids.size(); i++) {
-            engine->insert_row(*new_data, i, new_start_row_id + static_cast<int64_t>(i), txn_id, ctx.session_tz);
+        // Insert new entries — new chunks in vector order, contiguous row-ids from
+        // new_start_row_id (aligned positionally to the deleted old rows).
+        size_t inserted = 0;
+        for (const auto& chunk : new_data) {
+            for (uint64_t i = 0; i < chunk.size() && inserted < row_ids.size(); i++) {
+                engine->insert_row(chunk, i, new_start_row_id + static_cast<int64_t>(inserted), txn_id, ctx.session_tz);
+                ++inserted;
+            }
         }
 
         co_return;
@@ -1154,7 +1179,7 @@ namespace services::index {
     manager_index_t::unique_future<void>
     manager_index_t::repopulate_table(session_id_t session,
                                       components::catalog::oid_t table_oid,
-                                      std::unique_ptr<components::vector::data_chunk_t> chunk,
+                                      std::pmr::vector<components::vector::data_chunk_t> chunks,
                                       uint64_t row_count,
                                       core::date::timezone_offset_t session_tz) {
         trace(log_, "manager_index_t::repopulate_table: oid={} rows={}", static_cast<unsigned>(table_oid), row_count);
@@ -1214,9 +1239,13 @@ namespace services::index {
         //     txn_id=0 (committed-for-everyone — no commit needed). row_count==0
         //     (empty table after compact) is valid: the clears above ran,
         //     nothing is re-inserted here.
-        if (chunk && row_count != 0) {
-            for (uint64_t i = 0; i < row_count; ++i) {
-                engine_after->insert_row(*chunk, i, static_cast<int64_t>(i), /*txn_id=*/0, session_tz);
+        if (row_count != 0) {
+            uint64_t global = 0;
+            for (const auto& chunk : chunks) {
+                for (uint64_t i = 0; i < chunk.size() && global < row_count; ++i) {
+                    engine_after->insert_row(chunk, i, static_cast<int64_t>(global), /*txn_id=*/0, session_tz);
+                    ++global;
+                }
             }
 
             agent_batch_map_t insert_batches;
@@ -1448,7 +1477,7 @@ namespace services::index {
                                                 uint64_t wal_record_id,
                                                 uint8_t record_type,
                                                 std::pmr::vector<int64_t> row_ids,
-                                                std::unique_ptr<components::vector::data_chunk_t> physical_data,
+                                                std::pmr::vector<components::vector::data_chunk_t> physical_data,
                                                 uint64_t physical_row_start,
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t session_tz) {
@@ -1469,11 +1498,16 @@ namespace services::index {
 
         auto& engine = it->second;
 
+        uint64_t total_rows = 0;
+        for (const auto& chunk : physical_data) {
+            total_rows += chunk.size();
+        }
+
         if (record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT)) {
-            // Replay the INSERT chunk, tagged with the CREATE INDEX txn_id so
+            // Replay the INSERT chunks, tagged with the CREATE INDEX txn_id so
             // entries stay PENDING until the post-pipeline commit_insert
             // publishes them with the rest of the build.
-            if (!physical_data || physical_data->size() == 0) {
+            if (total_rows == 0) {
                 trace(log_,
                       "manager_index_t::apply_wal_record_for_index INSERT: empty chunk "
                       "(table_oid={} index_oid={} wal_id={})",
@@ -1482,13 +1516,16 @@ namespace services::index {
                       wal_record_id);
                 co_return;
             }
-            const auto rows = physical_data->size();
-            for (uint64_t i = 0; i < rows; ++i) {
-                engine->insert_row(*physical_data,
-                                   static_cast<size_t>(i),
-                                   static_cast<int64_t>(physical_row_start + i),
-                                   txn_id,
-                                   session_tz);
+            uint64_t global = 0;
+            for (const auto& chunk : physical_data) {
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    engine->insert_row(chunk,
+                                       static_cast<size_t>(i),
+                                       static_cast<int64_t>(physical_row_start + global),
+                                       txn_id,
+                                       session_tz);
+                    ++global;
+                }
             }
             trace(log_,
                   "manager_index_t::apply_wal_record_for_index INSERT: "
@@ -1496,13 +1533,13 @@ namespace services::index {
                   static_cast<unsigned>(table_oid),
                   static_cast<unsigned>(index_oid),
                   wal_record_id,
-                  rows);
+                  total_rows);
         } else if (record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE)) {
-            // physical_data is the operator-recovered key chunk (see header).
+            // physical_data is the operator-recovered key batch (see header).
             // Best-effort: if it's missing the rows are gone, skip and let the
             // operator's convergence guard catch persistent divergence; on
             // partial recovery apply only the row_ids/chunk prefix that agrees.
-            if (!physical_data || physical_data->size() == 0) {
+            if (total_rows == 0) {
                 trace(log_,
                       "manager_index_t::apply_wal_record_for_index DELETE: no recovered chunk "
                       "(table_oid={} index_oid={} wal_id={} row_ids={}), skipping",
@@ -1511,40 +1548,42 @@ namespace services::index {
                       wal_record_id,
                       row_ids.size());
             } else {
-                const auto rows = std::min<uint64_t>(physical_data->size(), row_ids.size());
-                for (uint64_t i = 0; i < rows; ++i) {
-                    engine->mark_delete_row(*physical_data,
-                                            static_cast<size_t>(i),
-                                            row_ids[static_cast<size_t>(i)],
-                                            txn_id,
-                                            session_tz);
+                size_t global = 0;
+                for (const auto& chunk : physical_data) {
+                    for (uint64_t i = 0; i < chunk.size() && global < row_ids.size(); ++i) {
+                        engine->mark_delete_row(chunk, static_cast<size_t>(i), row_ids[global], txn_id, session_tz);
+                        ++global;
+                    }
                 }
                 trace(log_,
                       "manager_index_t::apply_wal_record_for_index DELETE: "
-                      "table_oid={} index_oid={} wal_id={} rows={} (row_ids={} chunk={})",
+                      "table_oid={} index_oid={} wal_id={} rows={} (row_ids={} chunk_rows={})",
                       static_cast<unsigned>(table_oid),
                       static_cast<unsigned>(index_oid),
                       wal_record_id,
-                      rows,
+                      global,
                       row_ids.size(),
-                      physical_data->size());
+                      total_rows);
             }
         } else if (record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_UPDATE)) {
-            // Insert half only (NEW chunk in physical_data); the OLD-row delete
+            // Insert half only (NEW chunks in physical_data); the OLD-row delete
             // half arrives as a separate PHYSICAL_DELETE message (see header).
             // The two-message split lets the operator run the storage_fetch with
             // its own disk_address; this manager has none for the catchup path,
             // keeping inter-actor communication mailbox-only.
-            if (physical_data && physical_data->size() > 0) {
-                // New rows were appended from physical_row_start, so chunk row i
-                // maps to physical_row_start + i (the engine's row_id contract).
-                const auto rows = physical_data->size();
-                for (uint64_t i = 0; i < rows; ++i) {
-                    engine->insert_row(*physical_data,
-                                       static_cast<size_t>(i),
-                                       static_cast<int64_t>(physical_row_start + i),
-                                       txn_id,
-                                       session_tz);
+            if (total_rows > 0) {
+                // New rows were appended from physical_row_start, so the g-th row in
+                // vector order maps to physical_row_start + g (the engine's contract).
+                uint64_t global = 0;
+                for (const auto& chunk : physical_data) {
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        engine->insert_row(chunk,
+                                           static_cast<size_t>(i),
+                                           static_cast<int64_t>(physical_row_start + global),
+                                           txn_id,
+                                           session_tz);
+                        ++global;
+                    }
                 }
                 trace(log_,
                       "manager_index_t::apply_wal_record_for_index UPDATE (insert new half): "
@@ -1553,7 +1592,7 @@ namespace services::index {
                       static_cast<unsigned>(table_oid),
                       static_cast<unsigned>(index_oid),
                       wal_record_id,
-                      rows,
+                      total_rows,
                       row_ids.size());
             } else {
                 trace(log_,

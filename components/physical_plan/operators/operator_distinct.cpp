@@ -8,23 +8,12 @@ namespace components::operators {
     operator_distinct_t::operator_distinct_t(std::pmr::memory_resource* resource, log_t log)
         : read_only_operator_t(resource, log, operator_type::match) {}
 
-    void operator_distinct_t::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (!left_ || !left_->output()) {
-            return;
-        }
-        const auto& chunk = left_->output()->data_chunk();
-        auto types = chunk.types();
-        output_ = operators::make_operator_data(left_->output()->resource(), types, chunk.size());
-        auto& out_chunk = output_->data_chunk();
-
-        std::unordered_set<std::string> seen;
-        size_t count = 0;
-
-        for (size_t i = 0; i < chunk.size(); i++) {
-            // Build a key from all column values
+    namespace {
+        // Build a comparison-stable identity key for a single row across all columns.
+        std::string row_key(const vector::data_chunk_t& chunk, size_t row) {
             std::ostringstream key;
-            for (size_t j = 0; j < chunk.column_count(); j++) {
-                auto val = chunk.data[j].value(i);
+            for (size_t column = 0; column < chunk.column_count(); column++) {
+                auto val = chunk.data[column].value(row);
                 if (val.is_null()) {
                     key << "\0NULL\0";
                 } else {
@@ -74,15 +63,53 @@ namespace components::operators {
                 }
                 key << "|";
             }
+            return key.str();
+        }
+    } // namespace
 
-            if (seen.insert(key.str()).second) {
-                for (size_t j = 0; j < chunk.column_count(); j++) {
-                    out_chunk.set_value(j, count, chunk.data[j].value(i));
+    void operator_distinct_t::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
+        if (!left_ || !left_->output()) {
+            return;
+        }
+        auto* resource = left_->output()->resource();
+        const auto& in_chunks = left_->output()->chunks();
+        std::pmr::vector<types::complex_logical_type> types{resource};
+        if (!in_chunks.empty()) {
+            types = in_chunks.front().types();
+        }
+
+        // Dedup is global across every input chunk: the seen-set persists for the whole
+        // pass. Each input chunk is already ≤ DEFAULT_VECTOR_CAPACITY, so the surviving
+        // rows of one input chunk form one output chunk of the same bound.
+        chunks_vector_t out_chunks(resource);
+        out_chunks.reserve(in_chunks.size());
+        std::unordered_set<std::string> seen;
+
+        for (const auto& chunk : in_chunks) {
+            if (chunk.size() == 0) {
+                continue;
+            }
+            vector::data_chunk_t out_chunk(resource, types, chunk.size());
+            size_t count = 0;
+            for (size_t i = 0; i < chunk.size(); i++) {
+                if (seen.insert(row_key(chunk, i)).second) {
+                    for (size_t column = 0; column < chunk.column_count(); column++) {
+                        out_chunk.set_value(column, count, chunk.data[column].value(i));
+                    }
+                    ++count;
                 }
-                ++count;
+            }
+            out_chunk.set_cardinality(count);
+            if (count > 0) {
+                out_chunks.emplace_back(std::move(out_chunk));
             }
         }
-        out_chunk.set_cardinality(count);
+
+        if (out_chunks.empty()) {
+            output_ = operators::make_operator_data(resource, types, 0);
+        } else {
+            output_ = operators::make_operator_data(resource, std::move(out_chunks));
+        }
     }
 
 } // namespace components::operators

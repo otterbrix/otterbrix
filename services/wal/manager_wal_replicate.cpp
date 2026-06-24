@@ -23,6 +23,17 @@
 
 namespace services::wal {
 
+    namespace {
+        // Total rows across a chunk batch — used to skip writing an empty record.
+        uint64_t batch_row_count(const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
+            uint64_t total = 0;
+            for (const auto& chunk : chunks) {
+                total += chunk.size();
+            }
+            return total;
+        }
+    } // namespace
+
     // -----------------------------------------------------------------------
     // Constructor / Destructor
     // -----------------------------------------------------------------------
@@ -600,12 +611,15 @@ namespace services::wal {
     manager_wal_replicate_t::unique_future<wal::id_t>
     manager_wal_replicate_t::write_physical_insert(session_id_t session,
                                                    components::catalog::oid_t table_oid,
-                                                   std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+                                                   std::pmr::vector<components::vector::data_chunk_t> chunks,
                                                    uint64_t row_start,
                                                    uint64_t row_count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
         if (!enabled_) {
+            co_return wal::id_t{0};
+        }
+        if (batch_row_count(chunks) == 0) {
             co_return wal::id_t{0};
         }
 
@@ -615,7 +629,7 @@ namespace services::wal {
                                                               &wal_worker_t::write_physical_insert,
                                                               session,
                                                               table_oid,
-                                                              std::move(data_chunk),
+                                                              std::move(chunks),
                                                               row_start,
                                                               row_count,
                                                               txn_id,
@@ -667,11 +681,14 @@ namespace services::wal {
     manager_wal_replicate_t::write_physical_update(session_id_t session,
                                                    components::catalog::oid_t table_oid,
                                                    std::pmr::vector<int64_t> row_ids,
-                                                   std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                                   std::pmr::vector<components::vector::data_chunk_t> new_data,
                                                    uint64_t count,
                                                    uint64_t txn_id,
                                                    components::catalog::oid_t database_oid) {
         if (!enabled_) {
+            co_return wal::id_t{0};
+        }
+        if (batch_row_count(new_data) == 0) {
             co_return wal::id_t{0};
         }
 

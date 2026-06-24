@@ -199,7 +199,12 @@ namespace components::compute::detail {
                 return st;
             }
 
-            agg_ctx_->batch_results.reserve(inputs.size());
+            // All chunks belong to one logical group: consume folds each chunk's partial
+            // into the running state, finalize emits the group's result. An accumulating
+            // kernel (sum/min/max/count/avg) yields exactly one value — even for an empty
+            // batch it emits the identity. A push-style kernel emits one value per chunk
+            // in merge instead. The kernel therefore decides the result count; the executor
+            // does not pad.
             for (const auto& in : inputs) {
                 if (auto st = consume(in); st.contains_error()) {
                     return st;
@@ -210,9 +215,6 @@ namespace components::compute::detail {
                 return st;
             }
 
-            // resize to expected count — kernel may have written fewer or more
-            agg_ctx_->batch_results.resize(inputs.size(),
-                                           types::logical_value_t(exec_ctx().resource(), types::logical_type::NA));
             return agg_ctx_->batch_results;
         }
 

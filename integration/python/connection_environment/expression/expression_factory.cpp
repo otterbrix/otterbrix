@@ -82,9 +82,8 @@ namespace otterbrix {
 
         // Spark-style avg over integers uses floating accumulator:
         // https://github.com/apache/spark/blob/master/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Average.scala#L63-L79
-        // But grouped_aggregate truncates back to the column type when the input vector is integral:
-        // https://github.com/prawwtocol/otterbrix/blob/main/components/physical_plan/operators/aggregate/grouped_aggregate.cpp#L265
-        // multiply by 1.0 so arithmetic promotes to DOUBLE
+        // But the avg aggregate kernel truncates back to the column type when the input is
+        // integral (sum/count are the same integral type), so multiply by 1.0 to promote to DOUBLE.
         if (function_name == "avg") {
             expression_wrapper_t one = make_constant(types::logical_value_t(resource, 1.0));
             auto scaled = scalar_binary_expression(scalar_type::multiply, expr, std::move(one));

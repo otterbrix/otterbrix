@@ -60,19 +60,22 @@ namespace {
         }
     }
 
-    py::tuple row_to_tuple(const components::vector::data_chunk_t& chunk, uint64_t row_idx) {
-        py::tuple result(chunk.column_count());
-        for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-            result[col] = from_value(chunk.value(col, row_idx));
+    // Take the cursor (not a single chunk): value() spans the result batch, so rows
+    // beyond the first chunk are addressed correctly.
+    py::tuple row_to_tuple(const components::cursor::cursor_t& cursor, uint64_t row_idx) {
+        const auto cols = cursor.column_count();
+        py::tuple result(cols);
+        for (uint64_t col = 0; col < cols; ++col) {
+            result[col] = from_value(cursor.value(col, row_idx));
         }
         return result;
     }
 
-    py::dict row_to_dict(const components::vector::data_chunk_t& chunk, uint64_t row_idx) {
+    py::dict row_to_dict(const components::cursor::cursor_t& cursor, uint64_t row_idx) {
         py::dict result;
-        auto types = chunk.types();
-        for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-            auto value = chunk.value(col, row_idx);
+        const auto& types = cursor.type_data();
+        for (uint64_t col = 0; col < cursor.column_count(); ++col) {
+            auto value = cursor.value(col, row_idx);
             if (col < types.size()) {
                 auto col_name = types[col].alias();
                 if (!col_name.empty()) {
@@ -169,7 +172,7 @@ py::tuple wrapper_cursor::get_error() const {
 
 std::string wrapper_cursor::print() {
     if (ptr_->size() > 0) {
-        auto dict = row_to_dict(ptr_->chunk_data(), 0);
+        auto dict = row_to_dict(*ptr_, 0);
         return py::str(dict).cast<std::string>();
     }
     return "{}";
@@ -189,11 +192,10 @@ py::object wrapper_cursor::get_(const std::string& key) const {
     if (row < 0) {
         row = 0;
     }
-    const auto& chunk = ptr_->chunk_data();
-    auto types = chunk.types();
-    for (uint64_t col = 0; col < chunk.column_count(); ++col) {
+    const auto& types = ptr_->type_data();
+    for (uint64_t col = 0; col < ptr_->column_count(); ++col) {
         if (col < types.size() && types[col].alias() == key) {
-            return from_value(chunk.value(col, static_cast<uint64_t>(row)));
+            return from_value(ptr_->value(col, static_cast<uint64_t>(row)));
         }
     }
     return py::none();
@@ -203,16 +205,15 @@ py::object wrapper_cursor::get_(std::size_t index) const {
     if (index >= ptr_->size()) {
         return py::none();
     }
-    return row_to_dict(ptr_->chunk_data(), index);
+    return row_to_dict(*ptr_, index);
 }
 
 py::object wrapper_cursor::fetch_current_row_() {
-    const auto& chunk = ptr_->chunk_data();
     auto row = ptr_->current_index();
     if (row < 0) {
         row = 0;
     }
-    return row_to_tuple(chunk, static_cast<uint64_t>(row));
+    return row_to_tuple(*ptr_, static_cast<uint64_t>(row));
 }
 
 py::object wrapper_cursor::fetchone() {
@@ -242,10 +243,10 @@ py::list wrapper_cursor::fetchall() {
 }
 
 py::object wrapper_cursor::description() const {
-    if (ptr_->size() == 0 && ptr_->chunk_data().column_count() == 0) {
+    if (ptr_->size() == 0 && ptr_->column_count() == 0) {
         return py::none();
     }
-    auto types = ptr_->chunk_data().types();
+    const auto& types = ptr_->type_data();
     py::list desc;
     for (uint64_t col = 0; col < types.size(); ++col) {
         auto name = std::string(types[col].alias());

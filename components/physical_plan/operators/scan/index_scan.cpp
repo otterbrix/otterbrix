@@ -82,21 +82,20 @@ namespace components::operators {
         size_t count = (limit_val >= 0) ? std::min(available, static_cast<size_t>(limit_val)) : available;
 
         if (count > 0) {
-            // Build row_ids vector for fetch
+            // One fetch for the selected row-ids; the disk layer returns the rows as a
+            // vector of ≤DEFAULT_VECTOR_CAPACITY chunks.
             vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
             std::memcpy(row_ids.data(), row_ids_vec.data() + start, count * sizeof(int64_t));
-
-            // Fetch from storage
             auto [_f, ff] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_fetch,
                                              ctx->session,
                                              table_oid_,
                                              std::move(row_ids),
                                              count);
-            auto data = co_await std::move(ff);
+            auto batches = co_await std::move(ff);
 
-            if (data) {
-                output_ = make_operator_data(resource_, split_chunk_into_batches(resource_, std::move(*data)));
+            if (!batches.empty()) {
+                output_ = make_operator_data(resource_, std::move(batches));
             } else {
                 auto [_t2, tf2] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_types,

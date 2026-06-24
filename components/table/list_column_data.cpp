@@ -287,9 +287,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> list_column_data_t::update(uint64_t column_index,
-                                                          vector::vector_t& update_vector,
-                                                          int64_t* row_ids,
-                                                          uint64_t update_count) {
+                                                            vector::vector_t& update_vector,
+                                                            int64_t* row_ids,
+                                                            uint64_t update_count) {
         if (update_count == 0) {
             return true;
         }
@@ -312,10 +312,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> list_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                                vector::vector_t& update_vector,
-                                                                int64_t* row_ids,
-                                                                uint64_t update_count,
-                                                                uint64_t depth) {
+                                                                   vector::vector_t& update_vector,
+                                                                   int64_t* row_ids,
+                                                                   uint64_t update_count,
+                                                                   uint64_t depth) {
         if (update_count == 0) {
             return true;
         }

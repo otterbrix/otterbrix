@@ -159,8 +159,7 @@ TEST_CASE("c-api: DDL via execute_sql returns successful empty cursors", "[c-api
     REQUIRE(cursor_size(db_cur) == 0);
     release_cursor(db_cur);
 
-    cursor_ptr tbl_cur =
-        execute_sql(t.ptr, sv(std::string("CREATE TABLE testdb.items (name string, price bigint);")));
+    cursor_ptr tbl_cur = execute_sql(t.ptr, sv(std::string("CREATE TABLE testdb.items (name string, price bigint);")));
     REQUIRE(tbl_cur != nullptr);
     REQUIRE(cursor_is_success(tbl_cur));
     REQUIRE(cursor_size(tbl_cur) == 0);
@@ -248,10 +247,8 @@ TEST_CASE("c-api: cursor_column_logical_type reports basic types", "[c-api][curs
     REQUIRE(t.ptr != nullptr);
 
     run_ok(t.ptr, "CREATE DATABASE typedb;");
-    run_ok(t.ptr,
-           "CREATE TABLE typedb.mix (i integer, big bigint, flag boolean, val double, label string);");
-    run_ok(t.ptr,
-           "INSERT INTO typedb.mix (i, big, flag, val, label) VALUES (1, 2, true, 3.5, 'x');");
+    run_ok(t.ptr, "CREATE TABLE typedb.mix (i integer, big bigint, flag boolean, val double, label string);");
+    run_ok(t.ptr, "INSERT INTO typedb.mix (i, big, flag, val, label) VALUES (1, 2, true, 3.5, 'x');");
 
     cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT i, big, flag, val, label FROM typedb.mix;")));
     REQUIRE(cur != nullptr);

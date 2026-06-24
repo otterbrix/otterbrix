@@ -10,6 +10,16 @@ using namespace services::wal;
 using namespace components::types;
 using namespace components::vector;
 
+// encode_insert/encode_update now take a chunk batch; wrap a single chunk (deep copy).
+static std::pmr::vector<components::vector::data_chunk_t>
+to_chunk_batch(const components::vector::data_chunk_t& chunk) {
+    std::pmr::vector<components::vector::data_chunk_t> batch(chunk.resource());
+    components::vector::data_chunk_t copy(chunk.resource(), chunk.types(), chunk.size() == 0 ? 1 : chunk.size());
+    chunk.copy(copy, 0);
+    batch.emplace_back(std::move(copy));
+    return batch;
+}
+
 // WAL binary serialization supports fixed-size and STRING types.
 // ARRAY/LIST not yet supported in binary format — use explicit types.
 static std::pmr::vector<components::types::complex_logical_type> wal_test_types(std::pmr::memory_resource* r) {
@@ -38,7 +48,7 @@ TEST_CASE("wal_binary::encode_decode_insert") {
                   /*wal_id=*/1,
                   /*txn_id=*/100,
                   kTestTableOid,
-                  chunk,
+                  to_chunk_batch(chunk),
                   /*row_start=*/0,
                   /*row_count=*/10);
 
@@ -53,13 +63,13 @@ TEST_CASE("wal_binary::encode_decode_insert") {
     REQUIRE(record.table_oid == kTestTableOid);
     REQUIRE(record.physical_row_start == 0);
     REQUIRE(record.physical_row_count == 10);
-    REQUIRE(record.physical_data != nullptr);
-    REQUIRE(record.physical_data->column_count() == chunk.column_count());
-    REQUIRE(record.physical_data->size() == chunk.size());
+    REQUIRE(!record.physical_data.empty());
+    REQUIRE(record.physical_data.front().column_count() == chunk.column_count());
+    REQUIRE(record.physical_data.front().size() == chunk.size());
 
     for (uint64_t col = 0; col < chunk.column_count(); col++) {
         for (uint64_t row = 0; row < chunk.size(); row++) {
-            REQUIRE(record.physical_data->value(col, row) == chunk.value(col, row));
+            REQUIRE(record.physical_data.front().value(col, row) == chunk.value(col, row));
         }
     }
 }
@@ -100,7 +110,7 @@ TEST_CASE("wal_binary::encode_decode_update") {
                   /*txn_id=*/102,
                   kTestTableOid,
                   row_ids.data(),
-                  new_data,
+                  to_chunk_batch(new_data),
                   /*count=*/5);
 
     REQUIRE(buffer.size() > 0);
@@ -118,13 +128,13 @@ TEST_CASE("wal_binary::encode_decode_update") {
         REQUIRE(record.physical_row_ids[i] == row_ids[i]);
     }
 
-    REQUIRE(record.physical_data != nullptr);
-    REQUIRE(record.physical_data->column_count() == new_data.column_count());
-    REQUIRE(record.physical_data->size() == new_data.size());
+    REQUIRE(!record.physical_data.empty());
+    REQUIRE(record.physical_data.front().column_count() == new_data.column_count());
+    REQUIRE(record.physical_data.front().size() == new_data.size());
 
     for (uint64_t col = 0; col < new_data.column_count(); col++) {
         for (uint64_t row = 0; row < new_data.size(); row++) {
-            REQUIRE(record.physical_data->value(col, row) == new_data.value(col, row));
+            REQUIRE(record.physical_data.front().value(col, row) == new_data.value(col, row));
         }
     }
 }
@@ -157,7 +167,7 @@ TEST_CASE("wal_binary::crc32_corruption") {
                   /*wal_id=*/1,
                   /*txn_id=*/100,
                   kTestTableOid,
-                  chunk,
+                  to_chunk_batch(chunk),
                   /*row_start=*/0,
                   /*row_count=*/10);
 
@@ -182,7 +192,7 @@ TEST_CASE("wal_binary::truncated_input") {
                   /*wal_id=*/1,
                   /*txn_id=*/100,
                   kTestTableOid,
-                  chunk,
+                  to_chunk_batch(chunk),
                   /*row_start=*/0,
                   /*row_count=*/10);
 

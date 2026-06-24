@@ -27,6 +27,17 @@ using namespace components::catalog;
 using session_id_t = components::session::session_id_t;
 
 namespace {
+    // storage_append takes the whole chunk batch; wrap a single chunk for the
+    // one-shot test call site.
+    std::pmr::vector<components::vector::data_chunk_t>
+    to_batch(std::pmr::memory_resource* resource, std::unique_ptr<components::vector::data_chunk_t> chunk) {
+        std::pmr::vector<components::vector::data_chunk_t> batch(resource);
+        if (chunk) {
+            batch.emplace_back(std::move(*chunk));
+        }
+        return batch;
+    }
+
     std::string resolve_dir() {
         static std::string p = "/tmp/test_otterbrix_resolve_" + std::to_string(::getpid());
         return p;
@@ -210,7 +221,8 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                    components::table::transaction_data{0, 0},
                                                    {},
                                                    table_oid};
-        auto append_r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(chunk));
+        auto append_r =
+            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
         REQUIRE_FALSE(append_r.has_error());
         auto [start, count] = append_r.value();
         REQUIRE(count == nrows);

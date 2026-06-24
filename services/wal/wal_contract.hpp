@@ -37,14 +37,13 @@ namespace services::wal {
 
         // database_oid selects the target WAL worker: manager_wal_replicate
         // routes via wal_actors_[database_oid].
-        actor_zeta::unique_future<id_t>
-        write_physical_insert(session_id_t session,
-                              components::catalog::oid_t table_oid,
-                              std::unique_ptr<components::vector::data_chunk_t> data_chunk,
-                              uint64_t row_start,
-                              uint64_t row_count,
-                              uint64_t txn_id,
-                              components::catalog::oid_t database_oid);
+        actor_zeta::unique_future<id_t> write_physical_insert(session_id_t session,
+                                                              components::catalog::oid_t table_oid,
+                                                              std::pmr::vector<components::vector::data_chunk_t> chunks,
+                                                              uint64_t row_start,
+                                                              uint64_t row_count,
+                                                              uint64_t txn_id,
+                                                              components::catalog::oid_t database_oid);
 
         actor_zeta::unique_future<id_t> write_physical_delete(session_id_t session,
                                                               components::catalog::oid_t table_oid,
@@ -57,7 +56,7 @@ namespace services::wal {
         write_physical_update(session_id_t session,
                               components::catalog::oid_t table_oid,
                               std::pmr::vector<int64_t> row_ids,
-                              std::unique_ptr<components::vector::data_chunk_t> new_data,
+                              std::pmr::vector<components::vector::data_chunk_t> new_data,
                               uint64_t count,
                               uint64_t txn_id,
                               components::catalog::oid_t database_oid);

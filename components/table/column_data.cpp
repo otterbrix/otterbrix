@@ -443,7 +443,8 @@ namespace components::table {
                 // segment so we can re-point it to disk. state.current is moved to the new segment below, so the
                 // filled segment is no longer referenced by the append state.
                 const uint64_t filled_index = data_.segment_count(l) - 1;
-                auto created = apend_transient_segment(l, state.current->start + static_cast<int64_t>(state.current->count));
+                auto created =
+                    apend_transient_segment(l, state.current->start + static_cast<int64_t>(state.current->count));
                 if (created.has_error()) {
                     return created; // out_of_memory
                 }
@@ -573,9 +574,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::update(uint64_t column_index,
-                                                      vector::vector_t& update_vector,
-                                                      int64_t* row_ids,
-                                                      uint64_t update_count) {
+                                                       vector::vector_t& update_vector,
+                                                       int64_t* row_ids,
+                                                       uint64_t update_count) {
         vector::vector_t base_vector(resource_, type_, count_);
         column_scan_state state;
         auto fetch_count = fetch(state, row_ids[0], base_vector);
@@ -585,10 +586,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                            vector::vector_t& update_vector,
-                                                            int64_t* row_ids,
-                                                            uint64_t update_count,
-                                                            uint64_t) {
+                                                              vector::vector_t& update_vector,
+                                                              int64_t* row_ids,
+                                                              uint64_t update_count,
+                                                              uint64_t) {
         return column_data_t::update(column_path[0], update_vector, row_ids, update_count);
     }
 
@@ -681,7 +682,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::transition_segment_to_disk(std::unique_lock<std::mutex>& l,
-                                                                          uint64_t segment_index) {
+                                                                           uint64_t segment_index) {
         // In-memory tables have no backing store, so their segments must stay managed (no disk copy ->
         // clean OOM, never a crash). No-op.
         if (block_manager_.in_memory()) {
@@ -762,12 +763,12 @@ namespace components::table {
         // and block_handle::load() reloads it from the data file.
         auto block_handle = block_manager_.register_block(disk_block_id);
         auto new_segment = std::make_unique<column_segment_t>(block_handle,
-                                                             type_,
-                                                             seg_start,
-                                                             seg_count,
-                                                             static_cast<uint32_t>(disk_block_id),
-                                                             0U,
-                                                             segment_size);
+                                                              type_,
+                                                              seg_start,
+                                                              seg_count,
+                                                              static_cast<uint32_t>(disk_block_id),
+                                                              0U,
+                                                              segment_size);
         new_segment->set_compression(compression::compression_type::UNCOMPRESSED);
         if (has_stats) {
             new_segment->set_segment_statistics(std::move(seg_stats));
@@ -797,9 +798,8 @@ namespace components::table {
         // packed offset-0 segment is NOT treated as whole-block owner. Packed/shared partial blocks are
         // never freed here (a leak-until-restart is acceptable; corruption is not). FULL_THRESHOLD lives on
         // partial_block_manager_t so the two sides cannot drift.
-        const auto dedicated_min =
-            static_cast<uint64_t>(static_cast<double>(block_manager_.block_size()) *
-                                  storage::partial_block_manager_t::FULL_THRESHOLD);
+        const auto dedicated_min = static_cast<uint64_t>(static_cast<double>(block_manager_.block_size()) *
+                                                         storage::partial_block_manager_t::FULL_THRESHOLD);
         for (auto& segment : const_cast<segment_tree_t<column_segment_t>&>(data_).segments()) {
             if (segment.block && segment.block->is_reloadable() && segment.block_offset() == 0 &&
                 segment.segment_size() > dedicated_min) {
@@ -946,10 +946,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::update_internal(uint64_t column_index,
-                                                              vector::vector_t& update_vector,
-                                                              int64_t* row_ids,
-                                                              uint64_t update_count,
-                                                              vector::vector_t& base_vector) {
+                                                                vector::vector_t& update_vector,
+                                                                int64_t* row_ids,
+                                                                uint64_t update_count,
+                                                                vector::vector_t& base_vector) {
         std::lock_guard update_guard(update_lock_);
         if (!updates_) {
             updates_ = std::make_unique<update_segment_t>(*this);

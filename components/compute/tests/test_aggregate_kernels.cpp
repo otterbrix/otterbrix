@@ -5,10 +5,14 @@ using namespace components::compute;
 using namespace components::types;
 using namespace components::vector;
 
-// Builtin aggregate kernels (compute/kernels/aggregate.cpp) over EMPTY input:
+// Builtin aggregate kernels (compute/kernels/aggregate.cpp).
 //
-//   - sum / min / max / avg : one NA (NULL) placeholder per consumed batch;
-//   - count / count(*)      : one UBIGINT zero per consumed batch;
+// An aggregate consumes a whole batch (the chunks of ONE group, each
+// ≤DEFAULT_VECTOR_CAPACITY rows) and folds them into a single result:
+//
+//   - sum / min / max / avg : one NA (NULL) when the group has no non-null rows;
+//   - count / count(*)      : one UBIGINT count over the whole group;
+//   - a single empty chunk yields the empty-group identity (NA / 0);
 //   - an empty batch vector is rejected with kernel_error before dispatch.
 //
 // Everything runs through the public function::execute() pipeline with an
@@ -121,37 +125,91 @@ TEST_CASE("components::compute::aggregate::empty_input::count_star_is_zero") {
     REQUIRE(vals[0].value<uint64_t>() == 0);
 }
 
-TEST_CASE("components::compute::aggregate::empty_input::batch_of_empty_chunks") {
+TEST_CASE("components::compute::aggregate::batch_of_empty_chunks") {
     aggregate_registry_fixture fx;
 
-    // Per-group batch execution (the operator_group fallback shape): one
-    // result slot per consumed chunk, NA for sum / zero for count.
+    // A multi-chunk batch is ONE group (operator_group fallback shape): the chunks
+    // are folded into a single result. Two empty chunks is an empty group.
     std::vector<data_chunk_t> batch;
     batch.emplace_back(fx.empty_chunk(logical_type::INTEGER));
     batch.emplace_back(fx.empty_chunk(logical_type::INTEGER));
 
-    SECTION("sum yields one NA per empty group") {
+    SECTION("sum over an empty group is a single NA") {
         auto* fn = fx.get("sum");
         REQUIRE(fn != nullptr);
 
         auto res = fn->execute(batch, nullptr, fx.ctx);
         REQUIRE_FALSE(res.has_error());
         const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-        REQUIRE(vals.size() == 2);
+        REQUIRE(vals.size() == 1);
         REQUIRE(vals[0].is_null());
-        REQUIRE(vals[1].is_null());
     }
 
-    SECTION("count yields one zero per empty group") {
+    SECTION("count over an empty group is a single zero") {
         auto* fn = fx.get("count");
         REQUIRE(fn != nullptr);
 
         auto res = fn->execute(batch, nullptr, fx.ctx);
         REQUIRE_FALSE(res.has_error());
         const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-        REQUIRE(vals.size() == 2);
+        REQUIRE(vals.size() == 1);
         REQUIRE(vals[0].value<uint64_t>() == 0);
-        REQUIRE(vals[1].value<uint64_t>() == 0);
+    }
+}
+
+TEST_CASE("components::compute::aggregate::batch_accumulates_across_chunks") {
+    aggregate_registry_fixture fx;
+
+    // The crux of batched execution: a group whose rows span several chunks must
+    // produce one value folded over ALL chunks, not one value per chunk.
+    auto int_chunk = [&](std::initializer_list<int32_t> vals) {
+        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        types.emplace_back(logical_type::INTEGER);
+        data_chunk_t chunk(&fx.resource, types, vals.size());
+        uint64_t row = 0;
+        for (int32_t v : vals) {
+            chunk.set_value(0, row++, logical_value_t(&fx.resource, v));
+        }
+        chunk.set_cardinality(vals.size());
+        return chunk;
+    };
+
+    std::vector<data_chunk_t> batch;
+    batch.emplace_back(int_chunk({1, 2, 3}));
+    batch.emplace_back(int_chunk({4, 5}));
+
+    SECTION("sum folds every chunk") {
+        auto res = fx.get("sum")->execute(batch, nullptr, fx.ctx);
+        REQUIRE_FALSE(res.has_error());
+        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+        REQUIRE(vals.size() == 1);
+        REQUIRE(vals[0].value<int32_t>() == 15);
+    }
+
+    SECTION("count folds every chunk") {
+        auto res = fx.get("count")->execute(batch, nullptr, fx.ctx);
+        REQUIRE_FALSE(res.has_error());
+        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+        REQUIRE(vals.size() == 1);
+        REQUIRE(vals[0].value<uint64_t>() == 5);
+    }
+
+    SECTION("min and max span chunk boundaries") {
+        auto min_res = fx.get("min")->execute(batch, nullptr, fx.ctx);
+        REQUIRE_FALSE(min_res.has_error());
+        REQUIRE(std::get<std::pmr::vector<logical_value_t>>(min_res.value())[0].value<int32_t>() == 1);
+
+        auto max_res = fx.get("max")->execute(batch, nullptr, fx.ctx);
+        REQUIRE_FALSE(max_res.has_error());
+        REQUIRE(std::get<std::pmr::vector<logical_value_t>>(max_res.value())[0].value<int32_t>() == 5);
+    }
+
+    SECTION("avg is computed once over the whole group") {
+        auto res = fx.get("avg")->execute(batch, nullptr, fx.ctx);
+        REQUIRE_FALSE(res.has_error());
+        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+        REQUIRE(vals.size() == 1);
+        REQUIRE(vals[0].value<int32_t>() == 3); // (1+2+3+4+5) / 5
     }
 }
 

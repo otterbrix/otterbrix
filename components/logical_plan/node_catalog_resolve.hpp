@@ -116,9 +116,7 @@ namespace components::logical_plan {
 
         // type
         const std::string& type_name() const noexcept { return type_name_; }
-        void set_type_name(core::typename_t type_name) {
-            type_name_ = std::move(static_cast<std::string&>(type_name));
-        }
+        void set_type_name(core::typename_t type_name) { type_name_ = std::move(static_cast<std::string&>(type_name)); }
         components::catalog::oid_t type_oid() const noexcept { return type_oid_; }
         void set_type_oid(components::catalog::oid_t oid) noexcept { type_oid_ = oid; }
 

@@ -157,31 +157,25 @@ namespace services::disk {
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
         actor_zeta::unique_future<uint64_t> storage_total_rows(session_id_t session,
                                                                components::catalog::oid_t table_oid);
-        // Storage data operations
-        actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        // Storage data operations.
+        // Returns a vector of chunks and applies index-based column projection at the
+        // disk layer. Empty `projected_cols` means "read all columns" (pass-through). The
+        // reply wraps the batches so a buffer-pool OOM / data_corruption from the table-layer
+        // scan reaches the scan operators as a value rather than a throw across the mailbox.
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_scan(session_id_t session,
                      components::catalog::oid_t table_oid,
                      std::unique_ptr<components::table::table_filter_t> filter,
-                     int limit,
+                     int64_t limit,
+                     std::vector<size_t> projected_cols,
                      components::table::transaction_data txn);
-        // Batched + projected variant: returns a vector of chunks (PR #483 multi-chunk)
-        // and applies index-based column projection at the disk layer (PR #477).
-        // Empty `projected_cols` means "read all columns" (pass-through). The reply wraps the
-        // batches so a buffer-pool OOM / data_corruption from the table-layer scan reaches the
-        // scan operators as a value rather than a throw across the mailbox.
-        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_scan_batched(session_id_t session,
-                             components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::table::table_filter_t> filter,
-                             int64_t limit,
-                             std::vector<size_t> projected_cols,
-                             components::table::transaction_data txn);
-        actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
+        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
                       uint64_t count);
-        actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
 
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
@@ -189,15 +183,15 @@ namespace services::disk {
         actor_zeta::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::data_chunk_t> data);
 
         // Reply wraps (updated, appended) so a write_conflict / out_of_memory from the
         // table-layer MVCC update reaches operator_update / fk_cascade as a value.
         actor_zeta::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       components::vector::vector_t row_ids,
-                       std::unique_ptr<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::vector_t> row_ids,
+                       std::pmr::vector<components::vector::data_chunk_t> data);
         actor_zeta::unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
                                                                 components::catalog::oid_t table_oid,
                                                                 components::vector::vector_t row_ids,
@@ -275,7 +269,6 @@ namespace services::disk {
                                                             &disk_contract::storage_total_rows,
                                                             // Storage data operations
                                                             &disk_contract::storage_scan,
-                                                            &disk_contract::storage_scan_batched,
                                                             &disk_contract::storage_fetch,
                                                             &disk_contract::storage_scan_segment,
                                                             &disk_contract::storage_append,

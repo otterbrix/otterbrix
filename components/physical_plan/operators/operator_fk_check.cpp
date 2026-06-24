@@ -20,7 +20,7 @@ namespace components::operators {
         // After intercept_dml_io_, the DML operator's output is replaced with a
         // zero-column result chunk. Fall back to the DML op's data source.
         output_ = left_->output();
-        if (!output_ || output_->data_chunk().column_count() == 0) {
+        if (!output_ || output_->chunks().empty() || output_->chunks().front().column_count() == 0) {
             if (left_->left() && left_->left()->output()) {
                 output_ = left_->left()->output();
             }
@@ -35,11 +35,22 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        const auto& chunk = output_->data_chunk();
+        const auto& in_chunks = output_->chunks();
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         const auto& indices = fk_.child_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();
+
+        // An unresolved key column position voids a row's check, but it still counts as
+        // NULL for the MATCH policy below — so a MATCH FULL key that is partially absent
+        // (or partially NULL) is rejected before the row is skipped (constant per FK).
+        bool has_absent = indices.empty();
+        for (auto idx : indices) {
+            if (idx == absent) {
+                has_absent = true;
+                break;
+            }
+        }
 
         // Parent key column names are the same for every row; hoist them once.
         std::pmr::vector<std::string> parent_col_names(resource_);
@@ -48,53 +59,59 @@ namespace components::operators {
             parent_col_names.emplace_back(n);
         }
 
-        // Collect the qualifying child rows as a SELECTION into the input chunk,
-        // preserving the MATCH null policy + error path.
-        // selection[k] = source row of the k-th qualifying key; matches[k] empty -> violation.
-        components::vector::indexing_vector_t selection(resource_, chunk.size() == 0 ? 1 : chunk.size());
+        // Collect the qualifying child rows as a per-chunk SELECTION, preserving the
+        // MATCH null policy + error path. The selections are gathered across every input
+        // chunk and the qualifying keys are concatenated into one owned keys-chunk so a
+        // single batched scan_by_keys verifies them all.
+        // qualifying[c] = selection into in_chunks[c]; counts[c] = its qualifying count.
+        std::pmr::vector<components::vector::indexing_vector_t> qualifying(resource_);
+        std::pmr::vector<uint64_t> counts(resource_);
+        qualifying.reserve(in_chunks.size());
+        counts.reserve(in_chunks.size());
         uint64_t qcount = 0;
 
-        for (uint64_t row = 0; row < chunk.size(); ++row) {
-            bool any_null = false;
-            bool all_null = true;
-            for (std::size_t i = 0; i < indices.size(); ++i) {
-                const auto idx = indices[i];
-                const bool is_null = (idx == absent || !chunk.data[idx].validity().row_is_valid(row));
-                if (is_null)
-                    any_null = true;
-                else
-                    all_null = false;
-            }
-
-            if (fk_.matchtype == 'f') {
-                // MATCH FULL: all-NULL → skip; partial-NULL → error; no-NULL → check.
-                if (all_null)
-                    continue;
-                if (any_null) {
-                    set_error(core::error_t{
-                        core::error_code_t::other_error,
-                        std::pmr::string{"FK MATCH FULL: partial null in foreign key columns", resource_}});
-                    co_return;
+        for (const auto& chunk : in_chunks) {
+            components::vector::indexing_vector_t selection(resource_, chunk.size() == 0 ? 1 : chunk.size());
+            uint64_t chunk_count = 0;
+            for (uint64_t row = 0; row < chunk.size(); ++row) {
+                bool any_null = false;
+                bool all_null = true;
+                for (std::size_t i = 0; i < indices.size(); ++i) {
+                    const auto idx = indices[i];
+                    const bool is_null = (idx == absent || !chunk.data[idx].validity().row_is_valid(row));
+                    if (is_null)
+                        any_null = true;
+                    else
+                        all_null = false;
                 }
-            } else {
-                // MATCH SIMPLE (default): any-NULL → skip.
-                if (any_null)
-                    continue;
-            }
 
-            // Any unresolved key column position voids this row's check.
-            bool has_absent = false;
-            for (auto idx : indices) {
-                if (idx == absent) {
-                    has_absent = true;
-                    break;
+                if (fk_.matchtype == 'f') {
+                    // MATCH FULL: all-NULL → skip; partial-NULL → error; no-NULL → check.
+                    if (all_null)
+                        continue;
+                    if (any_null) {
+                        set_error(core::error_t{
+                            core::error_code_t::other_error,
+                            std::pmr::string{"FK MATCH FULL: partial null in foreign key columns", resource_}});
+                        co_return;
+                    }
+                } else {
+                    // MATCH SIMPLE (default): any-NULL → skip.
+                    if (any_null)
+                        continue;
                 }
-            }
-            if (has_absent || indices.empty())
-                continue;
 
-            selection.set_index(qcount, row);
-            ++qcount;
+                // Passed the MATCH policy but a key column is unresolved: nothing to look
+                // up in the parent, so the row qualifies for no scan key.
+                if (has_absent)
+                    continue;
+
+                selection.set_index(chunk_count, row);
+                ++chunk_count;
+            }
+            qcount += chunk_count;
+            qualifying.emplace_back(std::move(selection));
+            counts.push_back(chunk_count);
         }
 
         if (qcount == 0) {
@@ -105,15 +122,28 @@ namespace components::operators {
         // Build the keys-chunk: column j == child key column indices[j], rows == the
         // qcount qualifying source rows selected above. Must be an OWNED copy (not a
         // reference into the input): it crosses the mailbox and actors must not share
-        // buffers (actor isolation).
+        // buffers (actor isolation). Each chunk's selected rows are appended at a running
+        // destination offset so all qualifying keys land in one contiguous carrier.
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(indices.size());
         for (auto idx : indices) {
-            key_types.push_back(chunk.data[idx].type());
+            key_types.push_back(in_chunks.front().data[idx].type());
         }
         components::vector::data_chunk_t keys(resource_, key_types, qcount);
-        for (std::size_t j = 0; j < indices.size(); ++j) {
-            components::vector::vector_ops::copy(chunk.data[indices[j]], keys.data[j], selection, qcount, 0, 0);
+        uint64_t dst_offset = 0;
+        for (std::size_t c = 0; c < in_chunks.size(); ++c) {
+            if (counts[c] == 0) {
+                continue;
+            }
+            for (std::size_t j = 0; j < indices.size(); ++j) {
+                components::vector::vector_ops::copy(in_chunks[c].data[indices[j]],
+                                                     keys.data[j],
+                                                     qualifying[c],
+                                                     counts[c],
+                                                     0,
+                                                     dst_offset);
+            }
+            dst_offset += counts[c];
         }
         keys.set_cardinality(qcount);
 

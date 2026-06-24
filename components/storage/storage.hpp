@@ -63,10 +63,10 @@ namespace components::storage {
         // (the void scan path leaves no scan_error), so it always reports success; subclasses
         // that drive a batched scan override to read state.table_state.scan_error.
         [[nodiscard]] virtual core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
-                                                          const table::table_filter_t* filter,
-                                                          int64_t limit,
-                                                          const std::vector<size_t>* projected_cols,
-                                                          table::transaction_data txn) {
+                                                                        const table::table_filter_t* filter,
+                                                                        int64_t limit,
+                                                                        const std::vector<size_t>* projected_cols,
+                                                                        table::transaction_data txn) {
             auto t = types();
             vector::data_chunk_t one(resource(), t);
             if (projected_cols) {
@@ -104,7 +104,8 @@ namespace components::storage {
 
         // Txn-aware overloads with default fallbacks. Returns write_conflict / out_of_memory
         // surfaced by the table-layer append chain; the start_row on success.
-        [[nodiscard]] virtual core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data, table::transaction_data /*txn*/) {
+        [[nodiscard]] virtual core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data,
+                                                                      table::transaction_data /*txn*/) {
             return append(data);
         }
         virtual uint64_t delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t /*txn_id*/) {

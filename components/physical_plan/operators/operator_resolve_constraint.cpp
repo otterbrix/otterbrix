@@ -50,7 +50,7 @@ namespace components::operators {
         // stamp data on the target logical node, not to emit rows. Schema is
         // cached on the operator (output_schema_), built once in the ctor.
         output_ = make_operator_data(resource_, output_schema_, 0);
-        output_->data_chunk().set_cardinality(0);
+        output_->chunks().front().set_cardinality(0);
 
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             mark_executed();

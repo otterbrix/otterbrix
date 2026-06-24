@@ -273,46 +273,144 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        auto& out_chunk = output_->data_chunk();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+        // See operator_insert comment on db_oid temporary hardcode.
+        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
 
-        // If a resolver sibling supplied catalog metadata, compute a
-        // chunk_position -> table_position translation. See
-        // operator_insert::await_async_and_resume for the rationale; the
-        // disk path already aligns by alias, this is the wiring hook.
-        if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
-            auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
-            for (std::size_t i = 0; i < translation.size(); ++i) {
-                if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
-                    trace(log_,
-                          "operator_update: resolved metadata has no column matching chunk alias '{}'",
-                          std::string(out_chunk.data[i].type().alias()));
+        // Hold the updated chunks alive while we ship them; set_output rebinds output_.
+        auto input = output_;
+
+        // Old-row cursor over the scan (left) output. update_rows pairs old_data[i]
+        // with new_data[i]/row_ids[i] positionally, and on_execute gathered matches in
+        // scan order, so the first N scan rows are the old versions of the N updated
+        // rows. The cursor walks scan chunks to assemble each updated chunk's old data.
+        const chunks_vector_t* scan_chunks = nullptr;
+        if (auto scan_out = left_ ? left_->output() : nullptr) {
+            scan_chunks = &scan_out->chunks();
+        }
+        size_t scan_chunk_idx = 0;
+        uint64_t scan_row_in_chunk = 0;
+
+        // UPDATE = delete-old + append-new. The new-row segments append sequentially
+        // within the txn, so they are contiguous and coalesce into one range. Gather the
+        // whole batch up front, then issue a single send per service.
+        chunks_vector_t update_data(resource_);               // storage_update payload (mutated)
+        std::pmr::vector<vector_t> update_row_ids(resource_); // storage_update row_ids, one per chunk
+        chunks_vector_t wal_chunks(resource_);                // WAL payload (submitted new rows)
+        std::pmr::vector<int64_t> wal_row_ids(resource_);     // WAL row_ids, flat
+        chunks_vector_t idx_old(resource_);                   // index: old row versions, one per chunk
+        chunks_vector_t idx_new(resource_);                   // index: new rows, one per chunk
+        std::pmr::vector<int64_t> idx_row_ids(resource_);     // index row_ids, flat
+        chunks_vector_t projected(resource_);
+        // RETURNING: the matched FROM (right) rows were gathered in lockstep, one right
+        // chunk per updated chunk (returning_from_chunks_), aligned by index.
+        size_t right_idx = 0;
+        const bool mirror_index =
+            ctx->index_address != actor_zeta::address_t::empty_address() && scan_chunks != nullptr;
+
+        auto copy_of = [this](const data_chunk_t& src) {
+            data_chunk_t dst(resource_, src.types(), src.size());
+            src.copy(dst, 0);
+            return dst;
+        };
+
+        for (auto& out_chunk : input->chunks()) {
+            if (out_chunk.size() == 0) {
+                continue;
+            }
+            const uint64_t n = out_chunk.size();
+
+            // If a resolver sibling supplied catalog metadata, surface alias drift.
+            // See operator_insert::await_async_and_resume for the rationale.
+            if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
+                auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
+                for (std::size_t i = 0; i < translation.size(); ++i) {
+                    if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
+                        trace(log_,
+                              "operator_update: resolved metadata has no column matching chunk alias '{}'",
+                              std::string(out_chunk.data[i].type().alias()));
+                    }
                 }
+            }
+
+            // storage_update needs a row_ids vector_t + payload copy per chunk.
+            vector_t row_ids(resource_, types::logical_type::BIGINT, n);
+            for (uint64_t i = 0; i < n; i++) {
+                row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
+            }
+            update_row_ids.emplace_back(std::move(row_ids));
+            update_data.emplace_back(copy_of(out_chunk));
+
+            // WAL needs the submitted new rows + their flat row_ids.
+            wal_chunks.emplace_back(copy_of(out_chunk));
+            for (uint64_t i = 0; i < n; i++) {
+                wal_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
+            }
+
+            // Index needs the n old row versions, pulled from the scan cursor in lockstep
+            // with the matched scan order, plus the new rows and their row_ids.
+            if (mirror_index) {
+                data_chunk_t old_data(resource_, out_chunk.types(), n);
+                uint64_t filled = 0;
+                while (filled < n && scan_chunk_idx < scan_chunks->size()) {
+                    const auto& sc = (*scan_chunks)[scan_chunk_idx];
+                    if (scan_row_in_chunk >= sc.size()) {
+                        ++scan_chunk_idx;
+                        scan_row_in_chunk = 0;
+                        continue;
+                    }
+                    const uint64_t take = std::min<uint64_t>(sc.size() - scan_row_in_chunk, n - filled);
+                    for (uint64_t col = 0; col < sc.column_count() && col < old_data.column_count(); ++col) {
+                        vector::vector_ops::copy(sc.data[col], old_data.data[col], take, scan_row_in_chunk, filled);
+                    }
+                    vector::vector_ops::copy(sc.row_ids, old_data.row_ids, take, scan_row_in_chunk, filled);
+                    filled += take;
+                    scan_row_in_chunk += take;
+                }
+                old_data.set_cardinality(filled);
+                idx_old.emplace_back(std::move(old_data));
+                idx_new.emplace_back(copy_of(out_chunk));
+                for (uint64_t i = 0; i < n; i++) {
+                    idx_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
+                }
+            }
+
+            // RETURNING projection is local (no storage read-back): project the updated
+            // chunk now, paired with its lockstep FROM (right) chunk.
+            if (!returning_.empty()) {
+                data_chunk_t* right_batch =
+                    right_idx < returning_from_chunks_.size() ? &returning_from_chunks_[right_idx] : nullptr;
+                auto proj = evaluate_projection(resource_,
+                                                returning_,
+                                                &out_chunk,
+                                                ctx->parameters,
+                                                ctx->session_tz,
+                                                right_batch);
+                if (proj.has_error()) {
+                    set_error(proj.error());
+                    mark_executed();
+                    co_return;
+                }
+                projected.emplace_back(std::move(proj.value()));
+                ++right_idx;
             }
         }
 
-        // 1. Capture WAL data: row_ids + updated chunk.
-        std::pmr::vector<int64_t> wal_row_ids(resource_);
-        wal_row_ids.reserve(out_chunk.size());
-        for (uint64_t i = 0; i < out_chunk.size(); i++) {
-            wal_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
+        if (update_data.empty()) {
+            if (!returning_.empty()) {
+                set_output(make_operator_data(resource_, std::move(projected)));
+            }
+            mark_executed();
+            co_return;
         }
-        auto wal_update_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-        out_chunk.copy(*wal_update_data, 0);
 
-        // 2. storage_update (MVCC: delete old + insert new).
-        vector_t row_ids(resource_, types::logical_type::BIGINT, out_chunk.size());
-        for (uint64_t i = 0; i < out_chunk.size(); i++) {
-            row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
-        }
-        auto data_copy = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-        out_chunk.copy(*data_copy, 0);
+        // 1. storage_update (MVCC: delete old + insert new) — one batched send.
         auto [_u, uf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::storage_update,
                                          exec_ctx,
                                          table_oid_,
-                                         std::move(row_ids),
-                                         std::move(data_copy));
+                                         std::move(update_row_ids),
+                                         std::move(update_data));
         // The update reply carries any write_conflict / out_of_memory the table-layer MVCC
         // update surfaced; surface it as a clean error cursor (the executor turns has_error()
         // into an error cursor) so the txn aborts gracefully.
@@ -322,20 +420,18 @@ namespace components::operators {
             mark_failed();
             co_return;
         }
-        auto [upd_row_start, upd_row_count] = update_result.value();
+        auto [range_start, total_count] = update_result.value();
 
-        // 3. WAL physical_update.
+        // 2. WAL physical_update: one record for the whole range.
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            auto upd_count = static_cast<uint64_t>(wal_row_ids.size());
-            // See operator_insert comment on db_oid temporary hardcode.
-            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+            const uint64_t wal_count = wal_row_ids.size();
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                              &services::wal::manager_wal_replicate_t::write_physical_update,
                                              ctx->session,
                                              table_oid_,
                                              std::move(wal_row_ids),
-                                             std::move(wal_update_data),
-                                             upd_count,
+                                             std::move(wal_chunks),
+                                             wal_count,
                                              ctx->txn.transaction_id,
                                              db_oid);
             auto wal_id = co_await std::move(wf);
@@ -344,73 +440,27 @@ namespace components::operators {
             ctx->add_pending_disk_future(std::move(dff));
         }
 
-        // 4. Mirror to index (old + new data).
-        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            if (auto scan_out = left_ ? left_->output() : nullptr) {
-                auto& sc = scan_out->data_chunk();
-                auto old_data = std::make_unique<data_chunk_t>(resource_, sc.types(), sc.size());
-                sc.copy(*old_data, 0);
-                auto new_data = std::make_unique<data_chunk_t>(resource_, out_chunk.types(), out_chunk.size());
-                out_chunk.copy(*new_data, 0);
-                auto idx_ids = std::pmr::vector<int64_t>(resource_);
-                idx_ids.reserve(out_chunk.size());
-                for (size_t i = 0; i < out_chunk.size(); i++) {
-                    idx_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
-                }
-                auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::update_rows,
-                                                   exec_ctx,
-                                                   table_oid_,
-                                                   std::move(old_data),
-                                                   std::move(new_data),
-                                                   std::move(idx_ids),
-                                                   static_cast<int64_t>(upd_row_start));
-                co_await std::move(ixf);
-            }
+        // 3. Mirror to index (old + new data) — one batched send.
+        if (mirror_index) {
+            auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
+                                               &services::index::manager_index_t::update_rows,
+                                               exec_ctx,
+                                               table_oid_,
+                                               std::move(idx_old),
+                                               std::move(idx_new),
+                                               std::move(idx_row_ids),
+                                               range_start);
+            co_await std::move(ixf);
         }
 
-        // 5. Record swap-info on context. UPDATE = delete-old + append-new,
-        // so both append_row_* and delete_txn_id must be populated.
-        ctx->dml_append_row_start = upd_row_start;
-        ctx->dml_append_row_count = upd_row_count;
+        // 4. Record swap-info on context. UPDATE = delete-old + append-new, so both
+        // append_row_* and delete_txn_id must be populated.
+        ctx->dml_append_row_start = range_start;
+        ctx->dml_append_row_count = total_count;
         ctx->dml_delete_txn_id = ctx->txn.transaction_id;
         ctx->dml_table_oid = table_oid_;
 
-        // RETURNING: project the requested columns from the updated rows.
-        // out_chunk is the merged updated-rows chunk (all table columns, in
-        // table order, matching the paths resolved by validate). Split it back
-        // into capacity-bounded batches and project each. Without RETURNING,
-        // output_ keeps the updated rows as set by on_execute_impl.
-        // TODO: keep the updated rows batched end-to-end instead of merging in
-        // data_chunk() and re-splitting here.
         if (!returning_.empty()) {
-            chunks_vector_t projected(resource_);
-            auto batches = split_chunk_into_batches(resource_, std::move(out_chunk));
-
-            // UPDATE ... FROM: the matched FROM rows were gathered in lockstep with
-            // the updated rows. Merge them the same way out_chunk was merged and
-            // split identically, so batch b of each side covers the same matches.
-            chunks_vector_t right_batches(resource_);
-            if (!returning_from_chunks_.empty()) {
-                auto right_data = make_operator_data(resource_, std::move(returning_from_chunks_));
-                right_batches = split_chunk_into_batches(resource_, std::move(right_data->data_chunk()));
-            }
-
-            for (size_t b = 0; b < batches.size(); b++) {
-                auto& batch = batches[b];
-                if (batch.size() == 0) {
-                    continue;
-                }
-                data_chunk_t* right_batch = b < right_batches.size() ? &right_batches[b] : nullptr;
-                auto proj =
-                    evaluate_projection(resource_, returning_, &batch, ctx->parameters, ctx->session_tz, right_batch);
-                if (proj.has_error()) {
-                    set_error(proj.error());
-                    mark_executed();
-                    co_return;
-                }
-                projected.emplace_back(std::move(proj.value()));
-            }
             set_output(make_operator_data(resource_, std::move(projected)));
         }
         mark_executed();

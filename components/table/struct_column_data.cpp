@@ -200,9 +200,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> struct_column_data_t::update(uint64_t column_index,
-                                                            vector::vector_t& update_vector,
-                                                            int64_t* row_ids,
-                                                            uint64_t update_count) {
+                                                              vector::vector_t& update_vector,
+                                                              int64_t* row_ids,
+                                                              uint64_t update_count) {
         auto v = validity.update(column_index, update_vector, row_ids, update_count);
         if (v.has_error()) {
             return v;
@@ -218,10 +218,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> struct_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                                  vector::vector_t& update_vector,
-                                                                  int64_t* row_ids,
-                                                                  uint64_t update_count,
-                                                                  uint64_t depth) {
+                                                                     vector::vector_t& update_vector,
+                                                                     int64_t* row_ids,
+                                                                     uint64_t update_count,
+                                                                     uint64_t depth) {
         if (depth >= column_path.size()) {
             throw std::runtime_error("Attempting to directly update a struct column - this should not be possible");
         }
@@ -232,8 +232,11 @@ namespace components::table {
             if (update_column > sub_columns.size()) {
                 throw std::runtime_error("update column_path out of range");
             }
-            return sub_columns[update_column - 1]
-                ->update_column(column_path, update_vector, row_ids, update_count, depth + 1);
+            return sub_columns[update_column - 1]->update_column(column_path,
+                                                                 update_vector,
+                                                                 row_ids,
+                                                                 update_count,
+                                                                 depth + 1);
         }
     }
 

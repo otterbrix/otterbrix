@@ -99,7 +99,7 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
 
     REQUIRE_FALSE(group->has_error());
     REQUIRE(group->output());
-    auto& out = group->output()->data_chunk();
+    auto& out = group->output()->chunks().front();
     REQUIRE(out.size() == 3);
     REQUIRE(out.column_count() == 1);
     // The key column type must be the field's type walked through the input

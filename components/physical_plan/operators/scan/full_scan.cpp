@@ -253,12 +253,12 @@ namespace components::operators {
             filter = std::move(filter_result.value());
         }
 
-        // Scan from storage — batched + projected (PR #477+#483).
+        // Scan from storage — projected, returns a vector of chunks.
         int64_t offset_val = limit_.offset();
         int64_t limit_val = limit_.limit();
         int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_scan_batched,
+                                         &services::disk::manager_disk_t::storage_scan,
                                          ctx->session,
                                          table_oid_,
                                          std::move(filter),
@@ -296,7 +296,7 @@ namespace components::operators {
         }
 
         // Maintain the operator_data_t invariant: at least one (possibly empty)
-        // chunk. storage_scan_batched can return an empty vector at SSB-scale when
+        // chunk. storage_scan can return an empty vector at SSB-scale when
         // the disk service get_storage(table_oid) hits an oid-resolution race with
         // CSV ingest commit. Without this guard, operator_join.cpp:125 asserts.
         // Schema is taken from the projected scan signature so OUTER joins can

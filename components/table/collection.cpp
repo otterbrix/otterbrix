@@ -394,8 +394,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> collection_t::update_column(vector::vector_t& row_ids,
-                                                           const std::vector<uint64_t>& column_path,
-                                                           vector::data_chunk_t& updates) {
+                                                             const std::vector<uint64_t>& column_path,
+                                                             vector::data_chunk_t& updates) {
         uint64_t pos = 0;
         do {
             uint64_t start = pos;

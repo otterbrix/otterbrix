@@ -87,8 +87,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> standard_column_data_t::append_data(column_append_state& state,
-                                                                    vector::unified_vector_format& uvf,
-                                                                    uint64_t count) {
+                                                                     vector::unified_vector_format& uvf,
+                                                                     uint64_t count) {
         auto base = column_data_t::append_data(state, uvf, count);
         if (base.has_error()) {
             return base; // out_of_memory (rules 2/9)
@@ -125,9 +125,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> standard_column_data_t::update(uint64_t column_index,
-                                                              vector::vector_t& update_vector,
-                                                              int64_t* row_ids,
-                                                              uint64_t update_count) {
+                                                                vector::vector_t& update_vector,
+                                                                int64_t* row_ids,
+                                                                uint64_t update_count) {
         auto base = column_data_t::update(column_index, update_vector, row_ids, update_count);
         if (base.has_error()) {
             return base;
@@ -136,10 +136,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> standard_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                                     vector::vector_t& update_vector,
-                                                                     int64_t* row_ids,
-                                                                     uint64_t update_count,
-                                                                     uint64_t depth) {
+                                                                       vector::vector_t& update_vector,
+                                                                       int64_t* row_ids,
+                                                                       uint64_t update_count,
+                                                                       uint64_t depth) {
         if (depth >= column_path.size()) {
             return column_data_t::update(column_path[0], update_vector, row_ids, update_count);
         } else {

@@ -347,9 +347,10 @@ namespace services::disk {
         // data_table_t::compact), so pre-compact row_ids persisted in on-disk
         // index btrees go stale; base_spaces feeds this scan into
         // manager_index_t::bootstrap_repopulate_sync to rebuild against current
-        // row_ids. Single-threaded bootstrap only. Returns a default-constructed
-        // unique_ptr when the oid is unknown or its storage is empty.
-        std::unique_ptr<components::vector::data_chunk_t>
+        // row_ids. Single-threaded bootstrap only. Returns the storage as a batch of
+        // ≤DEFAULT_VECTOR_CAPACITY chunks (empty when the oid is unknown or its storage
+        // is empty).
+        std::pmr::vector<components::vector::data_chunk_t>
         scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid, std::pmr::memory_resource* resource) const;
 
         // Catalog scan returning (oid, delete_id) for every tombstoned pg_class
@@ -625,46 +626,47 @@ namespace services::disk {
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
         unique_future<uint64_t> storage_total_rows(session_id_t session, components::catalog::oid_t table_oid);
 
-        // Storage data operations
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        // Storage data operations.
+        // Returns a vector of chunks and applies index-based column projection at the
+        // storage layer. Empty `projected_cols` means "read all columns" (pass-through).
+        // Returns a vector of chunks and applies index-based column projection at the
+        // storage layer. Empty `projected_cols` means "read all columns" (pass-through). The
+        // reply wraps the batches so a buffer-pool OOM / data_corruption from the table-layer
+        // scan reaches the scan operators as a value rather than a throw across the mailbox.
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_scan(session_id_t session,
                      components::catalog::oid_t table_oid,
                      std::unique_ptr<components::table::table_filter_t> filter,
-                     int limit,
+                     int64_t limit,
+                     std::vector<size_t> projected_cols,
                      components::table::transaction_data txn);
-        // Batched + projected variant: returns a vector of chunks and applies
-        // index-based column projection at the storage layer.
-        // Empty `projected_cols` means "read all columns" (pass-through). The reply wraps the
-        // batches so a buffer-pool OOM / data_corruption from the table-layer scan reaches the
-        // scan operators as a value rather than a throw across the mailbox.
-        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_scan_batched(session_id_t session,
-                             components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::table::table_filter_t> filter,
-                             int64_t limit,
-                             std::vector<size_t> projected_cols,
-                             components::table::transaction_data txn);
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
                       uint64_t count);
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment(session_id_t session, components::catalog::oid_t table_oid, int64_t start, uint64_t count);
+        // Appends every chunk in order. Appends within one txn are contiguous, so the
+        // result is the single coalesced range [range_start, range_start + total_count).
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
         // table-layer append chain reaches operator_insert as a value.
         unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::data_chunk_t> data);
 
+        // Updates every chunk in order; row_ids[i] are the storage row-ids for data[i]
+        // (the two vectors are positionally aligned and must have equal length). Returns
+        // the coalesced new-row range [range_start, range_start + total_count).
         // Reply wraps (updated, appended) so a write_conflict / out_of_memory from the
         // table-layer MVCC update reaches operator_update / fk_cascade as a value.
         unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       components::vector::vector_t row_ids,
-                       std::unique_ptr<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::vector_t> row_ids,
+                       std::pmr::vector<components::vector::data_chunk_t> data);
         unique_future<uint64_t> storage_delete_rows(execution_context_t ctx,
                                                     components::catalog::oid_t table_oid,
                                                     components::vector::vector_t row_ids,
@@ -699,7 +701,6 @@ namespace services::disk {
                                                        &manager_disk_t::storage_total_rows,
                                                        // Storage data operations
                                                        &manager_disk_t::storage_scan,
-                                                       &manager_disk_t::storage_scan_batched,
                                                        &manager_disk_t::storage_fetch,
                                                        &manager_disk_t::storage_scan_segment,
                                                        &manager_disk_t::storage_append,
@@ -784,7 +785,7 @@ namespace services::disk {
         auto agent() -> actor_zeta::address_t;
 
         // Single manager-side scan funnel over the owning agent's
-        // storage_scan_batched_inner, so there is ONE place that issues a catalog
+        // storage_scan_inner, so there is ONE place that issues a catalog
         // scan. `filter` null = "see all rows"; `projected_cols` empty = "all
         // columns"; returns an empty batch vector when there is no owning agent.
         // txn defaults to transaction_data{} = "see all committed".

@@ -228,14 +228,14 @@ namespace otterbrix {
                 for (auto* r : records) {
                     switch (r->record_type) {
                         case services::wal::wal_record_type::PHYSICAL_INSERT:
-                            if (r->physical_data) {
+                            if (!r->physical_data.empty()) {
                                 if (!disk_ptr->has_storage(table_oid)) {
                                     // Try lazy-load from .otbx; if that fails (table is
                                     // in-memory or .otbx absent), synthesise an in-memory
                                     // storage from the WAL chunk's column types.
                                     disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        auto types = r->physical_data->types();
+                                        auto types = r->physical_data.front().types();
                                         std::vector<components::table::column_definition_t> cols;
                                         cols.reserve(types.size());
                                         for (const auto& t : types) {
@@ -247,7 +247,9 @@ namespace otterbrix {
                                     }
                                 }
                                 // TODO: load timezone from settings?
-                                disk_ptr->direct_append_sync(table_oid, *r->physical_data, {});
+                                for (auto& chunk : r->physical_data) {
+                                    disk_ptr->direct_append_sync(table_oid, chunk, {});
+                                }
                             }
                             break;
                         case services::wal::wal_record_type::PHYSICAL_ADD_COLUMN:
@@ -255,11 +257,11 @@ namespace otterbrix {
                             // dependent PHYSICAL_INSERT (higher wal_id, so replays after
                             // this). Storage must exist first — load .otbx or synthesise
                             // it from the schema chunk's column types.
-                            if (r->physical_data) {
+                            if (!r->physical_data.empty()) {
                                 if (!disk_ptr->has_storage(table_oid)) {
                                     disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        auto types = r->physical_data->types();
+                                        auto types = r->physical_data.front().types();
                                         std::vector<components::table::column_definition_t> cols;
                                         cols.reserve(types.size());
                                         for (const auto& t : types) {
@@ -273,7 +275,7 @@ namespace otterbrix {
                                         break;
                                     }
                                 }
-                                disk_ptr->direct_add_column_sync(table_oid, *r->physical_data);
+                                disk_ptr->direct_add_column_sync(table_oid, r->physical_data.front());
                             }
                             break;
                         case services::wal::wal_record_type::PHYSICAL_DELETE: {
@@ -281,8 +283,20 @@ namespace otterbrix {
                             break;
                         }
                         case services::wal::wal_record_type::PHYSICAL_UPDATE:
-                            if (r->physical_data) {
-                                disk_ptr->direct_update_sync(table_oid, r->physical_row_ids, *r->physical_data);
+                            if (!r->physical_data.empty()) {
+                                // physical_row_ids is flat across the batch; slice it per
+                                // chunk in vector order to match each chunk's rows.
+                                std::size_t id_base = 0;
+                                for (auto& chunk : r->physical_data) {
+                                    const std::size_t n = chunk.size();
+                                    std::pmr::vector<int64_t> ids(r->physical_row_ids.get_allocator().resource());
+                                    ids.reserve(n);
+                                    for (std::size_t i = 0; i < n && id_base + i < r->physical_row_ids.size(); ++i) {
+                                        ids.push_back(r->physical_row_ids[id_base + i]);
+                                    }
+                                    id_base += n;
+                                    disk_ptr->direct_update_sync(table_oid, ids, chunk);
+                                }
                             }
                             break;
                         default:
@@ -577,13 +591,14 @@ namespace otterbrix {
         // silently drops them (SELECT WHERE indexed_col = X returns 0 rows).
         // Sync — same pre-scheduler-start window as the bootstrap_*_sync calls.
         for (auto oid : live_tables) {
-            auto chunk = manager_disk_->scan_storage_for_rebuild_sync(oid, &resource);
-            if (!chunk)
-                continue;
-            const auto row_count = chunk->size();
+            auto chunks = manager_disk_->scan_storage_for_rebuild_sync(oid, &resource);
+            uint64_t row_count = 0;
+            for (const auto& chunk : chunks) {
+                row_count += chunk.size();
+            }
             if (row_count == 0)
                 continue;
-            manager_index_->bootstrap_repopulate_sync(oid, std::move(chunk), row_count);
+            manager_index_->bootstrap_repopulate_sync(oid, std::move(chunks), row_count);
         }
 
         trace(log_,

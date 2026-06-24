@@ -60,9 +60,8 @@ namespace {
             , buffer_manager(&resource, fs, buffer_pool) {}
     };
 
-    void append_int64_data(components::table::data_table_t& table,
-                           std::pmr::memory_resource* resource,
-                           uint64_t count) {
+    void
+    append_int64_data(components::table::data_table_t& table, std::pmr::memory_resource* resource, uint64_t count) {
         using namespace components::types;
         using namespace components::vector;
         using namespace components::table;
@@ -103,8 +102,7 @@ namespace {
     // INT64 values = 2 MiB of raw column data spread across many segments, well
     // above the 4 MiB pool once buffers / overhead are counted, and far above the
     // per-block 256 KiB so it can never stay resident as one chunk.
-    constexpr uint64_t LARGE_ROW_COUNT =
-        components::vector::DEFAULT_VECTOR_CAPACITY * 256; // 262144 rows
+    constexpr uint64_t LARGE_ROW_COUNT = components::vector::DEFAULT_VECTOR_CAPACITY * 256; // 262144 rows
 } // namespace
 
 TEST_CASE("disk_backed_scan: large table full scan completes bounded with correct values", "[step2]") {

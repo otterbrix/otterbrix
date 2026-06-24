@@ -225,10 +225,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 4);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE(cur->chunks().front().data[1].is_null(i));
                 }
             }
         }
@@ -243,7 +243,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 3);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
             }
         }
@@ -259,10 +259,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 4);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE(cur->chunks().front().data[1].is_null(i));
                 }
             }
         }
@@ -280,11 +280,11 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 4);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
-                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunks().front().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-                    REQUIRE(cur->chunk_data().value(1, i) == val);
+                    REQUIRE(cur->value(1, i) == val);
                 }
             }
         }
@@ -300,11 +300,11 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 4);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
-                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunks().front().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-                    REQUIRE(cur->chunk_data().value(1, i) == val);
+                    REQUIRE(cur->value(1, i) == val);
                 }
             }
         }
@@ -352,10 +352,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 5);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
-                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE(cur->chunks().front().data[1].is_null(i));
                 }
             }
         }
@@ -370,7 +370,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 3);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
             }
         }
@@ -386,10 +386,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 5);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
-                    REQUIRE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE(cur->chunks().front().data[1].is_null(i));
                 }
             }
         }
@@ -405,11 +405,11 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 5);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
-                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunks().front().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
-                    REQUIRE(cur->chunk_data().value(1, i) == val);
+                    REQUIRE(cur->value(1, i) == val);
                 }
             }
         }
@@ -425,11 +425,11 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == kNumInserts * 5);
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
-                    REQUIRE_FALSE(cur->chunk_data().data[1].is_null(i));
+                    REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
-                auto val = types::logical_value_t{dispatcher->resource(), cur->chunk_data().data[1].type()};
+                auto val = types::logical_value_t{dispatcher->resource(), cur->chunks().front().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
-                    REQUIRE(cur->chunk_data().value(1, i) == val);
+                    REQUIRE(cur->value(1, i) == val);
                 }
             }
         }

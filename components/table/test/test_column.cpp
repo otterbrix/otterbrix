@@ -68,8 +68,7 @@ TEST_CASE("components::table::column") {
         {
             vector_t v(&resource, logical_type::UBIGINT, test_size);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value{&resource, uint64_t(i)};
-                v.set_value(i, value);
+                v.set_value(i, uint64_t(i));
             }
 
             column_append_state state;
@@ -143,8 +142,8 @@ TEST_CASE("components::table::column") {
         {
             vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value{&resource, generate_string(i)};
-                v.set_value(i, value);
+                std::string value{generate_string(i)};
+                v.set_value(i, std::string_view{value});
             }
 
             column_append_state state;
@@ -227,12 +226,12 @@ TEST_CASE("components::table::column") {
         {
             vector_t v(&resource, complex_logical_type::create_array(logical_type::UBIGINT, array_size), test_size);
             for (size_t i = 0; i < test_size; i++) {
-                std::vector<logical_value_t> arr;
+                std::vector<std::optional<uint64_t>> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(&resource, uint64_t{i * array_size + j});
+                    arr.emplace_back(uint64_t{i * array_size + j});
                 }
-                v.set_value(i, logical_value_t::create_array(v.resource(), logical_type::UBIGINT, arr));
+                v.set_value(i, arr);
             }
 
             column_append_state state;
@@ -327,12 +326,17 @@ TEST_CASE("components::table::column") {
                        complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size),
                        test_size);
             for (size_t i = 0; i < test_size; i++) {
-                std::vector<logical_value_t> arr;
-                arr.reserve(array_size);
+                std::vector<std::string> storage;
+                storage.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(v.resource(), generate_string(i * array_size + j));
+                    storage.push_back(generate_string(i * array_size + j));
                 }
-                v.set_value(i, logical_value_t::create_array(v.resource(), logical_type::STRING_LITERAL, arr));
+                std::vector<std::optional<std::string_view>> arr;
+                arr.reserve(array_size);
+                for (const auto& s : storage) {
+                    arr.emplace_back(std::string_view{s});
+                }
+                v.set_value(i, arr);
             }
 
             column_append_state state;
@@ -434,13 +438,13 @@ TEST_CASE("components::table::column") {
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
             for (size_t i = 0; i < test_size; i++) {
-                std::vector<logical_value_t> list;
                 // test that each list entry can be a different length
+                std::vector<std::optional<uint64_t>> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(&resource, uint64_t{i * list_length(i) + j});
+                    list.emplace_back(uint64_t{i * list_length(i) + j});
                 }
-                v.set_value(i, logical_value_t::create_list(v.resource(), logical_type::UBIGINT, list));
+                v.set_value(i, list);
             }
 
             column_append_state state;
@@ -486,12 +490,12 @@ TEST_CASE("components::table::column") {
             ids.reserve(update_size);
             vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), update_size);
             for (size_t i = 0; i < update_size; i++) {
-                std::vector<logical_value_t> list;
+                std::vector<std::optional<uint64_t>> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(&resource, uint64_t{1000000 + i * list_length(i) + j});
+                    list.emplace_back(uint64_t{1000000 + i * list_length(i) + j});
                 }
-                v.set_value(i, logical_value_t::create_list(v.resource(), logical_type::UBIGINT, list));
+                v.set_value(i, list);
                 ids.emplace_back(static_cast<int64_t>(i));
             }
             auto update_result = column->update(0, v, ids.data(), update_size);
@@ -538,13 +542,18 @@ TEST_CASE("components::table::column") {
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
             for (size_t i = 0; i < test_size; i++) {
-                std::vector<logical_value_t> list;
                 // test that each list entry can be a different length
-                list.reserve(list_length(i));
+                std::vector<std::string> storage;
+                storage.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(v.resource(), generate_string(i * list_length(i) + j));
+                    storage.push_back(generate_string(i * list_length(i) + j));
                 }
-                v.set_value(i, logical_value_t::create_list(v.resource(), logical_type::STRING_LITERAL, list));
+                std::vector<std::optional<std::string_view>> list;
+                list.reserve(list_length(i));
+                for (const auto& s : storage) {
+                    list.emplace_back(std::string_view{s});
+                }
+                v.set_value(i, list);
             }
 
             column_append_state state;
@@ -594,12 +603,17 @@ TEST_CASE("components::table::column") {
             ids.reserve(update_size);
             vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), update_size);
             for (size_t i = 0; i < update_size; i++) {
-                std::vector<logical_value_t> list;
-                list.reserve(list_length(i));
+                std::vector<std::string> storage;
+                storage.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(v.resource(), generate_string(1000000 + i * list_length(i) + j));
+                    storage.push_back(generate_string(1000000 + i * list_length(i) + j));
                 }
-                v.set_value(i, logical_value_t::create_list(v.resource(), logical_type::STRING_LITERAL, list));
+                std::vector<std::optional<std::string_view>> list;
+                list.reserve(list_length(i));
+                for (const auto& s : storage) {
+                    list.emplace_back(std::string_view{s});
+                }
+                v.set_value(i, list);
                 ids.emplace_back(static_cast<int64_t>(i));
             }
             auto update_result = column->update(0, v, ids.data(), update_size);
@@ -658,18 +672,17 @@ TEST_CASE("components::table::column") {
             vector_t v(&resource, struct_type, test_size);
 
             for (size_t i = 0; i < test_size; i++) {
-                std::vector<logical_value_t> arr;
+                std::vector<std::optional<uint16_t>> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(&resource, uint16_t(j));
+                    arr.emplace_back(uint16_t(j));
                 }
-                std::vector<logical_value_t> value_fiels;
-                value_fiels.emplace_back(&resource, i % 2 != 0);
-                value_fiels.emplace_back(&resource, int32_t(i));
-                value_fiels.emplace_back(v.resource(), generate_string(i));
-                value_fiels.emplace_back(logical_value_t::create_list(v.resource(), logical_type::USMALLINT, arr));
-                logical_value_t value = logical_value_t::create_struct(v.resource(), struct_type, value_fiels);
-                v.set_value(i, value);
+                std::string name{generate_string(i)};
+                v.set_value(i,
+                            std::tuple{std::optional<bool>(i % 2 != 0),
+                                       std::optional<int32_t>(int32_t(i)),
+                                       std::optional<std::string_view>(name),
+                                       std::optional<std::vector<std::optional<uint16_t>>>(std::move(arr))});
             }
 
             column_append_state state;

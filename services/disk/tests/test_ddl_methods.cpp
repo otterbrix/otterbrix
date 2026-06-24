@@ -195,7 +195,7 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     std::uint64_t total = 0;
     for (const auto& c : batches) total += c.size();
     REQUIRE(total == 1);
-    REQUIRE(batches[0].value(6, 0).value<std::int64_t>() == 1);
+    REQUIRE(batches[0].get_value_not_null<std::int64_t>(6, 0) == 1);
 
     auto rs = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("agg"));
     REQUIRE(rs.found);
@@ -277,8 +277,8 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     for (const auto& chunk : batches) {
         REQUIRE(chunk.column_count() >= 7);
         for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-            const auto v = chunk.value(5, i).value<std::int64_t>();
-            const auto rc = chunk.value(6, i).value<std::int64_t>();
+            const auto v = chunk.get_value_not_null<std::int64_t>(5, i);
+            const auto rc = chunk.get_value_not_null<std::int64_t>(6, i);
             if (rc > 0) {
                 found_live = true;
                 live_v = v;
@@ -370,20 +370,22 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         for (const auto& chunk : batches) {
             REQUIRE(chunk.column_count() >= 7);
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                const auto attname = std::string(chunk.value(2, i).value<std::string_view>());
-                const auto v = chunk.value(5, i).value<std::int64_t>();
-                const auto rc = chunk.value(6, i).value<std::int64_t>();
+                const auto attname = std::string(chunk.get_value_not_null<std::string_view>(2, i));
+                const auto v = chunk.get_value_not_null<std::int64_t>(5, i);
+                const auto rc = chunk.get_value_not_null<std::int64_t>(6, i);
                 if (attname == "a") {
                     ++rows_a;
                 } else if (attname == "b") {
                     if (rc > 0) {
                         ++rows_b_live;
                         b_live_v = v;
-                        observed_b_live_attoid = static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
+                        observed_b_live_attoid =
+                            static_cast<catalog::oid_t>(chunk.get_value_not_null<std::uint32_t>(1, i));
                     } else {
                         ++rows_b_tomb;
                         b_tomb_v = v;
-                        observed_b_tomb_attoid = static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
+                        observed_b_tomb_attoid =
+                            static_cast<catalog::oid_t>(chunk.get_value_not_null<std::uint32_t>(1, i));
                     }
                 }
             }
@@ -508,9 +510,9 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         for (const auto& chunk : batches) {
             REQUIRE(chunk.column_count() >= 7);
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                const auto rc = chunk.value(6, i).value<std::int64_t>();
+                const auto rc = chunk.get_value_not_null<std::int64_t>(6, i);
                 if (rc <= 0) {
-                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>()));
+                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value_not_null<std::uint32_t>(1, i)));
                 }
             }
         }
@@ -543,7 +545,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         std::vector<std::string> names;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                names.emplace_back(chunk.value(2, i).value<std::string_view>());
+                names.emplace_back(chunk.get_value_not_null<std::string_view>(2, i));
             }
         }
         std::sort(names.begin(), names.end());
@@ -603,9 +605,9 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         }
         auto chunk = std::make_unique<data_chunk_t>(&fx.resource, types, 1);
         chunk->set_cardinality(1);
-        chunk->set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{1}));
-        chunk->set_value(1, 0, logical_value_t(&fx.resource, std::int64_t{2}));
-        chunk->set_value(2, 0, logical_value_t(&fx.resource, std::int64_t{3}));
+        chunk->set_value(0, 0, std::int64_t{1});
+        chunk->set_value(1, 0, std::int64_t{2});
+        chunk->set_value(2, 0, std::int64_t{3});
         components::execution_context_t append_ctx{session_id_t{},
                                                    components::table::transaction_data{0, 0},
                                                    {},
@@ -636,8 +638,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.value(6, i).value<std::int64_t>() <= 0) {
-                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>()));
+                if (chunk.get_value_not_null<std::int64_t>(6, i) <= 0) {
+                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value_not_null<std::uint32_t>(1, i)));
                 }
             }
         }
@@ -758,7 +760,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     {
         auto chunk = build_chunk(
             {{"a", complex_logical_type{logical_type::BIGINT}}},
-            [&](data_chunk_t& c) { c.set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{1})); },
+            [&](data_chunk_t& c) { c.set_value(0, 0, std::int64_t{1}); },
             /*rows=*/1);
         auto append_r = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
@@ -780,8 +782,8 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
             {{"a", complex_logical_type{logical_type::BIGINT}},
              {"b", complex_logical_type{logical_type::STRING_LITERAL}}},
             [&](data_chunk_t& c) {
-                c.set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{2}));
-                c.set_value(1, 0, logical_value_t(&fx.resource, std::string("x")));
+                c.set_value(0, 0, std::int64_t{2});
+                c.set_value(1, 0, std::string_view("x"));
             },
             /*rows=*/1);
         fx.invoke(&manager_disk_t::storage_append,
@@ -821,9 +823,9 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
              {"b", complex_logical_type{logical_type::STRING_LITERAL}},
              {"c", complex_logical_type{logical_type::DOUBLE}}},
             [&](data_chunk_t& c) {
-                c.set_value(0, 0, logical_value_t(&fx.resource, std::int64_t{3}));
-                c.set_value(1, 0, logical_value_t(&fx.resource, std::string("y")));
-                c.set_value(2, 0, logical_value_t(&fx.resource, double{3.14}));
+                c.set_value(0, 0, std::int64_t{3});
+                c.set_value(1, 0, std::string_view("y"));
+                c.set_value(2, 0, double{3.14});
             },
             /*rows=*/1);
         fx.invoke(&manager_disk_t::storage_append,
@@ -891,8 +893,8 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         }
         auto chunk = std::make_unique<data_chunk_t>(&fx.resource, types, 1);
         chunk->set_cardinality(1);
-        chunk->set_value(0, 0, logical_value_t(&fx.resource, kval));
-        chunk->set_value(1, 0, logical_value_t(&fx.resource, std::int64_t{kval * 10}));
+        chunk->set_value(0, 0, kval);
+        chunk->set_value(1, 0, std::int64_t{kval * 10});
         components::execution_context_t append_ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}, oid};
         fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
     };

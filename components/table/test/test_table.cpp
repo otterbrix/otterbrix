@@ -93,59 +93,69 @@ TEST_CASE("components::table::data_table") {
     auto set_cell = [&](data_chunk_t& chunk, size_t col, size_t row, size_t i) {
         switch (col) {
             case 0: // UBIGINT
-                chunk.set_value(col, row, logical_value_t{&resource, uint64_t(i)});
+                chunk.set_value(col, row, uint64_t(i));
                 break;
             case 1: // STRING
-                chunk.set_value(col, row, logical_value_t{&resource, generate_string(i)});
+                chunk.set_value(col, row, std::string_view{generate_string(i)});
                 break;
             case 2: { // ARRAY<UBIGINT>
-                std::vector<logical_value_t> arr;
+                std::vector<std::optional<uint64_t>> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(&resource, uint64_t{i * array_size + j});
+                    arr.emplace_back(uint64_t{i * array_size + j});
                 }
-                chunk.set_value(col, row, logical_value_t::create_array(&resource, logical_type::UBIGINT, arr));
+                chunk.set_value(col, row, arr);
                 break;
             }
             case 3: { // ARRAY<STRING>
-                std::vector<logical_value_t> arr;
-                arr.reserve(array_size);
+                std::vector<std::string> storage;
+                storage.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(&resource, generate_string(i * array_size + j));
+                    storage.push_back(generate_string(i * array_size + j));
                 }
-                chunk.set_value(col, row, logical_value_t::create_array(&resource, logical_type::STRING_LITERAL, arr));
+                std::vector<std::optional<std::string_view>> arr;
+                arr.reserve(array_size);
+                for (const auto& s : storage) {
+                    arr.emplace_back(std::string_view{s});
+                }
+                chunk.set_value(col, row, arr);
                 break;
             }
             case 4: { // LIST<UBIGINT> — each list entry can be a different length
-                std::vector<logical_value_t> list;
+                std::vector<std::optional<uint64_t>> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(&resource, uint64_t{i * list_length(i) + j});
+                    list.emplace_back(uint64_t{i * list_length(i) + j});
                 }
-                chunk.set_value(col, row, logical_value_t::create_list(&resource, logical_type::UBIGINT, list));
+                chunk.set_value(col, row, list);
                 break;
             }
             case 5: { // LIST<STRING>
-                std::vector<logical_value_t> list;
-                list.reserve(list_length(i));
+                std::vector<std::string> storage;
+                storage.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(&resource, generate_string(i * list_length(i) + j));
+                    storage.push_back(generate_string(i * list_length(i) + j));
                 }
-                chunk.set_value(col, row, logical_value_t::create_list(&resource, logical_type::STRING_LITERAL, list));
+                std::vector<std::optional<std::string_view>> list;
+                list.reserve(list_length(i));
+                for (const auto& s : storage) {
+                    list.emplace_back(std::string_view{s});
+                }
+                chunk.set_value(col, row, list);
                 break;
             }
             case 6: { // STRUCT
-                std::vector<logical_value_t> arr;
+                std::vector<std::optional<uint16_t>> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(&resource, test_data[i].array[j]);
+                    arr.emplace_back(test_data[i].array[j]);
                 }
-                std::vector<logical_value_t> value_fiels;
-                value_fiels.emplace_back(&resource, test_data[i].flag);
-                value_fiels.emplace_back(&resource, test_data[i].number);
-                value_fiels.emplace_back(&resource, test_data[i].name);
-                value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
-                chunk.set_value(col, row, logical_value_t::create_struct(&resource, struct_type, value_fiels));
+                chunk.set_value(col,
+                                row,
+                                std::tuple{std::optional<bool>(test_data[i].flag),
+                                           std::optional<int32_t>(test_data[i].number),
+                                           std::optional<std::string_view>(test_data[i].name),
+                                           std::optional<std::vector<std::optional<uint16_t>>>(std::move(arr))});
                 break;
             }
             case 7: { // UNION
@@ -345,7 +355,7 @@ TEST_CASE("components::table::data_table") {
             const size_t count = std::min(cap, test_size - base);
             vector_t rows(&resource, logical_type::BIGINT, count);
             for (size_t local = 0; local < count; local++) {
-                rows.set_value(local, logical_value_t(&resource, static_cast<int64_t>(base + local)));
+                rows.set_value(local, static_cast<int64_t>(base + local));
             }
             data_chunk_t result(&resource, data_table->copy_types(), count);
             data_table->fetch(result, column_indices, rows, count, state);
@@ -390,7 +400,7 @@ TEST_CASE("components::table::data_table") {
     INFO("Delete") {
         vector_t v(&resource, logical_type::BIGINT, test_size / 2);
         for (size_t i = 0; i < test_size; i += 2) {
-            v.set_value(i / 2, logical_value_t(&resource, int64_t(i)));
+            v.set_value(i / 2, int64_t(i));
         }
         auto state = data_table->initialize_delete({});
         auto deleted_count = data_table->delete_rows(*state, v, test_size / 2, 0);
@@ -415,9 +425,7 @@ TEST_CASE("components::table::data_table") {
         std::unique_ptr<data_table_t> extended_table;
 
         {
-            column_definition_t new_column{"temp_column_name7",
-                                           logical_type::SMALLINT,
-                                           logical_value_t{&resource, int16_t(0)}};
+            column_definition_t new_column{"temp_column_name7", logical_type::SMALLINT, int16_t(0)};
             extended_table = std::make_unique<data_table_t>(*data_table, new_column);
 
             // Update values in new column
@@ -427,8 +435,8 @@ TEST_CASE("components::table::data_table") {
             data_chunk_t chunk(&resource, {logical_type::SMALLINT}, test_size / 2);
             chunk.set_cardinality(test_size / 2);
             for (size_t i = 0; i < test_size / 2; i++) {
-                v.set_value(i, logical_value_t(&resource, int64_t(i * 2 + 1)));
-                chunk.set_value(0, i, logical_value_t{&resource, int16_t(i * 2 + 1)});
+                v.set_value(i, int64_t(i * 2 + 1));
+                chunk.set_value(0, i, int16_t(i * 2 + 1));
             }
             auto update_result = extended_table->update_column(v, {8}, chunk);
             REQUIRE_FALSE(update_result.has_error());

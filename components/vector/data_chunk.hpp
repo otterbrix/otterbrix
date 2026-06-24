@@ -38,6 +38,33 @@ namespace components::vector {
         void set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val);
         void set_value(const std::pmr::vector<size_t>& col_path, uint64_t index, const types::logical_value_t& val);
 
+        template<typename T>
+        std::optional<T> get_value(uint64_t col_idx, uint64_t index) const {
+            return data[col_idx].get_value<T>(index);
+        }
+        template<typename... Ts>
+        requires(sizeof...(Ts) > 1) std::optional<std::tuple<std::optional<Ts>...>> get_value(uint64_t col_idx,
+                                                                                              uint64_t index) const {
+            return data[col_idx].get_value<Ts...>(index);
+        }
+        template<typename T>
+        T get_value_not_null(uint64_t col_idx, uint64_t index) const {
+            return data[col_idx].get_value_not_null<T>(index);
+        }
+        template<typename... Ts>
+        requires(sizeof...(Ts) > 1) std::tuple<std::optional<Ts>...> get_value_not_null(uint64_t col_idx,
+                                                                                        uint64_t index) const {
+            return data[col_idx].get_value_not_null<Ts...>(index);
+        }
+        // Forwards plain values, optionals and (optional-of-)struct-tuples to the column vector, which
+        // deduces and routes them. logical_value_t is excluded so it keeps hitting the runtime overload.
+        template<typename Arg>
+        requires(!std::is_same_v<std::remove_cvref_t<Arg>, types::logical_value_t>) void set_value(uint64_t col_idx,
+                                                                                                   uint64_t index,
+                                                                                                   Arg&& value) {
+            data[col_idx].set_value(index, std::forward<Arg>(value));
+        }
+
         vector_t* at(const std::pmr::vector<size_t>& col_indices);
         const vector_t* at(const std::pmr::vector<size_t>& col_indices) const;
 

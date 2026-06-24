@@ -34,28 +34,24 @@ TEST_CASE("components::vector::vector") {
     INFO("sixed size") {
         components::vector::vector_t v(&resource, components::types::logical_type::UBIGINT, test_size);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value{&resource, uint64_t(i)};
-            v.set_value(i, value);
+            v.set_value(i, uint64_t(i));
         }
 
+        REQUIRE(v.type().type() == components::types::logical_type::UBIGINT);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value = v.value(i);
-            REQUIRE(value.type().type() == components::types::logical_type::UBIGINT);
-            REQUIRE(value.value<uint64_t>() == i);
+            REQUIRE(v.get_value_not_null<uint64_t>(i) == i);
         }
     }
     INFO("string") {
         components::vector::vector_t v(&resource, components::types::logical_type::STRING_LITERAL, test_size);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value{v.resource(),
-                                                     std::string{"long_string_with_index_" + std::to_string(i)}};
-            v.set_value(i, value);
+            std::string value{"long_string_with_index_" + std::to_string(i)};
+            v.set_value(i, std::string_view{value});
         }
 
+        REQUIRE(v.type().type() == components::types::logical_type::STRING_LITERAL);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value = v.value(i);
-            REQUIRE(value.type().type() == components::types::logical_type::STRING_LITERAL);
-            std::string result = *(value.value<std::string*>());
+            std::string result{v.get_value_not_null<std::string_view>(i)};
             REQUIRE(result == std::string{"long_string_with_index_" + std::to_string(i)});
         }
     }
@@ -65,23 +61,20 @@ TEST_CASE("components::vector::vector") {
             components::types::complex_logical_type::create_array(components::types::logical_type::UBIGINT, array_size),
             test_size);
         for (size_t i = 0; i < test_size; i++) {
-            std::vector<components::types::logical_value_t> arr;
+            std::vector<std::optional<uint64_t>> arr;
             arr.reserve(array_size);
             for (size_t j = 0; j < array_size; j++) {
-                arr.emplace_back(v.resource(), uint64_t{i * array_size + j});
+                arr.emplace_back(uint64_t{i * array_size + j});
             }
-            v.set_value(i,
-                        components::types::logical_value_t::create_array(v.resource(),
-                                                                         components::types::logical_type::UBIGINT,
-                                                                         arr));
+            v.set_value(i, arr);
         }
 
+        REQUIRE(v.type().type() == components::types::logical_type::ARRAY);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value = v.value(i);
-            REQUIRE(value.type().type() == components::types::logical_type::ARRAY);
+            auto arr = v.get_value_not_null<std::vector<std::optional<uint64_t>>>(i);
+            REQUIRE(arr.size() == array_size);
             for (size_t j = 0; j < array_size; j++) {
-                REQUIRE(value.children()[j].type().type() == components::types::logical_type::UBIGINT);
-                REQUIRE(value.children()[j].value<uint64_t>() == i * array_size + j);
+                REQUIRE(arr[j] == i * array_size + j);
             }
         }
     }
@@ -92,25 +85,26 @@ TEST_CASE("components::vector::vector") {
                                                                   array_size),
             test_size);
         for (size_t i = 0; i < test_size; i++) {
-            std::vector<components::types::logical_value_t> arr;
-            arr.reserve(array_size);
+            // storage keeps the strings alive while their views are written
+            std::vector<std::string> storage;
+            storage.reserve(array_size);
             for (size_t j = 0; j < array_size; j++) {
-                arr.emplace_back(v.resource(),
-                                 std::string{"long_string_with_index_" + std::to_string(i * array_size + j)});
+                storage.push_back("long_string_with_index_" + std::to_string(i * array_size + j));
             }
-            v.set_value(
-                i,
-                components::types::logical_value_t::create_array(v.resource(),
-                                                                 components::types::logical_type::STRING_LITERAL,
-                                                                 arr));
+            std::vector<std::optional<std::string_view>> arr;
+            arr.reserve(array_size);
+            for (const auto& s : storage) {
+                arr.emplace_back(std::string_view{s});
+            }
+            v.set_value(i, arr);
         }
 
+        REQUIRE(v.type().type() == components::types::logical_type::ARRAY);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value = v.value(i);
-            REQUIRE(value.type().type() == components::types::logical_type::ARRAY);
+            auto arr = v.get_value_not_null<std::vector<std::optional<std::string_view>>>(i);
+            REQUIRE(arr.size() == array_size);
             for (size_t j = 0; j < array_size; j++) {
-                REQUIRE(value.children()[j].type().type() == components::types::logical_type::STRING_LITERAL);
-                std::string result = *(value.children()[j].value<std::string*>());
+                std::string result{*arr[j]};
                 REQUIRE(result == std::string{"long_string_with_index_" + std::to_string(i * array_size + j)});
             }
         }
@@ -121,24 +115,21 @@ TEST_CASE("components::vector::vector") {
             components::types::complex_logical_type::create_list(components::types::logical_type::UBIGINT),
             test_size);
         for (size_t i = 0; i < test_size; i++) {
-            std::vector<components::types::logical_value_t> list;
             // test that each list entry can be a different length
+            std::vector<std::optional<uint64_t>> list;
             list.reserve(list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
-                list.emplace_back(v.resource(), uint64_t{i * list_length(i) + j});
+                list.emplace_back(uint64_t{i * list_length(i) + j});
             }
-            v.set_value(i,
-                        components::types::logical_value_t::create_list(v.resource(),
-                                                                        components::types::logical_type::UBIGINT,
-                                                                        list));
+            v.set_value(i, list);
         }
 
+        REQUIRE(v.type().type() == components::types::logical_type::LIST);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value = v.value(i);
-            REQUIRE(value.type().type() == components::types::logical_type::LIST);
+            auto list = v.get_value_not_null<std::vector<std::optional<uint64_t>>>(i);
+            REQUIRE(list.size() == list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
-                REQUIRE(value.children()[j].type().type() == components::types::logical_type::UBIGINT);
-                REQUIRE(value.children()[j].value<uint64_t>() == i * list_length(i) + j);
+                REQUIRE(list[j] == i * list_length(i) + j);
             }
         }
     }
@@ -148,25 +139,27 @@ TEST_CASE("components::vector::vector") {
             components::types::complex_logical_type::create_list(components::types::logical_type::STRING_LITERAL),
             test_size);
         for (size_t i = 0; i < test_size; i++) {
-            std::vector<components::types::logical_value_t> list;
-            // test that each list entry can be a different length
-            list.reserve(list_length(i));
+            // test that each list entry can be a different length; storage keeps the
+            // strings alive while their views are written
+            std::vector<std::string> storage;
+            storage.reserve(list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
-                list.emplace_back(v.resource(),
-                                  std::string{"long_string_with_index_" + std::to_string(i * list_length(i) + j)});
+                storage.push_back("long_string_with_index_" + std::to_string(i * list_length(i) + j));
             }
-            v.set_value(i,
-                        components::types::logical_value_t::create_list(v.resource(),
-                                                                        components::types::logical_type::STRING_LITERAL,
-                                                                        list));
+            std::vector<std::optional<std::string_view>> list;
+            list.reserve(list_length(i));
+            for (const auto& s : storage) {
+                list.emplace_back(std::string_view{s});
+            }
+            v.set_value(i, list);
         }
 
+        REQUIRE(v.type().type() == components::types::logical_type::LIST);
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value = v.value(i);
-            REQUIRE(value.type().type() == components::types::logical_type::LIST);
+            auto list = v.get_value_not_null<std::vector<std::optional<std::string_view>>>(i);
+            REQUIRE(list.size() == list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
-                REQUIRE(value.children()[j].type().type() == components::types::logical_type::STRING_LITERAL);
-                std::string result = *(value.children()[j].value<std::string*>());
+                std::string result{*list[j]};
                 REQUIRE(result == std::string{"long_string_with_index_" + std::to_string(i * list_length(i) + j)});
             }
         }
@@ -187,45 +180,38 @@ TEST_CASE("components::vector::vector") {
         components::vector::vector_t v(&resource, struct_type, test_size);
 
         for (size_t i = 0; i < test_size; i++) {
-            std::vector<components::types::logical_value_t> arr;
+            std::vector<std::optional<uint16_t>> arr;
             arr.reserve(i);
             for (size_t j = 0; j < i; j++) {
-                arr.emplace_back(v.resource(), test_data[i].array[j]);
+                arr.emplace_back(test_data[i].array[j]);
             }
-            std::vector<components::types::logical_value_t> value_fiels;
-            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].flag});
-            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].number});
-            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].name});
-            value_fiels.emplace_back(
-                components::types::logical_value_t::create_list(v.resource(),
-                                                                components::types::logical_type::USMALLINT,
-                                                                arr));
-            components::types::logical_value_t value =
-                components::types::logical_value_t::create_struct(v.resource(), struct_type, value_fiels);
-            v.set_value(i, value);
+            v.set_value(i,
+                        std::tuple{std::optional<bool>(test_data[i].flag),
+                                   std::optional<int32_t>(test_data[i].number),
+                                   std::optional<std::string_view>(test_data[i].name),
+                                   std::optional<std::vector<std::optional<uint16_t>>>(std::move(arr))});
         }
 
+        REQUIRE(v.type().type() == components::types::logical_type::STRUCT);
+        REQUIRE(v.type().alias() == "test_struct");
+        REQUIRE(v.type().child_types()[0].type() == components::types::logical_type::BOOLEAN);
+        REQUIRE(v.type().child_types()[0].alias() == "flag");
+        REQUIRE(v.type().child_types()[1].type() == components::types::logical_type::INTEGER);
+        REQUIRE(v.type().child_types()[1].alias() == "number");
+        REQUIRE(v.type().child_types()[2].type() == components::types::logical_type::STRING_LITERAL);
+        REQUIRE(v.type().child_types()[2].alias() == "name");
+        REQUIRE(v.type().child_types()[3].type() == components::types::logical_type::LIST);
+        REQUIRE(v.type().child_types()[3].child_type().type() == components::types::logical_type::USMALLINT);
+        REQUIRE(v.type().child_types()[3].alias() == "array");
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value = v.value(i);
-            REQUIRE(value.type().type() == components::types::logical_type::STRUCT);
-            REQUIRE(value.type().alias() == "test_struct");
-            REQUIRE(value.type().child_types()[0].type() == components::types::logical_type::BOOLEAN);
-            REQUIRE(value.type().child_types()[0].alias() == "flag");
-            REQUIRE(value.type().child_types()[1].type() == components::types::logical_type::INTEGER);
-            REQUIRE(value.type().child_types()[1].alias() == "number");
-            REQUIRE(value.type().child_types()[2].type() == components::types::logical_type::STRING_LITERAL);
-            REQUIRE(value.type().child_types()[2].alias() == "name");
-            REQUIRE(value.type().child_types()[3].type() == components::types::logical_type::LIST);
-            REQUIRE(value.type().child_types()[3].child_type().type() == components::types::logical_type::USMALLINT);
-            REQUIRE(value.type().child_types()[3].alias() == "array");
-
-            REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
-            REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);
-            REQUIRE(*value.children()[2].value<std::string*>() == test_data[i].name);
-            std::vector arr(*value.children()[3].value<std::vector<components::types::logical_value_t>*>());
-            REQUIRE(arr.size() == test_data[i].array.size());
-            for (size_t j = 0; j < arr.size(); j++) {
-                REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
+            auto [flag, number, name, arr] =
+                v.get_value_not_null<bool, int32_t, std::string_view, std::vector<std::optional<uint16_t>>>(i);
+            REQUIRE(flag == test_data[i].flag);
+            REQUIRE(number == test_data[i].number);
+            REQUIRE(std::string{*name} == test_data[i].name);
+            REQUIRE(arr->size() == test_data[i].array.size());
+            for (size_t j = 0; j < arr->size(); j++) {
+                REQUIRE((*arr)[j] == test_data[i].array[j]);
             }
         }
     }
@@ -243,9 +229,8 @@ TEST_CASE("components::vector::vector") {
                                                   components::types::logical_type::STRING_LITERAL,
                                                   string_count);
         for (size_t i = 0; i < string_count; i++) {
-            components::types::logical_value_t value{string_array.resource(),
-                                                     std::string{"long_string_with_index_" + std::to_string(i)}};
-            string_array.set_value(i, value);
+            std::string value{"long_string_with_index_" + std::to_string(i)};
+            string_array.set_value(i, std::string_view{value});
         }
 
         components::vector::indexing_vector_t indexing(&resource, test_size);
@@ -261,7 +246,8 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(dictionary.get_vector_type() == components::vector::vector_type::DICTIONARY);
         for (size_t i = 0; i < test_size; i++) {
-            REQUIRE(dictionary.value(i) == string_array.value(indices[i]));
+            REQUIRE(dictionary.get_value_not_null<std::string_view>(i) ==
+                    string_array.get_value_not_null<std::string_view>(indices[i]));
         }
     }
     INFO("union") {

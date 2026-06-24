@@ -123,20 +123,15 @@ namespace components::operators {
             const auto ref_cls = static_cast<catalog::oid_t>(k >> 32);
             const auto ref_oid = static_cast<catalog::oid_t>(k & 0xFFFFFFFFu);
 
-            types::logical_value_t cls_lv(resource_, ref_cls);
-            types::logical_value_t oid_lv(resource_, ref_oid);
             std::pmr::vector<std::string> rd_keys(resource_);
             rd_keys.emplace_back("refclassid");
             rd_keys.emplace_back("refobjid");
-            std::pmr::vector<types::logical_value_t> rd_vals(resource_);
-            rd_vals.emplace_back(cls_lv);
-            rd_vals.emplace_back(oid_lv);
             auto [_rd, rdf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgDepend,
                                                std::move(rd_keys),
-                                               components::operators::make_key_chunk(resource_, std::move(rd_vals)));
+                                               components::operators::make_key_chunk(resource_, ref_cls, ref_oid));
             auto dep_batches = co_await std::move(rdf);
 
             std::pmr::vector<catalog::dependency_t> deps(resource_);
@@ -145,10 +140,9 @@ namespace components::operators {
                     continue;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     catalog::dependency_t d;
-                    d.classid = static_cast<catalog::oid_t>(chunk.value(0, i).value<std::uint32_t>());
-                    d.objid = static_cast<catalog::oid_t>(chunk.value(1, i).value<std::uint32_t>());
-                    auto deptype_v = chunk.value(4, i);
-                    const auto dv = deptype_v.is_null() ? std::string_view{"n"} : deptype_v.value<std::string_view>();
+                    d.classid = static_cast<catalog::oid_t>(chunk.get_value_not_null<std::uint32_t>(0, i));
+                    d.objid = static_cast<catalog::oid_t>(chunk.get_value_not_null<std::uint32_t>(1, i));
+                    const auto dv = chunk.get_value<std::string_view>(4, i).value_or(std::string_view{"n"});
                     d.deptype = dv.empty() ? 'n' : dv[0];
                     deps.push_back(d);
                     stack.push_back(encode_key(d.classid, d.objid));
@@ -213,14 +207,10 @@ namespace components::operators {
         // pg_class-keyed step oids in step order and run ONE batched read_chunks_by_keys
         // keyed on "oid", then map result[i] back to the i-th probed step.
         std::pmr::vector<catalog::oid_t> probe_oids(resource_);
-        std::pmr::vector<std::pmr::vector<types::logical_value_t>> probe_key_rows(resource_);
         for (const auto& step : plan.steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table)
                 continue;
             probe_oids.push_back(step.objid);
-            std::pmr::vector<types::logical_value_t> row(resource_);
-            row.emplace_back(types::logical_value_t(resource_, step.objid));
-            probe_key_rows.push_back(std::move(row));
         }
         if (!probe_oids.empty()) {
             // Read pg_class rows for these oids to inspect relkind: (oid, relname, relnamespace,
@@ -233,7 +223,7 @@ namespace components::operators {
                                                exec_ctx,
                                                kPgClass,
                                                std::move(pc_keys),
-                                               components::operators::make_keys_chunk(resource_, probe_key_rows));
+                                               components::operators::make_keys_chunk(resource_, probe_oids));
             std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> pc_results = co_await std::move(pcf);
 
             for (std::size_t k = 0; k < probe_oids.size() && k < pc_results.size(); ++k) {
@@ -241,8 +231,7 @@ namespace components::operators {
                 if (pc_batches.empty() || pc_batches[0].size() == 0 || pc_batches[0].column_count() < 4)
                     continue;
 
-                const auto rk = pc_batches[0].value(3, 0);
-                const auto rkv = rk.is_null() ? std::string_view{"r"} : rk.value<std::string_view>();
+                const auto rkv = pc_batches[0].get_value<std::string_view>(3, 0).value_or(std::string_view{"r"});
                 const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
 
                 // Only regular and computing tables back actual storage. Index/

@@ -55,17 +55,14 @@ namespace components::operators {
             co_return;
         }
 
-        components::types::logical_value_t attoid_lv(resource_, attoid_);
         std::pmr::vector<std::string> pa_keys(resource_);
         pa_keys.emplace_back("attoid");
-        std::pmr::vector<components::types::logical_value_t> pa_vals(resource_);
-        pa_vals.emplace_back(attoid_lv);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr_oid,
                                            std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, std::move(pa_vals)));
+                                           components::operators::make_key_chunk(resource_, attoid_));
         std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
 
         catalog::oid_t attoid = catalog::INVALID_OID;
@@ -78,27 +75,22 @@ namespace components::operators {
                 continue;
             bool found = false;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto c0 = chunk.value(0, i);
-                if (c0.is_null())
+                auto c0 = chunk.get_value<std::uint32_t>(0, i);
+                if (!c0)
                     continue;
-                auto c7 = chunk.value(7, i);
-                if (!c7.is_null() && c7.value<bool>())
+                auto c7 = chunk.get_value<bool>(7, i);
+                if (c7 && *c7)
                     continue; // already dropped
-                attoid = static_cast<catalog::oid_t>(c0.value<std::uint32_t>());
-                auto c3 = chunk.value(3, i);
-                atttypid = c3.is_null() ? catalog::INVALID_OID : static_cast<catalog::oid_t>(c3.value<std::uint32_t>());
-                auto c4 = chunk.value(4, i);
-                attnum = c4.is_null() ? 0 : c4.value<std::int32_t>();
-                auto c5 = chunk.value(5, i);
-                att_not_null = !c5.is_null() && c5.value<bool>();
-                auto c6 = chunk.value(6, i);
-                att_has_default = !c6.is_null() && c6.value<bool>();
-                auto c8 = chunk.value(8, i);
-                if (!c8.is_null())
-                    att_typspec = std::string(c8.value<std::string_view>());
-                auto c9 = chunk.value(9, i);
-                if (!c9.is_null())
-                    att_defspec = std::string(c9.value<std::string_view>());
+                attoid = static_cast<catalog::oid_t>(*c0);
+                auto c3 = chunk.get_value<std::uint32_t>(3, i);
+                atttypid = c3 ? static_cast<catalog::oid_t>(*c3) : catalog::INVALID_OID;
+                attnum = chunk.get_value<std::int32_t>(4, i).value_or(0);
+                att_not_null = chunk.get_value<bool>(5, i).value_or(false);
+                att_has_default = chunk.get_value<bool>(6, i).value_or(false);
+                if (auto c8 = chunk.get_value<std::string_view>(8, i))
+                    att_typspec = std::string(*c8);
+                if (auto c9 = chunk.get_value<std::string_view>(9, i))
+                    att_defspec = std::string(*c9);
                 found = true;
                 break;
             }
@@ -112,20 +104,16 @@ namespace components::operators {
         }
 
         // read pg_depend for refclassid=pg_attribute, refobjid=attoid.
-        components::types::logical_value_t att_cls_lv(resource_, catalog::well_known_oid::pg_attribute_table);
-        components::types::logical_value_t att_oid_lv(resource_, attoid);
         std::pmr::vector<std::string> pd_keys(resource_);
         pd_keys.emplace_back("refclassid");
         pd_keys.emplace_back("refobjid");
-        std::pmr::vector<components::types::logical_value_t> pd_vals(resource_);
-        pd_vals.emplace_back(att_cls_lv);
-        pd_vals.emplace_back(att_oid_lv);
-        auto [_pd, pdf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_chunks_by_key,
-                                           exec_ctx,
-                                           pg_dep_oid,
-                                           std::move(pd_keys),
-                                           components::operators::make_key_chunk(resource_, std::move(pd_vals)));
+        auto [_pd, pdf] = actor_zeta::send(
+            ctx->disk_address,
+            &services::disk::manager_disk_t::read_chunks_by_key,
+            exec_ctx,
+            pg_dep_oid,
+            std::move(pd_keys),
+            components::operators::make_key_chunk(resource_, catalog::well_known_oid::pg_attribute_table, attoid));
         std::pmr::vector<components::vector::data_chunk_t> dep_batches = co_await std::move(pdf);
 
         std::size_t dep_row_count = 0;
@@ -139,12 +127,12 @@ namespace components::operators {
             if (chunk.column_count() < 2)
                 continue;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto d0 = chunk.value(0, i);
-                auto d1 = chunk.value(1, i);
-                if (d0.is_null() || d1.is_null())
+                auto d0 = chunk.get_value<std::uint32_t>(0, i);
+                auto d1 = chunk.get_value<std::uint32_t>(1, i);
+                if (!d0 || !d1)
                     continue;
-                const auto dep_cls = static_cast<catalog::oid_t>(d0.value<std::uint32_t>());
-                const auto dep_oid = static_cast<catalog::oid_t>(d1.value<std::uint32_t>());
+                const auto dep_cls = static_cast<catalog::oid_t>(*d0);
+                const auto dep_oid = static_cast<catalog::oid_t>(*d1);
                 dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
             }
         }
@@ -177,12 +165,12 @@ namespace components::operators {
             if (chunk.column_count() < 2)
                 continue;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto d0 = chunk.value(0, i);
-                auto d1 = chunk.value(1, i);
-                if (d0.is_null() || d1.is_null())
+                auto d0 = chunk.get_value<std::uint32_t>(0, i);
+                auto d1 = chunk.get_value<std::uint32_t>(1, i);
+                if (!d0 || !d1)
                     continue;
-                const auto dep_cls = static_cast<catalog::oid_t>(d0.value<std::uint32_t>());
-                const auto dep_oid = static_cast<catalog::oid_t>(d1.value<std::uint32_t>());
+                const auto dep_cls = static_cast<catalog::oid_t>(*d0);
+                const auto dep_oid = static_cast<catalog::oid_t>(*d1);
                 if (dep_cls == catalog::well_known_oid::pg_class_table) {
                     // Dependent index: scrub pg_index (by indexrelid=oid_col_idx 0),
                     // pg_depend.objid (idx 1), pg_depend.refobjid (idx 3), pg_class.oid.

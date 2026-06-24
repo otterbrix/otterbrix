@@ -580,6 +580,41 @@ namespace components::vector {
         }
     }
 
+    const vector_t* vector_t::resolve_value_location(uint64_t row_index, uint64_t* index) const {
+        if (!validity_.row_is_valid(row_index)) {
+            return nullptr;
+        }
+
+        const vector_t* vector = this;
+        *index = row_index;
+        bool finished = false;
+        while (!finished) {
+            switch (vector->get_vector_type()) {
+                case vector_type::CONSTANT:
+                    *index = 0;
+                    finished = true;
+                    break;
+                case vector_type::FLAT:
+                    finished = true;
+                    break;
+                case vector_type::DICTIONARY: {
+                    *index = vector->indexing().get_index(*index);
+                    vector = &(vector->child());
+                    break;
+                }
+                case vector_type::SEQUENCE:
+                    return vector;
+                default:
+                    throw std::runtime_error("Unimplemented vector type for vector_t::get_value");
+            }
+        }
+
+        if (!vector->validity_.row_is_valid(*index)) {
+            return nullptr;
+        }
+        return vector;
+    }
+
     types::logical_value_t vector_t::value_internal(uint64_t index_p) const {
         const vector_t* vector = this;
         uint64_t index = index_p;

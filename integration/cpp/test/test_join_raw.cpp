@@ -26,8 +26,8 @@ namespace {
         vector::data_chunk_t chunk(res, types, rows.size());
         chunk.set_cardinality(rows.size());
         for (size_t i = 0; i < rows.size(); ++i) {
-            chunk.set_value(0, i, types::logical_value_t{res, rows[i].first});
-            chunk.set_value(1, i, types::logical_value_t{res, rows[i].second});
+            chunk.set_value(0, i, rows[i].first);
+            chunk.set_value(1, i, rows[i].second);
         }
         return chunk;
     }

@@ -12,13 +12,17 @@ namespace components::planner {
     // validate_schema are present.
     // Rules (in order):
     //   - constant_folding (on parameter expressions)
-    //   - pushdown_filter
+    //   - pushdown_filter (skipped when enable_pushdown is false)
     //   - hash_join selection (needs the validate_schema stamps)
     // On DDL trees (sequence_t of primitive writes) it is a harmless no-op:
     // the planner leaves the match_t/join_t/aggregate_t these rules target
     // intact (DML wrappers sit on top; DDL has no such nodes).
+    // enable_pushdown defaults to true; callers that want a non-pushed-down
+    // plan (the Python relation API's optimize=False) pass false to gate only
+    // the pushdown_filter rule, leaving const-folding and hash-join intact.
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
-                                    logical_plan::parameter_node_t* parameters);
+                                    logical_plan::parameter_node_t* parameters,
+                                    bool enable_pushdown = true);
 
 } // namespace components::planner

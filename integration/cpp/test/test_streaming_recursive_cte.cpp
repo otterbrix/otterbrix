@@ -117,7 +117,6 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::outer_plan_no_longer_mater
     setup_org(dispatcher);
 
     const auto streaming_before = services::collection::executor::streaming_pipeline_runs();
-    const auto materialized_before = services::collection::executor::materialized_plan_runs();
     {
         auto cur = exec(dispatcher,
                         "WITH RECURSIVE hierarchy AS ("
@@ -132,12 +131,8 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::outer_plan_no_longer_mater
         REQUIRE(cur->size() == 5);
     }
     const auto streaming_after = services::collection::executor::streaming_pipeline_runs();
-    const auto materialized_after = services::collection::executor::materialized_plan_runs();
     // The outer plan + every fixpoint sub-plan streamed.
     REQUIRE(streaming_after > streaming_before);
-    // And NOTHING fell to the legacy materialize path — the proof that the outer
-    // WITH RECURSIVE plan no longer needs on_execute (the deletion gate).
-    REQUIRE(materialized_after == materialized_before);
 }
 
 TEST_CASE("integration::cpp::streaming_recursive_cte::subtree_and_depth_stream") {

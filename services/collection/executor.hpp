@@ -34,16 +34,6 @@ namespace services::collection::executor {
     // binaries carry neither the counter nor these accessors.
 #ifdef DEV_MODE
     uint64_t streaming_pipeline_runs() noexcept;
-    void reset_streaming_pipeline_runs() noexcept;
-
-    // Legacy materialized-path counter, now PERMANENTLY ZERO: the materialize
-    // (on_execute) path has been deleted, so nothing bumps this and it stays 0.
-    // Retained as a guard so the deletion-gate test can still assert a statement
-    // NEVER materialized (e.g. a top-level WITH RECURSIVE streams its whole
-    // [select->sort->match->recursive_cte] chain through execute_pipeline). Same
-    // coarse relaxed/DEV_MODE-only contract as streaming_pipeline_runs().
-    uint64_t materialized_plan_runs() noexcept;
-    void reset_materialized_plan_runs() noexcept;
 #endif
 
     // One range per (table, DML fragment), accumulated across sub-plans.

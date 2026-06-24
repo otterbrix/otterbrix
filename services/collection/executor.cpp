@@ -59,16 +59,9 @@ namespace services::collection::executor {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_streaming_pipeline_runs{0};
-        std::atomic<uint64_t> g_materialized_plan_runs{0};
     } // namespace
 
     uint64_t streaming_pipeline_runs() noexcept { return g_streaming_pipeline_runs.load(std::memory_order_relaxed); }
-    void reset_streaming_pipeline_runs() noexcept { g_streaming_pipeline_runs.store(0, std::memory_order_relaxed); }
-
-    // Permanently zero: the legacy materialized execution path is deleted, so nothing
-    // bumps g_materialized_plan_runs. Kept only as a guard for the deletion-gate test.
-    uint64_t materialized_plan_runs() noexcept { return g_materialized_plan_runs.load(std::memory_order_relaxed); }
-    void reset_materialized_plan_runs() noexcept { g_materialized_plan_runs.store(0, std::memory_order_relaxed); }
 #endif
 
     // ---- behavior/dispatch_traits sync check ----

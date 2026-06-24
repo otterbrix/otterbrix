@@ -43,10 +43,6 @@ namespace components::operators {
 
     const operator_data_ptr& operator_t::output() const { return output_; }
 
-    const operator_write_data_ptr& operator_t::modified() const { return modified_; }
-
-    const operator_write_data_ptr& operator_t::no_modified() const { return no_modified_; }
-
     void operator_t::set_children(ptr left, ptr right) {
         left_ = std::move(left);
         right_ = std::move(right);
@@ -54,7 +50,6 @@ namespace components::operators {
 
     void operator_t::set_output(operator_data_ptr data) { output_ = std::move(data); }
 
-    void operator_t::take_output(ptr& src) { output_ = std::move(src->output_); }
     void operator_t::set_error(const core::error_t& error) { error_ = error; }
     void operator_t::set_error(core::error_t&& error) { error_ = std::move(error); }
     bool operator_t::has_error() const noexcept { return error_.contains_error(); }
@@ -98,7 +93,6 @@ namespace components::operators {
         : operator_t(resource, std::move(log), type) {}
 
     read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
-        : operator_t(resource, std::move(log), type)
-        , state_(read_write_operator_state::pending) {}
+        : operator_t(resource, std::move(log), type) {}
 
 } // namespace components::operators

@@ -152,7 +152,6 @@ namespace components::operators {
     {
         created,
         executed,
-        cleared,
         failed
     };
 
@@ -243,8 +242,6 @@ namespace components::operators {
         [[nodiscard]] operator_state state() const noexcept;
         [[nodiscard]] operator_type type() const noexcept;
         const operator_data_ptr& output() const;
-        const operator_write_data_ptr& modified() const;
-        const operator_write_data_ptr& no_modified() const;
 
         // Rows a PARENT constraint operator (fk_check / fk_cascade /
         // check_constraint) must validate against. A DML operator (insert /
@@ -257,7 +254,6 @@ namespace components::operators {
         const operator_data_ptr& constraint_input() const noexcept { return constraint_input_; }
         void set_children(ptr left, ptr right = nullptr);
         void set_output(operator_data_ptr data);
-        void take_output(ptr& src);
         void mark_executed();
         void mark_failed() noexcept { state_ = operator_state::failed; }
         void reset_for_reuse() noexcept {
@@ -313,24 +309,9 @@ namespace components::operators {
         read_only_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type);
     };
 
-    enum class read_write_operator_state
-    {
-        pending,
-        executed,
-        conflicted,
-        rolledBack,
-        committed
-    };
-
     class read_write_operator_t : public operator_t {
     public:
         read_write_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type);
-        //todo:
-        //void commit();
-        //void rollback();
-
-    protected:
-        read_write_operator_state state_;
     };
 
     using operator_ptr = operator_t::ptr;

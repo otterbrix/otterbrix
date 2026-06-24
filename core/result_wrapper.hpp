@@ -144,8 +144,8 @@ namespace core {
     };
 
     // has implicit constructors to simplify usage
-    template<typename T>
-    requires(!std::is_same_v<std::decay<T>, error_t> && !std::is_same_v<T, void>) class result_wrapper_t {
+    template<typename T, typename Error = error_t>
+    requires(!std::is_same_v<std::decay<T>, Error> && !std::is_same_v<T, void>) class result_wrapper_t {
     private:
         static constexpr bool trivial_store = std::is_default_constructible_v<T>;
         using Store_T = std::conditional_t<trivial_store, T, std::optional<T>>;
@@ -154,11 +154,11 @@ namespace core {
         template<typename... Args>
         result_wrapper_t(Args&&... args) requires(std::constructible_from<T, Args...>)
             : value_(std::forward<Args>(args)...)
-            , error_(error_t::no_error()) {}
+            , error_(Error::no_error()) {}
 
-        result_wrapper_t(const error_t& error)
+        result_wrapper_t(const Error& error)
             : error_(error) {}
-        result_wrapper_t(error_t&& error)
+        result_wrapper_t(Error&& error)
             : error_(std::move(error)) {}
 
 #if not defined(NDEBUG)
@@ -198,9 +198,9 @@ namespace core {
 #if not defined(NDEBUG)
             error_checked_ = true;
 #endif
-            return error_.type != error_code_t::none;
+            return error_.contains_error();
         }
-        const error_t& error() const noexcept {
+        const Error& error() const noexcept {
 #if not defined(NDEBUG)
             error_checked_ = true;
 #endif
@@ -237,7 +237,7 @@ namespace core {
 #if not defined(NDEBUG)
         mutable bool error_checked_{false};
 #endif
-        error_t error_;
+        Error error_;
     };
 
     // TODO: assert for unchecked errors in the destructor of result_wrapper_t

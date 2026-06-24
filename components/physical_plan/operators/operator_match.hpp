@@ -38,14 +38,27 @@ namespace components::operators {
         //       closures stay valid across the second finalize chunk.
         // The executor FLUSH/PUMP path itself already streams a filter above a sink
         // correctly (select-over-sink works), so with both defects fixed the filter
-        // streams in every shape. Only the sourceless no-table match (left_ == nullptr,
-        // no input to transform) stays role()==none and runs the legacy on_execute path.
-        // Both entry points route through the SAME filter_batch_ core (R6).
+        // streams in every shape.
+        //
+        // The sourceless no-table match (left_ == nullptr) is a degenerate shape: the
+        // physical-plan generator only emits it when create_plan_match_ cannot resolve
+        // the table_oid (has_table_oid() == false), but the executor re-captures
+        // known_oids from the enriched plan before create_plan runs, so a valid table
+        // never reaches it. It produces an empty result (the materialized path returned
+        // early with a null output_). Modeled as a SOURCE that drains immediately
+        // (source_next emits the 0-column sentinel on the first call), so it is a valid
+        // streaming-pipeline root that yields the same empty result. Both transforming
+        // entry points route through the SAME filter_batch_ core (R6).
         [[nodiscard]] pipeline_role role() const noexcept override {
-            return left_ != nullptr ? pipeline_role::streaming : pipeline_role::none;
+            return left_ != nullptr ? pipeline_role::streaming : pipeline_role::source;
         }
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
+        // SOURCE entry for the sourceless no-table shape (left_ == nullptr): there is
+        // no input to filter, so drain immediately with the 0-column sentinel — the
+        // streaming equivalent of the materialized path's early-return-with-no-output.
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        source_next(pipeline::context_t* ctx) override;
 
     private:
         // The input chunks carry REAL absolute row_ids ONLY when this match sits

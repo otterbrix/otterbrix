@@ -38,14 +38,16 @@ namespace components::operators {
         //     each LEFT batch against right_->output() via consume_join_batch_ —
         //     same semi-join match, modified_, index-old staging and per-batch joined
         //     RETURNING the legacy on_execute USING branch produced.
-        // Only the catalog form (oid_col_idx_>=0) has no scan source, so it stays on
-        // the legacy on_execute path (role()==none). The LEFT scan streams; the RIGHT
-        // (USING) build side is fully materialized before the first push (the executor
-        // materializes join build sides — traverse_plan_ split / materialize_build_sides_).
-        // needs_async_finalize drives the async commit after the pump.
-        [[nodiscard]] pipeline_role role() const noexcept override {
-            return (oid_col_idx_ < 0) ? pipeline_role::sink : pipeline_role::none;
-        }
+        // The catalog form (oid_col_idx_>=0) is a SOURCELESS sink: it has no children
+        // and no scan input — its entire effect is the WAL-first delete_pg_catalog_rows
+        // commit in await_async_and_resume, which the executor drives via the bottom-up
+        // needs_async_finalize pass (the sourceless-sink-root shape; push()/finalize()
+        // are never reached because there is no source to pump). The scan-sourced forms
+        // are sinks on the LEFT scan input. The RIGHT (USING) build side is fully
+        // materialized before the first push (the executor materializes join build
+        // sides — traverse_plan_ split / materialize_build_sides_). needs_async_finalize
+        // drives the async commit after the pump (or, for the catalog form, directly).
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t

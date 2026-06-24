@@ -184,6 +184,16 @@ namespace components::operators {
                              out);
     }
 
+    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    operator_match_t::source_next(pipeline::context_t* /*ctx*/) {
+        // Sourceless no-table match (left_ == nullptr): no input to filter, so drain
+        // immediately with the 0-column sentinel. The materialized on_execute_impl
+        // returned early producing a null output_; the streaming pipeline produces the
+        // same empty result.
+        co_return core::result_wrapper_t<vector::data_chunk_t>(
+            vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0});
+    }
+
     void operator_match_t::on_execute_impl(pipeline::context_t* pipeline_context) {
         // LOCAL LIMIT/OFFSET counter — a fresh count per materialized execution, so a
         // recursive-CTE re-drive (reset_for_reuse + on_execute) restarts at 0.

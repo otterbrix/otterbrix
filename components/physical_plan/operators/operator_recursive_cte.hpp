@@ -25,13 +25,19 @@ namespace components::operators {
     // through the sink ancestors (the materialized-input pump, see executor.cpp).
     //
     // At the TOP level the outer query `SELECT ... FROM cte ...` always lowers to
-    // [select -> sort -> match -> recursive_cte], and operator_match_t::role()==none when
-    // its left child is NOT a scan source (a recursive_cte is a sink). That role()==none
-    // short-circuits is_streaming_pipeline FIRST, so the outer plan still materializes; the
-    // sink role only takes effect if this operator is ever driven as a bare sourceless-sink
-    // root. on_execute_impl is therefore RETAINED as the materialized entry (arm async_wait;
-    // the find_waiting_operator loop dispatches await_async_and_resume — exactly how a waiting
-    // DML/scan operator is driven). Both entry points reach the SAME drive_fixpoint_ core.
+    // [select -> sort -> match -> recursive_cte]. The chain bottom is this sourceless
+    // sink, but a STREAMING operator_match_t sits above it, so the chain is NOT all-sink
+    // and is_streaming_pipeline's sourceless-sink-root admission (which requires
+    // all_sink) returns FALSE — the outer plan still runs the MATERIALIZED path. (The
+    // streaming sourceless-sink-root shape assumes the bottom sink's effect is a pure
+    // async commit; this operator instead PRODUCES rows in await_async_and_resume that
+    // must flow UP through the match/sort/select ancestors, which execute_pipeline's
+    // pass order — PUMP/FLUSH before async-finalize — does not yet support.) The sink
+    // role only takes effect if this operator is ever driven as a bare sourceless-sink
+    // root. on_execute_impl is therefore RETAINED as the materialized entry (arm
+    // async_wait; the find_waiting_operator loop dispatches await_async_and_resume —
+    // exactly how a waiting DML/scan operator is driven). Both entry points reach the
+    // SAME drive_fixpoint_ core.
     class operator_recursive_cte_t final : public read_only_operator_t {
     public:
         operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log, bool all);

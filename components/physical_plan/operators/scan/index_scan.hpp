@@ -42,11 +42,11 @@ namespace components::operators {
         // behavior() handler, so the actor-zeta single-slot awaited continuation is
         // republished+cleared between sequential awaits — no lost-wakeup (same shape as
         // await_async_and_resume's sequential awaits).
-        //   A no-table sentinel scan (INVALID_OID) is not a real source: role()==none keeps it on
-        // the legacy path.
-        [[nodiscard]] pipeline_role role() const noexcept override {
-            return table_oid_ == components::catalog::INVALID_OID ? pipeline_role::none : pipeline_role::source;
-        }
+        //   index_scan is built ONLY when create_plan_match_ proves an index exists on a real table
+        // (can_use_index), so table_oid_ is always valid in practice; the INVALID_OID sentinel is a
+        // degenerate shape that source_next drains to an empty guard. role() is therefore
+        // unconditionally source.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
 

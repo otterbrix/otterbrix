@@ -116,9 +116,9 @@ namespace services::planner::impl {
         // ALTER TABLE: rewrite_alter_table emits sequence_t(alter_column_t × N)
         // (op=add | rename, computed=false). Build the operators and chain them
         // as left children (head = innermost step) so the executor walks the chain
-        // via left_/right_ traversal. operator_sequence_t doesn't surface its
-        // internal steps_ to that walk, which would strand multi-clause ALTER TABLE
-        // statements after the first async step. Computed (relkind='g') alter_columns
+        // via left_/right_ traversal. A sequence wrapper carries no steps of its
+        // own, which would strand multi-clause ALTER TABLE statements after the
+        // first async step. Computed (relkind='g') alter_columns
         // and op=drop are excluded — they ride other sequence shapes handled by the
         // generic path.
         auto is_chainable_alter = [](const node_ptr& child) {
@@ -162,8 +162,9 @@ namespace services::planner::impl {
         // Generic case (e.g. CREATE DATABASE/SEQUENCE/VIEW/MACRO/TYPE → sequence_t(catalog-write node_insert_t × N),
         // INSERT-into-relkind='g' → sequence_t(insert, computed_field_register)):
         // build a left-child chain so the executor can walk each child via
-        // left_/right_ traversal. operator_sequence_t.steps_ is invisible to that
-        // walk, which would strand async children.
+        // left_/right_ traversal — operator_sequence_t carries no steps of its
+        // own (it is only the childless no-op fallback below), so a sequence
+        // wrapper would strand async children.
         //
         // Order: depth-first traversal runs LEFT first, then the operator's own work,
         // so the DEEPEST-left operator executes first. To preserve children-in-
@@ -215,13 +216,10 @@ namespace services::planner::impl {
             return head;
         }
 
-        std::vector<components::operators::operator_ptr> steps;
-        steps.reserve(node->children().size());
-        for (const auto& child : node->children()) {
-            steps.push_back(create_plan(context, function_registry, child, {}, params));
-        }
+        // Reached only when node has no children (all child-bearing shapes return
+        // above): emit the childless no-op sequence fallback.
         return boost::intrusive_ptr(
-            new components::operators::operator_sequence_t(context.resource, context.log.clone(), std::move(steps)));
+            new components::operators::operator_sequence_t(context.resource, context.log.clone()));
     }
 
 } // namespace services::planner::impl

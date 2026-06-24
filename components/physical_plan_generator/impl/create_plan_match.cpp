@@ -190,7 +190,12 @@ namespace services::planner::impl {
                                                                                      limit,
                                                                                      std::move(effective_cols)));
             } else {
-                return boost::intrusive_ptr(new components::operators::transfer_scan(nullptr,
+                // No-table sentinel scan (INVALID_OID, e.g. a no-FROM SELECT). It is a
+                // SOURCE that emits one synthetic 1-row placeholder batch (see
+                // transfer_scan::source_next), so it needs a VALID resource to allocate
+                // that batch on — use the logical node's own resource (mirrors
+                // create_plan_aggregate's no-table fallback), not nullptr.
+                return boost::intrusive_ptr(new components::operators::transfer_scan(node->resource(),
                                                                                      node->table_oid(),
                                                                                      limit,
                                                                                      std::move(effective_cols)));

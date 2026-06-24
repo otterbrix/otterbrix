@@ -34,13 +34,14 @@ namespace components::operators {
                         const expressions::expression_ptr& expression);
 
         // SINK on the build side, streaming on the probe side (see class comment).
-        // Cross-join is the one exception (its probe needs the build row order that
-        // only the materialized path guarantees); it keeps role()==none so the
-        // executor routes it through on_execute_impl. role() is therefore
-        // conditional on join_type_.
-        [[nodiscard]] pipeline_role role() const noexcept override {
-            return (join_type_ == type::cross) ? pipeline_role::none : pipeline_role::sink;
-        }
+        // ALL join types stream now, cross included: a cross join is the cartesian
+        // product, i.e. every probe row matches every build row — exactly what
+        // probe_batch_ emits when the predicate is all-true (build_layout_ builds an
+        // all-true predicate when expression_ is null, which cross always is). So
+        // cross reuses the SAME build_layout_/probe_batch_ core as the other types
+        // and preserves left-major / build-chunk row order per batch. role() is
+        // therefore unconditionally sink.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
 
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
@@ -89,9 +90,11 @@ namespace components::operators {
         void probe_batch_(const vector::data_chunk_t& probe, chunks_vector_t& out);
         // Emit unmatched build rows (right/full) NULL-padded on the left side.
         void emit_unmatched_build_(chunks_vector_t& out);
-        // Cross join is the one type that never streams (role()==none): full
-        // cartesian product of the two materialized sides. Driven only by
-        // on_execute_impl, it does not share the predicate-based probe core.
+        // Cross join on the MATERIALIZED (sourceless) entry: full cartesian product
+        // of the two materialized sides, in left-major / build-chunk order. The
+        // STREAMING entry (push/finalize) does not call this — it reuses
+        // build_layout_/probe_batch_ with an all-true predicate, which emits the same
+        // cartesian product per probe batch. Kept for the on_execute_impl path only.
         void cross_join_(const std::pmr::vector<types::complex_logical_type>& out_types, chunks_vector_t& out);
     };
 

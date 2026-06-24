@@ -42,11 +42,12 @@ namespace components::operators {
         // so the actor-zeta single-slot awaited continuation is republished+cleared between each
         // sequential await (same shape as await_async_and_resume's two sequential awaits) — no
         // lost-wakeup.
-        // A no-table sentinel scan (INVALID_OID, e.g. a no-FROM `SELECT 2+3`) is not a real source:
-        // role()==none keeps the sub-plan on the legacy path that synthesizes the single constants row.
-        [[nodiscard]] pipeline_role role() const noexcept override {
-            return table_oid_ == components::catalog::INVALID_OID ? pipeline_role::none : pipeline_role::source;
-        }
+        // A no-table sentinel scan (INVALID_OID, e.g. a no-FROM `SELECT 2+3`) is ALSO a
+        // source: source_next emits ONE synthetic single-row batch with one placeholder
+        // column (not the 0-column drain sentinel), then drains, so the downstream
+        // operator_select_t projects its constant/arithmetic columns over that one row —
+        // matching the legacy virtual-row path. role() is therefore unconditionally source.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
 

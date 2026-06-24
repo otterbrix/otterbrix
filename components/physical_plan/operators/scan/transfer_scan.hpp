@@ -35,10 +35,15 @@ namespace components::operators {
         // call ADVANCEs the same cursor and reads exactly ONE batch — zero pins survive a round-trip,
         // so peak scan memory is one batch. The N sequential cross-actor awaits live in this nested
         // operator coroutine (driven by execute_pipeline), not a behavior() handler — no lost-wakeup.
-        // A no-table sentinel scan (INVALID_OID) keeps role()==none for the legacy path.
-        [[nodiscard]] pipeline_role role() const noexcept override {
-            return table_oid_ == components::catalog::INVALID_OID ? pipeline_role::none : pipeline_role::source;
-        }
+        // A no-table sentinel scan (INVALID_OID, e.g. a no-FROM `SELECT 2+3`) is ALSO a
+        // source: source_next emits ONE synthetic single-row batch carrying one
+        // placeholder column (so it is not the 0-column drain sentinel), then drains.
+        // The downstream operator_select_t projects its constant/arithmetic columns over
+        // that one row — those columns ignore input columns, so the placeholder is inert —
+        // yielding exactly the single constants row the legacy virtual-row path produced
+        // (operator_select_t::on_execute_impl's all_constant branch). role() is therefore
+        // unconditionally source.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
 

@@ -146,10 +146,76 @@ TEST_CASE("integration::cpp::streaming_join::cross_join_materialized") {
     REQUIRE(exec(dispatcher, "INSERT INTO SJ3.a (x) VALUES (1), (2), (3);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO SJ3.b (y) VALUES (10), (20);")->is_success());
 
-    // Cross join keeps role()==none (materialized): 3 * 2 = 6 rows.
+    // Cross join: 3 * 2 = 6 rows.
     auto cur = exec(dispatcher, "SELECT * FROM SJ3.a CROSS JOIN SJ3.b;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 6);
+}
+
+TEST_CASE("integration::cpp::streaming_join::cross_join_streams_multibatch") {
+    auto config = test_create_config("/tmp/test_streaming_join/cross_stream");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE SJ5;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE SJ5.a();")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE SJ5.b();")->is_success());
+
+    // Multi-batch probe (left) side (> DEFAULT_VECTOR_CAPACITY) forces the cross
+    // product across chunk boundaries through the streamed probe path. Small right
+    // (build) side keeps the cartesian product bounded: kN * 2 rows.
+    {
+        std::stringstream l;
+        l << "INSERT INTO SJ5.a (x) VALUES ";
+        for (int i = 0; i < kN; ++i) {
+            l << "(" << i << ")" << (i == kN - 1 ? ";" : ", ");
+        }
+        REQUIRE(exec(dispatcher, l.str())->is_success());
+    }
+    REQUIRE(exec(dispatcher, "INSERT INTO SJ5.b (y) VALUES (10), (20);")->is_success());
+
+    // PATH: the multi-batch CROSS JOIN now routes through execute_pipeline (cross is
+    // a sink, like every other join type), proven by streaming_pipeline_runs bumping.
+    const auto runs_before = services::collection::executor::streaming_pipeline_runs();
+    auto cur = exec(dispatcher, "SELECT * FROM SJ5.a CROSS JOIN SJ5.b;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == static_cast<size_t>(kN * 2)); // full cartesian product
+    const auto runs_after = services::collection::executor::streaming_pipeline_runs();
+    REQUIRE(runs_after > runs_before); // streamed through the push-based pipeline
+}
+
+TEST_CASE("integration::cpp::streaming_join::no_from_constants_stream") {
+    auto config = test_create_config("/tmp/test_streaming_join/nofrom");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    // No-FROM constants-only SELECT: the INVALID_OID sentinel scan is now a SOURCE
+    // emitting one synthetic placeholder row, so `select -> scan` routes through
+    // execute_pipeline and yields exactly the single constants row.
+    const auto runs_before = services::collection::executor::streaming_pipeline_runs();
+    {
+        auto cur = exec(dispatcher, "SELECT 2 + 3 AS five, 10 * 5 AS fifty;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 5);
+        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 50);
+    }
+    const auto runs_after = services::collection::executor::streaming_pipeline_runs();
+    REQUIRE(runs_after > runs_before); // streamed (no longer the legacy materialize path)
+
+    // A bare literal projection still yields one row.
+    {
+        auto cur = exec(dispatcher, "SELECT 1 AS one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+    }
 }
 
 TEST_CASE("integration::cpp::streaming_join::union_distinct_sinks") {

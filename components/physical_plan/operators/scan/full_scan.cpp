@@ -353,6 +353,20 @@ namespace components::operators {
             co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
         }
 
+        // No-table sentinel (no-FROM SELECT): emit ONE synthetic single-row batch
+        // carrying one placeholder column (not the 0-column drain sentinel), then drain.
+        // operator_select_t projects its constant/arithmetic columns over this one row to
+        // produce the single constants row (the placeholder is ignored), matching the
+        // legacy virtual-row path. No disk round-trip.
+        if (table_oid_ == components::catalog::INVALID_OID) {
+            drained_ = true;
+            std::pmr::vector<types::complex_logical_type> types(resource_);
+            types.emplace_back(types::logical_type::BOOLEAN);
+            vector::data_chunk_t row{resource_, types, 1};
+            row.set_cardinality(1);
+            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(row));
+        }
+
         if (!opened_) {
             opened_ = true;
 

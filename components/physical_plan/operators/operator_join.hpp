@@ -39,7 +39,6 @@ namespace components::operators {
         // cross reuses the SAME build_layout_/probe_batch_ core as the other types
         // and preserves left-major / build-chunk row order per batch. role() is
         // therefore unconditionally sink.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
 
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;

@@ -26,7 +26,6 @@ namespace components::operators {
         // allocate_oids_batch round-trip to the disk actor + the node stamp run in
         // await_async_and_resume. The executor admits it as a streaming sink-root and
         // drives await_async_and_resume via the bottom-up needs_async_finalize pass.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:

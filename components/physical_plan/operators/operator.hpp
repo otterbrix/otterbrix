@@ -162,7 +162,6 @@ namespace components::operators {
     // intermediates. An operator's role selects how the driver pulls/pushes it.
     enum class pipeline_role
     {
-        none,      // carries no streaming drive of its own (a pre-materialized data carrier)
         source,    // produces batches via source_next() (scans)
         streaming, // 1 batch in -> 0+ out, no accumulation (filter/projection, join probe)
         sink       // accumulates bounded state in push(), emits in finalize() (hash build, group/agg, sort)
@@ -188,10 +187,12 @@ namespace components::operators {
         virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
 
         // --- Push-based streaming pipeline interface (SELECT read-path) ---
-        // execute_pipeline() inspects role() to drive the operator. Every reachable
-        // plan streams; role()==none means the operator carries no streaming drive of
-        // its own (a pre-materialized data carrier driven via its already-set output_).
-        [[nodiscard]] virtual pipeline_role role() const noexcept { return pipeline_role::none; }
+        // execute_pipeline() inspects role() to drive the operator. The default is
+        // `sink`: a leaf/DDL/txn/DML/group/join/sort/distinct operator accumulates
+        // bounded state in push() and emits in finalize(), so it needs no override.
+        // Only a SOURCE (scans, raw-data carriers) or a STREAMING operator
+        // (filter/projection) overrides this.
+        [[nodiscard]] virtual pipeline_role role() const noexcept { return pipeline_role::sink; }
 
         // SOURCE: fetch the next batch via an async storage round-trip
         // (storage_fetch_next_batch). A drained source returns an EMPTY chunk

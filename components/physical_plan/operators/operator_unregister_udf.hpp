@@ -30,7 +30,6 @@ namespace components::operators {
         // existence-check + overload drop and the pg_proc/pg_depend purge run in
         // await_async_and_resume. The dispatcher drives this operator's async
         // finalize directly (a single await_async_and_resume).
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:

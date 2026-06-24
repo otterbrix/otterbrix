@@ -15,7 +15,6 @@ namespace components::operators {
     public:
         operator_distinct_t(std::pmr::memory_resource* resource, log_t log);
 
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
 
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;

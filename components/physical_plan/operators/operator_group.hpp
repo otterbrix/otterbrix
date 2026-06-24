@@ -116,7 +116,6 @@ namespace components::operators {
         // finalize() materializes the accumulated groups into the result chunk(s).
         // State is bounded by the number of GROUPS, not by the input row count, so a
         // 4-table-join + GROUP BY no longer materializes every intermediate row.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;

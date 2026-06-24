@@ -47,7 +47,6 @@ namespace components::operators {
         // materialized before the first push (the executor materializes join build
         // sides — traverse_plan_ split / materialize_build_sides_). needs_async_finalize
         // drives the async commit after the pump (or, for the catalog form, directly).
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t

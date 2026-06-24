@@ -23,7 +23,6 @@ namespace components::operators {
         // constraint_input_), then this fk_cascade reads them to find / mutate the
         // referencing child rows. push()/finalize() are no-ops (no streaming input of
         // its own).
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         // No streaming input of its own: the child DELETE sink drains the pumped

@@ -33,7 +33,6 @@ namespace components::operators {
         // on_execute path (adopt left_->output(), single append) remains as the
         // materialized entry point for any sourceless caller; both share the SAME
         // append core, so results are identical.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t

@@ -41,7 +41,6 @@ namespace components::operators {
         // recursive_ are private members), so the executor admits this as a
         // sourceless sink root; needs_async_finalize routes the fixpoint through
         // execute_pipeline's bottom-up await_async_and_resume pass.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         // Returns a pointer to the working-set slot so operator_cte_scan_t can point into it.

@@ -33,7 +33,6 @@ namespace components::operators {
         // resolved database_oid onto target_node_; push()/finalize() inherit the
         // no-op defaults (the metadata handoff is the node stamp, read later via
         // plan_resolve_index).
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:

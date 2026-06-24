@@ -29,7 +29,6 @@ namespace components::operators {
         // FLUSH phase runs BEFORE the DML await, which would be too early). push()/
         // finalize() are no-ops; the validation runs in await_async_and_resume
         // via the validate_() core, completing synchronously (co_return).
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         // No streaming input of its own: the child DML sink drains the pumped

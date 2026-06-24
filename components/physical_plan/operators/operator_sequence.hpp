@@ -21,7 +21,6 @@ namespace components::operators {
 
         const std::vector<operator_ptr>& steps() const { return steps_; }
 
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
 
     private:
         std::vector<operator_ptr> steps_;

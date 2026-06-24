@@ -42,7 +42,6 @@ namespace components::operators {
         // bottom-up needs_async_finalize pass. The compiled body_op_ is run INSIDE
         // await_async_and_resume (via ctx->runner), not as a chain child, so the
         // operator stays a sourceless leaf. push()/finalize() inherit no-op defaults.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;

@@ -38,7 +38,6 @@ namespace components::operators {
         // buffered_input_ and emits nothing; finalize() runs the per-chunk
         // key-eval + local sort and the k-way merge over the buffer, emitting the
         // sorted result into `out` via sort_merge().
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;

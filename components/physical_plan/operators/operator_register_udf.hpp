@@ -60,7 +60,6 @@ namespace components::operators {
         // pg_proc/pg_depend writes — runs in await_async_and_resume. The dispatcher
         // drives this operator's async finalize directly (a single
         // await_async_and_resume).
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:

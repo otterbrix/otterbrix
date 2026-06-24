@@ -41,7 +41,6 @@ namespace components::operators {
         // INSERT affected-row count, set by insert.await running first) into output_
         // so the cursor reports the right count, then commits the pg_computed_column
         // rows. push()/finalize() inherit the no-op defaults.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:

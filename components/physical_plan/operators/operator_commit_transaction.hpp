@@ -39,7 +39,6 @@ namespace components::operators {
         // the bottom-up needs_async_finalize pass. push()/finalize() inherit the
         // no-op defaults. All commit work — the dispatcher drain, storage publishes,
         // WAL marker, ProcArray barrier — runs in await_async_and_resume.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:

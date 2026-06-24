@@ -48,7 +48,6 @@ namespace components::operators {
         // (its left in the chain) commits + stamps table_oid BEFORE this operator
         // reads target_node_->target()->resolved_metadata()->table_oid.
         // push()/finalize() inherit the no-op defaults.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:

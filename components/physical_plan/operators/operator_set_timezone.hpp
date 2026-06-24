@@ -20,7 +20,6 @@ namespace components::operators {
         // the bottom-up needs_async_finalize pass. push()/finalize() inherit the
         // no-op defaults. The sync timezone-name validation runs at the TOP of
         // await_async_and_resume, so an invalid value aborts before any disk write.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;

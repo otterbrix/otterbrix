@@ -21,7 +21,6 @@ namespace components::operators {
         // constraint_input_), then this fk_check validates them. push()/finalize()
         // are no-ops: this operator holds no streaming input of its own; it reads its
         // child DML's snapshot in the async step and validates those rows.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         // No streaming input of its own: the child DML sink drains the pumped

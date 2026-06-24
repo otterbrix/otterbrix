@@ -39,7 +39,6 @@ namespace components::operators {
         // durable before this operator scans + backfills + flips indisvalid=true.
         // push()/finalize() inherit the no-op defaults (no pipeline data flows);
         // all work lives in await_async_and_resume.
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:

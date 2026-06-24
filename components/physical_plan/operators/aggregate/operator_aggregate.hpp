@@ -37,7 +37,6 @@ namespace components::operators::aggregate {
         // owns. The synchronous aggregation core (compute()/run_aggregation)
         // stays intact (it is still driven by operator_group's per-group
         // aggregator calls).
-        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;

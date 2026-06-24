@@ -8,8 +8,6 @@ namespace components::operators::aggregate {
 
     class operator_aggregate_t : public read_only_operator_t {
     public:
-        void set_value(std::pmr::vector<types::logical_value_t>& row, std::string_view key) const;
-        types::logical_value_t value() const;
         compute::datum_t take_batch_values();
 
         // Synchronous per-group aggregation entry point for operator_group_t.

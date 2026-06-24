@@ -194,19 +194,5 @@ namespace components::operators::aggregate {
         return compute::datum_t{std::move(results)};
     }
 
-    void operator_aggregate_t::set_value(std::pmr::vector<types::logical_value_t>& row, std::string_view alias) const {
-        auto res_it = std::find_if(row.begin(), row.end(), [&](const types::logical_value_t& v) {
-            return !v.type().extension() ? false : v.type().alias() == alias;
-        });
-        if (res_it == row.end()) {
-            row.emplace_back(aggregate_result_);
-            row.back().set_alias(std::string(alias));
-        } else {
-            *res_it = aggregate_result_;
-            res_it->set_alias(std::string(alias));
-        }
-    }
-
-    types::logical_value_t operator_aggregate_t::value() const { return aggregate_result_; }
     compute::datum_t operator_aggregate_t::take_batch_values() { return std::move(batch_results_); }
 } // namespace components::operators::aggregate

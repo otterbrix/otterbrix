@@ -47,6 +47,20 @@ namespace components::operators {
 
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        // Drop the lazily-built layout/predicate + matched marker so a re-driven sub-plan
+        // (recursive-CTE recursive term, re-run per fixpoint iteration over a repointed
+        // working set) rebuilds from the NEW build side. reset_for_reuse() clears
+        // state_/output_ but not this build state.
+        void reset_pipeline_state() noexcept override {
+            layout_built_ = false;
+            res_types_.clear();
+            predicate_ = nullptr;
+            build_matched_.clear();
+            build_chunk_offsets_.clear();
+            indices_left_.clear();
+            indices_right_.clear();
+        }
+
     private:
         type join_type_;
         expressions::expression_ptr expression_;

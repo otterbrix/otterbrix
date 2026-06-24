@@ -1984,6 +1984,30 @@ namespace services::collection::executor {
     }
 
     executor_t::unique_future<core::error_t>
+    executor_t::materialize_build_sides_(components::operators::operator_ptr root,
+                                         components::pipeline::context_t* ctx) {
+        // Walk the LEFT chain (the streaming spine). For each operator that has a RIGHT
+        // (build) child not yet executed, drive that whole right subtree to completion
+        // FIRST — it is itself a sub-plan (its own build sides materialized recursively
+        // by the drive_subplan_ call below) — so the streaming join can read its
+        // materialized output_ when it builds the hash table. Already-executed right
+        // subtrees (the normal traverse_plan_-split flow) short-circuit, so this is a
+        // no-op outside the run_subplan-without-split case (recursive-CTE term).
+        namespace ops = components::operators;
+        for (ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
+            auto right = op->right();
+            if (right && !right->is_executed()) {
+                right->prepare();
+                auto err = co_await drive_subplan_(right, ctx);
+                if (err.contains_error()) {
+                    co_return err;
+                }
+            }
+        }
+        co_return core::error_t::no_error();
+    }
+
+    executor_t::unique_future<core::error_t>
     executor_t::drive_subplan_(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
         // THE routing seam, extracted so execute_sub_plan_ and run_subplan share
         // one implementation (no duplication; behavior identical to the inline
@@ -1992,6 +2016,14 @@ namespace services::collection::executor {
         // other shape -> materialized on_execute + async-await loop. Both reach the
         // SAME per-operator core (see is_streaming_pipeline).
         if (is_streaming_pipeline(root)) {
+            // Build sides (join RIGHT children) must be materialized before the pump.
+            // The top-level flow gets them from traverse_plan_'s sub-plan split; a
+            // single-root run_subplan (recursive-CTE term) does not, so materialize them
+            // here. No-op when already executed (the split flow).
+            auto build_err = co_await materialize_build_sides_(root, ctx);
+            if (build_err.contains_error()) {
+                co_return build_err;
+            }
             auto piped = co_await execute_pipeline(root, ctx);
             if (piped.has_error()) {
                 co_return piped.error();

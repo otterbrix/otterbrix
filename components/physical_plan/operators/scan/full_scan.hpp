@@ -50,6 +50,19 @@ namespace components::operators {
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
 
+        // Rewind the per-batch fetch-next cursor so a re-driven sub-plan (recursive-CTE
+        // recursive term, re-run once per fixpoint iteration) re-OPENs the scan from the
+        // head of the stream instead of seeing a drained cursor. Clears only the streaming
+        // cursor bookkeeping; reset_for_reuse() handles the generic state_/output_.
+        void reset_pipeline_state() noexcept override {
+            opened_ = false;
+            drained_ = false;
+            emitted_any_ = false;
+            cursor_id_ = 0;
+            remaining_offset_ = 0;
+            guard_types_.clear();
+        }
+
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 

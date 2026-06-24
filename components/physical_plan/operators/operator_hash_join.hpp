@@ -71,6 +71,20 @@ namespace components::operators {
 
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        // Drop the lazily-built index + derived layout so a re-driven sub-plan (the
+        // recursive-CTE recursive term, re-run per fixpoint iteration over a repointed
+        // working set) rebuilds the hash table from the NEW build side instead of reusing
+        // the stale one. reset_for_reuse() clears state_/output_ but not this build state.
+        void reset_pipeline_state() noexcept override {
+            index_built_ = false;
+            right_index_.clear();
+            res_types_.clear();
+            build_matched_.clear();
+            build_chunk_offsets_.clear();
+            indices_left_.clear();
+            indices_right_.clear();
+        }
+
     private:
         type join_type_;
         // Equi-key column indices into the left (probe) / right (build) input

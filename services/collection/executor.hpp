@@ -240,6 +240,19 @@ namespace services::collection::executor {
         unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
                                                     components::pipeline::context_t* ctx);
 
+        // Materialize the build sides of a sub-plan's left-chain before the streaming
+        // pump. execute_pipeline streams the LEFT chain and reads each join's RIGHT
+        // (build) child from its already-materialized output_; the TOP-LEVEL flow gets
+        // those build sides pre-executed because traverse_plan_ splits them into their
+        // own sub-plans. run_subplan drives a single root with NO such split (e.g. the
+        // recursive-CTE recursive term JOIN(scan, cte_scan)), so the build side would be
+        // un-materialized at first push(). This walks the left-chain and recursively
+        // drives any un-executed right subtree via drive_subplan_ — a no-op when the
+        // build sides were already split out (is_executed() short-circuits). Returns the
+        // first error; no_error() on success.
+        unique_future<core::error_t> materialize_build_sides_(components::operators::operator_ptr root,
+                                                              components::pipeline::context_t* ctx);
+
         // THE unified commit publisher: builds node_transaction_t(commit)
         // (ddl_mode adds the flush/WAL prefix) and runs it through the same
         // execute_plan pipeline every statement uses. The operator drains

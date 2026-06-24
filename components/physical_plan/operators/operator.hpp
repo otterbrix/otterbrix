@@ -224,6 +224,18 @@ namespace components::operators {
         // owns the cross-actor await, so it is lost-wakeup-safe). Default false.
         [[nodiscard]] virtual bool needs_async_finalize() const noexcept { return false; }
 
+        // Rewind an operator's PRIVATE streaming bookkeeping so it can be re-driven
+        // from scratch. reset_for_reuse() clears the generic state_/output_, but the
+        // streaming path keeps extra per-run state that reset_for_reuse() does not see:
+        //   - a SOURCE's cursor (opened_/drained_/cursor_id_ for a scan; the working-set
+        //     walk index for a cte_scan), and
+        //   - a SINK's lazily-built accumulator (a hash join's index_built_ / right_index_
+        //     / build_matched_).
+        // The recursive-CTE fixpoint driver re-runs its recursive-term sub-plan once per
+        // iteration, so it walks that subtree calling reset_for_reuse() + this hook on
+        // EVERY node before each pass. Default no-op.
+        virtual void reset_pipeline_state() noexcept {}
+
         bool is_executed() const;
         bool is_wait_sync_disk() const;
         bool is_root() const noexcept;

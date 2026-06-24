@@ -27,7 +27,11 @@ namespace services::planner::impl {
 
         auto recursive_op = create_plan(recursive_context, function_registry, cte_node->children()[1], limit, params);
 
-        op->set_children(std::move(anchor_op), std::move(recursive_op));
+        // The anchor + recursive term are NOT left_/right_ children: operator_recursive_cte_t
+        // owns driving them via ctx->runner->run_subplan, so it must look like a leaf to
+        // traverse_plan_ / is_streaming_pipeline (which walk left()/right()). The cte_scan(s)
+        // inside recursive_op already hold the working_set_slot() pointer (injected above).
+        op->set_recursive_terms(std::move(anchor_op), std::move(recursive_op));
         return op;
     }
 

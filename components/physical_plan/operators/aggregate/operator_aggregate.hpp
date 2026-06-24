@@ -44,6 +44,22 @@ namespace components::operators::aggregate {
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        // Drop the lazily-classified streaming sink state so a re-driven sub-plan
+        // (recursive-CTE recursive term, re-run per fixpoint iteration) re-accumulates
+        // from scratch instead of folding into a stale running state. reset_for_reuse()
+        // clears state_/output_ but not this push/finalize bookkeeping.
+        void reset_pipeline_state() noexcept override {
+            sink_mode_ = sink_mode_t::unclassified;
+            running_state_ = raw_agg_state_t{};
+            fast_kind_ = builtin_agg::UNKNOWN;
+            fast_is_count_star_ = false;
+            fast_col_path_.clear();
+            fast_col_type_ = types::logical_type::NA;
+            rows_seen_ = 0;
+            schema_carrier_.clear();
+            buffered_input_.clear();
+        }
+
     protected:
         operator_aggregate_t(std::pmr::memory_resource* resource, log_t log);
 

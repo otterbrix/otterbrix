@@ -50,6 +50,18 @@ namespace components::operators {
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
 
+        // Rewind the windowed point-fetch cursor so a re-driven sub-plan re-runs the
+        // one-shot index search from scratch (recursive-CTE recursive term, per iteration).
+        void reset_pipeline_state() noexcept override {
+            opened_ = false;
+            drained_ = false;
+            emitted_any_ = false;
+            pos_ = 0;
+            end_ = 0;
+            row_ids_vec_.clear();
+            guard_types_.clear();
+        }
+
     private:
         void on_execute_impl(pipeline::context_t* pipeline_context) override;
 

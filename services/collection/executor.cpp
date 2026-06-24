@@ -1162,13 +1162,15 @@ namespace services::collection::executor {
                 pctx.disk_address = disk_address_;
                 pctx.txn = components::table::transaction_data{0, 0};
                 op->prepare();
-                op->on_execute(&pctx);
-                while (!op->is_executed()) {
-                    auto waiting = op->find_waiting_operator();
-                    if (!waiting)
-                        break;
-                    co_await waiting->await_async_and_resume(&pctx);
-                    op->on_execute(&pctx);
+                // operator_allocate_oids_t is a sourceless sink (role()==sink,
+                // needs_async_finalize()==true): drive it through the SAME streaming
+                // seam every other sub-plan uses — execute_pipeline drives its
+                // await_async_and_resume (the allocate_oids_batch round-trip + node
+                // stamp) via the bottom-up async-finalize pass. Replaces the legacy
+                // on_execute + find_waiting_operator inline drive loop.
+                auto drive_err = co_await drive_subplan_(op, &pctx);
+                if (drive_err.contains_error()) {
+                    co_return std::vector<components::catalog::oid_t>{};
                 }
                 if (pctx.has_pending_disk_futures()) {
                     auto futures = pctx.take_pending_disk_futures();

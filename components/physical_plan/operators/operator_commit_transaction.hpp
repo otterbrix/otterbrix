@@ -34,6 +34,17 @@ namespace components::operators {
         // Result accessor; valid only after the operator reports is_executed().
         std::uint64_t commit_id() const noexcept { return commit_id_; }
 
+        // Sourceless SINK leaf (no data pipeline, no children): the executor
+        // admits it as a streaming sink-root and drives await_async_and_resume via
+        // the bottom-up needs_async_finalize pass. push()/finalize() inherit the
+        // no-op defaults; replaces the legacy on_execute + find_waiting_operator
+        // drive. on_execute_impl is a pure async_wait() (all commit work — the
+        // dispatcher drain, storage publishes, WAL marker, ProcArray barrier —
+        // lives in await_async_and_resume), so routing through execute_pipeline is
+        // behavior-preserving.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
     private:
         void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;

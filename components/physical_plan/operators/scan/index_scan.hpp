@@ -27,8 +27,6 @@ namespace components::operators {
         components::logical_plan::index_type preferred_index_type() const { return preferred_index_type_; }
         const logical_plan::limit_t& limit() const { return limit_; }
 
-        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
-
         // --- Push-based streaming pipeline source (WINDOWED point-fetch, bounded) ---
         // The index search is ONE-SHOT — it returns the whole matched row-id set in a single
         // future — so this source materializes the ids ONCE (the FIRST source_next call), applies
@@ -40,8 +38,7 @@ namespace components::operators {
         //   The N sequential cross-actor co_awaits (one index search + one fetch per window) live in
         // this NESTED operator coroutine (driven by co_await from execute_pipeline), not in a
         // behavior() handler, so the actor-zeta single-slot awaited continuation is
-        // republished+cleared between sequential awaits — no lost-wakeup (same shape as
-        // await_async_and_resume's sequential awaits).
+        // republished+cleared between sequential awaits — no lost-wakeup.
         //   index_scan is built ONLY when create_plan_match_ proves an index exists on a real table
         // (can_use_index), so table_oid_ is always valid in practice; the INVALID_OID sentinel is a
         // degenerate shape that source_next drains to an empty guard. role() is therefore
@@ -63,10 +60,9 @@ namespace components::operators {
         }
 
     private:
-        // Shared windowing core (Rule 6: ONE implementation for source_next and the materialized
-        // await_async_and_resume). Run the one-shot index search (txn-aware visibility), store the
-        // matched ids in row_ids_vec_, and compute the OFFSET/LIMIT window [pos_=start_, end_).
-        // If there is no index service or the search matched nothing, leaves an empty window.
+        // Windowing core: run the one-shot index search (txn-aware visibility), store the matched
+        // ids in row_ids_vec_, and compute the OFFSET/LIMIT window [pos_=start_, end_). If there is
+        // no index service or the search matched nothing, leaves an empty window.
         actor_zeta::unique_future<void> open_index_window(pipeline::context_t* ctx);
 
         // Fetch the absolute-row-id window [start, start+count) as ONE chunk via the existing

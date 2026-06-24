@@ -26,8 +26,6 @@ namespace components::operators {
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const logical_plan::limit_t& limit() const { return limit_; }
 
-        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
-
         // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
         // role()==source drives the streaming push/finalize pipeline. The FIRST source_next OPENs a
         // position-only fetch-next cursor (storage_fetch_next_batch, cursor_id==0, no filter —

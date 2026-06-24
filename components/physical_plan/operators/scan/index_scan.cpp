@@ -21,10 +21,10 @@ namespace components::operators {
         , preferred_index_type_(preferred_index_type)
         , limit_(limit) {}
 
-    // --- Shared windowing core (Rule 6) ---------------------------------------------------------
+    // --- Windowing core -------------------------------------------------------------------------
     // Run the ONE-SHOT index search and compute the OFFSET/LIMIT window [pos_=start, end_) over the
-    // matched ids. Both await_async_and_resume (materialized) and source_next (per-window) call this
-    // exactly once, so the search + windowing logic lives in ONE place.
+    // matched ids. source_next calls this exactly once (the first call), so the search + windowing
+    // logic lives in ONE place.
     actor_zeta::unique_future<void> index_scan::open_index_window(pipeline::context_t* ctx) {
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
             // No index service — empty window (no matched ids).
@@ -102,40 +102,6 @@ namespace components::operators {
         co_return vector::data_chunk_t{resource_, types, 0};
     }
 
-    actor_zeta::unique_future<void> index_scan::await_async_and_resume(pipeline::context_t* ctx) {
-        if (log_.is_valid()) {
-            trace(log(), "index_scan::await_async_and_resume on oid={}", static_cast<unsigned>(table_oid_));
-        }
-
-        // ONE-SHOT search + OFFSET/LIMIT window (shared core).
-        co_await open_index_window(ctx);
-
-        // Materialized entry: loop ALL windows of the [pos_, end_) range into output_, so a legacy
-        // parent / build-side consumer gets the full result. Windowing ≤ DEFAULT_VECTOR_CAPACITY
-        // keeps each storage_fetch bounded; split_chunk_into_batches is a no-op (already ≤ cap).
-        if (pos_ >= end_) {
-            output_ = make_operator_data(resource_, co_await make_empty_chunk(ctx));
-            mark_executed();
-            co_return;
-        }
-
-        chunks_vector_t batches{resource_};
-        while (pos_ < end_) {
-            const size_t count = std::min<size_t>(vector::DEFAULT_VECTOR_CAPACITY, end_ - pos_);
-            auto fetched = co_await fetch_window(ctx, pos_, count);
-            if (fetched.has_error()) {
-                set_error(fetched.error());
-                mark_failed();
-                co_return;
-            }
-            pos_ += count;
-            batches.push_back(std::move(fetched.value()));
-        }
-        output_ = make_operator_data(resource_, std::move(batches));
-        mark_executed();
-        co_return;
-    }
-
     // --- Push-based streaming pipeline source (WINDOWED point-fetch) ----------------------------
     // FIRST call: open_index_window (await #1: the one-shot index search) + compute [pos_, end_).
     // EACH call: fetch the next ≤ DEFAULT_VECTOR_CAPACITY window [pos_, ..) (await #2: storage_fetch)
@@ -144,8 +110,7 @@ namespace components::operators {
     //   else the 0-column drain sentinel.
     // Each call does at most ONE cross-actor fetch await; the N awaits are sequential across calls in
     // this nested operator coroutine (driven by execute_pipeline), so the single-slot awaited
-    // continuation is republished+cleared between awaits — no lost-wakeup (same shape as
-    // await_async_and_resume's sequential awaits).
+    // continuation is republished+cleared between awaits — no lost-wakeup.
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     index_scan::source_next(pipeline::context_t* ctx) {
         if (drained_) {

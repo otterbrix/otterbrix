@@ -28,8 +28,6 @@ namespace components::operators {
         const expressions::compare_expression_ptr& expression() const { return expression_; }
         const logical_plan::limit_t& limit() const { return limit_; }
 
-        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
-
         // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
         // role()==source drives the streaming push/finalize pipeline. The FIRST source_next call
         // OPENs a position-only fetch-next cursor on the owning agent (storage_fetch_next_batch,
@@ -40,8 +38,7 @@ namespace components::operators {
         // execute_pipeline stops. The N sequential cross-actor co_awaits live in this NESTED
         // operator coroutine (driven by co_await from execute_pipeline), not in a behavior() handler,
         // so the actor-zeta single-slot awaited continuation is republished+cleared between each
-        // sequential await (same shape as await_async_and_resume's two sequential awaits) — no
-        // lost-wakeup.
+        // sequential await — no lost-wakeup.
         // A no-table sentinel scan (INVALID_OID, e.g. a no-FROM `SELECT 2+3`) is ALSO a
         // source: source_next emits ONE synthetic single-row batch with one placeholder
         // column (not the 0-column drain sentinel), then drains, so the downstream

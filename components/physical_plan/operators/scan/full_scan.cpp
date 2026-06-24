@@ -14,7 +14,7 @@ namespace components::operators {
             return std::unique_ptr<table::table_filter_t>{};
         }
         if (expression->type() == expressions::compare_type::all_false) {
-            assert(false && "all_false should be short-circuited in await_async_and_resume");
+            assert(false && "all_false should be short-circuited in source_next");
         }
         switch (expression->type()) {
             case expressions::compare_type::union_and: {
@@ -196,125 +196,6 @@ namespace components::operators {
         , limit_(limit)
         , projected_cols_(std::move(projected_cols)) {}
 
-    actor_zeta::unique_future<void> full_scan::await_async_and_resume(pipeline::context_t* ctx) {
-        if (log_.is_valid()) {
-            trace(log(), "full_scan::await_async_and_resume on oid={}", static_cast<unsigned>(table_oid_));
-        }
-
-        // Short-circuit: if expression is all_false, return empty result immediately
-        if (expression_ && expression_->type() == expressions::compare_type::all_false) {
-            output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
-            mark_executed();
-            co_return;
-        }
-
-        // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
-        // col OP NULL → always false → return empty immediately.
-        // col OP ALL(empty) is vacuously true → skip filter, scan all rows.
-        // Excludes is_null/is_not_null which use a dummy null parameter on the right.
-        bool null_param_skip_filter = false;
-        if (expression_ && !expression_->is_union() && expression_->type() != expressions::compare_type::is_null &&
-            expression_->type() != expressions::compare_type::is_not_null &&
-            std::holds_alternative<core::parameter_id_t>(expression_->right())) {
-            auto pid = std::get<core::parameter_id_t>(expression_->right());
-            auto it = ctx->parameters.parameters.find(pid);
-            if (it != ctx->parameters.parameters.end() && it->second.is_null()) {
-                if (expression_->type() != expressions::compare_type::all) {
-                    output_ = make_operator_data(resource_, std::pmr::vector<types::complex_logical_type>{resource_});
-                    mark_executed();
-                    co_return;
-                }
-                null_param_skip_filter = true;
-            }
-        }
-
-        // Get types to build filter
-        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_types,
-                                         ctx->session,
-                                         table_oid_);
-        auto types = co_await std::move(tf);
-
-        // Build filter from expression
-        std::unique_ptr<table::table_filter_t> filter;
-        if (!null_param_skip_filter) {
-            auto filter_result = transform_predicate(resource_, expression_, types, &ctx->parameters, ctx->session_tz);
-            if (filter_result.has_error()) {
-                set_error(filter_result.error());
-                mark_failed();
-                co_return;
-            }
-            filter = std::move(filter_result.value());
-        }
-
-        // Scan from storage — batched + projected (PR #477+#483).
-        int64_t offset_val = limit_.offset();
-        int64_t limit_val = limit_.limit();
-        int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
-        auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_scan_batched,
-                                         ctx->session,
-                                         table_oid_,
-                                         std::move(filter),
-                                         scan_limit,
-                                         projected_cols_,
-                                         ctx->txn);
-        // The scan reply carries any buffer-pool OOM / data_corruption the table-layer scan
-        // surfaced. Surface it as a clean error cursor; the executor turns has_error() into an
-        // error cursor.
-        auto scan_result = co_await std::move(sf);
-        if (scan_result.has_error()) {
-            set_error(scan_result.error());
-            mark_failed();
-            co_return;
-        }
-        auto batches = std::move(scan_result.value());
-
-        // Skip offset rows across batches.
-        if (offset_val > 0) {
-            uint64_t remaining = static_cast<uint64_t>(offset_val);
-            size_t skip_count = 0;
-            for (; skip_count < batches.size() && remaining > 0; ++skip_count) {
-                auto sz = batches[skip_count].size();
-                if (sz <= remaining) {
-                    remaining -= sz;
-                    continue;
-                }
-                batches[skip_count] = batches[skip_count].partial_copy(resource_, remaining, sz - remaining);
-                remaining = 0;
-                break;
-            }
-            if (skip_count > 0) {
-                batches.erase(batches.begin(), batches.begin() + static_cast<std::ptrdiff_t>(skip_count));
-            }
-        }
-
-        // Maintain the operator_data_t invariant: at least one (possibly empty)
-        // chunk. storage_scan_batched can return an empty vector at SSB-scale when
-        // the disk service get_storage(table_oid) hits an oid-resolution race with
-        // CSV ingest commit. Without this guard, operator_join.cpp:125 asserts.
-        // Schema is taken from the projected scan signature so OUTER joins can
-        // still emit NULL-padded rows from the non-empty side.
-        if (batches.empty()) {
-            std::pmr::vector<types::complex_logical_type> projected_types(resource_);
-            if (projected_cols_.empty()) {
-                projected_types = types;
-            } else {
-                projected_types.reserve(projected_cols_.size());
-                for (auto idx : projected_cols_) {
-                    if (idx < types.size()) {
-                        projected_types.push_back(types[idx]);
-                    }
-                }
-            }
-            batches.emplace_back(resource_, projected_types, 0);
-        }
-
-        output_ = make_operator_data(resource_, std::move(batches));
-        mark_executed();
-        co_return;
-    }
-
     vector::data_chunk_t
     full_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
         std::pmr::vector<types::complex_logical_type> projected_types(resource_);
@@ -338,9 +219,9 @@ namespace components::operators {
     // SUBSEQUENT calls: ADVANCE the SAME cursor (cursor_id_!=0, no filter) and return one batch.
     // Each call does at most ONE cross-actor fetch await; the N awaits are sequential across calls
     // in this nested operator coroutine (driven by execute_pipeline), so the single-slot awaited
-    // continuation is republished+cleared between awaits — no lost-wakeup (same shape as
-    // await_async_and_resume's two sequential awaits). Peak scan memory = one batch (zero pins
-    // survive a round-trip; the agent re-seeks a transient scan state from a stored position).
+    // continuation is republished+cleared between awaits — no lost-wakeup. Peak scan memory = one
+    // batch (zero pins survive a round-trip; the agent re-seeks a transient scan state from a
+    // stored position).
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     full_scan::source_next(pipeline::context_t* ctx) {
         if (drained_) {

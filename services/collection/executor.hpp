@@ -35,6 +35,15 @@ namespace services::collection::executor {
 #ifdef DEV_MODE
     uint64_t streaming_pipeline_runs() noexcept;
     void reset_streaming_pipeline_runs() noexcept;
+
+    // Symmetric materialized-path counter: drive_subplan_ bumps it once per sub-plan
+    // that takes the LEGACY materialize (on_execute) path instead of execute_pipeline.
+    // A test can assert a statement DID NOT fall to materialize (e.g. a top-level
+    // WITH RECURSIVE now streams its whole [select->sort->match->recursive_cte] chain
+    // through execute_pipeline, so this counter must NOT advance for it). Same coarse
+    // relaxed/DEV_MODE-only instrumentation contract as streaming_pipeline_runs().
+    uint64_t materialized_plan_runs() noexcept;
+    void reset_materialized_plan_runs() noexcept;
 #endif
 
     // One range per (table, DML fragment), accumulated across sub-plans.

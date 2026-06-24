@@ -59,10 +59,14 @@ namespace services::collection::executor {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_streaming_pipeline_runs{0};
+        std::atomic<uint64_t> g_materialized_plan_runs{0};
     } // namespace
 
     uint64_t streaming_pipeline_runs() noexcept { return g_streaming_pipeline_runs.load(std::memory_order_relaxed); }
     void reset_streaming_pipeline_runs() noexcept { g_streaming_pipeline_runs.store(0, std::memory_order_relaxed); }
+
+    uint64_t materialized_plan_runs() noexcept { return g_materialized_plan_runs.load(std::memory_order_relaxed); }
+    void reset_materialized_plan_runs() noexcept { g_materialized_plan_runs.store(0, std::memory_order_relaxed); }
 #endif
 
     // ---- behavior/dispatch_traits sync check ----
@@ -1794,13 +1798,9 @@ namespace services::collection::executor {
     bool executor_t::is_streaming_pipeline(const components::operators::operator_ptr& root) noexcept {
         namespace ops = components::operators;
         const ops::operator_t* deepest = nullptr;
-        bool all_sink = true;
         for (const ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
             if (op->role() == ops::pipeline_role::none) {
                 return false; // an unconverted operator on the chain -> legacy materialize path
-            }
-            if (op->role() != ops::pipeline_role::sink) {
-                all_sink = false;
             }
             deepest = op;
         }
@@ -1811,20 +1811,26 @@ namespace services::collection::executor {
         if (deepest->role() == ops::pipeline_role::source) {
             return true;
         }
-        // SOURCELESS SINK CHAIN: the chain bottom is a sourceless sink (no left
-        // child), and every operator on the chain is a sink. There is no scan
-        // source to pump; execute_pipeline skips the pump and drives each sink's
-        // FLUSH + needs_async_finalize await BOTTOM-UP (deepest first). This admits
+        // SOURCELESS SINK BOTTOM: the chain bottom is a sourceless sink (no left
+        // child). There is no scan source to pump; execute_pipeline drives the
+        // bottom sink's await_async_and_resume FIRST (its commit / fixpoint), then
+        // streams any rows it PRODUCES (output_) UP through the ancestors, then
+        // FLUSHes + async-finalizes those ancestors BOTTOM-UP. This admits
         //   - a single leaf DDL/txn sink (create_collection, set_timezone,
-        //     begin_transaction, resolve_*), and
+        //     begin_transaction, resolve_*) — no ancestors, a pure async commit;
         //   - a multi-node all-sink async chain with sink(s) ABOVE the sourceless
         //     bottom: CREATE INDEX = [backfill(root) -> metadata(left leaf)], and a
-        //     multi-resolve front-pass = [resolve_table(root) -> resolve_ns(leaf)].
-        // The bottom-up async-finalize drive runs the deepest sink's commit first,
-        // exactly as the legacy on_execute / find_waiting_operator path did (left
-        // child awaited before its parent). A streaming op ABOVE the sourceless
-        // bottom would have no input to transform, so the chain must be all-sink.
-        return deepest->role() == ops::pipeline_role::sink && deepest->left() == nullptr && all_sink;
+        //     multi-resolve front-pass = [resolve_table(root) -> resolve_ns(leaf)];
+        // and now also
+        //   - a PRODUCING sourceless sink with STREAMING/sink ancestors: a top-level
+        //     WITH RECURSIVE lowers to [select -> sort -> match -> recursive_cte],
+        //     where recursive_cte (the bottom) produces its rows in
+        //     await_async_and_resume and they must flow UP through match/sort/select.
+        // The old all_sink restriction is therefore dropped: a streaming op ABOVE the
+        // sourceless bottom is fine because execute_pipeline drives the bottom's
+        // producing await BEFORE the pump, so the streaming ancestors DO have input
+        // to transform.
+        return deepest->role() == ops::pipeline_role::sink && deepest->left() == nullptr;
     }
 
     executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
@@ -1850,21 +1856,42 @@ namespace services::collection::executor {
         while (start < chain.size() && chain[start]->is_executed()) {
             ++start;
         }
-        // SOURCELESS SINK CHAIN: a DDL/txn/catalog-read operator (create_collection,
-        // set_timezone, begin_transaction, resolve_*, ...) lowers to a sink whose
-        // chain bottom has no left child — no scan source. is_streaming_pipeline
-        // admits both the single-leaf shape AND a multi-node all-sink chain (CREATE
-        // INDEX = backfill->metadata; a multi-resolve front-pass = resolve_table->
-        // resolve_namespace). is_streaming_pipeline admits these so the on_execute
-        // legacy path can be retired; here we skip the source pump entirely and drive
-        // every sink through FLUSH + needs_async_finalize below. All work lives in
-        // await_async_and_resume, so the bottom-most operator (chain[0]) MUST be in
-        // the [op_start, end) range the async-finalize drive iterates — hence op_start
-        // stays at 0 (not 1) for this shape. (chain[0]->role()==source is the normal
-        // pumped case; a NOT-executed non-source bottom is the sourceless sink.)
+        // SOURCELESS SINK BOTTOM: a DDL/txn/catalog-read operator (create_collection,
+        // set_timezone, begin_transaction, resolve_*, ...) OR a producing recursive_cte
+        // lowers to a sink whose chain bottom has no left child — no scan source.
+        // is_streaming_pipeline admits the single-leaf shape, a multi-node all-sink
+        // chain (CREATE INDEX = backfill->metadata; a multi-resolve front-pass =
+        // resolve_table->resolve_namespace), AND a PRODUCING bottom with streaming/sink
+        // ancestors (top-level WITH RECURSIVE = [select -> sort -> match ->
+        // recursive_cte]). is_streaming_pipeline admits these so the on_execute legacy
+        // path can be retired. For ALL of them the bottom sink's entire effect lives in
+        // its await_async_and_resume (a cross-actor commit and/or the fixpoint that
+        // PRODUCES output_), which the dedicated block below drives FIRST — so chain[0]
+        // is handled there, not in the [op_start, end) FLUSH/async-finalize passes.
+        // op_start therefore becomes 1 for this shape (the ANCESTOR range chain[1..]):
+        // the bottom's produced rows are pumped UP through those ancestors, which are
+        // then FLUSHed + async-finalized bottom-up. (chain[0]->role()==source is the
+        // normal pumped case; a NOT-executed non-source bottom is the sourceless sink.)
         const bool sourceless_sink_root =
             start == 0 && chain.front()->role() != ops::pipeline_role::source;
-        const std::size_t op_start = sourceless_sink_root ? 0 : ((start == 0) ? 1 : start);
+        const std::size_t op_start = sourceless_sink_root ? 1 : ((start == 0) ? 1 : start);
+
+        // A producing sourceless bottom (recursive_cte) whose ancestors are REAL query
+        // operators (sort/select/match) must stream its rows UP through them. The
+        // discriminator is "not all-sink": if EVERY op on the chain is a sink it is an
+        // independent-producer metadata chain (resolve/ddl/create-index) that must NOT
+        // pump (its sink ancestors don't override push()); any streaming op on the chain
+        // means a real pipeline whose ancestors consume the bottom's rows. Only consulted
+        // for the sourceless_sink_root shape.
+        bool pumpable_ancestors = false;
+        if (sourceless_sink_root) {
+            for (ops::operator_t* op : chain) {
+                if (op->role() != ops::pipeline_role::sink) {
+                    pumpable_ancestors = true; // a streaming op on the chain -> real pipeline
+                    break;
+                }
+            }
+        }
 
         ops::chunks_vector_t output{resource()};
 
@@ -1892,10 +1919,44 @@ namespace services::collection::executor {
 
         // PUMP.
         if (sourceless_sink_root) {
-            // No source at the bottom: nothing to pump. The sink leaf's entire
-            // effect is the async cross-actor commit driven by the bottom-up
-            // needs_async_finalize loop below (FLUSH over a sink-only chain emits
-            // nothing). Fall through.
+            // No source at the bottom: the bottom sink (chain[0]) produces / commits
+            // its entire effect in await_async_and_resume, which MUST run BEFORE we
+            // pump its rows up. (A bare DDL/txn leaf, an all-sink CREATE INDEX chain,
+            // and a producing recursive_cte all share this: their work is the await,
+            // not a push-fed finalize.) Drive it here, deepest-first — exactly the
+            // commit the legacy on_execute / find_waiting_operator loop drove — so the
+            // FLUSH/async-finalize passes below operate only on the ANCESTORS.
+            if (chain.front()->needs_async_finalize()) {
+                co_await chain.front()->await_async_and_resume(ctx);
+                if (chain.front()->has_error()) {
+                    co_return core::result_wrapper_t<ops::chunks_vector_t>(chain.front()->get_error());
+                }
+            }
+            // Stream any rows the bottom PRODUCED (recursive_cte's fixpoint output_) UP
+            // through the ancestors chain[1..] (e.g. sort -> select, or match -> sort ->
+            // select). COPY (not move) the chunks: output_ is a shared intrusive_ptr
+            // operator_data the bottom still owns (and run_subplan's caller may re-read).
+            //
+            // Gate on `pumpable_ancestors` (the chain is NOT all-sink): a producing
+            // bottom under REAL query operators (sort/select/match — all override push())
+            // pumps its rows up. An ALL-SINK sourceless chain (CREATE INDEX =
+            // backfill->metadata; a multi-resolve front-pass = resolve_table->
+            // resolve_namespace) is different: each level is an INDEPENDENT producing
+            // metadata sink that sets its OWN output_ in its own await and does NOT
+            // override push() — pumping the bottom's rows into them would hit the default
+            // "not a streaming/sink op" push error. For that shape we pump nothing; the
+            // FLUSH/async-finalize passes below drive each ancestor sink's own await
+            // bottom-up (the original all-sink behavior), and drive_subplan_ reads the
+            // ROOT's output_. (A pure-commit DDL/txn leaf has no ancestors, so
+            // op_start == chain.size() and this is skipped regardless.)
+            if (pumpable_ancestors && chain.front()->output()) {
+                for (const auto& c : chain.front()->output()->chunks()) {
+                    auto err = pump_one(c.partial_copy(resource(), 0, c.size()));
+                    if (err.contains_error()) {
+                        co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+                    }
+                }
+            }
         } else if (start == 0) {
             ops::operator_t* source = chain.front();
             while (true) {
@@ -1966,11 +2027,14 @@ namespace services::collection::executor {
         // output_ (RETURNING / affected-row count) and marks it executed.
         //
         // Iterate over only the operators THIS pipeline drove ([op_start, end)) and
-        // go DEEPEST-FIRST: chain[op_start] is the bottom (closest to the source),
-        // chain.back() the root, so ascending index == bottom-up. Today at most one
-        // op per chain sets needs_async_finalize() (the DML sink at the root), so
-        // this is behavior-preserving — but it is the hook future phases (a
-        // constraint above a DML, multi-async chains) need. Stop on the first error.
+        // go DEEPEST-FIRST: chain[op_start] is the deepest op in this range, chain.back()
+        // the root, so ascending index == bottom-up. For a sourceless sink bottom the
+        // real chain[0] was already driven (deepest-first) in the PUMP block above, so
+        // this range (op_start==1) covers only its ancestors — still bottom-up overall.
+        // Today at most one op per chain sets needs_async_finalize() (the DML sink at
+        // the root, or the bottom sourceless sink already driven above), so this is
+        // behavior-preserving — but it is the hook future phases (a constraint above a
+        // DML, multi-async chains) need. Stop on the first error.
         for (std::size_t i = op_start; i < chain.size(); ++i) {
             ops::operator_t* op = chain[i];
             if (!op->needs_async_finalize()) {
@@ -2035,6 +2099,14 @@ namespace services::collection::executor {
                 root->mark_executed();
             }
         }
+#ifdef DEV_MODE
+        else {
+            // Test-observable: this sub-plan fell to the LEGACY materialize path
+            // (on_execute + the await loop below). Symmetric to the bump
+            // execute_pipeline does for the streaming path (see materialized_plan_runs).
+            g_materialized_plan_runs.fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
 
         // Execute the plan tree (scan operators send I/O requests and enter waiting state)
         root->on_execute(ctx);

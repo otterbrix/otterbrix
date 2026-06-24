@@ -120,39 +120,6 @@ namespace components::table {
         return row_group.initialize_scan_with_offset(state, vector_index);
     }
 
-    bool collection_t::scan(const std::vector<storage_index_t>& column_ids,
-                            const std::function<bool(vector::data_chunk_t& chunk)>& fun) {
-        std::pmr::vector<types::complex_logical_type> scan_types(resource_);
-        for (uint64_t i = 0; i < column_ids.size(); i++) {
-            scan_types.push_back(types_[column_ids[i].primary_index()]);
-        }
-        vector::data_chunk_t chunk(resource_, scan_types);
-
-        table_scan_state state(resource_);
-        state.initialize(column_ids, nullptr);
-        initialize_scan(state.local_state, column_ids);
-
-        while (true) {
-            chunk.reset();
-            state.local_state.scan(chunk);
-            if (chunk.size() == 0) {
-                return true;
-            }
-            if (!fun(chunk)) {
-                return false;
-            }
-        }
-    }
-
-    bool collection_t::scan(const std::function<bool(vector::data_chunk_t& chunk)>& fun) {
-        std::vector<storage_index_t> column_ids;
-        column_ids.reserve(types_.size());
-        for (uint64_t i = 0; i < types_.size(); i++) {
-            column_ids.emplace_back(i);
-        }
-        return scan(column_ids, fun);
-    }
-
     void collection_t::fetch(vector::data_chunk_t& result,
                              const std::vector<storage_index_t>& column_ids,
                              const vector::vector_t& row_identifiers,

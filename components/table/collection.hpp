@@ -2,7 +2,6 @@
 #include <atomic>
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
-#include <functional>
 
 #include "column_data.hpp"
 #include "row_version_manager.hpp"
@@ -62,10 +61,6 @@ namespace components::table {
                                                  row_group_t& row_group,
                                                  uint64_t vector_index,
                                                  int64_t max_row);
-
-        bool scan(const std::vector<storage_index_t>& column_ids,
-                  const std::function<bool(vector::data_chunk_t& chunk)>& fun);
-        bool scan(const std::function<bool(vector::data_chunk_t& chunk)>& fun);
 
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,

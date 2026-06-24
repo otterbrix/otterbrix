@@ -12,9 +12,8 @@ namespace components::operators {
     // Generous so legitimate deep hierarchies are never clipped.
     static constexpr std::size_t kMaxRecursionDepth = 10000;
 
-    operator_recursive_cte_t::operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log, bool all)
-        : read_only_operator_t(resource, std::move(log), operator_type::recursive_cte)
-        , all_(all) {}
+    operator_recursive_cte_t::operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log)
+        : read_only_operator_t(resource, std::move(log), operator_type::recursive_cte) {}
 
     void operator_recursive_cte_t::reset_recursive_subtree(const operator_ptr& op) {
         if (!op) {

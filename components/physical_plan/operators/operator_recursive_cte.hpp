@@ -35,7 +35,7 @@ namespace components::operators {
     // a bare sourceless-sink root. await_async_and_resume reaches the drive_fixpoint_ core.
     class operator_recursive_cte_t final : public read_only_operator_t {
     public:
-        operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log, bool all);
+        operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log);
 
         // Sourceless async-finalize sink: see the class note. left()==nullptr (anchor_/
         // recursive_ are private members), so the executor admits this as a
@@ -57,7 +57,6 @@ namespace components::operators {
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
     private:
-        bool all_;
         // The current recursive-CTE working set: the rows the LAST iteration produced.
         // operator_cte_scan_t holds a raw pointer into this field (working_set_slot());
         // the fixpoint repoints it each pass. Owned here (intrusive_ptr) — run_subplan

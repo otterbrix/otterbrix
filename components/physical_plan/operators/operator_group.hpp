@@ -169,14 +169,6 @@ namespace components::operators {
         // need_row_gather_ is true; otherwise the table stays bounded by #groups.
         std::pmr::vector<chunks_vector_t> gathered_rows_per_group_;
 
-        // Design intent (NOT an R6 transitional fallback): push()/finalize() =
-        // streaming path (sourced pipelines); on_execute_impl = materialized path
-        // for sourceless sub-plans (raw_data / recursive-CTE working sets / no-FROM
-        // SELECT) that have no streaming source. Both route through the SAME
-        // accumulate() + materialize_groups() / empty_aggregate_result() core — two
-        // entry points to one implementation for two plan shapes.
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
-
         // Folds one input batch into the running group table. Returns an error_t
         // (no throw / no set_error on the streaming path). Computed-key columns are
         // appended to `input` for the duration of the call.

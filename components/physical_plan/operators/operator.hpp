@@ -151,8 +151,6 @@ namespace components::operators {
     enum class operator_state
     {
         created,
-        running,
-        waiting,
         executed,
         cleared,
         failed
@@ -164,7 +162,7 @@ namespace components::operators {
     // intermediates. An operator's role selects how the driver pulls/pushes it.
     enum class pipeline_role
     {
-        none,      // not on the streaming path (DML/DDL, legacy materialize via on_execute)
+        none,      // carries no streaming drive of its own (a pre-materialized data carrier)
         source,    // produces batches via source_next() (scans)
         streaming, // 1 batch in -> 0+ out, no accumulation (filter/projection, join probe)
         sink       // accumulates bounded state in push(), emits in finalize() (hash build, group/agg, sort)
@@ -187,16 +185,12 @@ namespace components::operators {
         // Prepare the operator tree (connects children) without executing
         void prepare();
 
-        // TODO fwd
-        void on_execute(pipeline::context_t* pipeline_context);
-        void on_resume(pipeline::context_t* pipeline_context);
-        void async_wait();
-
         virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
 
         // --- Push-based streaming pipeline interface (SELECT read-path) ---
-        // execute_pipeline() inspects role() to drive the operator; operators not yet
-        // converted keep role()==none and stay on the legacy on_execute() path.
+        // execute_pipeline() inspects role() to drive the operator. Every reachable
+        // plan streams; role()==none means the operator carries no streaming drive of
+        // its own (a pre-materialized data carrier driven via its already-set output_).
         [[nodiscard]] virtual pipeline_role role() const noexcept { return pipeline_role::none; }
 
         // SOURCE: fetch the next batch via an async storage round-trip
@@ -237,11 +231,8 @@ namespace components::operators {
         virtual void reset_pipeline_state() noexcept {}
 
         bool is_executed() const;
-        bool is_wait_sync_disk() const;
         bool is_root() const noexcept;
         void set_as_root() noexcept;
-
-        ptr find_waiting_operator();
 
         virtual std::pmr::memory_resource* resource() const noexcept;
         log_t& log() noexcept;
@@ -307,8 +298,6 @@ namespace components::operators {
         operator_data_ptr constraint_input_{nullptr};
 
     private:
-        virtual void on_execute_impl(pipeline::context_t* pipeline_context) = 0;
-        virtual void on_resume_impl(pipeline::context_t* pipeline_context);
         virtual void on_prepare_impl();
 
         operator_type type_;

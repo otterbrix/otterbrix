@@ -30,13 +30,6 @@ namespace components::operators {
         reset_recursive_subtree(op->right());
     }
 
-    void operator_recursive_cte_t::on_execute_impl(pipeline::context_t* /*context*/) {
-        // Defer the fixpoint to await_async_and_resume: it co_awaits run_subplan, which a
-        // synchronous on_execute_impl cannot do. Arm async_wait so the materialized drive's
-        // find_waiting_operator loop dispatches await_async_and_resume (mirrors a DML sink).
-        async_wait();
-    }
-
     actor_zeta::unique_future<void> operator_recursive_cte_t::await_async_and_resume(pipeline::context_t* ctx) {
         auto err = co_await drive_fixpoint_(ctx);
         if (err.contains_error()) {

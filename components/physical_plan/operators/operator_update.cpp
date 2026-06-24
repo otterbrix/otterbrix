@@ -157,8 +157,7 @@ namespace components::operators {
         // output_ + modified_/no_modified_, stages the matched OLD rows for the index
         // mirror (aligned by row_id with the NEW rows), and — for RETURNING — keeps
         // the matched FROM rows in lockstep so a joined RETURNING column reads them.
-        // push() calls it per LEFT batch; on_execute_impl loops the materialized left
-        // chunks through it. await_async_and_resume drains it all.
+        // push() calls it per LEFT batch. await_async_and_resume drains it all.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -272,98 +271,6 @@ namespace components::operators {
         return consume_batch_(ctx, input);
     }
 
-    void operator_update::on_execute_impl(pipeline::context_t* pipeline_context) {
-        if (left_ && left_->output() && right_ && right_->output()) {
-            // UPDATE ... FROM (materialized entry point): loop each LEFT (target)
-            // scan chunk through the SAME consume_join_batch_ core push() uses
-            // (R6: one implementation, two entry points), probing it against the
-            // materialized RIGHT (FROM) build chunks. Matching, SET application,
-            // modified_/no_modified_, the index-old staging and the lockstep FROM
-            // rows for RETURNING are identical.
-            auto* resource = left_->output()->resource();
-            const auto& left_chunks = left_->output()->chunks();
-            const auto& right_chunks = right_->output()->chunks();
-
-            std::pmr::vector<types::complex_logical_type> types_left(resource);
-            if (!left_chunks.empty()) {
-                types_left = left_chunks.front().types();
-            }
-
-            const uint64_t left_size = left_->output()->size();
-            const uint64_t right_size = right_->output()->size();
-
-            if (left_size == 0 && right_size == 0) {
-                if (upsert_) {
-                    output_ = operators::make_operator_data(resource, types_left);
-                    // upsert path: synthesise a row by running update exprs against an empty context.
-                    std::pmr::vector<types::complex_logical_type> types_right(resource);
-                    if (!right_chunks.empty()) {
-                        types_right = right_chunks.front().types();
-                    }
-                    vector::data_chunk_t empty_left(resource, types_left);
-                    vector::data_chunk_t empty_right(resource, types_right);
-                    for (const auto& expr : updates_) {
-                        expr->execute(resource,
-                                      empty_left,
-                                      empty_right,
-                                      0,
-                                      &pipeline_context->parameters,
-                                      pipeline_context->session_tz);
-                    }
-                    modified_ = operators::make_operator_write_data(resource);
-                }
-            } else {
-                for (const auto& chunk_left : left_chunks) {
-                    auto err = consume_join_batch_(pipeline_context, chunk_left, right_chunks);
-                    if (err.contains_error()) {
-                        set_error(err);
-                        return;
-                    }
-                }
-                // No matched rows: keep output_ as a typed empty result (matches the
-                // legacy "out_chunks.empty()" shape) rather than the empty accumulator.
-                if (output_ && output_->size() == 0) {
-                    output_ = operators::make_operator_data(resource, types_left, 0);
-                }
-            }
-        } else if (left_ && left_->output()) {
-            // SIMPLE predicate-scan UPDATE (no FROM): the materialized entry point.
-            // Stream each scan chunk through the SAME consume_batch_ core push()
-            // uses (R6: one implementation, two entry points), so matching, SET
-            // application, modified_/no_modified_ accumulation and index-old staging
-            // are identical.
-            auto* resource = left_->output()->resource();
-            const auto& in_chunks = left_->output()->chunks();
-            std::pmr::vector<types::complex_logical_type> types(resource);
-            if (!in_chunks.empty()) {
-                types = in_chunks.front().types();
-            }
-
-            if (left_->output()->size() == 0) {
-                if (upsert_) {
-                    output_ = operators::make_operator_data(resource, types);
-                }
-            } else {
-                for (const auto& chunk : in_chunks) {
-                    auto err = consume_batch_(pipeline_context, chunk);
-                    if (err.contains_error()) {
-                        set_error(err);
-                        return;
-                    }
-                }
-                // No matched rows: keep output_ as a typed empty result (matches the
-                // legacy "out_chunks.empty()" shape) rather than the empty accumulator.
-                if (output_ && output_->size() == 0) {
-                    output_ = operators::make_operator_data(resource, types, 0);
-                }
-            }
-        }
-
-        if (output_ && modified_ && modified_->size() > 0 && table_oid_ != components::catalog::INVALID_OID) {
-            async_wait();
-        }
-    }
-
     actor_zeta::unique_future<void> operator_update::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
@@ -458,12 +365,11 @@ namespace components::operators {
             ctx->add_pending_disk_future(std::move(dff));
         }
 
-        // 4. Mirror to index (old + new data). The SIMPLE path (consume_batch_,
-        //    whether via push() OR on_execute_impl) staged the matched OLD scan rows
-        //    into index_old_chunks_, aligned row-for-row + by row_id with the NEW
-        //    rows (out_chunk), so the mirror works when streaming leaves
-        //    left_->output() empty. The UPDATE...FROM path has no staging and reads
-        //    left_->output() as before.
+        // 4. Mirror to index (old + new data). The SIMPLE path (consume_batch_ via
+        //    push()) staged the matched OLD scan rows into index_old_chunks_, aligned
+        //    row-for-row + by row_id with the NEW rows (out_chunk), so the mirror works
+        //    when streaming leaves left_->output() empty. The UPDATE...FROM path has no
+        //    staging and reads left_->output() as before.
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             std::unique_ptr<data_chunk_t> old_data;
             if (!index_old_chunks_.empty()) {
@@ -507,7 +413,7 @@ namespace components::operators {
         // out_chunk is the merged updated-rows chunk (all table columns, in
         // table order, matching the paths resolved by validate). Split it back
         // into capacity-bounded batches and project each. Without RETURNING,
-        // output_ keeps the updated rows as set by on_execute_impl.
+        // output_ keeps the updated rows.
         // TODO: keep the updated rows batched end-to-end instead of merging in
         // data_chunk() and re-splitting here.
         if (!returning_.empty()) {

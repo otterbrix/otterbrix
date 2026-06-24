@@ -48,8 +48,6 @@ namespace components::operators {
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
-
         components::catalog::oid_t mv_oid_;
         components::catalog::oid_t namespace_oid_;
         std::vector<table::column_definition_t> columns_;

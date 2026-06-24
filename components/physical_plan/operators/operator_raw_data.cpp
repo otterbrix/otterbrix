@@ -16,8 +16,6 @@ namespace components::operators {
 
     std::pmr::memory_resource* operator_raw_data_t::resource() const noexcept { return output_->resource(); }
 
-    void operator_raw_data_t::on_execute_impl(pipeline::context_t*) {}
-
     vector::data_chunk_t operator_raw_data_t::make_drain_chunk() {
         std::pmr::vector<types::complex_logical_type> empty_types(resource());
         return vector::data_chunk_t{resource(), empty_types, 0};

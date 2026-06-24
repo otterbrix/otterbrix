@@ -10,12 +10,6 @@ namespace components::operators {
         : read_only_operator_t(resource, std::move(log), operator_type::cte_scan)
         , working_set_(working_set) {}
 
-    void operator_cte_scan_t::on_execute_impl(pipeline::context_t*) {
-        if (working_set_ && *working_set_) {
-            output_ = *working_set_;
-        }
-    }
-
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     operator_cte_scan_t::source_next(pipeline::context_t* /*ctx*/) {
         // Walk the CURRENT working set (the recursive driver repoints *working_set_ each

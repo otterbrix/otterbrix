@@ -165,8 +165,7 @@ namespace components::operators {
     }
 
     core::error_t operator_union_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
-        // Emit the union of the two MATERIALIZED sides. This mirrors on_execute_impl
-        // exactly (same emit_union_ core) — the only difference is the entry point.
+        // Emit the union of the two MATERIALIZED sides (the emit_union_ core).
         if (!left_ || !left_->output()) {
             return core::error_t::no_error();
         }
@@ -177,27 +176,6 @@ namespace components::operators {
             (right_ && right_->output()) ? right_->output()->chunks() : empty_right;
         emit_union_(res, left_chunks, right_chunks, out);
         return core::error_t::no_error();
-    }
-
-    void operator_union_t::on_execute_impl(pipeline::context_t*) {
-        // Materialized entry (sourceless sub-plans). Shares emit_union_() with the
-        // streaming finalize() path so the result is identical.
-        if (!left_ || !right_ || !left_->output() || !right_->output()) {
-            return;
-        }
-
-        auto* res = left_->output()->resource();
-        const auto& left_chunks = left_->output()->chunks();
-        const auto& right_chunks = right_->output()->chunks();
-        const auto& types = left_chunks.empty() ? right_chunks.front().types() : left_chunks.front().types();
-        chunks_vector_t out_chunks(res);
-
-        emit_union_(res, left_chunks, right_chunks, out_chunks);
-
-        if (out_chunks.empty()) {
-            out_chunks.emplace_back(res, types, 0);
-        }
-        output_ = make_operator_data(res, std::move(out_chunks));
     }
 
 } // namespace components::operators

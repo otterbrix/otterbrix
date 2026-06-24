@@ -25,8 +25,6 @@ namespace components::operators {
         , attoid_(attoid)
         , column_name_(std::move(column_name)) {}
 
-    void operator_computed_field_unregister_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void>
     operator_computed_field_unregister_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Concurrent INSERT registering same field while ALTER DROP

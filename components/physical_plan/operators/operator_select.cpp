@@ -126,8 +126,7 @@ namespace components::operators {
     void operator_select_t::add_column(select_column_t&& col) { columns_.push_back(std::move(col)); }
 
     core::error_t operator_select_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
-        // Streaming projection: apply the same per-chunk transform the legacy
-        // on_execute_impl runs over left_->output()->chunks(), but to the single
+        // Streaming projection: apply the per-chunk transform to the single
         // batch handed in via `input`. No accumulation, no read of left_->output().
         // A SELECT over a JOIN receives one merged chunk holding both sides'
         // columns, so the chunk doubles as right_input (mirrors evaluate()).
@@ -142,44 +141,6 @@ namespace components::operators {
         }
         out.emplace_back(std::move(result.value()));
         return core::error_t::no_error();
-    }
-
-    void operator_select_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        if (!left_ || !left_->output()) {
-            // No usable input. If every column is a constant or arithmetic expression
-            // (no field_ref that would require an actual row), evaluate on a virtual
-            // single-row empty chunk. Otherwise return empty — the FROM clause exists
-            // but produced no rows (e.g. a JOIN with an empty working set).
-            bool all_constant =
-                !columns_.empty() && std::all_of(columns_.begin(), columns_.end(), [](const select_column_t& col) {
-                    return col.type == select_column_t::kind::constant || col.type == select_column_t::kind::arithmetic;
-                });
-            if (all_constant) {
-                std::pmr::vector<types::complex_logical_type> empty_types(resource_);
-                vector::data_chunk_t virtual_input(resource_, empty_types, 1);
-                virtual_input.set_cardinality(1);
-                auto result = evaluate(pipeline_context, virtual_input);
-                output_ = operators::make_operator_data(resource_, std::move(result));
-            }
-            return;
-        }
-
-        auto* resource = left_->output()->resource();
-        auto& in_chunks = left_->output()->chunks();
-        chunks_vector_t out_chunks(resource);
-        out_chunks.reserve(in_chunks.size());
-        for (auto& input : in_chunks) {
-            auto result = evaluate(pipeline_context, input);
-            if (has_error()) {
-                return;
-            }
-            out_chunks.emplace_back(std::move(result));
-        }
-        if (out_chunks.empty()) {
-            std::pmr::vector<types::complex_logical_type> empty_types(resource);
-            out_chunks.emplace_back(resource, empty_types, 0);
-        }
-        output_ = operators::make_operator_data(resource, std::move(out_chunks));
     }
 
     core::result_wrapper_t<vector::data_chunk_t> evaluate_projection(std::pmr::memory_resource* resource,

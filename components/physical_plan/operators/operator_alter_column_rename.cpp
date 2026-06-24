@@ -28,8 +28,6 @@ namespace components::operators {
         , old_name_(std::move(old_name))
         , new_name_(std::move(new_name)) {}
 
-    void operator_alter_column_rename_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_alter_column_rename_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
         constexpr catalog::oid_t pg_attr = catalog::well_known_oid::pg_attribute_table;

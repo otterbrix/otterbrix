@@ -36,8 +36,6 @@ namespace components::operators {
         output_schema_.emplace_back(types::logical_type::UINTEGER);
     }
 
-    void operator_resolve_constraint_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_resolve_constraint_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgConstraint = catalog::well_known_oid::pg_constraint_table;
         constexpr catalog::oid_t kPgAttribute = catalog::well_known_oid::pg_attribute_table;

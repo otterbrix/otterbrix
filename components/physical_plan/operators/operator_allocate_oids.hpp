@@ -24,15 +24,12 @@ namespace components::operators {
 
         // Sourceless SINK leaf (no data pipeline, no children): the single
         // allocate_oids_batch round-trip to the disk actor + the node stamp run in
-        // await_async_and_resume (on_execute_impl is a pure async_wait()). The
-        // executor admits it as a streaming sink-root and drives await_async_and_resume
-        // via the bottom-up needs_async_finalize pass; replaces the legacy
-        // allocate_oids_inline on_execute + find_waiting_operator drive loop.
+        // await_async_and_resume. The executor admits it as a streaming sink-root and
+        // drives await_async_and_resume via the bottom-up needs_async_finalize pass.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         std::size_t count_;

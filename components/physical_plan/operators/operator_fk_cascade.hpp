@@ -22,7 +22,7 @@ namespace components::operators {
         // delete commits first (snapshotting the matched OLD rows into
         // constraint_input_), then this fk_cascade reads them to find / mutate the
         // referencing child rows. push()/finalize() are no-ops (no streaming input of
-        // its own). on_execute_impl stays the materialized entry point — same cascade.
+        // its own).
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -37,7 +37,6 @@ namespace components::operators {
         }
 
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         catalog::fk_info_t fk_;

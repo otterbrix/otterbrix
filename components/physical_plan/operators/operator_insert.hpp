@@ -54,8 +54,6 @@ namespace components::operators {
         bool has_resolved_metadata() const noexcept { return resolved_metadata_.has_value(); }
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
-
         catalog::oid_t table_oid_;
         std::optional<resolved_table_metadata_t> resolved_metadata_;
         std::pmr::vector<select_column_t> returning_;

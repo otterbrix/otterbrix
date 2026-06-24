@@ -540,13 +540,13 @@ namespace services::dispatcher {
 
         op->prepare();
         // operator_register_udf_t is a sourceless sink (role()==sink,
-        // needs_async_finalize()==true): on_execute_impl is a pure async_wait() and
-        // ALL work — the conflict read, default-registry mirror, pg_proc/pg_depend
-        // writes — lives in await_async_and_resume. The dispatcher is a DIFFERENT
+        // needs_async_finalize()==true): ALL work — the conflict read, default-registry
+        // mirror, pg_proc/pg_depend writes — runs in await_async_and_resume (the
+        // executor's bottom-up async-finalize pass). The dispatcher is a DIFFERENT
         // actor than the executor, so it cannot call drive_subplan_; the minimal
         // correct drive for a sourceless-sink leaf is a single direct
         // await_async_and_resume (the executor's execute_pipeline does exactly this
-        // in its bottom-up async-finalize pass). No on_execute / find_waiting_operator.
+        // in its bottom-up async-finalize pass).
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
             auto futures = pctx.take_pending_disk_futures();
@@ -597,13 +597,13 @@ namespace services::dispatcher {
 
         op->prepare();
         // operator_unregister_udf_t is a sourceless sink (role()==sink,
-        // needs_async_finalize()==true): on_execute_impl is a pure async_wait() and
-        // ALL work — the registry existence-check + overload drop, the pg_proc/
-        // pg_depend purge — lives in await_async_and_resume. The dispatcher is a
+        // needs_async_finalize()==true): ALL work — the registry existence-check +
+        // overload drop, the pg_proc/pg_depend purge — runs in await_async_and_resume
+        // (the executor's bottom-up async-finalize pass). The dispatcher is a
         // DIFFERENT actor than the executor, so it cannot call drive_subplan_; the
         // minimal correct drive for a sourceless-sink leaf is a single direct
         // await_async_and_resume (mirrors execute_pipeline's bottom-up async-finalize
-        // pass). No on_execute / find_waiting_operator.
+        // pass).
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
             auto futures = pctx.take_pending_disk_futures();

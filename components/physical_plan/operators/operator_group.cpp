@@ -721,59 +721,6 @@ namespace components::operators {
         return result;
     }
 
-    void operator_group_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        if (left_ && left_->output()) {
-            auto in = left_->output();
-            auto& in_chunks = in->chunks();
-
-            for (auto& chunk : in_chunks) {
-                auto err = accumulate(pipeline_context, chunk);
-                if (err.contains_error()) {
-                    set_error(err);
-                    return;
-                }
-            }
-            auto result = materialize_groups(pipeline_context);
-            if (has_error()) {
-                return;
-            }
-
-            // Output. SELECT-order column reordering is handled by the downstream
-            // operator_select_t (PR #479). Group emits columns in internal order.
-            output_ = operators::make_operator_data(in->resource(), std::move(result));
-            output_ = operators::split_large_output(in->resource(), std::move(output_));
-        } else if (keys_.empty() && !values_.empty()) {
-            auto result = empty_aggregate_result(pipeline_context);
-            if (has_error()) {
-                return;
-            }
-            output_ = operators::make_operator_data(resource_, std::move(result));
-        } else if (!computed_columns_.empty()) {
-            // Constants-only query (no FROM clause): evaluate arithmetic on a virtual single row
-            std::pmr::vector<types::complex_logical_type> empty_types(resource_);
-            vector::data_chunk_t chunk(resource_, empty_types, 1);
-            chunk.set_cardinality(1);
-
-            for (auto& comp : computed_columns_) {
-                auto result_vec = evaluate_arithmetic(resource_,
-                                                      comp.op,
-                                                      comp.operands,
-                                                      chunk,
-                                                      pipeline_context->parameters,
-                                                      pipeline_context->session_tz);
-                if (result_vec.has_error()) {
-                    set_error(result_vec.error());
-                    return;
-                }
-                result_vec.value().set_type_alias(std::string(comp.alias));
-                chunk.data.emplace_back(std::move(result_vec.value()));
-            }
-
-            output_ = operators::make_operator_data(resource_, std::move(chunk));
-        }
-    }
-
-
     void operator_group_t::calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result) {
         auto num_groups = result.size();
         result.data.reserve(result.data.size() + post_aggregates_.size());
@@ -1009,8 +956,8 @@ namespace components::operators {
             return core::error_t::no_error();
         }
 
-        // No input rows were pushed (source drained immediately). Mirror the
-        // no-left-output branches of on_execute_impl.
+        // No input rows were pushed (source drained immediately): the
+        // no-left-output branches.
         if (keys_.empty() && !values_.empty()) {
             // Global aggregate over empty input — e.g. SELECT COUNT(*) FROM empty.
             auto result = empty_aggregate_result(ctx);

@@ -65,6 +65,8 @@ namespace services::collection::executor {
     uint64_t streaming_pipeline_runs() noexcept { return g_streaming_pipeline_runs.load(std::memory_order_relaxed); }
     void reset_streaming_pipeline_runs() noexcept { g_streaming_pipeline_runs.store(0, std::memory_order_relaxed); }
 
+    // Permanently zero: the legacy materialized execution path is deleted, so nothing
+    // bumps g_materialized_plan_runs. Kept only as a guard for the deletion-gate test.
     uint64_t materialized_plan_runs() noexcept { return g_materialized_plan_runs.load(std::memory_order_relaxed); }
     void reset_materialized_plan_runs() noexcept { g_materialized_plan_runs.store(0, std::memory_order_relaxed); }
 #endif
@@ -1170,8 +1172,7 @@ namespace services::collection::executor {
                 // needs_async_finalize()==true): drive it through the SAME streaming
                 // seam every other sub-plan uses — execute_pipeline drives its
                 // await_async_and_resume (the allocate_oids_batch round-trip + node
-                // stamp) via the bottom-up async-finalize pass. Replaces the legacy
-                // on_execute + find_waiting_operator inline drive loop.
+                // stamp) via the executor's bottom-up async-finalize pass.
                 auto drive_err = co_await drive_subplan_(op, &pctx);
                 if (drive_err.contains_error()) {
                     co_return std::vector<components::catalog::oid_t>{};
@@ -1784,55 +1785,6 @@ namespace services::collection::executor {
         return plan_t{std::move(sub_plans), &parameters, std::move(context_storage)};
     }
 
-    // Routing seam between the two operator entry points (R6 design intent — this
-    // is NOT a transitional fallback). A sub-plan whose whole left-chain is
-    // pipeline-capable and bottoms out in a scan SOURCE runs through the push-based
-    // STREAMING path (execute_pipeline below): operators' push()/finalize() fold one
-    // batch at a time into bounded sink state. A sub-plan that is NOT a streaming
-    // pipeline — a genuinely SOURCELESS shape with no scan source (raw_data joins,
-    // recursive-CTE working sets, no-FROM SELECT) — runs through the MATERIALIZED
-    // path (plan->on_execute -> each operator's on_execute_impl). Both entry points
-    // route through the SAME per-operator build/probe/accumulate core, so they
-    // produce identical results: two entry points to one implementation for two plan
-    // shapes, not a dual divergent path.
-    bool executor_t::is_streaming_pipeline(const components::operators::operator_ptr& root) noexcept {
-        namespace ops = components::operators;
-        const ops::operator_t* deepest = nullptr;
-        for (const ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
-            if (op->role() == ops::pipeline_role::none) {
-                return false; // an unconverted operator on the chain -> legacy materialize path
-            }
-            deepest = op;
-        }
-        if (deepest == nullptr) {
-            return false;
-        }
-        // Normal case: the chain bottom is a scan SOURCE the pump pulls batches from.
-        if (deepest->role() == ops::pipeline_role::source) {
-            return true;
-        }
-        // SOURCELESS SINK BOTTOM: the chain bottom is a sourceless sink (no left
-        // child). There is no scan source to pump; execute_pipeline drives the
-        // bottom sink's await_async_and_resume FIRST (its commit / fixpoint), then
-        // streams any rows it PRODUCES (output_) UP through the ancestors, then
-        // FLUSHes + async-finalizes those ancestors BOTTOM-UP. This admits
-        //   - a single leaf DDL/txn sink (create_collection, set_timezone,
-        //     begin_transaction, resolve_*) — no ancestors, a pure async commit;
-        //   - a multi-node all-sink async chain with sink(s) ABOVE the sourceless
-        //     bottom: CREATE INDEX = [backfill(root) -> metadata(left leaf)], and a
-        //     multi-resolve front-pass = [resolve_table(root) -> resolve_ns(leaf)];
-        // and now also
-        //   - a PRODUCING sourceless sink with STREAMING/sink ancestors: a top-level
-        //     WITH RECURSIVE lowers to [select -> sort -> match -> recursive_cte],
-        //     where recursive_cte (the bottom) produces its rows in
-        //     await_async_and_resume and they must flow UP through match/sort/select.
-        // The old all_sink restriction is therefore dropped: a streaming op ABOVE the
-        // sourceless bottom is fine because execute_pipeline drives the bottom's
-        // producing await BEFORE the pump, so the streaming ancestors DO have input
-        // to transform.
-        return deepest->role() == ops::pipeline_role::sink && deepest->left() == nullptr;
-    }
-
     executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
     executor_t::execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
         namespace ops = components::operators;
@@ -1859,12 +1811,11 @@ namespace services::collection::executor {
         // SOURCELESS SINK BOTTOM: a DDL/txn/catalog-read operator (create_collection,
         // set_timezone, begin_transaction, resolve_*, ...) OR a producing recursive_cte
         // lowers to a sink whose chain bottom has no left child — no scan source.
-        // is_streaming_pipeline admits the single-leaf shape, a multi-node all-sink
+        // The streaming executor admits the single-leaf shape, a multi-node all-sink
         // chain (CREATE INDEX = backfill->metadata; a multi-resolve front-pass =
         // resolve_table->resolve_namespace), AND a PRODUCING bottom with streaming/sink
         // ancestors (top-level WITH RECURSIVE = [select -> sort -> match ->
-        // recursive_cte]). is_streaming_pipeline admits these so the on_execute legacy
-        // path can be retired. For ALL of them the bottom sink's entire effect lives in
+        // recursive_cte]). For ALL of them the bottom sink's entire effect lives in
         // its await_async_and_resume (a cross-actor commit and/or the fixpoint that
         // PRODUCES output_), which the dedicated block below drives FIRST — so chain[0]
         // is handled there, not in the [op_start, end) FLUSH/async-finalize passes.
@@ -1924,7 +1875,7 @@ namespace services::collection::executor {
             // pump its rows up. (A bare DDL/txn leaf, an all-sink CREATE INDEX chain,
             // and a producing recursive_cte all share this: their work is the await,
             // not a push-fed finalize.) Drive it here, deepest-first — exactly the
-            // commit the legacy on_execute / find_waiting_operator loop drove — so the
+            // commit the executor's bottom-up async-finalize pass drives — so the
             // FLUSH/async-finalize passes below operate only on the ANCESTORS.
             if (chain.front()->needs_async_finalize()) {
                 co_await chain.front()->await_async_and_resume(ctx);
@@ -2075,68 +2026,26 @@ namespace services::collection::executor {
 
     executor_t::unique_future<core::error_t>
     executor_t::drive_subplan_(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
-        // THE routing seam, extracted so execute_sub_plan_ and run_subplan share
-        // one implementation (no duplication; behavior identical to the inline
-        // drive execute_sub_plan_ used before). The caller has already prepared
-        // `root`. Streaming pipeline -> execute_pipeline (bounded memory); every
-        // other shape -> materialized on_execute + async-await loop. Both reach the
-        // SAME per-operator core (see is_streaming_pipeline).
-        if (is_streaming_pipeline(root)) {
-            // Build sides (join RIGHT children) must be materialized before the pump.
-            // The top-level flow gets them from traverse_plan_'s sub-plan split; a
-            // single-root run_subplan (recursive-CTE term) does not, so materialize them
-            // here. No-op when already executed (the split flow).
-            auto build_err = co_await materialize_build_sides_(root, ctx);
-            if (build_err.contains_error()) {
-                co_return build_err;
-            }
-            auto piped = co_await execute_pipeline(root, ctx);
-            if (piped.has_error()) {
-                co_return piped.error();
-            }
-            if (!root->is_executed()) { // a DML sink already set output_ + executed in execute_pipeline
-                root->set_output(components::operators::make_operator_data(resource(), std::move(piped.value())));
-                root->mark_executed();
-            }
+        // THE single drive seam, shared by execute_sub_plan_ and run_subplan (no
+        // duplication). The caller has already prepared `root`. EVERY reachable plan
+        // streams through execute_pipeline (bounded memory): the producing-sourceless-
+        // sink-bottom shape is supported, so the legacy materialized execution path is
+        // gone. Build sides (join RIGHT children) must be materialized before the pump:
+        // the top-level flow gets them from traverse_plan_'s sub-plan split; a single-
+        // root run_subplan (recursive-CTE term) does not, so materialize them here. No-op
+        // when already executed (the split flow).
+        auto build_err = co_await materialize_build_sides_(root, ctx);
+        if (build_err.contains_error()) {
+            co_return build_err;
         }
-#ifdef DEV_MODE
-        else {
-            // Test-observable: this sub-plan fell to the LEGACY materialize path
-            // (on_execute + the await loop below). Symmetric to the bump
-            // execute_pipeline does for the streaming path (see materialized_plan_runs).
-            g_materialized_plan_runs.fetch_add(1, std::memory_order_relaxed);
+        auto piped = co_await execute_pipeline(root, ctx);
+        if (piped.has_error()) {
+            co_return piped.error();
         }
-#endif
-
-        // Execute the plan tree (scan operators send I/O requests and enter waiting state)
-        root->on_execute(ctx);
-        if (root->has_error()) {
-            co_return root->get_error();
+        if (!root->is_executed()) { // a DML sink already set output_ + executed in execute_pipeline
+            root->set_output(components::operators::make_operator_data(resource(), std::move(piped.value())));
+            root->mark_executed();
         }
-
-        // Await all waiting operators (multiple scans in a join, etc.)
-        while (!root->is_executed()) {
-            auto waiting_op = root->find_waiting_operator();
-            if (!waiting_op) {
-                error(log_, "Plan not executed and no waiting operator! plan type: {}", static_cast<int>(root->type()));
-                assert(root->has_error());
-                co_return root->get_error();
-            }
-            trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
-            // DML operators (insert/remove/update) self-contain
-            // WAL + storage + index I/O inside their await_async_and_resume.
-            // Every operator is dispatched uniformly via the same coroutine entry point.
-            co_await waiting_op->await_async_and_resume(ctx);
-            // Propagate errors set during async resume (fk_check, fk_cascade,
-            // DML on disk failure, etc.)
-            if (waiting_op->has_error()) {
-                co_return waiting_op->get_error();
-            }
-            trace(log_, "executor: after await completed");
-            // Re-execute: completed scan allows parent to proceed, may find next waiting scan
-            root->on_execute(ctx);
-        }
-
         // Detect errors set asynchronously in operators (e.g. fk_cascade root with RESTRICT).
         if (root->has_error()) {
             co_return root->get_error();
@@ -2221,12 +2130,9 @@ namespace services::collection::executor {
             // Prepare the operator tree (connects children in aggregation, etc.)
             plan->prepare();
 
-            // Drive the sub-plan to completion through the shared routing seam
-            // (streaming via execute_pipeline when is_streaming_pipeline, else the
-            // materialized on_execute + async-await loop). On success `plan` is
-            // executed with output_ set; the switch below reads plan->output().
-            // Both entry points reach the SAME per-operator core — the R6
-            // single-implementation routing seam, not a transitional fallback.
+            // Drive the sub-plan to completion through the shared streaming seam
+            // (drive_subplan_ -> execute_pipeline). On success `plan` is executed with
+            // output_ set; the switch below reads plan->output().
             {
                 auto drive_err = co_await drive_subplan_(plan, &pipeline_context);
                 if (drive_err.contains_error()) {

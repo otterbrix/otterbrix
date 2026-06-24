@@ -40,9 +40,8 @@ namespace components::operators {
         // placeholder column (so it is not the 0-column drain sentinel), then drains.
         // The downstream operator_select_t projects its constant/arithmetic columns over
         // that one row — those columns ignore input columns, so the placeholder is inert —
-        // yielding exactly the single constants row the legacy virtual-row path produced
-        // (operator_select_t::on_execute_impl's all_constant branch). role() is therefore
-        // unconditionally source.
+        // yielding exactly the single constants row the legacy virtual-row path produced.
+        // role() is therefore unconditionally source.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
@@ -60,8 +59,6 @@ namespace components::operators {
         }
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
-
         // Projected empty chunk (drained sentinel) carrying the table schema, so a downstream OUTER
         // join can NULL-pad and a scalar aggregate can emit COUNT=0.
         vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);

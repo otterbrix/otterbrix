@@ -29,10 +29,6 @@ namespace components::operators::aggregate {
         }
     }
 
-    void operator_aggregate_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        run_aggregation(pipeline_context);
-    }
-
     void operator_aggregate_t::compute(pipeline::context_t* ctx, const operator_ptr& source_batch) {
         clear();
         set_children(source_batch);
@@ -128,8 +124,8 @@ namespace components::operators::aggregate {
     core::error_t operator_aggregate_t::finalize_via_legacy(pipeline::context_t* ctx,
                                                             chunks_vector_t&& in_chunks,
                                                             chunks_vector_t& out) {
-        // Run the EXACT scalar aggregation the legacy on_execute_impl runs, sourcing
-        // rows from the buffered batches. operator_empty_t (not operator_type::batch)
+        // Run the EXACT scalar aggregation, sourcing rows from the buffered batches.
+        // operator_empty_t (not operator_type::batch)
         // drives run_aggregation down the scalar aggregate_impl path, which reads
         // left_->output()->data_chunk() — the concatenation of every chunk — so the
         // result is identical to materializing the whole input first.

@@ -33,20 +33,18 @@ namespace components::operators {
         // SINK with an async commit. INSERT-into-relkind='g' lowers to
         // sequence_t(insert, register) → the left-chain register(root) -> insert ->
         // <scan/values source> (see create_plan_sequence). The chain bottom is the
-        // INSERT's data source, so is_streaming_pipeline admits it the normal way;
-        // the executor folds the rows through insert.push() (which emits nothing) and
-        // then drives insert.await then register.await BOTTOM-UP via the
-        // needs_async_finalize pass. register.push() is therefore never reached (its
-        // predicate insert produces no chunks). await_async_and_resume propagates
-        // left_->output() (the INSERT affected-row count, set by insert.await running
-        // first) into output_ so the cursor reports the right count, then commits the
-        // pg_computed_column rows. push()/finalize() inherit the no-op defaults.
-        // Replaces the legacy on_execute + find_waiting_operator drive.
+        // INSERT's data source, so the executor admits it the normal way; it folds
+        // the rows through insert.push() (which emits nothing) and then drives
+        // insert.await then register.await BOTTOM-UP via the needs_async_finalize
+        // pass. register.push() is therefore never reached (its predicate insert
+        // produces no chunks). await_async_and_resume propagates left_->output() (the
+        // INSERT affected-row count, set by insert.await running first) into output_
+        // so the cursor reports the right count, then commits the pg_computed_column
+        // rows. push()/finalize() inherit the no-op defaults.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         components::catalog::oid_t table_oid_;

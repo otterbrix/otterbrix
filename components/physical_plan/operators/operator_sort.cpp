@@ -28,9 +28,8 @@ namespace components::operators {
     }
 
     core::error_t operator_sort_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
-        // Upstream is drained; run the same Phase 1 / Phase 2 logic the legacy
-        // on_execute_impl runs over left_->output()->chunks(), but sourcing the
-        // accumulated buffer and writing into the pipeline sink `out`.
+        // Upstream is drained; run the Phase 1 / Phase 2 logic over the accumulated
+        // buffer, writing into the pipeline sink `out`.
         return sort_merge(ctx, buffered_input_, out);
     }
 
@@ -175,23 +174,6 @@ namespace components::operators {
             out_chunks.emplace_back(resource_, out_types, 0);
         }
         return core::error_t::no_error();
-    }
-
-    void operator_sort_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        // Legacy materialize path (removed in phase E). Source from the
-        // already-materialized left output and stash the merged chunks into
-        // output_; shares the Phase 1 / Phase 2 core with the streaming sink.
-        if (!left_ || !left_->output()) {
-            return;
-        }
-        auto in = left_->output();
-        chunks_vector_t out_chunks(resource_);
-        auto err = sort_merge(pipeline_context, in->chunks(), out_chunks);
-        if (err.contains_error()) {
-            set_error(std::move(err));
-            return;
-        }
-        output_ = operators::make_operator_data(in->resource(), std::move(out_chunks));
     }
 
 } // namespace components::operators

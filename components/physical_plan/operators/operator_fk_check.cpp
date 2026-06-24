@@ -41,7 +41,7 @@ namespace components::operators {
         // result cursor (executor reads plan->output() in the is_root default case).
         // Surface the DML child's final result: its RETURNING projection
         // (column_count > 0) when present, else the raw written rows so the cursor
-        // reports the affected-row count — matching the legacy on_execute resolution.
+        // reports the affected-row count.
         const operator_data_ptr& resolve_cursor_output(const operator_ptr& left,
                                                        const operator_data_ptr& validation_source) {
             if (left->output() && left->output()->data_chunk().column_count() > 0) {
@@ -51,22 +51,9 @@ namespace components::operators {
         }
     } // namespace
 
-    void operator_fk_check_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        if (!left_)
-            return;
-        // Materialized entry point: resolve the validation source (the DML's
-        // snapshot, or the legacy fallbacks) and defer to the async step. output_ is
-        // (re)assigned to the cursor result in await_async_and_resume.
-        output_ = resolve_fk_check_source(left_);
-        if (output_ && output_->size() > 0) {
-            async_wait();
-        }
-    }
-
     actor_zeta::unique_future<void> operator_fk_check_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Streaming drive does not run on_execute_impl (the executor marks the root
-        // executed after the pump), so resolve the source here directly. Materialized
-        // callers set output_ in on_execute_impl to the same source.
+        // Resolve the source here directly in await_async_and_resume (the executor
+        // marks the root executed after the pump).
         const auto& source = resolve_fk_check_source(left_);
         if (!source || source->size() == 0) {
             // Nothing to validate; still surface the DML result as the cursor.

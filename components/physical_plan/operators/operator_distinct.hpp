@@ -10,8 +10,7 @@ namespace components::operators {
     // SELECT DISTINCT. A SINK on its single (LEFT) input: rows arrive batch-by-batch
     // through push(), the first occurrence of each distinct row is retained, and the
     // unique rows are emitted in input order at finalize(). The seen-set and the
-    // emission share emit_distinct_() with the materialized on_execute_impl entry,
-    // so both produce identical output.
+    // emission go through emit_distinct_().
     class operator_distinct_t final : public read_only_operator_t {
     public:
         operator_distinct_t(std::pmr::memory_resource* resource, log_t log);
@@ -28,8 +27,6 @@ namespace components::operators {
         // first occurrence of a row anywhere in the stream wins. Survives until
         // finalize().
         std::unordered_set<std::string> seen_;
-
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         // The shared dedup core: for each row of each chunk, build the all-column
         // identity key, and on first occurrence copy the row into `out` (chunks of

@@ -77,12 +77,6 @@ namespace components::operators {
         build_output_schema(output_schema_);
     }
 
-    void operator_resolve_table_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // All catalog reads are async: defer to await_async_and_resume so the
-        // executor can co_await on the disk-actor message chain.
-        async_wait();
-    }
-
     actor_zeta::unique_future<void> operator_resolve_table_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t kPgAttribute = catalog::well_known_oid::pg_attribute_table;

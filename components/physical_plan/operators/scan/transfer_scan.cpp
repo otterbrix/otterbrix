@@ -16,12 +16,6 @@ namespace components::operators {
         , limit_(limit)
         , projected_cols_(std::move(projected_cols)) {}
 
-    void transfer_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (table_oid_ == components::catalog::INVALID_OID)
-            return;
-        async_wait();
-    }
-
     actor_zeta::unique_future<void> transfer_scan::await_async_and_resume(pipeline::context_t* ctx) {
         int64_t offset_val = limit_.offset();
         int64_t limit_val = limit_.limit();

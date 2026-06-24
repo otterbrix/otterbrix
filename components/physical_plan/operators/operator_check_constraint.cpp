@@ -221,11 +221,6 @@ namespace components::operators {
         }
     }
 
-    void operator_check_constraint_t::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        // Materialized entry point: same validation as the streaming async step.
-        validate_();
-    }
-
     actor_zeta::unique_future<void> operator_check_constraint_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
         // SYNCHRONOUS validation routed through the async-finalize drive so it runs
         // AFTER the DML child's await (which snapshots the written rows into

@@ -131,23 +131,4 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
-    void operator_distinct_t::on_execute_impl(pipeline::context_t*) {
-        // Materialized entry (sourceless sub-plans). Shares emit_distinct_() with the
-        // streaming push() path so the result is identical.
-        if (!left_ || !left_->output()) {
-            return;
-        }
-        seen_.clear();
-        auto* res = left_->output()->resource();
-        const auto& chunks = left_->output()->chunks();
-        chunks_vector_t out_chunks(res);
-        emit_distinct_(res, chunks, out_chunks);
-
-        if (out_chunks.empty()) {
-            const auto& types = left_->output()->data_chunk().types();
-            out_chunks.emplace_back(res, types, 0);
-        }
-        output_ = operators::make_operator_data(res, std::move(out_chunks));
-    }
-
 } // namespace components::operators

@@ -95,7 +95,7 @@ namespace components::operators {
         std::vector<size_t> indices_left_;
         std::vector<size_t> indices_right_;
 
-        // --- Build/probe state (push + on_execute_impl share this) ---
+        // --- Build/probe state (shared by push) ---
         bool index_built_{false};
         hash_join_detail::right_index_t right_index_{resource_};
         std::pmr::vector<types::complex_logical_type> res_types_{resource_};
@@ -106,14 +106,6 @@ namespace components::operators {
         // marker branch-free. Unmatched build rows are NULL-padded at finalize().
         std::pmr::vector<uint8_t> build_matched_{resource_};
         std::pmr::vector<uint64_t> build_chunk_offsets_{resource_};
-
-        // Design intent (NOT an R6 transitional fallback): push()/finalize() =
-        // streaming path (sourced pipelines); on_execute_impl = materialized path
-        // for sourceless sub-plans (raw_data joins / recursive-CTE working sets /
-        // no-FROM SELECT) that have no streaming probe source. Both route through
-        // the SAME build_index_() + probe_batch_() + emit_unmatched_build_() core —
-        // two entry points to one implementation for two plan shapes.
-        void on_execute_impl(pipeline::context_t* context) override;
 
         // Build the hash+verify index over the materialized build (right) chunks.
         // NULL build keys are skipped — they never join under SQL equi-join

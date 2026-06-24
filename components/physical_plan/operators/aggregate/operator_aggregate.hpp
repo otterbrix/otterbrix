@@ -13,13 +13,10 @@ namespace components::operators::aggregate {
         compute::datum_t take_batch_values();
 
         // Synchronous per-group aggregation entry point for operator_group_t.
-        // operator_func_t aggregation is pure-CPU (no async_wait / await / cross-actor
-        // send), so the legacy on_execute() drive is unnecessary: this clears prior
-        // state, wires `source_batch` as the input child, and runs the SAME
-        // run_aggregation core on_execute_impl reaches — minus the on_execute
-        // recursion/state machinery (left_ is an already-executed operator_batch_t,
-        // so on_execute's child-drive is a no-op anyway). Read has_error() /
-        // take_batch_values() afterwards exactly as before.
+        // operator_func_t aggregation is pure-CPU (no await / cross-actor send):
+        // this clears prior state, wires `source_batch` as the input child
+        // (an already-executed operator_batch_t), and runs the run_aggregation
+        // core. Read has_error() / take_batch_values() afterwards.
         void compute(pipeline::context_t* ctx, const operator_ptr& source_batch);
 
         // --- Push-based streaming pipeline (STEP 3 / phase C) ---
@@ -37,8 +34,9 @@ namespace components::operators::aggregate {
         // non-builtin func) fall back to running the legacy scalar aggregate_impl
         // over a buffered input — O(rows) only for those inputs, never for the
         // common SUM/MIN/MAX/COUNT/AVG-over-a-numeric-column case the fast path
-        // owns. The legacy on_execute_impl materialize path stays intact (it is
-        // still driven by operator_group's per-group aggregator calls).
+        // owns. The synchronous aggregation core (compute()/run_aggregation)
+        // stays intact (it is still driven by operator_group's per-group
+        // aggregator calls).
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
@@ -112,21 +110,13 @@ namespace components::operators::aggregate {
         // result row into `out` (fallback + empty-table guard).
         core::error_t finalize_via_legacy(pipeline::context_t* ctx, chunks_vector_t&& in_chunks, chunks_vector_t& out);
 
-        // Shared dispatch between the on_execute_impl materialized path and
-        // finalize(): selects the batch vs scalar aggregation depending on the
-        // source child's type and stamps batch_results_/aggregate_result_. The
-        // source child is already wired as left_ by the caller. finalize_via_legacy
-        // routes the fallback/empty-table cases here too, so both entry points
-        // reach the same aggregate_impl/aggregate_batch_impl core.
+        // Shared dispatch reached by compute() and finalize(): selects the batch
+        // vs scalar aggregation depending on the source child's type and stamps
+        // batch_results_/aggregate_result_. The source child is already wired as
+        // left_ by the caller. finalize_via_legacy routes the fallback/empty-table
+        // cases here too, so every caller reaches the same
+        // aggregate_impl/aggregate_batch_impl core.
         void run_aggregation(pipeline::context_t* pipeline_context);
-
-        // Design intent (NOT an R6 transitional fallback): push()/finalize() =
-        // streaming path (sourced pipelines); on_execute_impl = materialized path
-        // for sourceless sub-plans (raw_data / recursive-CTE working sets / no-FROM
-        // SELECT) AND for operator_group's per-group aggregator calls. Both route
-        // through the SAME run_aggregation core — two entry points to one
-        // implementation for two plan shapes.
-        void on_execute_impl(pipeline::context_t* pipeline_context) final;
     };
 
     using operator_aggregate_ptr = boost::intrusive_ptr<operator_aggregate_t>;

@@ -25,8 +25,6 @@ namespace components::operators {
         , catalog_writes_(std::move(catalog_writes))
         , body_op_(std::move(body_op)) {}
 
-    void operator_create_matview_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_create_matview_t::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 

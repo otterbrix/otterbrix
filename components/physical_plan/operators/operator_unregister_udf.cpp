@@ -21,8 +21,6 @@ namespace components::operators {
         , function_name_(std::move(function_name))
         , inputs_(std::move(inputs)) {}
 
-    void operator_unregister_udf_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;
 

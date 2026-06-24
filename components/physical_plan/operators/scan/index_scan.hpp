@@ -63,8 +63,6 @@ namespace components::operators {
         }
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
-
         // Shared windowing core (Rule 6: ONE implementation for source_next and the materialized
         // await_async_and_resume). Run the one-shot index search (txn-aware visibility), store the
         // matched ids in row_ids_vec_, and compute the OFFSET/LIMIT window [pos_=start_, end_).

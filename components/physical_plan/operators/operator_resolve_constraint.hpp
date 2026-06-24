@@ -42,18 +42,16 @@ namespace components::operators {
         // Sourceless SINK leaf (catalog read, no data pipeline, no children). Unlike
         // the other resolve operators this one emits NO rows — its whole effect is
         // stamping fks()/check_exprs() onto the back-pointed logical node (read later
-        // via plan_resolve_index). is_streaming_pipeline admits the resolve front-pass
-        // as an all-sink chain and drives await_async_and_resume via the bottom-up
+        // via plan_resolve_index). The executor admits the resolve front-pass as an
+        // all-sink chain and drives await_async_and_resume via the bottom-up
         // needs_async_finalize pass, deepest-first: the prerequisite resolve_table
         // (its left in the chain) commits + stamps table_oid BEFORE this operator
-        // reads target_node_->target()->resolved_metadata()->table_oid, exactly as
-        // the legacy left-first on_execute drive did. push()/finalize() inherit the
-        // no-op defaults. Replaces the legacy on_execute drive.
+        // reads target_node_->target()->resolved_metadata()->table_oid.
+        // push()/finalize() inherit the no-op defaults.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         components::logical_plan::node_catalog_resolve_t* target_node_{nullptr};

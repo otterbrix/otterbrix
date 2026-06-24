@@ -31,8 +31,6 @@ namespace components::operators {
         , index_oid_(index_oid)
         , indkey_(std::move(indkey)) {}
 
-    void operator_create_index_backfill_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_create_index_backfill_t::await_async_and_resume(pipeline::context_t* ctx) {
         // No-op when there is no index actor wired (e.g. some test harnesses).
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {

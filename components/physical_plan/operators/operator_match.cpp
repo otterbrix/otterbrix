@@ -78,12 +78,11 @@ namespace components::operators {
 
     // Shared filter core (R6): filter ONE chunk through the predicate + projection,
     // advancing the caller-owned LIMIT/OFFSET running counter `limit_total` across
-    // batches, and append the surviving-rows chunk to `out`. Called by BOTH
-    // on_execute_impl (per materialized chunk, LOCAL counter) and push() (per streamed
-    // batch, MEMBER counter), so the two entry points produce identical output. The
-    // predicate compares chunk against itself (single-input filter), surviving rows
-    // carry their absolute row_id, and only populated (non-placeholder) columns are
-    // copied — exactly as the prior single-loop implementation did.
+    // batches, and append the surviving-rows chunk to `out`. Called by push() (per
+    // streamed batch, MEMBER counter). The predicate compares chunk against itself
+    // (single-input filter), surviving rows carry their absolute row_id, and only
+    // populated (non-placeholder) columns are copied — exactly as the prior single-loop
+    // implementation did.
     core::error_t operator_match_t::filter_batch_(std::pmr::memory_resource* resource,
                                                   predicates::predicate_ptr& predicate,
                                                   const std::vector<size_t>& populated_cols,
@@ -139,13 +138,12 @@ namespace components::operators {
     }
 
     core::error_t operator_match_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
-        // Streaming filter: run the SAME per-chunk filter+projection that
-        // on_execute_impl runs over left_->output()->chunks(), but on the single batch
+        // Streaming filter: run the per-chunk filter+projection on the single batch
         // handed in via `input`. The predicate + projection metadata depend only on the
         // (stable) chunk schema, so they are built once on the first batch and reused.
         // The LIMIT/OFFSET counter (limit_total_) persists across calls so a LIMIT caps
         // the total emitted across ALL batches and an OFFSET skips the head of the
-        // stream — exactly as the materialized loop does over its chunk vector.
+        // stream.
         if (!stream_ready_) {
             // Stable resource for the whole streaming run: the operator's own resource_
             // when it has one (scan-source matches), else the input chunk's resource —
@@ -187,75 +185,9 @@ namespace components::operators {
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     operator_match_t::source_next(pipeline::context_t* /*ctx*/) {
         // Sourceless no-table match (left_ == nullptr): no input to filter, so drain
-        // immediately with the 0-column sentinel. The materialized on_execute_impl
-        // returned early producing a null output_; the streaming pipeline produces the
-        // same empty result.
+        // immediately with the 0-column sentinel — an empty result.
         co_return core::result_wrapper_t<vector::data_chunk_t>(
             vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0});
-    }
-
-    void operator_match_t::on_execute_impl(pipeline::context_t* pipeline_context) {
-        // LOCAL LIMIT/OFFSET counter — a fresh count per materialized execution, so a
-        // recursive-CTE re-drive (reset_for_reuse + on_execute) restarts at 0.
-        int64_t limit_total = 0;
-        if (!limit_.check(limit_total)) {
-            return;
-        }
-        if (!left_ || !left_->output()) {
-            return;
-        }
-
-        auto* resource = left_->output()->resource();
-        const auto& in_chunks = left_->output()->chunks();
-
-        // Build predicate + projection metadata once from the first chunk (the schema
-        // is identical across chunks). For an empty input there is nothing to filter;
-        // emit an empty result carrying the schema, mirroring the prior behavior.
-        std::pmr::vector<types::complex_logical_type> types{resource};
-        std::vector<size_t> populated_cols;
-        bool sparse = false;
-        predicates::predicate_ptr predicate{nullptr};
-        if (!in_chunks.empty()) {
-            auto err = build_predicate_(pipeline_context,
-                                        in_chunks.front(),
-                                        resource,
-                                        types,
-                                        populated_cols,
-                                        sparse,
-                                        predicate);
-            if (err.contains_error()) {
-                set_error(err);
-                return;
-            }
-        }
-
-        chunks_vector_t out_chunks(resource);
-        for (const auto& chunk : in_chunks) {
-            // filter_batch_ returns immediately once the LIMIT is reached; break out so
-            // we stop building per-chunk output once capped (the prior early-out).
-            if (!limit_.check(limit_total)) {
-                break;
-            }
-            auto err = filter_batch_(resource,
-                                     predicate,
-                                     populated_cols,
-                                     sparse,
-                                     row_ids_meaningful_(),
-                                     types,
-                                     chunk,
-                                     limit_total,
-                                     out_chunks);
-            if (err.contains_error()) {
-                set_error(err);
-                return;
-            }
-        }
-
-        if (out_chunks.empty()) {
-            output_ = operators::make_operator_data(resource, types, 0);
-        } else {
-            output_ = operators::make_operator_data(resource, std::move(out_chunks));
-        }
     }
 
 } // namespace components::operators

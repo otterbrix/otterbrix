@@ -36,12 +36,12 @@ namespace services::collection::executor {
     uint64_t streaming_pipeline_runs() noexcept;
     void reset_streaming_pipeline_runs() noexcept;
 
-    // Symmetric materialized-path counter: drive_subplan_ bumps it once per sub-plan
-    // that takes the LEGACY materialize (on_execute) path instead of execute_pipeline.
-    // A test can assert a statement DID NOT fall to materialize (e.g. a top-level
-    // WITH RECURSIVE now streams its whole [select->sort->match->recursive_cte] chain
-    // through execute_pipeline, so this counter must NOT advance for it). Same coarse
-    // relaxed/DEV_MODE-only instrumentation contract as streaming_pipeline_runs().
+    // Legacy materialized-path counter, now PERMANENTLY ZERO: the materialize
+    // (on_execute) path has been deleted, so nothing bumps this and it stays 0.
+    // Retained as a guard so the deletion-gate test can still assert a statement
+    // NEVER materialized (e.g. a top-level WITH RECURSIVE streams its whole
+    // [select->sort->match->recursive_cte] chain through execute_pipeline). Same
+    // coarse relaxed/DEV_MODE-only contract as streaming_pipeline_runs().
     uint64_t materialized_plan_runs() noexcept;
     void reset_materialized_plan_runs() noexcept;
 #endif
@@ -200,11 +200,11 @@ namespace services::collection::executor {
         unique_future<void> poke_msg();
 
         // subplan_runner_t override. Routes a prepared sub-plan root through the
-        // SAME seam execute_sub_plan_ uses (streaming via execute_pipeline when
-        // is_streaming_pipeline, else the materialized on_execute + async-await
-        // drive) and returns its output chunks. Called INTRA-actor by an operator
-        // through ctx->runner (never across the mailbox). NOT in dispatch_traits:
-        // it is a synchronous in-coroutine interface call, not a mailbox handler.
+        // SAME streaming seam execute_sub_plan_ uses (drive_subplan_ ->
+        // execute_pipeline) and returns its output chunks. Called INTRA-actor by an
+        // operator through ctx->runner (never across the mailbox). NOT in
+        // dispatch_traits: it is a synchronous in-coroutine interface call, not a
+        // mailbox handler.
         [[nodiscard]] unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
 
@@ -227,25 +227,21 @@ namespace services::collection::executor {
         // Push-based streaming driver. Pulls one batch at a time from the pipeline
         // source (the chain bottom), pushes it up through the streaming operators into
         // the sink, then finalizes — peak memory is one batch plus active sink state.
-        // Populates `root`'s output_, so the cursor/back-channel logic in
-        // execute_sub_plan_ is unchanged. Used only for a sub-plan whose whole
-        // left-chain is streaming-capable (is_streaming_pipeline); every other
-        // sub-plan keeps the legacy materialize (on_execute) path.
+        // Also drives the sourceless-sink-bottom shapes (DDL/txn leaves, the resolve
+        // front-pass, a producing recursive_cte) by running the bottom sink's
+        // await_async_and_resume first and pumping any rows it produces up. Populates
+        // `root`'s output_, so the cursor/back-channel logic in execute_sub_plan_ is
+        // unchanged. EVERY reachable plan streams through here.
         unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx);
 
-        // True when `root`'s left-chain bottoms out in a pipeline source and every
-        // operator on it is streaming-capable (role != none).
-        static bool is_streaming_pipeline(const components::operators::operator_ptr& root) noexcept;
-
-        // Drive ONE prepared sub-plan root to completion through the routing seam:
-        // streaming (execute_pipeline) when is_streaming_pipeline, else the
-        // materialized on_execute + async-await loop. On return `root` is executed
-        // with its output_ set (unless an error occurred). Shared by
-        // execute_sub_plan_ (which then reads root->output()) and run_subplan
-        // (which copies the chunks out). Returns the first error encountered (no
-        // exceptions — rule 2/9); core::error_t::no_error() on success. The caller
-        // must have already called root->prepare().
+        // Drive ONE prepared sub-plan root to completion through the streaming seam
+        // (execute_pipeline). On return `root` is executed with its output_ set
+        // (unless an error occurred). Shared by execute_sub_plan_ (which then reads
+        // root->output()) and run_subplan (which copies the chunks out). Returns the
+        // first error encountered (no exceptions — rule 2/9);
+        // core::error_t::no_error() on success. The caller must have already called
+        // root->prepare().
         unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
                                                     components::pipeline::context_t* ctx);
 

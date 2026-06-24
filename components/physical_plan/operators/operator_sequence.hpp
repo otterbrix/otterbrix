@@ -24,8 +24,6 @@ namespace components::operators {
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
-
         std::vector<operator_ptr> steps_;
     };
 

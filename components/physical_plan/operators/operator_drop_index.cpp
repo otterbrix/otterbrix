@@ -23,8 +23,6 @@ namespace components::operators {
         , index_name_(std::move(index_name))
         , catalog_deletes_(std::move(catalog_deletes)) {}
 
-    void operator_drop_index_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_drop_index_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Scrub catalog rows referencing the dropped index. Dependants are
         // deleted before pg_class (order set by rewrite_drop_index). Each delete

@@ -234,8 +234,8 @@ namespace components::operators {
     operator_hash_join_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // The build (right) side is materialized by a separate sub-plan before the
         // first push and always holds at least one (possibly empty) chunk. A truly
-        // absent right_ is a degenerate plan: mirror on_execute_impl and emit
-        // nothing (no left layout to pad against, no build rows to preserve).
+        // absent right_ is a degenerate plan: emit nothing (no left layout to
+        // pad against, no build rows to preserve).
         if (!right_ || !right_->output()) {
             index_built_ = true;
             return core::error_t::no_error();
@@ -280,64 +280,6 @@ namespace components::operators {
         }
         emit_unmatched_build_(out);
         return core::error_t::no_error();
-    }
-
-    void operator_hash_join_t::on_execute_impl(pipeline::context_t*) {
-        // Legacy materialize path (taken when the left chain is not fully streaming,
-        // so is_streaming_pipeline() routes here). Reuses the SAME build+probe
-        // machinery as push()/finalize() — no separate per-join-type rebuild — so
-        // results are identical to the streaming path and to the nested-loop join.
-        //
-        // reset_for_reuse() does not clear the promoted index_built_/right_index_
-        // members, so a reused operator (e.g. each RECURSIVE CTE iteration) must
-        // rebuild from scratch against the current build side.
-        index_built_ = false;
-        right_index_.clear();
-        build_matched_.clear();
-        res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
-
-        if (!left_ || !right_ || !left_->output() || !right_->output()) {
-            return;
-        }
-
-        auto left_out = left_->output();
-        auto right_out = right_->output();
-        auto& left_chunks = left_out->chunks();
-        auto& right_chunks = right_out->chunks();
-
-        // operator_data_t always holds at least one (possibly empty) chunk per side.
-        assert(!left_chunks.empty());
-        assert(!right_chunks.empty());
-
-        join_detail::compute_join_layout(left_chunks.front(),
-                                         right_chunks.front(),
-                                         res_types_,
-                                         indices_left_,
-                                         indices_right_);
-
-        if (log_.is_valid()) {
-            trace(log(), "operator_hash_join::left_size(): {}", left_out->size());
-            trace(log(), "operator_hash_join::right_size(): {}", right_out->size());
-        }
-
-        build_index_();
-        index_built_ = true;
-
-        auto* res_resource = left_out->resource();
-        chunks_vector_t out_chunks(res_resource);
-        for (const auto& L : left_chunks) {
-            probe_batch_(L, out_chunks);
-        }
-        emit_unmatched_build_(out_chunks);
-
-        if (out_chunks.empty()) {
-            out_chunks.emplace_back(res_resource, res_types_, 0);
-        }
-        output_ = operators::make_operator_data(res_resource, std::move(out_chunks));
-
-        if (log_.is_valid()) {
-            trace(log(), "operator_hash_join::result_size(): {}", output_->size());
-        }
     }
 
 } // namespace components::operators

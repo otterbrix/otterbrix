@@ -78,19 +78,15 @@ namespace components::operators {
         // rows SEEN across all push() batches so far. limit_.is_skipping() /
         // limit_.check() read it to decide OFFSET-skip vs emit vs limit-reached, so a
         // LIMIT caps the total across ALL batches and an OFFSET skips the head of the
-        // stream. on_execute_impl owns a LOCAL counter instead (so a recursive-CTE
-        // re-drive via reset_for_reuse restarts at 0) — both feed the same filter core.
+        // stream. It feeds the shared filter core.
         int64_t stream_limit_total_{0};
-
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
 
         // Shared filter core (R6): filter ONE input chunk through the predicate +
         // projection, advancing the caller-owned LIMIT/OFFSET counter `limit_total`,
         // and append the surviving-rows chunk to `out` (nothing appended when zero
-        // rows survive). Called by BOTH push() (per streamed batch, member counter)
-        // and on_execute_impl (per materialized chunk, local counter). `predicate` and
-        // the populated-column projection are passed in so the predicate is built ONCE
-        // per execution, not per chunk.
+        // rows survive). Called by push() (per streamed batch, member counter).
+        // `predicate` and the populated-column projection are passed in so the
+        // predicate is built ONCE per execution, not per chunk.
         //
         // `row_ids_meaningful`: whether the input chunk carries REAL absolute row_ids
         // (true ONLY when left_ is a scan SOURCE, which stamps them). A SINK output

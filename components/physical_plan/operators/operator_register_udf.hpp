@@ -57,15 +57,13 @@ namespace components::operators {
 
         // Sourceless SINK leaf (no data pipeline, no children): all work — the
         // cross-namespace conflict read, the default-registry mirror and the
-        // pg_proc/pg_depend writes — runs in await_async_and_resume (on_execute_impl
-        // is a pure async_wait()). The dispatcher drives this operator's async
-        // finalize directly (a single await_async_and_resume, no on_execute /
-        // find_waiting_operator), replacing the legacy inline drive loop.
+        // pg_proc/pg_depend writes — runs in await_async_and_resume. The dispatcher
+        // drives this operator's async finalize directly (a single
+        // await_async_and_resume).
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         components::compute::function_ptr function_;

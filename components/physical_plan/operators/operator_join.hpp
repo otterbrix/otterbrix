@@ -20,10 +20,8 @@ namespace components::operators {
     // probe is drained, drains unmatched build rows (right/full) via finalize().
     //
     // A SINGLE core (probe_batch_ + emit_unmatched_build_, built on the shared
-    // join_builder) serves BOTH entry points: push()/finalize() (streaming, sourced
-    // left chain) and on_execute_impl (materialized, sourceless sub-plans). Both
-    // produce identical row order, NULL padding and dedup — two entry points to one
-    // implementation, not a divergent dual path (R6).
+    // join_builder) serves push()/finalize() and preserves row order, NULL padding
+    // and dedup across all join types.
     class operator_join_t final : public read_only_operator_t {
     public:
         using type = logical_plan::join_type;
@@ -68,7 +66,7 @@ namespace components::operators {
         std::vector<size_t> indices_left_;
         std::vector<size_t> indices_right_;
 
-        // --- Build/probe state (push + on_execute_impl share this) ---
+        // --- Build/probe state ---
         bool layout_built_{false};
         std::pmr::vector<types::complex_logical_type> res_types_{resource_};
         predicates::predicate_ptr predicate_{nullptr};
@@ -79,8 +77,6 @@ namespace components::operators {
         std::pmr::vector<uint8_t> build_matched_{resource_};
         std::pmr::vector<uint64_t> build_chunk_offsets_{resource_};
 
-        void on_execute_impl(pipeline::context_t* context) override;
-
         // Derive the output layout + predicate + (right/full) the matched marker once,
         // lazily, from the materialized build (right) side and a probe schema chunk.
         void build_layout_(pipeline::context_t* context, const vector::data_chunk_t& probe_front);
@@ -90,12 +86,6 @@ namespace components::operators {
         void probe_batch_(const vector::data_chunk_t& probe, chunks_vector_t& out);
         // Emit unmatched build rows (right/full) NULL-padded on the left side.
         void emit_unmatched_build_(chunks_vector_t& out);
-        // Cross join on the MATERIALIZED (sourceless) entry: full cartesian product
-        // of the two materialized sides, in left-major / build-chunk order. The
-        // STREAMING entry (push/finalize) does not call this — it reuses
-        // build_layout_/probe_batch_ with an all-true predicate, which emits the same
-        // cartesian product per probe batch. Kept for the on_execute_impl path only.
-        void cross_join_(const std::pmr::vector<types::complex_logical_type>& out_types, chunks_vector_t& out);
     };
 
 } // namespace components::operators

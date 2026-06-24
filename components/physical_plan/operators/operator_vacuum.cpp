@@ -26,8 +26,6 @@ namespace components::operators {
     operator_vacuum_t::operator_vacuum_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, std::move(log), operator_type::vacuum) {}
 
-    void operator_vacuum_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_vacuum_t::await_async_and_resume(pipeline::context_t* ctx) {
         const std::uint64_t lowest = ctx->lowest_active_start_time;
 

@@ -30,7 +30,7 @@ namespace components::operators {
         //
         // SAFE as a right child: traverse_plan_ splits the right side into its own
         // sub-plan that runs first and materializes into output_ (set_output +
-        // mark_executed), and is_streaming_pipeline only walks the LEFT chain — so a
+        // mark_executed), and the executor only walks the LEFT chain — so a
         // join/update/delete with a VALUES right side reads the materialized output_,
         // not source_next.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
@@ -38,12 +38,6 @@ namespace components::operators {
         source_next(pipeline::context_t* ctx) override;
 
     private:
-        // No-op: output_ is populated in the ctor. Kept as the materialized entry
-        // point for the right-child case (pre-executed by its own sub-plan) and any
-        // legacy materialize caller. Shares the same source-of-truth (output_) as
-        // source_next — two entry points to one already-materialized result.
-        void on_execute_impl(pipeline::context_t*) override;
-
         // Build the 0-column drain sentinel that tells execute_pipeline's pump to
         // stop (mirrors the scan sources' drain chunk).
         vector::data_chunk_t make_drain_chunk();

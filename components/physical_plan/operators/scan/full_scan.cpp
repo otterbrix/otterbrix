@@ -196,12 +196,6 @@ namespace components::operators {
         , limit_(limit)
         , projected_cols_(std::move(projected_cols)) {}
 
-    void full_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (table_oid_ == components::catalog::INVALID_OID)
-            return;
-        async_wait();
-    }
-
     actor_zeta::unique_future<void> full_scan::await_async_and_resume(pipeline::context_t* ctx) {
         if (log_.is_valid()) {
             trace(log(), "full_scan::await_async_and_resume on oid={}", static_cast<unsigned>(table_oid_));

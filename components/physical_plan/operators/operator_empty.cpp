@@ -20,6 +20,4 @@ namespace components::operators {
         co_return vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0};
     }
 
-    void operator_empty_t::on_execute_impl(pipeline::context_t*) {}
-
 } // namespace components::operators

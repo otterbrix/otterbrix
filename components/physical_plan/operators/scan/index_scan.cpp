@@ -21,15 +21,6 @@ namespace components::operators {
         , preferred_index_type_(preferred_index_type)
         , limit_(limit) {}
 
-    void index_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (log_.is_valid()) {
-            trace(log(), "index_scan by field \"{}\"", key_.as_string());
-        }
-        if (table_oid_ == components::catalog::INVALID_OID)
-            return;
-        async_wait();
-    }
-
     // --- Shared windowing core (Rule 6) ---------------------------------------------------------
     // Run the ONE-SHOT index search and compute the OFFSET/LIMIT window [pos_=start, end_) over the
     // matched ids. Both await_async_and_resume (materialized) and source_next (per-window) call this

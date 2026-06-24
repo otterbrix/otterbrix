@@ -38,10 +38,6 @@ namespace components::operators {
 
         // Index of the next working-set chunk to emit. Past the chunk count ⇒ drained.
         std::size_t cursor_{0};
-
-        // Materialized entry point (legacy on_execute path): adopt the working set wholesale.
-        // Shares the working-set source-of-truth with source_next.
-        void on_execute_impl(pipeline::context_t*) override;
     };
 
 } // namespace components::operators

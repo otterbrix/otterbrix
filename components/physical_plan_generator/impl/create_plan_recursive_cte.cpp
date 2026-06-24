@@ -29,8 +29,8 @@ namespace services::planner::impl {
 
         // The anchor + recursive term are NOT left_/right_ children: operator_recursive_cte_t
         // owns driving them via ctx->runner->run_subplan, so it must look like a leaf to
-        // traverse_plan_ / is_streaming_pipeline (which walk left()/right()). The cte_scan(s)
-        // inside recursive_op already hold the working_set_slot() pointer (injected above).
+        // traverse_plan_ (which walks left()/right()). The cte_scan(s) inside recursive_op
+        // already hold the working_set_slot() pointer (injected above).
         op->set_recursive_terms(std::move(anchor_op), std::move(recursive_op));
         return op;
     }

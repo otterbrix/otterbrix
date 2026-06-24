@@ -17,18 +17,9 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::set_timezone)
         , timezone_name_(std::move(timezone_name)) {}
 
-    void operator_set_timezone_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // Leaf SINK: all work (validation + pg_settings persist) lives in
-        // await_async_and_resume, driven by the executor's needs_async_finalize
-        // pass. Defer it here on the legacy entry point too.
-        async_wait();
-    }
-
     actor_zeta::unique_future<void> operator_set_timezone_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Validate the timezone name first (set_timezone returns error_t on an
         // unknown/unparseable identifier) so an invalid value never reaches disk.
-        // Runs here (not on_execute_impl) so BOTH the streaming sink-root drive and
-        // the legacy await-loop hit the same single validation point (R6).
         {
             components::catalog::session_catalog_t local_cat;
             auto err = local_cat.set_timezone(this->resource(),

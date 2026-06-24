@@ -9,8 +9,7 @@ namespace components::operators {
     // the union runs: when the union is reached, left_->output() and right_->output()
     // are ready. push() therefore folds nothing (the streaming pump's left batches are
     // a redundant view of the already-materialized left_->output()); finalize() emits
-    // the union of the two materialized sides. The materialized on_execute_impl entry
-    // shares the same emit_union_() core, so both produce identical output — left rows
+    // the union of the two materialized sides via the emit_union_() core — left rows
     // first (in order), then right rows (deduped across both sides for UNION,
     // concatenated for UNION ALL).
     class operator_union_t final : public read_only_operator_t {
@@ -26,8 +25,6 @@ namespace components::operators {
 
     private:
         bool all_;
-
-        void on_execute_impl(pipeline::context_t* context) override;
 
         // The shared dedup/concat core: emit the union of `left_chunks` then
         // `right_chunks` into `out` (allocated from `res`). UNION ALL concatenates;

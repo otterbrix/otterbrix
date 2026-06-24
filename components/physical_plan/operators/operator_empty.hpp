@@ -20,8 +20,6 @@ namespace components::operators {
         void reset_pipeline_state() noexcept override { emit_index_ = 0; }
 
     private:
-        void on_execute_impl(pipeline::context_t*) override;
-
         size_t emit_index_{0};
     };
 

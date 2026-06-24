@@ -35,21 +35,11 @@ namespace components::operators {
         }
     } // namespace
 
-    void operator_fk_cascade_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        if (!left_)
-            return;
-        output_ = resolve_fk_cascade_source(left_);
-        if (output_ && output_->size() > 0) {
-            async_wait();
-        }
-    }
-
     actor_zeta::unique_future<void> operator_fk_cascade_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Streaming drive skips on_execute_impl, so resolve the source here directly;
-        // materialized callers set output_ to the same source. fk_cascade is the plan
-        // ROOT, so output_ becomes the DELETE result cursor — set it to the deleted
-        // (matched) rows, matching the legacy on_execute resolution (the cursor count
-        // equals the number of deleted parent rows regardless of cascade outcome).
+        // Resolve the source here directly in await_async_and_resume. fk_cascade is the
+        // plan ROOT, so output_ becomes the DELETE result cursor — set it to the deleted
+        // (matched) rows (the cursor count equals the number of deleted parent rows
+        // regardless of cascade outcome).
         const auto& source = resolve_fk_cascade_source(left_);
         output_ = source;
         if (!source || source->size() == 0) {

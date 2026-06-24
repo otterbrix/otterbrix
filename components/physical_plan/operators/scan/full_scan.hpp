@@ -65,8 +65,6 @@ namespace components::operators {
         }
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
-
         // Projected empty chunk (drained / short-circuit sentinel) carrying the table schema, so a
         // downstream OUTER join can NULL-pad and a scalar aggregate can emit COUNT=0.
         vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);

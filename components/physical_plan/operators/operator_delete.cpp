@@ -154,8 +154,8 @@ namespace components::operators {
         // bounded state the simple path does — matched ABSOLUTE row-ids in modified_,
         // the matched OLD left rows + their ids for the index mirror, and (per batch,
         // gathered in lockstep) the projected RETURNING rows from the matched
-        // left+right pair. push() calls it per LEFT batch; on_execute_impl loops the
-        // materialized left chunks through it. await_async_and_resume drains it all.
+        // left+right pair. push() calls it per LEFT batch. await_async_and_resume
+        // drains it all.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -295,62 +295,6 @@ namespace components::operators {
         return consume_batch_(ctx, input);
     }
 
-    void operator_delete::on_execute_impl(pipeline::context_t* pipeline_context) {
-        // Catalog-delete mode: no predicate scan / no children — the (oid_col_idx,
-        // target_oid) spec is shipped straight to delete_pg_catalog_rows in
-        // await_async_and_resume.
-        if (oid_col_idx_ >= 0) {
-            async_wait();
-            return;
-        }
-        const bool collect_returning = !returning_.empty();
-        // Predicate matching only — table.delete_rows() is now handled by
-        // await_async_and_resume via send(disk_address_, &manager_disk_t::storage_delete_rows).
-        if (left_ && left_->output() && right_ && right_->output()) {
-            // DELETE ... USING (materialized entry point): loop each LEFT (target)
-            // scan chunk through the SAME consume_join_batch_ core push() uses
-            // (R6: one implementation, two entry points), probing it against the
-            // materialized RIGHT (USING) build chunk. Matching, modified_, the
-            // index-old staging and the per-batch RETURNING projection are identical.
-            auto& chunk_right = right_->output()->data_chunk();
-            for (const auto& chunk_left : left_->output()->chunks()) {
-                auto err = consume_join_batch_(pipeline_context, chunk_left, chunk_right);
-                if (err.contains_error()) {
-                    set_error(err);
-                    return;
-                }
-            }
-            // Drain staged RETURNING into output_ (the streaming entry point does the
-            // same in await_async_and_resume's tail).
-            if (collect_returning) {
-                set_output(make_operator_data(resource_, std::move(returning_staged_)));
-            }
-        } else if (left_ && left_->output()) {
-            // SIMPLE predicate-scan DELETE (no USING): the materialized entry point.
-            // Stream each scan chunk through the SAME consume_batch_ core push()
-            // uses (R6: one implementation, two entry points), so matching, modified_
-            // accumulation, index-old staging and RETURNING staging are identical.
-            output_ = left_->output(); // pass-through for downstream fk_cascade operators
-            for (const auto& chunk : left_->output()->chunks()) {
-                auto err = consume_batch_(pipeline_context, chunk);
-                if (err.contains_error()) {
-                    set_error(err);
-                    return;
-                }
-            }
-            // Drain staged RETURNING into output_ (the streaming entry point does
-            // the same in await_async_and_resume's tail). Skip when this is a
-            // fk_cascade pass-through (no RETURNING) so output_ keeps the scan rows.
-            if (collect_returning) {
-                set_output(make_operator_data(resource_, std::move(returning_staged_)));
-            }
-        }
-
-        if (modified_ && modified_->size() > 0 && table_oid_ != components::catalog::INVALID_OID) {
-            async_wait();
-        }
-    }
-
     actor_zeta::unique_future<void> operator_delete::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
@@ -467,11 +411,10 @@ namespace components::operators {
 
         // 4. Mirror to index (old data). BOTH paths stage the MATCHED old rows +
         //    their absolute ids into index_old_chunks_/index_old_row_ids_: the
-        //    SIMPLE path via consume_batch_ (push() OR on_execute_impl), the
-        //    USING-join path in on_execute_impl's match loop. So the index
-        //    delete_rows always receives the matched rows paired with their own
-        //    ids — never the first-N scan rows — even when streaming leaves
-        //    left_->output() empty.
+        //    SIMPLE path via consume_batch_ (push()), the USING-join path in its
+        //    match loop. So the index delete_rows always receives the matched rows
+        //    paired with their own ids — never the first-N scan rows — even when
+        //    streaming leaves left_->output() empty.
         if (ctx->index_address != actor_zeta::address_t::empty_address() && !index_old_chunks_.empty()) {
             auto old_data = make_operator_data(resource_, std::move(index_old_chunks_));
             auto& merged = old_data->data_chunk();
@@ -490,12 +433,9 @@ namespace components::operators {
         ctx->dml_delete_txn_id = ctx->txn.transaction_id;
         ctx->dml_table_oid = table_oid_;
 
-        // 6. Build result chunk. With RETURNING: the materialized simple path and
-        // the USING path drained their projected rows into output_ in
-        // on_execute_impl; the STREAMING path did not run on_execute_impl, so drain
-        // the staged RETURNING here (returning_staged_ is non-empty only then).
-        // Without RETURNING, emit a typed chunk whose cardinality carries the
-        // affected-row count.
+        // 6. Build result chunk. With RETURNING: drain the staged RETURNING here
+        // (returning_staged_ is populated as batches are pushed). Without RETURNING,
+        // emit a typed chunk whose cardinality carries the affected-row count.
         if (!returning_.empty()) {
             if (!returning_staged_.empty()) {
                 set_output(make_operator_data(resource_, std::move(returning_staged_)));

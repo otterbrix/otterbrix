@@ -37,7 +37,7 @@ namespace components::operators {
         //   - DELETE ... USING (right_ = the materialized USING scan): push() probes
         //     each LEFT batch against right_->output() via consume_join_batch_ —
         //     same semi-join match, modified_, index-old staging and per-batch joined
-        //     RETURNING the legacy on_execute USING branch produced.
+        //     RETURNING.
         // The catalog form (oid_col_idx_>=0) is a SOURCELESS sink: it has no children
         // and no scan input — its entire effect is the WAL-first delete_pg_catalog_rows
         // commit in await_async_and_resume, which the executor drives via the bottom-up
@@ -65,29 +65,23 @@ namespace components::operators {
         bool has_resolved_metadata() const noexcept { return resolved_metadata_.has_value(); }
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
-
-        // Shared SIMPLE-path core (R6: one implementation, two entry points).
-        // Matches expression_ (all-true when null — the scan already filtered)
-        // over ONE scan chunk; appends matched ABSOLUTE row-ids to modified_
-        // (dictionary-index branch + chunk.row_ids exactly as the legacy path),
-        // stages matched RETURNING rows, and stages the matched OLD scan rows +
-        // their absolute row-ids for the index mirror. push() calls it per batch;
-        // on_execute_impl's simple path loops left_->output()->chunks() through it.
+        // Shared SIMPLE-path core. Matches expression_ (all-true when null — the
+        // scan already filtered) over ONE scan chunk; appends matched ABSOLUTE
+        // row-ids to modified_ (dictionary-index branch + chunk.row_ids), stages
+        // matched RETURNING rows, and stages the matched OLD scan rows + their
+        // absolute row-ids for the index mirror. push() calls it per batch.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
-        // Shared DELETE...USING core (R6: one implementation, two entry points).
-        // Probes ONE LEFT (target) scan chunk against the fully-materialized RIGHT
-        // (USING) build chunk as a semi-join, and stages the SAME bounded state
-        // consume_batch_ does — matched ABSOLUTE row-ids (DICTIONARY fallback) into
-        // modified_, the matched OLD left rows + their ids for the index mirror, and
-        // the per-batch joined RETURNING projection (matched left+right pair gathered
-        // in lockstep). push() calls it per LEFT batch; on_execute_impl loops the
-        // materialized left chunks through it. await_async_and_resume drains it.
+        // Shared DELETE...USING core. Probes ONE LEFT (target) scan chunk against
+        // the fully-materialized RIGHT (USING) build chunk as a semi-join, and
+        // stages the SAME bounded state consume_batch_ does — matched ABSOLUTE
+        // row-ids (DICTIONARY fallback) into modified_, the matched OLD left rows +
+        // their ids for the index mirror, and the per-batch joined RETURNING
+        // projection (matched left+right pair gathered in lockstep). push() calls
+        // it per LEFT batch. await_async_and_resume drains it.
         core::error_t consume_join_batch_(pipeline::context_t* ctx,
                                           const vector::data_chunk_t& chunk_left,
                                           const vector::data_chunk_t& chunk_right);
-        // Lazily create modified_ + the staging buffers so push() and
-        // on_execute_impl share the same per-operator init.
+        // Lazily create modified_ + the staging buffers for the per-operator init.
         void ensure_simple_init_();
 
         components::catalog::oid_t table_oid_;

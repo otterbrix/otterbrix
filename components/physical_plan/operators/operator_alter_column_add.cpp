@@ -24,8 +24,6 @@ namespace components::operators {
         , table_oid_(table_oid)
         , column_(std::move(column)) {}
 
-    void operator_alter_column_add_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_alter_column_add_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 

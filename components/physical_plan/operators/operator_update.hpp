@@ -56,28 +56,24 @@ namespace components::operators {
         bool has_resolved_metadata() const noexcept { return resolved_metadata_.has_value(); }
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
-
-        // Shared SIMPLE-path core (R6: one implementation, two entry points).
-        // Matches expr_ (all-true when null — the scan already filtered) over ONE
-        // scan chunk; builds the updated out_chunk (matched rows, SET applied),
-        // appends it to output_, accumulates modified_/no_modified_, and stages the
-        // matched OLD scan rows for the index mirror. push() calls it per batch;
-        // on_execute_impl's simple path loops left_->output()->chunks() through it.
+        // Shared SIMPLE-path core. Matches expr_ (all-true when null — the scan
+        // already filtered) over ONE scan chunk; builds the updated out_chunk
+        // (matched rows, SET applied), appends it to output_, accumulates
+        // modified_/no_modified_, and stages the matched OLD scan rows for the
+        // index mirror. push() calls it per batch.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
-        // Shared UPDATE...FROM core (R6: one implementation, two entry points).
-        // Probes ONE LEFT (target) scan chunk against the fully-materialized RIGHT
-        // (FROM) build chunks as a semi-join, and stages the SAME bounded state
-        // consume_batch_ does — the updated out_chunk (matched columns, DICTIONARY
-        // row-id fallback, SET applied) appended to output_, modified_/no_modified_,
-        // the matched OLD rows for the index mirror, and (for RETURNING) the matched
-        // FROM rows in lockstep. push() calls it per LEFT batch; on_execute_impl loops
-        // the materialized left chunks through it. await_async_and_resume drains it.
+        // Shared UPDATE...FROM core. Probes ONE LEFT (target) scan chunk against
+        // the fully-materialized RIGHT (FROM) build chunks as a semi-join, and
+        // stages the SAME bounded state consume_batch_ does — the updated out_chunk
+        // (matched columns, DICTIONARY row-id fallback, SET applied) appended to
+        // output_, modified_/no_modified_, the matched OLD rows for the index
+        // mirror, and (for RETURNING) the matched FROM rows in lockstep. push()
+        // calls it per LEFT batch. await_async_and_resume drains it.
         core::error_t consume_join_batch_(pipeline::context_t* ctx,
                                           const vector::data_chunk_t& chunk_left,
                                           const chunks_vector_t& right_chunks);
-        // Lazily create modified_/no_modified_/output_ accumulator + staging so
-        // push() and on_execute_impl share the same per-operator init.
+        // Lazily create modified_/no_modified_/output_ accumulator + staging for
+        // the per-operator init.
         void ensure_simple_init_();
 
         components::catalog::oid_t table_oid_;

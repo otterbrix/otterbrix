@@ -20,7 +20,7 @@ namespace components::operators {
     void operator_join_t::build_layout_(pipeline::context_t* context, const vector::data_chunk_t& probe_front) {
         // Lazily derive the output layout, predicate and (right/full) the matched
         // marker once, from the materialized build (right) side and one probe
-        // (left) schema chunk. Shared by push() and on_execute_impl.
+        // (left) schema chunk. Used by push().
         const auto& build_chunks = right_->output()->chunks();
         // operator_data_t always holds at least one (possibly empty) chunk.
         assert(!build_chunks.empty());
@@ -129,32 +129,12 @@ namespace components::operators {
         builder.flush();
     }
 
-    void operator_join_t::cross_join_(const std::pmr::vector<types::complex_logical_type>& out_types,
-                                      chunks_vector_t& out_chunks) {
-        // Cross join is never streamed (role()==none): the full cartesian product of
-        // the two materialized sides, in left-major / build-chunk order.
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        join_builder builder(resource_, out_types, indices_left_, indices_right_, out_chunks);
-
-        for (const auto& L : left_chunks) {
-            for (uint64_t li = 0; li < L.size(); ++li) {
-                for (const auto& R : right_chunks) {
-                    for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                        builder.emit_matched(L, li, R, rj);
-                    }
-                }
-            }
-        }
-        builder.flush();
-    }
-
     core::error_t
     operator_join_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // The build (right) side is materialized by a separate sub-plan before the
         // first push and always holds at least one (possibly empty) chunk. A truly
-        // absent right_ is a degenerate plan: mirror on_execute_impl and emit
-        // nothing (no build rows to preserve, no layout to pad against).
+        // absent right_ is a degenerate plan: emit nothing (no build rows to
+        // preserve, no layout to pad against).
         if (!right_ || !right_->output()) {
             layout_built_ = true;
             return core::error_t::no_error();
@@ -182,67 +162,6 @@ namespace components::operators {
         }
         emit_unmatched_build_(out);
         return core::error_t::no_error();
-    }
-
-    void operator_join_t::on_execute_impl(pipeline::context_t* context) {
-        // Materialized entry (sourceless sub-plans: raw_data joins / no-FROM SELECT).
-        // Reuses the SAME build_layout_ / probe_batch_ / emit_unmatched_build_ core as
-        // push()/finalize() over the materialized left_->output() chunks, so the
-        // result is identical to the streaming path. reset_for_reuse() does not clear
-        // layout_built_, so a reused operator rebuilds from scratch.
-        layout_built_ = false;
-
-        if (!left_ || !right_ || !left_->output() || !right_->output()) {
-            return;
-        }
-
-        auto left_out = left_->output();
-        auto right_out = right_->output();
-        auto& left_chunks = left_out->chunks();
-        auto& right_chunks = right_out->chunks();
-
-        // operator_data_t always holds at least one (possibly empty) chunk per side.
-        assert(!left_chunks.empty());
-        assert(!right_chunks.empty());
-
-        auto* res_resource = left_out->resource();
-        chunks_vector_t out_chunks(res_resource);
-
-        if (join_type_ == type::cross) {
-            // Cross keeps its dedicated cartesian path (no predicate, never streams).
-            std::pmr::vector<types::complex_logical_type> res_types{res_resource};
-            join_detail::compute_join_layout(left_chunks.front(),
-                                             right_chunks.front(),
-                                             res_types,
-                                             indices_left_,
-                                             indices_right_);
-            cross_join_(res_types, out_chunks);
-            res_types_ = std::move(res_types);
-        } else {
-            build_layout_(context, left_chunks.front());
-
-            if (log_.is_valid()) {
-                trace(log(), "operator_join::left_size(): {}", left_out->size());
-                trace(log(), "operator_join::right_size(): {}", right_out->size());
-            }
-
-            for (const auto& L : left_chunks) {
-                probe_batch_(L, out_chunks);
-                if (has_error()) {
-                    return;
-                }
-            }
-            emit_unmatched_build_(out_chunks);
-        }
-
-        if (out_chunks.empty()) {
-            out_chunks.emplace_back(res_resource, res_types_, 0);
-        }
-        output_ = operators::make_operator_data(res_resource, std::move(out_chunks));
-
-        if (log_.is_valid()) {
-            trace(log(), "operator_join::result_size(): {}", output_->size());
-        }
     }
 
 } // namespace components::operators

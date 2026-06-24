@@ -15,8 +15,6 @@ namespace components::operators {
     operator_abort_transaction_t::operator_abort_transaction_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, std::move(log), operator_type::abort_transaction) {}
 
-    void operator_abort_transaction_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_abort_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Snapshot txn_data + swap-appends and abort in one dispatcher
         // round-trip. The dispatcher (sole owner of transaction_manager_t)

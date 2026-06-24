@@ -20,9 +20,7 @@ namespace components::operators {
         // the DML commits first (snapshotting the written rows into
         // constraint_input_), then this fk_check validates them. push()/finalize()
         // are no-ops: this operator holds no streaming input of its own; it reads its
-        // child DML's snapshot in the async step (the same rows the legacy materialize
-        // path read from the DML output). on_execute_impl stays the materialized
-        // entry point for any non-streaming caller — both share the SAME validation.
+        // child DML's snapshot in the async step and validates those rows.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -38,7 +36,6 @@ namespace components::operators {
         }
 
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         catalog::fk_info_t fk_;

@@ -4,8 +4,6 @@
 
 namespace components::operators {
 
-    bool is_success(const operator_t::ptr& op) { return !op || op->is_executed(); }
-
     operator_t::operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : resource_(resource)
         , log_(std::move(log))
@@ -25,76 +23,11 @@ namespace components::operators {
         }
     }
 
-    void operator_t::on_execute(pipeline::context_t* pipeline_context) {
-        if (state_ == operator_state::created || state_ == operator_state::running) {
-            if (!prepared_) {
-                on_prepare_impl();
-                prepared_ = true;
-            }
-            state_ = operator_state::running;
-            if (left_) {
-                left_->on_execute(pipeline_context);
-                if (left_->has_error()) {
-                    error_ = left_->get_error();
-                    state_ = operator_state::failed;
-                    return;
-                }
-            }
-            if (right_ && is_success(left_)) {
-                right_->on_execute(pipeline_context);
-                if (right_->has_error()) {
-                    error_ = right_->get_error();
-                    state_ = operator_state::failed;
-                    return;
-                }
-            }
-            if (is_success(left_) && is_success(right_)) {
-                on_execute_impl(pipeline_context);
-                if (has_error()) {
-                    state_ = operator_state::failed;
-                    return;
-                }
-                if (!is_wait_sync_disk()) {
-                    state_ = operator_state::executed;
-                }
-            }
-        } else if (is_wait_sync_disk()) {
-            on_resume_impl(pipeline_context);
-            state_ = operator_state::executed;
-        }
-    }
-
-    void operator_t::on_resume(pipeline::context_t* pipeline_context) { on_execute(pipeline_context); }
-
-    void operator_t::async_wait() { state_ = operator_state::waiting; }
-
     bool operator_t::is_executed() const { return state_ == operator_state::executed; }
-
-    bool operator_t::is_wait_sync_disk() const { return state_ == operator_state::waiting; }
 
     bool operator_t::is_root() const noexcept { return root; }
 
     void operator_t::set_as_root() noexcept { root = true; }
-
-    operator_t::ptr operator_t::find_waiting_operator() {
-        if (is_wait_sync_disk()) {
-            return ptr(this);
-        }
-        if (left_) {
-            auto found = left_->find_waiting_operator();
-            if (found) {
-                return found;
-            }
-        }
-
-        if (right_) {
-            auto found = right_->find_waiting_operator();
-            if (found) {
-                return found;
-            }
-        }
-        return nullptr;
-    }
 
     std::pmr::memory_resource* operator_t::resource() const noexcept { return resource_; }
 
@@ -136,8 +69,6 @@ namespace components::operators {
         output_ = nullptr;
         constraint_input_ = nullptr;
     }
-
-    void operator_t::on_resume_impl(pipeline::context_t*) {}
 
     void operator_t::on_prepare_impl() {}
 

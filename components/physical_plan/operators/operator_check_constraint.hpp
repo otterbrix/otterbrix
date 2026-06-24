@@ -27,9 +27,8 @@ namespace components::operators {
         // on the streaming path the scan SOURCE's output_ is empty. needs_async_finalize
         // routes the validation into the executor's bottom-up async-finalize drive (the
         // FLUSH phase runs BEFORE the DML await, which would be too early). push()/
-        // finalize() are no-ops; the validation runs in await_async_and_resume,
-        // completing synchronously (co_return). on_execute_impl stays the materialized
-        // entry point — both call the same validate_() core, so results are identical.
+        // finalize() are no-ops; the validation runs in await_async_and_resume
+        // via the validate_() core, completing synchronously (co_return).
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::sink; }
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -44,14 +43,12 @@ namespace components::operators {
         }
 
     private:
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        // Shared synchronous validation core (R6: one implementation, two entry
-        // points). Resolves the rows to validate (the DML's constraint_input()
-        // snapshot, or the legacy fallbacks) and runs NOT NULL + fixed-ARRAY length +
-        // CHECK-expression checks over them; on the first violation it sets the error
-        // and returns. Called by both on_execute_impl and await_async_and_resume.
+        // Synchronous validation core. Resolves the rows to validate (the DML's
+        // constraint_input() snapshot, or the fallbacks) and runs NOT NULL +
+        // fixed-ARRAY length + CHECK-expression checks over them; on the first
+        // violation it sets the error and returns. Called by await_async_and_resume.
         void validate_();
 
         std::vector<std::string> not_null_columns_;

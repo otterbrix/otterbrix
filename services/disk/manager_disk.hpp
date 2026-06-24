@@ -632,18 +632,6 @@ namespace services::disk {
                      std::unique_ptr<components::table::table_filter_t> filter,
                      int limit,
                      components::table::transaction_data txn);
-        // Batched + projected variant: returns a vector of chunks and applies
-        // index-based column projection at the storage layer.
-        // Empty `projected_cols` means "read all columns" (pass-through). The reply wraps the
-        // batches so a buffer-pool OOM / data_corruption from the table-layer scan reaches the
-        // scan operators as a value rather than a throw across the mailbox.
-        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_scan_batched(session_id_t session,
-                             components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::table::table_filter_t> filter,
-                             int64_t limit,
-                             std::vector<size_t> projected_cols,
-                             components::table::transaction_data txn);
         // Streaming fetch-next scan source (STEP 3 / phase B). Transparent router:
         // pool_idx_for_oid -> owning agent's storage_fetch_next_batch_inner, forwarding
         // the reply (batch + minted/advanced cursor_id) unchanged. The agent holds the
@@ -712,7 +700,6 @@ namespace services::disk {
                                                        &manager_disk_t::storage_total_rows,
                                                        // Storage data operations
                                                        &manager_disk_t::storage_scan,
-                                                       &manager_disk_t::storage_scan_batched,
                                                        &manager_disk_t::storage_fetch_next_batch,
                                                        &manager_disk_t::storage_fetch,
                                                        &manager_disk_t::storage_scan_segment,

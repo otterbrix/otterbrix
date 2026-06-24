@@ -184,18 +184,6 @@ namespace services::disk {
                      std::unique_ptr<components::table::table_filter_t> filter,
                      int limit,
                      components::table::transaction_data txn);
-        // Batched + projected variant: returns a vector of chunks (PR #483 multi-chunk)
-        // and applies index-based column projection at the disk layer (PR #477).
-        // Empty `projected_cols` means "read all columns" (pass-through). The reply wraps the
-        // batches so a buffer-pool OOM / data_corruption from the table-layer scan reaches the
-        // scan operators as a value rather than a throw across the mailbox.
-        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_scan_batched(session_id_t session,
-                             components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::table::table_filter_t> filter,
-                             int64_t limit,
-                             std::vector<size_t> projected_cols,
-                             components::table::transaction_data txn);
         // Streaming fetch-next scan source (STEP 3 / phase B). Holds LIVE scan state
         // per cursor on the owning agent instead of materializing the whole batch
         // vector. cursor_id==0 OPENs a fresh cursor (mints an id from the filter /
@@ -203,7 +191,7 @@ namespace services::disk {
         // that cursor (filter is ignored, pass nullptr). The reply pairs one batch with
         // the cursor_id; an EMPTY chunk (cardinality 0) is the drained sentinel and the
         // cursor is erased agent-side. Buffer-pool OOM / data_corruption ride the wrapper
-        // as a value (no throw across the mailbox), same as storage_scan_batched.
+        // as a value (no throw across the mailbox).
         actor_zeta::unique_future<core::result_wrapper_t<fetch_batch_t>>
         storage_fetch_next_batch(session_id_t session,
                                  components::catalog::oid_t table_oid,
@@ -311,7 +299,6 @@ namespace services::disk {
                                                             &disk_contract::storage_total_rows,
                                                             // Storage data operations
                                                             &disk_contract::storage_scan,
-                                                            &disk_contract::storage_scan_batched,
                                                             &disk_contract::storage_fetch_next_batch,
                                                             &disk_contract::storage_fetch,
                                                             &disk_contract::storage_scan_segment,

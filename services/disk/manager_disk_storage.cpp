@@ -342,33 +342,6 @@ namespace services::disk {
         co_return nullptr;
     }
 
-    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-    manager_disk_t::storage_scan_batched(session_id_t /*session*/,
-                                         catalog::oid_t table_oid,
-                                         std::unique_ptr<components::table::table_filter_t> filter,
-                                         int64_t limit,
-                                         std::vector<size_t> projected_cols,
-                                         components::table::transaction_data txn) {
-        // Transparent router: the agent reply carries the scan_error; forward the wrapper
-        // unchanged so the scan operators turn it into an error cursor.
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[pool_idx];
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_scan_batched_inner,
-                                                                  table_oid,
-                                                                  std::move(filter),
-                                                                  limit,
-                                                                  projected_cols,
-                                                                  txn);
-            if (needs_sched) {
-                scheduler_disk_->enqueue(agent.get());
-            }
-            co_return co_await std::move(fut);
-        }
-        co_return std::pmr::vector<components::vector::data_chunk_t>{resource()};
-    }
-
     manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
     manager_disk_t::storage_fetch_next_batch(session_id_t session,
                                              catalog::oid_t table_oid,

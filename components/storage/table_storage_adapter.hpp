@@ -215,27 +215,6 @@ namespace components::storage {
             table_.scan_table_segment(start, count, callback);
         }
 
-        uint64_t parallel_scan(const std::function<void(vector::data_chunk_t& chunk)>& callback) override {
-            std::vector<table::storage_index_t> column_ids;
-            column_ids.reserve(table_.column_count());
-            for (size_t i = 0; i < table_.column_count(); i++) {
-                column_ids.emplace_back(static_cast<int64_t>(i));
-            }
-            auto parallel_state = table_.create_parallel_scan_state(column_ids);
-            auto types = table_.copy_types();
-            uint64_t total_rows = 0;
-            while (true) {
-                table::table_scan_state local_state(resource_);
-                vector::data_chunk_t result(resource_, types, vector::DEFAULT_VECTOR_CAPACITY);
-                if (!table_.next_parallel_chunk(*parallel_state, local_state, result)) {
-                    break;
-                }
-                total_rows += result.size();
-                callback(result);
-            }
-            return total_rows;
-        }
-
         // Replay/legacy path (no txn). The table-layer append chain returns result_wrapper_t
         // (write_conflict / out_of_memory); replay records are already schema-aligned and
         // single-threaded, so a failure here is a hard bug — bind the wrappers and assert success.

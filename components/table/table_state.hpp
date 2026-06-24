@@ -232,18 +232,6 @@ namespace components::table {
         std::unique_lock<std::mutex> segment_lock;
     };
 
-    struct parallel_table_scan_state_t {
-        parallel_table_scan_state_t(std::vector<storage_index_t> col_ids, const table_filter_t* flt, uint64_t total_rg)
-            : column_ids(std::move(col_ids))
-            , filter(flt)
-            , total_row_groups(total_rg) {}
-
-        std::vector<storage_index_t> column_ids;
-        const table_filter_t* filter;
-        uint64_t total_row_groups;
-        std::atomic<uint64_t> next_row_group_idx{0};
-    };
-
     struct table_append_state {
         table_append_state(std::pmr::memory_resource* resource)
             : append_state(*this)

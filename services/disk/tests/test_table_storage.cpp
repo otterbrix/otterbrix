@@ -308,24 +308,3 @@ TEST_CASE("services::disk::table_storage::drop_column_disk_is_noop") {
 
     cleanup_test_dir();
 }
-
-TEST_CASE("services::disk::table_storage::parallel_scan_via_storage_adapter") {
-    std::pmr::synchronized_pool_resource resource;
-
-    std::vector<column_definition_t> columns;
-    columns.emplace_back("value", logical_type::BIGINT);
-    table_storage_t ts(&resource, std::move(columns));
-
-    // Insert 4 row groups worth of data (4 * DEFAULT_VECTOR_CAPACITY)
-    append_int64_data(ts.table(), &resource, 4 * DEFAULT_VECTOR_CAPACITY);
-    REQUIRE(ts.table().calculate_size() == 4 * DEFAULT_VECTOR_CAPACITY);
-
-    // Use storage adapter's parallel_scan
-    components::storage::table_storage_adapter_t adapter(ts.table(), &resource);
-
-    uint64_t chunks_seen = 0;
-    uint64_t total = adapter.parallel_scan([&](data_chunk_t& /*chunk*/) { chunks_seen++; });
-
-    REQUIRE(total == 4 * DEFAULT_VECTOR_CAPACITY);
-    REQUIRE(chunks_seen == 4);
-}

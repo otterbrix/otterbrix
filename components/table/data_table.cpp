@@ -449,40 +449,6 @@ namespace components::table {
         }
     }
 
-    std::shared_ptr<parallel_table_scan_state_t>
-    data_table_t::create_parallel_scan_state(const std::vector<storage_index_t>& column_ids,
-                                             const table_filter_t* filter) {
-        auto total_rg = row_groups_->row_group_tree()->segment_count();
-        return std::make_shared<parallel_table_scan_state_t>(column_ids, filter, total_rg);
-    }
-
-    bool data_table_t::next_parallel_chunk(parallel_table_scan_state_t& parallel_state,
-                                           table_scan_state& local_state,
-                                           vector::data_chunk_t& result) {
-        while (true) {
-            auto rg_idx = parallel_state.next_row_group_idx.fetch_add(1);
-            if (rg_idx >= parallel_state.total_row_groups) {
-                return false;
-            }
-
-            auto* rg = row_groups_->row_group_tree()->segment_at(static_cast<int64_t>(rg_idx));
-            if (!rg) {
-                return false;
-            }
-
-            local_state.initialize(parallel_state.column_ids, parallel_state.filter);
-            int64_t max_row = rg->start + static_cast<int64_t>(rg->count);
-            collection_t::initialize_scan_in_row_group(local_state.local_state, *row_groups_, *rg, 0, max_row);
-
-            result.reset();
-            local_state.local_state.scan_committed(result, table_scan_type::COMMITTED_ROWS);
-            if (result.size() > 0) {
-                return true;
-            }
-            // Empty row group (all deleted) — skip and try next
-        }
-    }
-
     void data_table_t::merge_storage(collection_t& data) { row_groups_->merge_storage(data); }
 
     std::unique_ptr<table_delete_state>

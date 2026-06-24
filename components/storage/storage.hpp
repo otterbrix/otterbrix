@@ -127,8 +127,6 @@ namespace components::storage {
                                   uint64_t count,
                                   const std::function<void(vector::data_chunk_t& chunk)>& callback) = 0;
 
-        virtual uint64_t parallel_scan(const std::function<void(vector::data_chunk_t& chunk)>& callback) = 0;
-
         virtual uint64_t append(vector::data_chunk_t& data) = 0;
 
         virtual void update(vector::vector_t& row_ids, vector::data_chunk_t& data) = 0;

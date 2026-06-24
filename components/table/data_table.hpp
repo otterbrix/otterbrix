@@ -128,13 +128,6 @@ namespace components::table {
         // compacted (or empty) and safe to checkpoint without version metadata.
         bool compact(uint64_t compact_watermark);
 
-        std::shared_ptr<parallel_table_scan_state_t>
-        create_parallel_scan_state(const std::vector<storage_index_t>& column_ids,
-                                   const table_filter_t* filter = nullptr);
-        bool next_parallel_chunk(parallel_table_scan_state_t& parallel_state,
-                                 table_scan_state& local_state,
-                                 vector::data_chunk_t& result);
-
         // The checkpoint chain returns out_of_memory when a column flush pin fails;
         // true on success.
         [[nodiscard]] core::result_wrapper_t<bool> checkpoint(storage::metadata_writer_t& writer);

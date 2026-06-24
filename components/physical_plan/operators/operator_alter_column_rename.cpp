@@ -1,6 +1,5 @@
 #include "operator_alter_column_rename.hpp"
 
-#include <set>
 #include <vector>
 
 #include "alter_validators.hpp"

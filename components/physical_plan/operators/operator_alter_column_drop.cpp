@@ -11,7 +11,6 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
-#include <set>
 #include <utility>
 #include <vector>
 

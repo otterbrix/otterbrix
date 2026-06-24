@@ -2,7 +2,6 @@
 #include "join_utils.hpp"
 #include "predicates/predicate.hpp"
 
-#include <algorithm>
 #include <components/vector/vector_operations.hpp>
 
 namespace components::operators {

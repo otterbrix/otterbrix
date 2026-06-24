@@ -13,7 +13,6 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>

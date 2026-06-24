@@ -6,7 +6,6 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>

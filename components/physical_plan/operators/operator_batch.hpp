@@ -4,7 +4,6 @@
 #include "operator_data.hpp"
 #include <boost/intrusive_ptr.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <vector>
 
 namespace components::operators {
     // A pre-materialized data carrier: holds a fixed set of chunks (set in the ctor,

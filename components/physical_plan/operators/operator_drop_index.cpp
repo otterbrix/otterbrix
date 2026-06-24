@@ -4,7 +4,6 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
-#include <set>
 #include <vector>
 
 namespace components::operators {

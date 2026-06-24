@@ -1,5 +1,4 @@
 #include "operator_union.hpp"
-#include "join_utils.hpp"
 #include "operator_data.hpp"
 
 #include <components/vector/data_chunk.hpp>

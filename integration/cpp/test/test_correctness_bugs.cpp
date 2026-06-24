@@ -4,6 +4,7 @@
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <core/operations_helper.hpp>
+#include <services/collection/executor.hpp>
 
 namespace {
 
@@ -392,6 +393,257 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
         INFO("6d error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_error());
     }
+}
+
+// A constraint (CHECK / FK) that errors AFTER the DML operator already appended its
+// rows, in AUTOCOMMIT, must leave NO physical trace: the appended (uncommitted) rows
+// must be REVERTED, not lingered. Mechanism of the bug being guarded against: the
+// insert's await_async_and_resume does the WAL-first storage_append and records the
+// append range on the pipeline context; the constraint operator above it (driven
+// bottom-up, AFTER the insert) then errors. If the executor's error path skips lifting
+// the recorded append range into the result, the autocommit abort tail has nothing to
+// revert and the bad row physically lingers (txn_abort alone does not scrub it). These
+// tests assert the row is ABSENT after the violation — including the deterministic
+// "re-insert the same id succeeds" probe, which is RED if a uniqueness-free physical
+// row still sits in the table.
+TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_linger") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_autocommit_no_linger");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        // age is bigint so the CHECK constant compares same-type (mirrors the
+        // existing streaming_dml::check_constraint test).
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.acc (id bigint, age bigint);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(session, "ALTER TABLE t.acc ADD CONSTRAINT chk_age CHECK (age > 0);")->is_success());
+    }
+
+    // AUTOCOMMIT INSERT that violates the CHECK (age = -5 fails age > 0). The
+    // statement MUST error.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO t.acc (id, age) VALUES (1, -5);");
+        INFO("CHECK-violating INSERT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+    }
+
+    // The bad row must be ABSENT: it was physically appended before the CHECK ran,
+    // and the autocommit abort must have reverted that append.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM t.acc;");
+        INFO("post-violation COUNT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 0);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM t.acc WHERE id = 1;");
+        INFO("post-violation SELECT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    // Deterministic physical-leak probe: a VALID re-insert of the SAME id must
+    // succeed and the table must then hold EXACTLY ONE row. If the reverted append
+    // had lingered, a full scan / COUNT here would observe the stale row too.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO t.acc (id, age) VALUES (1, 42);");
+        INFO("valid re-insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM t.acc;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 1);
+    }
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/fk_violation_autocommit_no_linger");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.parent (id bigint, name text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.child (id bigint, parent_id bigint);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session,
+                                  "ALTER TABLE t.child ADD CONSTRAINT fk_p "
+                                  "FOREIGN KEY (parent_id) REFERENCES t.parent (id);")
+                    ->is_success());
+    }
+    // One parent row (id == 1) exists; a child referencing id == 99 has no parent.
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.parent (id, name) VALUES (1, 'p1');")->is_success());
+    }
+
+    // AUTOCOMMIT INSERT into the child referencing a missing parent: MUST error.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO t.child (id, parent_id) VALUES (7, 99);");
+        INFO("FK-violating INSERT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+    }
+
+    // The child row must be ABSENT (the append must have been reverted on abort).
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM t.child;");
+        INFO("post-FK-violation COUNT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 0);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM t.child WHERE id = 7;");
+        INFO("post-FK-violation SELECT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    // Deterministic probe: a VALID insert referencing the existing parent succeeds
+    // and the child table then holds exactly one row (the stale FK-violating row,
+    // had it lingered, would push the count to 2).
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO t.child (id, parent_id) VALUES (8, 1);");
+        INFO("valid child insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM t.child;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 1);
+    }
+}
+
+// Deterministic RED/GREEN probe of the PHYSICAL revert. The black-box tests above
+// assert the externally-visible "row absent" contract, but MVCC permanently masks the
+// leaked row from every SQL read (its insert_id stays >= TRANSACTION_ID_START — a
+// pending-txn id that is never lowered to a commit_id and is never reused), so they
+// pass even with the leak present. This test observes the FIX MECHANISM directly via
+// the DEV_MODE executor counter dml_appends_reverted(): a CHECK/FK violation in
+// autocommit appends a row BEFORE the constraint fails, and the executor's failed-
+// statement abort path MUST lift that recorded append range and physically revert it
+// (storage_revert_appends → row_group_t::revert_append truncates the slot back). Before
+// the fix the error path breaks BEFORE the dml_appends lift, so the counter does not
+// move and the physical slot lingers — this assertion is RED. After the fix it bumps by
+// exactly one per leaked range.
+TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_reverts_physical_append") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_reverts_physical_append");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.acc (id bigint, age bigint);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(session, "ALTER TABLE t.acc ADD CONSTRAINT chk_age CHECK (age > 0);")->is_success());
+    }
+
+    const auto reverts_before = services::collection::executor::dml_appends_reverted();
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO t.acc (id, age) VALUES (1, -5);");
+        INFO("CHECK-violating INSERT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+    }
+    const auto reverts_after = services::collection::executor::dml_appends_reverted();
+
+    // The physically-appended (then constraint-rejected) row's base append range
+    // must have been reverted on the abort path. RED before the fix (counter unchanged
+    // because the error path skipped the dml_appends lift).
+    INFO("dml_appends_reverted before=" << reverts_before << " after=" << reverts_after);
+    REQUIRE(reverts_after == reverts_before + 1);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_physical_append") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/fk_violation_reverts_physical_append");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.parent (id bigint, name text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.child (id bigint, parent_id bigint);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session,
+                                  "ALTER TABLE t.child ADD CONSTRAINT fk_p "
+                                  "FOREIGN KEY (parent_id) REFERENCES t.parent (id);")
+                    ->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.parent (id, name) VALUES (1, 'p1');")->is_success());
+    }
+
+    const auto reverts_before = services::collection::executor::dml_appends_reverted();
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO t.child (id, parent_id) VALUES (7, 99);");
+        INFO("FK-violating INSERT error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+    }
+    const auto reverts_after = services::collection::executor::dml_appends_reverted();
+
+    INFO("dml_appends_reverted before=" << reverts_before << " after=" << reverts_after);
+    REQUIRE(reverts_after == reverts_before + 1);
 }
 
 // A scalar aggregate over a COLUMN argument (not count(*)) over an EMPTY table must

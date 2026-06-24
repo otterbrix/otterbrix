@@ -34,6 +34,17 @@ namespace services::collection::executor {
     // binaries carry neither the counter nor these accessors.
 #ifdef DEV_MODE
     uint64_t streaming_pipeline_runs() noexcept;
+
+    // Test-observable counter of BASE-table DML append ranges PHYSICALLY reverted on
+    // the failed-statement abort path (revert_failed_txn → storage_revert_appends).
+    // Exists to make the constraint-error-leak regression deterministically RED/GREEN
+    // through SQL: a CHECK/FK violation in autocommit appends a row BEFORE the
+    // constraint fails; if the executor's error path does not lift that recorded
+    // append range, this counter stays 0 and the physical row lingers (the bug). After
+    // the fix it bumps by exactly the number of leaked ranges reverted. Process-global
+    // + relaxed: coarse instrumentation, not a synchronization primitive; off every hot
+    // path. DEV_MODE-only, like streaming_pipeline_runs().
+    uint64_t dml_appends_reverted() noexcept;
 #endif
 
     // One range per (table, DML fragment), accumulated across sub-plans.

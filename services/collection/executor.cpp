@@ -59,9 +59,11 @@ namespace services::collection::executor {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_streaming_pipeline_runs{0};
+        std::atomic<uint64_t> g_dml_appends_reverted{0};
     } // namespace
 
     uint64_t streaming_pipeline_runs() noexcept { return g_streaming_pipeline_runs.load(std::memory_order_relaxed); }
+    uint64_t dml_appends_reverted() noexcept { return g_dml_appends_reverted.load(std::memory_order_relaxed); }
 #endif
 
     // ---- behavior/dispatch_traits sync check ----
@@ -1392,6 +1394,13 @@ namespace services::collection::executor {
             for (const auto& app : exec_result.dml_appends) {
                 revert_ranges.push_back(
                     components::pg_catalog_append_range_t{app.table_oid, app.row_start, app.row_count});
+#ifdef DEV_MODE
+                // Test-observability: count each base-table DML append range we
+                // physically revert here. A constraint (CHECK/FK) that errors AFTER
+                // the DML appended its rows must reach this point with a non-empty
+                // dml_appends so the leaked physical slot is reverted (see header).
+                g_dml_appends_reverted.fetch_add(1, std::memory_order_relaxed);
+#endif
             }
             for (auto& pgc : exec_result.pg_catalog_appends) {
                 revert_ranges.push_back(std::move(pgc));
@@ -2123,12 +2132,56 @@ namespace services::collection::executor {
             // Prepare the operator tree (connects children in aggregation, etc.)
             plan->prepare();
 
+            // Lift the BASE-table + FK-cascade DML append/delete ranges the DML
+            // operators recorded in their await_async_and_resume. Factored out of the
+            // success-path lift block below so the CONSTRAINT-ERROR path can lift them
+            // too: a CHECK/fk_check operator sits ABOVE the DML and is driven AFTER it
+            // (bottom-up async-finalize), so by the time it errors the DML has already
+            // done its WAL-first storage_append and stamped these ranges. If we break
+            // out of the loop without lifting them, exec_result.dml_appends is empty and
+            // the failed-statement abort tail (revert_failed_txn / operator_abort_
+            // transaction) has NOTHING to revert — the physically-appended (uncommitted)
+            // row LINGERS (invisible via MVCC, but a real storage leak: row_group.count
+            // stays bumped, the slot is never reclaimed). Lifting here on BOTH paths
+            // hands the recorded range to the abort tail so storage_revert_appends ->
+            // row_group_t::revert_append truncates the slot back. Idempotent: it zeroes
+            // the single-slot dml_* fields and clears the cascade vectors, so the
+            // success-path block below (which lifts the rest) never double-counts.
+            auto lift_dml_ranges = [&pipeline_context, &result_tracking]() {
+                if (pipeline_context.dml_append_row_count > 0) {
+                    result_tracking.dml_appends.push_back({pipeline_context.dml_table_oid,
+                                                           pipeline_context.dml_append_row_start,
+                                                           pipeline_context.dml_append_row_count});
+                }
+                if (pipeline_context.dml_delete_txn_id != 0) {
+                    result_tracking.dml_deletes.push_back(
+                        {pipeline_context.dml_table_oid, pipeline_context.dml_delete_txn_id});
+                }
+                for (const auto& del : pipeline_context.cascade_dml_deletes) {
+                    result_tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
+                }
+                for (const auto& app : pipeline_context.cascade_dml_appends) {
+                    result_tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});
+                }
+                pipeline_context.cascade_dml_deletes.clear();
+                pipeline_context.cascade_dml_appends.clear();
+                pipeline_context.dml_append_row_start = 0;
+                pipeline_context.dml_append_row_count = 0;
+                pipeline_context.dml_delete_txn_id = 0;
+                pipeline_context.dml_table_oid = components::catalog::INVALID_OID;
+            };
+
             // Drive the sub-plan to completion through the shared streaming seam
             // (drive_subplan_ -> execute_pipeline). On success `plan` is executed with
             // output_ set; the switch below reads plan->output().
             {
                 auto drive_err = co_await drive_subplan_(plan, &pipeline_context);
                 if (drive_err.contains_error()) {
+                    // Constraint-error (or any operator-error) path: the DML child may
+                    // have already appended + stamped its range before the operator
+                    // above it failed. Lift the recorded range so the abort tail reverts
+                    // the physical append (see lift_dml_ranges).
+                    lift_dml_ranges();
                     cursor = make_cursor(resource(), std::move(drive_err));
                     break;
                 }
@@ -2202,6 +2255,10 @@ namespace services::collection::executor {
             }
 
             if (cursor->is_error()) {
+                // Same reasoning as the drive-error break above: lift any DML range the
+                // operators recorded before this cursor-level error so the abort tail
+                // reverts the physical append. Idempotent (drains the dml_* slots).
+                lift_dml_ranges();
                 break;
             }
 
@@ -2233,34 +2290,12 @@ namespace services::collection::executor {
             pipeline_context.pg_catalog_delete_tables.clear();
             pipeline_context.pg_attribute_commit_id_backfills.clear();
 
-            // Lift DML swap-info recorded by operator_insert / _delete / _update
-            // inside await_async_and_resume. Push a range per sub-plan rather
-            // than overwriting, so FK cascade across >=2 tables keeps every
-            // child's publish (see dml_append_range_t).
-            if (pipeline_context.dml_append_row_count > 0) {
-                result_tracking.dml_appends.push_back({pipeline_context.dml_table_oid,
-                                                       pipeline_context.dml_append_row_start,
-                                                       pipeline_context.dml_append_row_count});
-            }
-            if (pipeline_context.dml_delete_txn_id != 0) {
-                result_tracking.dml_deletes.push_back(
-                    {pipeline_context.dml_table_oid, pipeline_context.dml_delete_txn_id});
-            }
-            // Lift FK cascade child-table ranges. operator_fk_cascade_t touches a
-            // DIFFERENT table than the parent operator_delete (which owns the
-            // single-slot dml_* fields above), so its child delete / SET NULL-
-            // DEFAULT update ranges arrive on the dedicated cascade channels.
-            // Fold them into the SAME dml_deletes / dml_appends vectors the
-            // parent's ranges land in so the commit/abort tail publishes / reverts
-            // the child mutation under the parent txn — atomic with the parent.
-            for (const auto& del : pipeline_context.cascade_dml_deletes) {
-                result_tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
-            }
-            for (const auto& app : pipeline_context.cascade_dml_appends) {
-                result_tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});
-            }
-            pipeline_context.cascade_dml_deletes.clear();
-            pipeline_context.cascade_dml_appends.clear();
+            // Lift the BASE-table + FK-cascade DML append/delete ranges recorded by
+            // operator_insert / _delete / _update / _fk_cascade inside their
+            // await_async_and_resume. Shared with the constraint-error path above (see
+            // lift_dml_ranges): push a range per sub-plan rather than overwriting, so FK
+            // cascade across >=2 tables keeps every child's publish (dml_append_range_t).
+            lift_dml_ranges();
             // Lift the DROP storage-scrub oids: cascade-delete operators record
             // every storage whose backing files they tore down. Accumulate (not
             // overwrite) so a multi-table DROP keeps every dropped oid; the
@@ -2290,10 +2325,8 @@ namespace services::collection::executor {
             if (pipeline_context.committed_id != 0) {
                 result_tracking.commit_id = pipeline_context.committed_id;
             }
-            pipeline_context.dml_append_row_start = 0;
-            pipeline_context.dml_append_row_count = 0;
-            pipeline_context.dml_delete_txn_id = 0;
-            pipeline_context.dml_table_oid = components::catalog::INVALID_OID;
+            // (The single-slot dml_* fields + cascade vectors were already drained and
+            // zeroed by lift_dml_ranges() above.)
 
             plan_data.sub_plans.pop();
         }

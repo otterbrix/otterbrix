@@ -155,7 +155,7 @@ namespace {
             // materialization (column reads + chunk build) would. The point is that the
             // intermediate is suspended on co_await for a real interval before this lands.
             std::this_thread::yield();
-            volatile std::int64_t spin = 0;
+            std::atomic<std::int64_t> spin{0};
             for (int k = 0; k < 64; ++k) {
                 spin += k;
             }
@@ -302,7 +302,7 @@ namespace {
             // awaited_flags_ walked to nullptr) and sub-await #2 republishing it, do a
             // touch of operator work (cursor bookkeeping) so the deepest frame genuinely
             // dwells with a stale propagated chain.
-            volatile std::int64_t spin = 0;
+            std::atomic<std::int64_t> spin{0};
             for (int k = 0; k < 32; ++k) {
                 spin += k;
             }
@@ -356,7 +356,7 @@ namespace {
                 // Inter-batch work (== pump_one): a short burst between awaits so the
                 // consumer occupies the inter-await null-window the way the real operator
                 // push does, instead of immediately re-publishing the next await.
-                volatile std::int64_t spin = 0;
+                std::atomic<std::int64_t> spin{0};
                 for (int k = 0; k < 128; ++k) {
                     spin += k * i;
                 }

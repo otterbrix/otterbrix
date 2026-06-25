@@ -279,8 +279,8 @@ TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
         ts.table().scan(result, scan_state);
         REQUIRE(result.size() == NUM_ROWS);
         for (uint64_t i = 0; i < result.size(); ++i) {
-            REQUIRE(result.data[0].get_value_not_null<int64_t>(i) == static_cast<int64_t>(i));
-            REQUIRE(result.data[1].get_value_not_null<int64_t>(i) == static_cast<int64_t>(i * 100));
+            REQUIRE(result.data[0].get_value_unchecked<int64_t>(i) == static_cast<int64_t>(i));
+            REQUIRE(result.data[1].get_value_unchecked<int64_t>(i) == static_cast<int64_t>(i * 100));
         }
     }
 

@@ -95,7 +95,7 @@ namespace services::disk {
                 resolve_function_result_t r(resource());
                 r.found = true;
                 r.name = name;
-                r.oid = static_cast<components::catalog::oid_t>(chunk.get_value_not_null<std::uint32_t>(0, i));
+                r.oid = static_cast<components::catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(0, i));
                 if (auto ns_v = chunk.get_value<std::uint32_t>(2, i))
                     r.namespace_oid = static_cast<components::catalog::oid_t>(*ns_v);
                 if (auto nargs_v = chunk.get_value<std::int32_t>(3, i))

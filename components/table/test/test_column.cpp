@@ -672,17 +672,18 @@ TEST_CASE("components::table::column") {
             vector_t v(&resource, struct_type, test_size);
 
             for (size_t i = 0; i < test_size; i++) {
-                std::vector<std::optional<uint16_t>> arr;
+                std::vector<logical_value_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(uint16_t(j));
+                    arr.emplace_back(&resource, uint16_t(j));
                 }
-                std::string name{generate_string(i)};
-                v.set_value(i,
-                            std::tuple{std::optional<bool>(i % 2 != 0),
-                                       std::optional<int32_t>(int32_t(i)),
-                                       std::optional<std::string_view>(name),
-                                       std::optional<std::vector<std::optional<uint16_t>>>(std::move(arr))});
+                std::vector<logical_value_t> value_fiels;
+                value_fiels.emplace_back(&resource, i % 2 != 0);
+                value_fiels.emplace_back(&resource, int32_t(i));
+                value_fiels.emplace_back(v.resource(), generate_string(i));
+                value_fiels.emplace_back(logical_value_t::create_list(v.resource(), logical_type::USMALLINT, arr));
+                logical_value_t value = logical_value_t::create_struct(v.resource(), struct_type, value_fiels);
+                v.set_value(i, value);
             }
 
             column_append_state state;

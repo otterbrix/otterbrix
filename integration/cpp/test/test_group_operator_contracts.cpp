@@ -106,8 +106,8 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
     // schema, not the NA type of the first (NULL) group key.
     REQUIRE(out.data[0].type().type() == types::logical_type::BIGINT);
     REQUIRE(out.data[0].is_null(0));
-    REQUIRE(out.get_value_not_null<int64_t>(0, 1) == 10);
-    REQUIRE(out.get_value_not_null<int64_t>(0, 2) == 20);
+    REQUIRE(out.get_value_unchecked<int64_t>(0, 1) == 10);
+    REQUIRE(out.get_value_unchecked<int64_t>(0, 2) == 20);
 }
 
 TEST_CASE("group operator contracts: aggregator error on empty-input global aggregate is propagated",

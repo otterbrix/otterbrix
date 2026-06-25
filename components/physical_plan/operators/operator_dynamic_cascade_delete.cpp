@@ -140,8 +140,8 @@ namespace components::operators {
                     continue;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     catalog::dependency_t d;
-                    d.classid = static_cast<catalog::oid_t>(chunk.get_value_not_null<std::uint32_t>(0, i));
-                    d.objid = static_cast<catalog::oid_t>(chunk.get_value_not_null<std::uint32_t>(1, i));
+                    d.classid = static_cast<catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(0, i));
+                    d.objid = static_cast<catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(1, i));
                     const auto dv = chunk.get_value<std::string_view>(4, i).value_or(std::string_view{"n"});
                     d.deptype = dv.empty() ? 'n' : dv[0];
                     deps.push_back(d);

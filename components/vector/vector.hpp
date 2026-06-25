@@ -85,14 +85,6 @@ namespace components::vector {
         SEQUENCE
     };
 
-    // Shared guard for the typed set_value overloads: excludes logical_value_t (handled by the
-    // runtime overloads). Named so both overloads reference the SAME atomic constraint — the struct
-    // overload then subsumes the scalar one (it adds is_tuple), resolving a tuple argument to the
-    // struct overload instead of an ambiguous call. (Two textually identical but separately written
-    // requires-clauses are distinct atomic constraints and would NOT subsume.)
-    template<typename T>
-    concept non_logical_value_arg = !std::is_same_v<std::remove_cvref_t<T>, types::logical_value_t>;
-
     class vector_t {
     public:
         explicit vector_t(std::pmr::memory_resource* resource,
@@ -203,28 +195,15 @@ namespace components::vector {
         // Arrays and lists are acquired with std::vector<std::optional<T>
         template<typename T>
         std::optional<T> get_value(uint64_t row_index) const;
-        // for struct values result is a bit ugly
-        template<typename... Ts>
-        requires(sizeof...(Ts) > 1) std::optional<std::tuple<std::optional<Ts>...>> get_value(uint64_t row_index) const;
 
         // Unsafe variants for callers that know the value is present: return T (or the struct tuple)
         // directly instead of std::optional. Assert on a null value; undefined behaviour past the assert.
         template<typename T>
-        T get_value_not_null(uint64_t row_index) const;
-        template<typename... Ts>
-        requires(sizeof...(Ts) > 1) std::tuple<std::optional<Ts>...> get_value_not_null(uint64_t row_index) const;
-
+        T get_value_unchecked(uint64_t row_index) const;
         // For types known at compile time
         // takes either plain T or wrapped in std::optional for handling nulls
         template<typename T>
         requires non_logical_value_arg<T> void set_value(uint64_t row_index, T&& value);
-        // Structs are set using std::tuple<>
-        // Whole struct or each entry could be wrapped in std::optional for null handling
-        // Shares non_logical_value_arg with the overload above and adds is_tuple, so this one subsumes
-        // it and a tuple argument resolves here unambiguously instead of being an ambiguous call.
-        template<typename T>
-        requires(non_logical_value_arg<T>&& is_tuple_v<stored_value_type_t<T>>) void set_value(uint64_t row_index,
-                                                                                               T&& value);
 
     private:
         const vector_t* resolve_value_location(uint64_t row_index, uint64_t* index) const;
@@ -240,10 +219,19 @@ namespace components::vector {
 
     template<typename T>
     std::optional<T> vector_t::get_value(uint64_t row_index) const {
+        if (is_null(row_index)) {
+            return std::nullopt;
+        } else {
+            return get_value_unchecked<T>(row_index);
+        }
+    }
+
+    template<typename T>
+    T vector_t::get_value_unchecked(uint64_t row_index) const {
         uint64_t index;
         const vector_t* vector = resolve_value_location(row_index, &index);
         if (!vector) {
-            return std::nullopt;
+            return {};
         }
         if (vector->get_vector_type() == vector_type::SEQUENCE) {
             // Sequence vectors only ever hold arithmetic values; the branch is dead for other T but
@@ -254,7 +242,7 @@ namespace components::vector {
                 return sequence_entry<T>(start + increment * static_cast<int64_t>(index));
             } else {
                 assert(false && "sequence vector requires an arithmetic value type");
-                return std::nullopt;
+                return {};
             }
         }
 
@@ -290,42 +278,6 @@ namespace components::vector {
         }
         // default just read value:
         return reinterpret_cast<T*>(vector->data_)[index];
-    }
-
-    template<typename... Ts>
-    requires(sizeof...(Ts) >
-             1) std::optional<std::tuple<std::optional<Ts>...>> vector_t::get_value(uint64_t row_index) const {
-        uint64_t index;
-        const vector_t* vector = resolve_value_location(row_index, &index);
-        if (!vector) {
-            return std::nullopt;
-        }
-        assert(vector->get_vector_type() != vector_type::SEQUENCE &&
-               "vector_t::get_value<struct> does not support sequencing");
-
-        auto& child_entries = vector->entries();
-        // index sequence to get column for each entry
-        // with templated immediately invoked lambda
-        return [&]<std::size_t... ColumnIndices>(std::index_sequence<ColumnIndices...>)
-            ->std::tuple<std::optional<Ts>...> {
-            return {child_entries[ColumnIndices]->template get_value<Ts>(index)...};
-        }
-        (std::make_index_sequence<sizeof...(Ts)>{});
-    }
-
-    template<typename T>
-    T vector_t::get_value_not_null(uint64_t row_index) const {
-        auto value = get_value<T>(row_index);
-        assert(value.has_value() && "vector_t::get_value_not_null called on a null value");
-        return std::move(*value);
-    }
-
-    template<typename... Ts>
-    requires(sizeof...(Ts) >
-             1) std::tuple<std::optional<Ts>...> vector_t::get_value_not_null(uint64_t row_index) const {
-        auto value = get_value<Ts...>(row_index);
-        assert(value.has_value() && "vector_t::get_value_not_null called on a null struct");
-        return std::move(*value);
     }
 
     template<typename T>
@@ -389,42 +341,6 @@ namespace components::vector {
             assert(types::get_physical_type<value_type>::type == type_.to_physical_type() &&
                    "value has to be casted to vector's type before set_value");
             reinterpret_cast<value_type*>(data_)[row_index] = stored_value(std::forward<T>(value));
-        }
-    }
-
-    template<typename T>
-    requires(non_logical_value_arg<T>&& is_tuple_v<stored_value_type_t<T>>) void vector_t::set_value(uint64_t row_index,
-                                                                                                     T&& value) {
-        if (get_vector_type() == vector_type::DICTIONARY) {
-            auto& indexing_vector = indexing();
-            return child().set_value(indexing_vector.get_index(row_index), std::forward<T>(value));
-        }
-
-        using arg_type = std::remove_cvref_t<T>;
-        using tuple_type = stored_value_type_t<T>;
-        constexpr std::size_t column_count = std::tuple_size_v<tuple_type>;
-
-        bool present = true;
-        if constexpr (is_optional_v<arg_type>) {
-            present = value.has_value();
-        }
-        validity_.set(row_index, present);
-
-        // index sequence to get column for each entry with a templated immediately invoked lambda.
-        // Each field is forwarded with the struct's value category; a null struct nulls every entry.
-        auto& child_entries = entries();
-        if (present) {
-            [&]<std::size_t... ColumnIndices>(std::index_sequence<ColumnIndices...>) {
-                (child_entries[ColumnIndices]->set_value(row_index,
-                                                         std::get<ColumnIndices>(stored_value(std::forward<T>(value)))),
-                 ...);
-            }
-            (std::make_index_sequence<column_count>{});
-        } else {
-            [&]<std::size_t... ColumnIndices>(std::index_sequence<ColumnIndices...>) {
-                (child_entries[ColumnIndices]->set_null(row_index, true), ...);
-            }
-            (std::make_index_sequence<column_count>{});
         }
     }
 

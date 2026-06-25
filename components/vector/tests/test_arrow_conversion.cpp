@@ -100,18 +100,19 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
             }
             // struct
             {
-                std::vector<std::optional<uint16_t>> arr;
+                std::vector<logical_value_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(static_cast<uint16_t>(j));
+                    arr.emplace_back(&resource, static_cast<uint16_t>(j));
                 }
-                std::string name{"long_string_with_index_" + std::to_string(i)};
-                chunk.set_value(8,
-                                i,
-                                std::tuple{std::optional<bool>(i % 2 != 0),
-                                           std::optional<int32_t>(static_cast<int32_t>(i)),
-                                           std::optional<std::string_view>(name),
-                                           std::optional<std::vector<std::optional<uint16_t>>>(std::move(arr))});
+                std::vector<logical_value_t> value_fiels;
+                value_fiels.emplace_back(&resource, i % 2 != 0);
+                value_fiels.emplace_back(&resource, static_cast<int32_t>(i));
+                value_fiels.emplace_back(
+                    logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}});
+                value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
+                logical_value_t value = logical_value_t::create_struct(&resource, types.back(), value_fiels);
+                chunk.set_value(8, i, value);
             }
         }
 
@@ -222,18 +223,19 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
             }
             // struct
             {
-                std::vector<std::optional<uint16_t>> arr;
+                std::vector<logical_value_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(static_cast<uint16_t>(j));
+                    arr.emplace_back(&resource, static_cast<uint16_t>(j));
                 }
-                std::string name{"long_string_with_index_" + std::to_string(i)};
-                chunk.set_value(8,
-                                i,
-                                std::tuple{std::optional<bool>(i % 2 != 0),
-                                           std::optional<int32_t>(static_cast<int32_t>(i)),
-                                           std::optional<std::string_view>(name),
-                                           std::optional<std::vector<std::optional<uint16_t>>>(std::move(arr))});
+                std::vector<logical_value_t> value_fiels;
+                value_fiels.emplace_back(&resource, i % 2 != 0);
+                value_fiels.emplace_back(&resource, static_cast<int32_t>(i));
+                value_fiels.emplace_back(
+                    logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}});
+                value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
+                logical_value_t value = logical_value_t::create_struct(&resource, types.back(), value_fiels);
+                chunk.set_value(8, i, value);
             }
         }
 

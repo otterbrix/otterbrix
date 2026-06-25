@@ -154,10 +154,10 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
     REQUIRE(chunk.column_count() == 3); // campaign_name, product_count, avg_product_price
     bool seen_campaign[2] = {false, false};
     for (uint64_t row = 0; row < cursor->size(); ++row) {
-        auto key = chunk.get_value_not_null<int32_t>(0, row);
+        auto key = chunk.get_value_unchecked<int32_t>(0, row);
         REQUIRE((key == 1 || key == 2));
-        REQUIRE(chunk.get_value_not_null<uint64_t>(1, row) == 1);
-        REQUIRE(chunk.get_value_not_null<double>(2, row) == Approx(key == 1 ? 100.5 : 201.0));
+        REQUIRE(chunk.get_value_unchecked<uint64_t>(1, row) == 1);
+        REQUIRE(chunk.get_value_unchecked<double>(2, row) == Approx(key == 1 ? 100.5 : 201.0));
         seen_campaign[key - 1] = true;
     }
     REQUIRE(seen_campaign[0]);

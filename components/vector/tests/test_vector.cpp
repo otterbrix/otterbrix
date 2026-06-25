@@ -39,7 +39,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::UBIGINT);
         for (size_t i = 0; i < test_size; i++) {
-            REQUIRE(v.get_value_not_null<uint64_t>(i) == i);
+            REQUIRE(v.get_value_unchecked<uint64_t>(i) == i);
         }
     }
     INFO("string") {
@@ -51,7 +51,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::STRING_LITERAL);
         for (size_t i = 0; i < test_size; i++) {
-            std::string result{v.get_value_not_null<std::string_view>(i)};
+            std::string result{v.get_value_unchecked<std::string_view>(i)};
             REQUIRE(result == std::string{"long_string_with_index_" + std::to_string(i)});
         }
     }
@@ -71,7 +71,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::ARRAY);
         for (size_t i = 0; i < test_size; i++) {
-            auto arr = v.get_value_not_null<std::vector<std::optional<uint64_t>>>(i);
+            auto arr = v.get_value_unchecked<std::vector<std::optional<uint64_t>>>(i);
             REQUIRE(arr.size() == array_size);
             for (size_t j = 0; j < array_size; j++) {
                 REQUIRE(arr[j] == i * array_size + j);
@@ -101,7 +101,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::ARRAY);
         for (size_t i = 0; i < test_size; i++) {
-            auto arr = v.get_value_not_null<std::vector<std::optional<std::string_view>>>(i);
+            auto arr = v.get_value_unchecked<std::vector<std::optional<std::string_view>>>(i);
             REQUIRE(arr.size() == array_size);
             for (size_t j = 0; j < array_size; j++) {
                 std::string result{*arr[j]};
@@ -126,7 +126,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::LIST);
         for (size_t i = 0; i < test_size; i++) {
-            auto list = v.get_value_not_null<std::vector<std::optional<uint64_t>>>(i);
+            auto list = v.get_value_unchecked<std::vector<std::optional<uint64_t>>>(i);
             REQUIRE(list.size() == list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
                 REQUIRE(list[j] == i * list_length(i) + j);
@@ -156,7 +156,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::LIST);
         for (size_t i = 0; i < test_size; i++) {
-            auto list = v.get_value_not_null<std::vector<std::optional<std::string_view>>>(i);
+            auto list = v.get_value_unchecked<std::vector<std::optional<std::string_view>>>(i);
             REQUIRE(list.size() == list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
                 std::string result{*list[j]};
@@ -180,38 +180,45 @@ TEST_CASE("components::vector::vector") {
         components::vector::vector_t v(&resource, struct_type, test_size);
 
         for (size_t i = 0; i < test_size; i++) {
-            std::vector<std::optional<uint16_t>> arr;
+            std::vector<components::types::logical_value_t> arr;
             arr.reserve(i);
             for (size_t j = 0; j < i; j++) {
-                arr.emplace_back(test_data[i].array[j]);
+                arr.emplace_back(v.resource(), test_data[i].array[j]);
             }
-            v.set_value(i,
-                        std::tuple{std::optional<bool>(test_data[i].flag),
-                                   std::optional<int32_t>(test_data[i].number),
-                                   std::optional<std::string_view>(test_data[i].name),
-                                   std::optional<std::vector<std::optional<uint16_t>>>(std::move(arr))});
+            std::vector<components::types::logical_value_t> value_fiels;
+            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].flag});
+            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].number});
+            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].name});
+            value_fiels.emplace_back(
+                components::types::logical_value_t::create_list(v.resource(),
+                                                                components::types::logical_type::USMALLINT,
+                                                                arr));
+            components::types::logical_value_t value =
+                components::types::logical_value_t::create_struct(v.resource(), struct_type, value_fiels);
+            v.set_value(i, value);
         }
 
-        REQUIRE(v.type().type() == components::types::logical_type::STRUCT);
-        REQUIRE(v.type().alias() == "test_struct");
-        REQUIRE(v.type().child_types()[0].type() == components::types::logical_type::BOOLEAN);
-        REQUIRE(v.type().child_types()[0].alias() == "flag");
-        REQUIRE(v.type().child_types()[1].type() == components::types::logical_type::INTEGER);
-        REQUIRE(v.type().child_types()[1].alias() == "number");
-        REQUIRE(v.type().child_types()[2].type() == components::types::logical_type::STRING_LITERAL);
-        REQUIRE(v.type().child_types()[2].alias() == "name");
-        REQUIRE(v.type().child_types()[3].type() == components::types::logical_type::LIST);
-        REQUIRE(v.type().child_types()[3].child_type().type() == components::types::logical_type::USMALLINT);
-        REQUIRE(v.type().child_types()[3].alias() == "array");
         for (size_t i = 0; i < test_size; i++) {
-            auto [flag, number, name, arr] =
-                v.get_value_not_null<bool, int32_t, std::string_view, std::vector<std::optional<uint16_t>>>(i);
-            REQUIRE(flag == test_data[i].flag);
-            REQUIRE(number == test_data[i].number);
-            REQUIRE(std::string{*name} == test_data[i].name);
-            REQUIRE(arr->size() == test_data[i].array.size());
-            for (size_t j = 0; j < arr->size(); j++) {
-                REQUIRE((*arr)[j] == test_data[i].array[j]);
+            components::types::logical_value_t value = v.value(i);
+            REQUIRE(value.type().type() == components::types::logical_type::STRUCT);
+            REQUIRE(value.type().alias() == "test_struct");
+            REQUIRE(value.type().child_types()[0].type() == components::types::logical_type::BOOLEAN);
+            REQUIRE(value.type().child_types()[0].alias() == "flag");
+            REQUIRE(value.type().child_types()[1].type() == components::types::logical_type::INTEGER);
+            REQUIRE(value.type().child_types()[1].alias() == "number");
+            REQUIRE(value.type().child_types()[2].type() == components::types::logical_type::STRING_LITERAL);
+            REQUIRE(value.type().child_types()[2].alias() == "name");
+            REQUIRE(value.type().child_types()[3].type() == components::types::logical_type::LIST);
+            REQUIRE(value.type().child_types()[3].child_type().type() == components::types::logical_type::USMALLINT);
+            REQUIRE(value.type().child_types()[3].alias() == "array");
+
+            REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
+            REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);
+            REQUIRE(*value.children()[2].value<std::string*>() == test_data[i].name);
+            std::vector arr(*value.children()[3].value<std::vector<components::types::logical_value_t>*>());
+            REQUIRE(arr.size() == test_data[i].array.size());
+            for (size_t j = 0; j < arr.size(); j++) {
+                REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
             }
         }
     }
@@ -246,8 +253,8 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(dictionary.get_vector_type() == components::vector::vector_type::DICTIONARY);
         for (size_t i = 0; i < test_size; i++) {
-            REQUIRE(dictionary.get_value_not_null<std::string_view>(i) ==
-                    string_array.get_value_not_null<std::string_view>(indices[i]));
+            REQUIRE(dictionary.get_value_unchecked<std::string_view>(i) ==
+                    string_array.get_value_unchecked<std::string_view>(indices[i]));
         }
     }
     INFO("union") {

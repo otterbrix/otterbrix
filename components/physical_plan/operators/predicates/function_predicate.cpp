@@ -79,7 +79,7 @@ namespace {
                                      batch.resource()});
             }
             for (size_t k = 0; k < N; ++k) {
-                results[k] = chunk.data.front().get_value_not_null<bool>(k);
+                results[k] = chunk.data.front().get_value_unchecked<bool>(k);
             }
         }
         return results;

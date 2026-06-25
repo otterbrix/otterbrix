@@ -138,7 +138,7 @@ namespace components::operators {
                 mark_executed();
                 co_return;
             }
-            table_oid_ = static_cast<catalog::oid_t>(lookup_batches[0].get_value_not_null<std::uint32_t>(0, 0));
+            table_oid_ = static_cast<catalog::oid_t>(lookup_batches[0].get_value_unchecked<std::uint32_t>(0, 0));
         }
 
         // read pg_class by oid to determine relkind and relnamespace.

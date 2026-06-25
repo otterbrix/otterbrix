@@ -145,17 +145,17 @@ TEST_CASE("components::table::data_table") {
                 break;
             }
             case 6: { // STRUCT
-                std::vector<std::optional<uint16_t>> arr;
+                std::vector<logical_value_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(test_data[i].array[j]);
+                    arr.emplace_back(&resource, test_data[i].array[j]);
                 }
-                chunk.set_value(col,
-                                row,
-                                std::tuple{std::optional<bool>(test_data[i].flag),
-                                           std::optional<int32_t>(test_data[i].number),
-                                           std::optional<std::string_view>(test_data[i].name),
-                                           std::optional<std::vector<std::optional<uint16_t>>>(std::move(arr))});
+                std::vector<logical_value_t> value_fiels;
+                value_fiels.emplace_back(&resource, test_data[i].flag);
+                value_fiels.emplace_back(&resource, test_data[i].number);
+                value_fiels.emplace_back(&resource, test_data[i].name);
+                value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
+                chunk.set_value(col, row, logical_value_t::create_struct(&resource, struct_type, value_fiels));
                 break;
             }
             case 7: { // UNION

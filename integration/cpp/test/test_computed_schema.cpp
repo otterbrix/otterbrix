@@ -160,13 +160,13 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
         REQUIRE(string_val >= 0);
 
         // bigint variant: rows id=1,2 have values; id=3 (string row) is NULL.
-        REQUIRE(chunk.get_value_not_null<int64_t>(static_cast<size_t>(bigint_val), 0) == 1);
-        REQUIRE(chunk.get_value_not_null<int64_t>(static_cast<size_t>(bigint_val), 1) == 2);
+        REQUIRE(chunk.get_value_unchecked<int64_t>(static_cast<size_t>(bigint_val), 0) == 1);
+        REQUIRE(chunk.get_value_unchecked<int64_t>(static_cast<size_t>(bigint_val), 1) == 2);
         REQUIRE(chunk.value(static_cast<size_t>(bigint_val), 2).is_null());
         // string variant: only id=3 has a value.
         REQUIRE(chunk.value(static_cast<size_t>(string_val), 0).is_null());
         REQUIRE(chunk.value(static_cast<size_t>(string_val), 1).is_null());
-        REQUIRE(chunk.get_value_not_null<std::string_view>(static_cast<size_t>(string_val), 2) == "hello");
+        REQUIRE(chunk.get_value_unchecked<std::string_view>(static_cast<size_t>(string_val), 2) == "hello");
     }
 
     SECTION("an explicit reference to the multi-type name is ambiguous") {

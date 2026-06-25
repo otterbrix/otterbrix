@@ -108,6 +108,13 @@ namespace components::operators {
         void add_computed_column(computed_column_t&& col);
         void add_post_aggregate(post_aggregate_column_t&& col);
 
+        // Plan-time resolved output column types, by FINAL output position (keys first,
+        // then aggregate values), forwarded from the logical aggregate node's
+        // output_schema(). Used to build correctly-typed results over ZERO input rows
+        // instead of falling back to the 0-byte logical_type::NA sentinel (which crashes
+        // downstream under gcc -O3). Empty when not forwarded -> data-derived fallback.
+        void set_output_types(std::pmr::vector<types::complex_logical_type> types);
+
         // --- Push-based streaming pipeline (STEP 3) ---
         // GROUP BY / aggregation folds an unbounded input into a bounded set of group
         // rows, so it is a SINK. Unlike a buffer-everything sink, this one accumulates
@@ -125,6 +132,8 @@ namespace components::operators {
         std::pmr::vector<group_value_t> values_;
         std::pmr::vector<computed_column_t> computed_columns_;
         std::pmr::vector<post_aggregate_column_t> post_aggregates_;
+        // Plan-time resolved output types by final output position (see set_output_types).
+        std::pmr::vector<types::complex_logical_type> output_types_;
         expressions::expression_ptr having_;
         size_t internal_aggregate_count_;
 

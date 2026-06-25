@@ -8,7 +8,8 @@ namespace components::logical_plan {
     node_t::node_t(std::pmr::memory_resource* resource, node_type type)
         : type_(type)
         , children_(resource)
-        , expressions_(resource) {}
+        , expressions_(resource)
+        , output_types_(resource) {}
 
     node_type node_t::type() const { return type_; }
 

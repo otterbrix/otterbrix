@@ -8,6 +8,7 @@
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator_distinct.hpp>
+#include <components/physical_plan/operators/operator_group.hpp>
 #include <components/physical_plan/operators/operator_sort.hpp>
 #include <components/physical_plan/operators/scan/transfer_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
@@ -116,6 +117,14 @@ namespace services::planner::impl {
                                                                                std::move(projected_cols))));
         }
         if (group_op) {
+            // Forward the plan-time resolved output schema (stamped on the aggregate node
+            // by validate_schema) into the group operator, so it can build correctly-typed
+            // results over zero input rows (PostgreSQL TupleDesc model) instead of NA.
+            if (auto* group = dynamic_cast<components::operators::operator_group_t*>(group_op.get());
+                group != nullptr && node->has_output_types()) {
+                group->set_output_types(std::pmr::vector<components::types::complex_logical_type>(
+                    node->output_types().begin(), node->output_types().end(), plan_resource));
+            }
             group_op->set_children(std::move(executor));
             executor = std::move(group_op);
         }

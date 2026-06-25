@@ -1317,11 +1317,13 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
-    [[nodiscard]] core::result_wrapper_t<named_schema>
-    validate_schema(std::pmr::memory_resource* resource,
-                    const impl::plan_resolve_index_t* idx,
-                    node_t* node,
-                    const components::logical_plan::storage_parameters& parameters) {
+    // Renamed body of the public validate_schema. All node recursion calls the public
+    // wrapper below (which stamps), so every node's output schema is recorded.
+    [[nodiscard]] static core::result_wrapper_t<named_schema>
+    validate_schema_impl(std::pmr::memory_resource* resource,
+                         const impl::plan_resolve_index_t* idx,
+                         node_t* node,
+                         const components::logical_plan::storage_parameters& parameters) {
         // `idx` is supplied by the dispatcher.
         // Legacy harnesses may pass nullptr — fall back to a locally-gathered
         // index so internal callers still get plan-tree lookups.
@@ -2732,6 +2734,36 @@ namespace services::dispatcher {
         }
 
         return result;
+    }
+
+    // Public entry: resolve the node's output column types (data-INDEPENDENT — derived
+    // from the plan + catalog types, never from row data), then STAMP them onto the node
+    // so the physical-plan generator can build correctly-typed results over ZERO input
+    // rows (PostgreSQL TupleDesc model). Interposing at this boundary captures every
+    // return path of validate_schema_impl's switch and every recursive child call. Error
+    // or empty-schema (DDL/control) results leave the node unstamped, so consumers
+    // degrade to today's data-derived behavior rather than a hard failure.
+    core::result_wrapper_t<named_schema>
+    validate_schema(std::pmr::memory_resource* resource,
+                    const impl::plan_resolve_index_t* idx,
+                    node_t* node,
+                    const components::logical_plan::storage_parameters& parameters) {
+        auto res = validate_schema_impl(resource, idx, node, parameters);
+        if (!res.has_error() && !res.value().empty()) {
+            // Carry just the resolved column types (the codebase idiom for a column-type
+            // list is std::pmr::vector<complex_logical_type>). The alias is stripped so a
+            // plan-typed empty column never diverges from a data-derived sibling on an
+            // alias mismatch.
+            std::pmr::vector<complex_logical_type> types{node->resource()};
+            types.reserve(res.value().size());
+            for (const auto& c : res.value()) {
+                auto t = c.type;
+                t.set_alias(std::string{});
+                types.push_back(std::move(t));
+            }
+            node->set_output_types(std::move(types));
+        }
+        return res;
     }
 
 } // namespace services::dispatcher

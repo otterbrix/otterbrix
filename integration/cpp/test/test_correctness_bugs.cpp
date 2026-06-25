@@ -685,6 +685,11 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).is_null());
+        // Plan-time type resolution (variant 1): the empty SUM(bigint) result must be a
+        // typed BIGINT NULL, not the 0-byte logical_type::NA sentinel (which crashes
+        // downstream under gcc -O3). The type is config-invariant, so this also fails on
+        // clang before the fix.
+        REQUIRE(cur->chunk_data().types()[0].type() == components::types::logical_type::BIGINT);
     }
 
     SECTION("MIN(column) over empty table is NULL") {
@@ -694,5 +699,16 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->chunk_data().value(0, 0).is_null());
+        REQUIRE(cur->chunk_data().types()[0].type() == components::types::logical_type::BIGINT);
+    }
+
+    SECTION("MAX(column) over empty table is NULL") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT MAX(value) AS m FROM t.empty_tbl;");
+        INFO("MAX(value) empty error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->chunk_data().value(0, 0).is_null());
+        REQUIRE(cur->chunk_data().types()[0].type() == components::types::logical_type::BIGINT);
     }
 }

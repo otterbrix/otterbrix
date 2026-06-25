@@ -21,6 +21,17 @@ namespace components::operators {
             return v.data() == nullptr && v.auxiliary() == nullptr;
         }
 
+        // Plan-time resolved type for final output position `pos`, or nullptr when
+        // unavailable / NA (caller then keeps today's data-derived type). Free helper —
+        // it only indexes the carried type list, needs no operator state.
+        const types::complex_logical_type*
+        resolved_type_at(const std::pmr::vector<types::complex_logical_type>& cols, size_t pos) noexcept {
+            if (pos < cols.size() && cols[pos].type() != types::logical_type::NA) {
+                return &cols[pos];
+            }
+            return nullptr;
+        }
+
         template<typename T>
         bool cells_equal_typed(const vector::vector_t& a, size_t ra, const vector::vector_t& b, size_t rb) {
             if constexpr (std::is_floating_point_v<T>) {
@@ -211,6 +222,7 @@ namespace components::operators {
         , values_(resource_)
         , computed_columns_(resource_)
         , post_aggregates_(resource_)
+        , output_types_(resource_)
         , having_(std::move(having))
         , internal_aggregate_count_(internal_aggregate_count)
         , agg_plan_(resource_)
@@ -218,6 +230,10 @@ namespace components::operators {
         , group_hash_index_(resource_)
         , agg_states_(resource_)
         , gathered_rows_per_group_(resource_) {}
+
+    void operator_group_t::set_output_types(std::pmr::vector<types::complex_logical_type> types) {
+        output_types_ = std::move(types);
+    }
 
     void operator_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }
 
@@ -633,9 +649,19 @@ namespace components::operators {
         }
 
         // One column per aggregate, unconditionally (fixed position key_count + a).
+        // For an all-NULL/empty-group aggregate column the data-derived type is NA; use
+        // the plan-resolved type instead so the column is storable. The data path (a
+        // column with a real value) is untouched.
         for (size_t a = 0; a < values_.size(); a++) {
-            out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
-                                                       : agg_results[a][0].type());
+            const bool col_is_na =
+                agg_results[a].empty() || agg_results[a][0].type().type() == types::logical_type::NA;
+            const auto* carried = col_is_na ? resolved_type_at(output_types_, key_count_ + a) : nullptr;
+            if (carried) {
+                out_types.push_back(*carried);
+            } else {
+                out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
+                                                           : agg_results[a][0].type());
+            }
         }
 
         uint64_t cap = num_groups > 0 ? static_cast<uint64_t>(num_groups) : 1;
@@ -650,7 +676,9 @@ namespace components::operators {
             }
         }
 
-        // Aggregate columns.
+        // Aggregate columns. NULL cells keep their NA-typed logical_value; the COLUMN
+        // type (out_types above) carries the plan-resolved type, so a null cell becomes a
+        // typed NULL of a storable column instead of a 0-byte NA column.
         for (size_t a = 0; a < values_.size(); a++) {
             for (size_t g = 0; g < num_groups; g++) {
                 if (g < agg_results[a].size()) {
@@ -705,13 +733,28 @@ namespace components::operators {
             agg_results.push_back(std::move(results));
         }
 
+        // Plan-time types let an empty global aggregate emit a correctly-typed NULL
+        // (e.g. SUM(int) over empty -> INTEGER NULL) instead of the 0-byte NA sentinel
+        // that crashes downstream under gcc -O3. We override ONLY the NA/empty column;
+        // the data path is otherwise untouched. Output position == aggregate index here
+        // (this path has no group keys).
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         for (size_t a = 0; a < values_.size(); a++) {
-            out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
-                                                       : agg_results[a][0].type());
+            const bool col_is_na =
+                agg_results[a].empty() || agg_results[a][0].type().type() == types::logical_type::NA;
+            const auto* carried = col_is_na ? resolved_type_at(output_types_, a) : nullptr;
+            if (carried) {
+                out_types.push_back(*carried);
+            } else {
+                out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
+                                                           : agg_results[a][0].type());
+            }
         }
         vector::data_chunk_t result(resource_, out_types, 1);
         result.set_cardinality(1);
+        // Keep the original NULL cell (NULL is an NA-typed logical_value; set_value into
+        // the now-typed column just marks validity false). The COLUMN type (out_types) is
+        // what was NA and is now the plan-resolved type -> no 0-byte NA column, no crash.
         for (size_t a = 0; a < values_.size(); a++) {
             result.set_value(a,
                              0,

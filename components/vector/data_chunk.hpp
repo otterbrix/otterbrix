@@ -19,8 +19,8 @@ namespace components::vector {
                      uint64_t capacity);
         data_chunk_t(const data_chunk_t&) = delete;
         data_chunk_t& operator=(const data_chunk_t&) = delete;
-        data_chunk_t(data_chunk_t&&) = default;
-        data_chunk_t& operator=(data_chunk_t&&) = default;
+        data_chunk_t(data_chunk_t&&) noexcept;
+        data_chunk_t& operator=(data_chunk_t&&) noexcept;
         ~data_chunk_t() = default;
 
         bool empty() const { return count_ == 0; }

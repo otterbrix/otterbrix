@@ -43,6 +43,22 @@ namespace components::vector {
         }
     }
 
+    data_chunk_t::data_chunk_t(data_chunk_t&& other) noexcept
+        : resource_(other.resource_)
+        , count_(other.count_)
+        , capacity_(other.capacity_)
+        , row_ids(std::move(other.row_ids))
+        , data(std::move(other.data)) {}
+
+    data_chunk_t& data_chunk_t::operator=(data_chunk_t&& other) noexcept {
+        resource_ = other.resource_;
+        count_ = other.count_;
+        capacity_ = other.capacity_;
+        row_ids = std::move(other.row_ids);
+        data = std::move(other.data);
+        return *this;
+    }
+
     // An unprojected placeholder vector has no data buffer AND no auxiliary buffer.
     // (ARRAY/STRUCT/LIST real vectors have auxiliary != nullptr even though data_ is null.)
     // These exist to keep column indices stable when projected_scan skips columns.

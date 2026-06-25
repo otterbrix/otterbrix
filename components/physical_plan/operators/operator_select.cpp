@@ -125,6 +125,12 @@ namespace components::operators {
 
     void operator_select_t::add_column(select_column_t&& col) { columns_.push_back(std::move(col)); }
 
+    void operator_select_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& types) {
+        for (size_t i = 0; i < columns_.size() && i < types.size(); ++i) {
+            columns_[i].result_type = types[i];
+        }
+    }
+
     core::error_t operator_select_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // Streaming projection: apply the per-chunk transform to the single
         // batch handed in via `input`. No accumulation, no read of left_->output().
@@ -186,15 +192,14 @@ namespace components::operators {
                     // value, so values are materialised before the vector. Each cell
                     // is bound to a named local to keep logical_value_t round-trips
                     // to the unavoidable minimum (R1).
-                    types::complex_logical_type col_type{types::logical_type::NA};
+                    // The column type IS the plan-resolved type, authoritatively, so the
+                    // column is correctly typed even over zero rows (the per-row seed cannot
+                    // run then). Values are materialised; NULLs land as NULLs of this type.
+                    const types::complex_logical_type col_type = col.result_type;
                     std::pmr::vector<types::logical_value_t> values(resource);
                     values.reserve(num_rows);
                     for (uint64_t row = 0; row < num_rows; ++row) {
-                        auto val = extract_select_value(resource, col.key, *input, row, right_input);
-                        if (col_type.type() == types::logical_type::NA) {
-                            col_type = val.type();
-                        }
-                        values.push_back(std::move(val));
+                        values.push_back(extract_select_value(resource, col.key, *input, row, right_input));
                     }
                     vector::vector_t vec(resource, col_type, cap);
                     for (uint64_t row = 0; row < num_rows; ++row) {

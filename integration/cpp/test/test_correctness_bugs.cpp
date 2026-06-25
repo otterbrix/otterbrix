@@ -712,3 +712,48 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
         REQUIRE(cur->chunk_data().types()[0].type() == components::types::logical_type::BIGINT);
     }
 }
+
+// Projection (CASE / COALESCE / arithmetic) over an EMPTY table must yield 0 rows of a
+// correctly-typed column, not an untyped logical_type::NA column (which crashes under
+// gcc -O3, same class as the empty-aggregate bug). Type is config-invariant.
+TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/projection_over_empty_table");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.e (id bigint, value bigint);")->is_success());
+    }
+
+    auto check_projection = [&](const char* sql) {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, sql);
+        INFO(sql << " error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+        // Over empty input the projection must still expose its (one) typed column, not
+        // drop the schema (0 columns) or emit a 0-byte logical_type::NA column.
+        REQUIRE(cur->chunk_data().column_count() == 1);
+        REQUIRE(cur->chunk_data().types()[0].type() != components::types::logical_type::NA);
+    };
+
+    SECTION("COALESCE over empty table keeps column type") {
+        check_projection("SELECT COALESCE(value, value) AS c FROM t.e;");
+    }
+    SECTION("arithmetic over empty table keeps column type") {
+        check_projection("SELECT value + value AS c FROM t.e;");
+    }
+    // NOTE: `SELECT CASE WHEN ... END FROM <empty>` (searched-CASE, scalar_type::case_when)
+    // is routed through the node_group path, not node_select, so it is NOT covered by the
+    // no-group projection type resolution and still drops to 0 columns over empty input.
+    // Tracked as a follow-up (group-path case_when type resolution + operator) — its
+    // red-first test lands with that fix.
+}

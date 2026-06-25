@@ -89,6 +89,10 @@ namespace components::operators {
         // Default: drop on the floor. DML operators override to capture it.
     }
 
+    void operator_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& /*types*/) {
+        // Default: no-op. Operators that emit a typed result (group / select) override.
+    }
+
     read_only_operator_t::read_only_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : operator_t(resource, std::move(log), type) {}
 

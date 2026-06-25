@@ -113,7 +113,7 @@ namespace components::operators {
         // output_schema(). Used to build correctly-typed results over ZERO input rows
         // instead of falling back to the 0-byte logical_type::NA sentinel (which crashes
         // downstream under gcc -O3). Empty when not forwarded -> data-derived fallback.
-        void set_output_types(std::pmr::vector<types::complex_logical_type> types);
+        void set_output_types(const std::pmr::vector<types::complex_logical_type>& types) override;
 
         // --- Push-based streaming pipeline (STEP 3) ---
         // GROUP BY / aggregation folds an unbounded input into a bounded set of group

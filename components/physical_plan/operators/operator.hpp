@@ -281,6 +281,13 @@ namespace components::operators {
         // operator_type.
         virtual bool wants_resolved_metadata() const noexcept { return false; }
 
+        // Plan-time resolved output column types (one per output column, in output
+        // order), forwarded by the physical-plan generator from the logical node's
+        // output_types(). Default no-op; operators that emit a typed result (group /
+        // select) override it so a column produced over zero input rows stays correctly
+        // typed instead of the 0-byte logical_type::NA sentinel.
+        virtual void set_output_types(const std::pmr::vector<types::complex_logical_type>& types);
+
     protected:
         std::pmr::memory_resource* resource_;
         log_t log_;

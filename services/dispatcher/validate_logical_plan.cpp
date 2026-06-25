@@ -703,6 +703,185 @@ namespace services::dispatcher {
             return type_paths{resource};
         }
 
+        // Resolve the output type of a CASE / arithmetic / COALESCE / unary_minus
+        // scalar expression against `schema`. Used by the projection branch so a
+        // computed column never gets the non-storable UNKNOWN/NA sentinel: every
+        // path either yields a concrete type or returns a bind error (rule 6 — no
+        // sentinel fallback). Key paths in `params` are expected to be resolved
+        // already (the caller runs resolve_key_paths_in_group first); the type is
+        // pulled through find_types so nested/struct paths resolve correctly.
+        [[nodiscard]] core::result_wrapper_t<components::types::complex_logical_type>
+        resolve_scalar_output_type(std::pmr::memory_resource* resource,
+                                   components::expressions::scalar_expression_t* scalar_expr,
+                                   const named_schema& schema,
+                                   const components::logical_plan::storage_parameters& parameters) {
+            // Local recursive resolver for a single param (rule 14: no std::function —
+            // a functor struct that recurses through operator()). resolve_error carries
+            // the first failure out of the recursion.
+            core::error_t resolve_error = core::error_t::no_error();
+            struct param_type_resolver {
+                std::pmr::memory_resource* resource;
+                const named_schema& schema;
+                const components::logical_plan::storage_parameters& parameters;
+                core::error_t& resolve_error;
+
+                components::types::complex_logical_type operator()(param_storage& p) const {
+                    if (std::holds_alternative<components::expressions::key_t>(p)) {
+                        auto& k = std::get<components::expressions::key_t>(p);
+                        auto f = find_types(resource, k, schema);
+                        if (f.has_error()) {
+                            resolve_error = f.error();
+                            return components::types::complex_logical_type(logical_type::INVALID);
+                        }
+                        return f.value().front().type;
+                    } else if (std::holds_alternative<core::parameter_id_t>(p)) {
+                        auto it = parameters.parameters.find(std::get<core::parameter_id_t>(p));
+                        if (it == parameters.parameters.end()) {
+                            resolve_error =
+                                core::error_t(core::error_code_t::invalid_parameter,
+                                              std::pmr::string{"unbound parameter in scalar expression", resource});
+                            return components::types::complex_logical_type(logical_type::INVALID);
+                        }
+                        return it->second.type();
+                    } else {
+                        auto& inner = std::get<expression_ptr>(p);
+                        if (inner->group() == expression_group::scalar) {
+                            auto* s = reinterpret_cast<scalar_expression_t*>(inner.get());
+                            if (s->type() == scalar_type::case_expr) {
+                                if (s->params().size() < 2) {
+                                    resolve_error = core::error_t(
+                                        core::error_code_t::invalid_parameter,
+                                        std::pmr::string{"CASE expression with no THEN branch", resource});
+                                    return components::types::complex_logical_type(logical_type::INVALID);
+                                }
+                                return (*this)(s->params()[1]);
+                            }
+                            if (s->type() == scalar_type::coalesce) {
+                                if (s->params().empty()) {
+                                    resolve_error =
+                                        core::error_t(core::error_code_t::invalid_parameter,
+                                                      std::pmr::string{"COALESCE with no operands", resource});
+                                    return components::types::complex_logical_type(logical_type::INVALID);
+                                }
+                                return (*this)(s->params()[0]);
+                            }
+                            if (s->type() == scalar_type::unary_minus) {
+                                if (s->params().empty()) {
+                                    resolve_error =
+                                        core::error_t(core::error_code_t::invalid_parameter,
+                                                      std::pmr::string{"unary minus with no operand", resource});
+                                    return components::types::complex_logical_type(logical_type::INVALID);
+                                }
+                                return (*this)(s->params()[0]);
+                            }
+                            if (!s->params().empty()) {
+                                auto lt = (*this)(s->params()[0]);
+                                auto rt = s->params().size() > 1 ? (*this)(s->params()[1]) : lt;
+                                return components::types::complex_logical_type(
+                                    arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(s->type())));
+                            }
+                        }
+                        resolve_error = core::error_t(
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"non-scalar expression operand is not supported", resource});
+                        return components::types::complex_logical_type(logical_type::INVALID);
+                    }
+                }
+            };
+            param_type_resolver resolve{resource, schema, parameters, resolve_error};
+
+            components::types::complex_logical_type result_type;
+            switch (scalar_expr->type()) {
+                case scalar_type::constant: {
+                    // A constant projection (e.g. SELECT 1) carries its value as a
+                    // bound parameter; its type is the parameter's type.
+                    if (scalar_expr->params().empty()) {
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"constant expression with no value", resource});
+                    }
+                    result_type = resolve(scalar_expr->params()[0]);
+                    break;
+                }
+                case scalar_type::case_expr: {
+                    // case_expr params layout (transform_select_case_expr): pairs of
+                    // [cond, result, ...]; the CASE return type is the first THEN
+                    // result (params[1]). Mirrors compute_type_entry's CASE branch.
+                    if (scalar_expr->params().size() < 2) {
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"CASE expression with no THEN branch", resource});
+                    }
+                    result_type = resolve(scalar_expr->params()[1]);
+                    break;
+                }
+                case scalar_type::coalesce: {
+                    // COALESCE(a, b, ...): take the first operand's resolved type; for
+                    // numeric operands widen to the common (promoted) type so a mixed
+                    // INT/BIGINT coalesce keeps the wider column. Nested/decimal types
+                    // are preserved as-is (no numeric promotion path).
+                    if (scalar_expr->params().empty()) {
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"COALESCE with no operands", resource});
+                    }
+                    result_type = resolve(scalar_expr->params()[0]);
+                    if (!resolve_error.contains_error() && is_numeric(result_type.type())) {
+                        for (size_t i = 1; i < scalar_expr->params().size(); i++) {
+                            auto operand_type = resolve(scalar_expr->params()[i]);
+                            if (resolve_error.contains_error()) {
+                                break;
+                            }
+                            if (is_numeric(operand_type.type())) {
+                                result_type = components::types::complex_logical_type(
+                                    promote_type(result_type.type(), operand_type.type()));
+                            }
+                        }
+                    }
+                    break;
+                }
+                case scalar_type::unary_minus: {
+                    if (scalar_expr->params().empty()) {
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"unary minus with no operand", resource});
+                    }
+                    result_type = resolve(scalar_expr->params()[0]);
+                    break;
+                }
+                case scalar_type::add:
+                case scalar_type::subtract:
+                case scalar_type::multiply:
+                case scalar_type::divide:
+                case scalar_type::mod: {
+                    if (scalar_expr->params().empty()) {
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"arithmetic expression with no operand", resource});
+                    }
+                    auto lt = resolve(scalar_expr->params()[0]);
+                    auto rt = scalar_expr->params().size() > 1 ? resolve(scalar_expr->params()[1]) : lt;
+                    if (!resolve_error.contains_error()) {
+                        result_type = components::types::complex_logical_type(
+                            arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(scalar_expr->type())));
+                    }
+                    break;
+                }
+                default:
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"unsupported scalar expression in projection type resolution", resource});
+            }
+            if (resolve_error.contains_error()) {
+                return resolve_error;
+            }
+            // Rule 6: a resolved type must be concrete and storable — never the
+            // UNKNOWN/NA sentinel. If resolution collapsed to one, surface a bind
+            // error rather than emitting a 0-size column downstream.
+            if (result_type.type() == logical_type::UNKNOWN || result_type.type() == logical_type::NA ||
+                result_type.type() == logical_type::INVALID) {
+                return core::error_t(
+                    core::error_code_t::schema_error,
+                    std::pmr::string{"could not resolve a concrete type for projected scalar expression", resource});
+            }
+            return result_type;
+        }
+
         [[nodiscard]] core::result_wrapper_t<named_schema> validate_schema(std::pmr::memory_resource* resource,
                                                                            compare_expression_t* expr,
                                                                            const storage_parameters& parameters,
@@ -1663,11 +1842,11 @@ namespace services::dispatcher {
                     }
                     if (node_select) {
                         named_schema result_schema(resource);
-                        for (const auto& expr : node_select->expressions()) {
+                        for (auto& expr : node_select->expressions()) {
                             if (expr->group() != expression_group::scalar) {
                                 continue;
                             }
-                            const auto* scalar_expr = reinterpret_cast<const scalar_expression_t*>(expr.get());
+                            auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
                                 const auto& key =
                                     scalar_expr->params().empty()
@@ -1676,12 +1855,27 @@ namespace services::dispatcher {
                                 if (!key.path().empty() && key.path().front() < incoming_schema.size()) {
                                     result_schema.push_back(incoming_schema[key.path().front()]);
                                 }
-                            } else {
-                                complex_logical_type unknown_type(components::types::logical_type::UNKNOWN);
-                                if (!scalar_expr->key().is_null()) {
-                                    unknown_type.set_alias(scalar_expr->key().as_string());
+                            } else if (scalar_expr->type() == scalar_type::star_expand) {
+                                for (const auto& col : incoming_schema) {
+                                    result_schema.push_back(col);
                                 }
-                                result_schema.push_back(type_from_t{node->result_alias(), std::move(unknown_type)});
+                            } else {
+                                // Computed projection (CASE / COALESCE / arithmetic /
+                                // unary_minus / constant): resolve the real output type
+                                // against incoming_schema. Rule 6 — never the UNKNOWN/NA
+                                // sentinel; an unresolvable type is a bind error.
+                                auto resolved = impl::resolve_scalar_output_type(resource,
+                                                                                 scalar_expr,
+                                                                                 incoming_schema,
+                                                                                 parameters);
+                                if (resolved.has_error()) {
+                                    return resolved.convert_error<named_schema>();
+                                }
+                                complex_logical_type out_type = std::move(resolved.value());
+                                if (!scalar_expr->key().is_null()) {
+                                    out_type.set_alias(scalar_expr->key().as_string());
+                                }
+                                result_schema.push_back(type_from_t{node->result_alias(), std::move(out_type)});
                             }
                         }
                         return result_schema;
@@ -2750,16 +2944,15 @@ namespace services::dispatcher {
                     const components::logical_plan::storage_parameters& parameters) {
         auto res = validate_schema_impl(resource, idx, node, parameters);
         if (!res.has_error() && !res.value().empty()) {
-            // Carry just the resolved column types (the codebase idiom for a column-type
-            // list is std::pmr::vector<complex_logical_type>). The alias is stripped so a
-            // plan-typed empty column never diverges from a data-derived sibling on an
-            // alias mismatch.
+            // Carry the resolved column types (the codebase idiom for a column-type list
+            // is std::pmr::vector<complex_logical_type>). Keep each type's alias: it is the
+            // output column name, which operators stamp onto the result column type (e.g.
+            // a COUNT column named "count"); it matches the data-derived alias, so there is
+            // no divergence.
             std::pmr::vector<complex_logical_type> types{node->resource()};
             types.reserve(res.value().size());
             for (const auto& c : res.value()) {
-                auto t = c.type;
-                t.set_alias(std::string{});
-                types.push_back(std::move(t));
+                types.push_back(c.type);
             }
             node->set_output_types(std::move(types));
         }

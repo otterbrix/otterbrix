@@ -220,8 +220,8 @@ namespace components::operators {
         , agg_states_(resource_)
         , gathered_rows_per_group_(resource_) {}
 
-    void operator_group_t::set_output_types(std::pmr::vector<types::complex_logical_type> types) {
-        output_types_ = std::move(types);
+    void operator_group_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& types) {
+        output_types_.assign(types.begin(), types.end());
     }
 
     void operator_group_t::add_key(group_key_t&& key) { keys_.push_back(std::move(key)); }

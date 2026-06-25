@@ -29,6 +29,21 @@ namespace services::planner::impl {
 
         auto returning = build_returning_columns(context.resource, node_delete->returning(), params);
 
+        // Forward the plan-resolved RETURNING output types (stamped on the delete node by
+        // validate_schema, in RETURNING projection order) onto the projection columns, so a
+        // CASE/COALESCE/deep-field RETURNING column over zero affected rows stays correctly
+        // typed instead of being dropped as an untyped (NA) placeholder. Mirrors the SELECT
+        // path (create_plan_aggregate -> operator_select_t::set_output_types). build_returning_columns
+        // emits one select_column_t per scalar RETURNING expression in returning() order, and
+        // output_types() is stamped in that same order, so column i maps to output_types()[i].
+        // No RETURNING -> output_types() empty -> has_output_types() false -> guard skips (no-op).
+        if (node->has_output_types()) {
+            const auto& output_types = node->output_types();
+            for (size_t i = 0; i < returning.size() && i < output_types.size(); ++i) {
+                returning[i].result_type = output_types[i];
+            }
+        }
+
         components::logical_plan::node_ptr node_match = nullptr;
         components::logical_plan::node_ptr node_limit = nullptr;
         components::logical_plan::node_ptr node_raw_data = nullptr;

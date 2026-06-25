@@ -21,17 +21,6 @@ namespace components::operators {
             return v.data() == nullptr && v.auxiliary() == nullptr;
         }
 
-        // Plan-time resolved type for final output position `pos`, or nullptr when
-        // unavailable / NA (caller then keeps today's data-derived type). Free helper —
-        // it only indexes the carried type list, needs no operator state.
-        const types::complex_logical_type*
-        resolved_type_at(const std::pmr::vector<types::complex_logical_type>& cols, size_t pos) noexcept {
-            if (pos < cols.size() && cols[pos].type() != types::logical_type::NA) {
-                return &cols[pos];
-            }
-            return nullptr;
-        }
-
         template<typename T>
         bool cells_equal_typed(const vector::vector_t& a, size_t ra, const vector::vector_t& b, size_t rb) {
             if constexpr (std::is_floating_point_v<T>) {
@@ -648,16 +637,14 @@ namespace components::operators {
             agg_results.push_back(std::move(results));
         }
 
-        // One column per aggregate, unconditionally (fixed position key_count + a).
-        // For an all-NULL/empty-group aggregate column the data-derived type is NA; use
-        // the plan-resolved type instead so the column is storable. The data path (a
-        // column with a real value) is untouched.
+        // One column per aggregate at fixed position key_count + a. The output column type
+        // is the plan-resolved type (forwarded into output_types_), authoritative even for
+        // an all-NULL/empty group. Trailing internal aggregates (erased before output)
+        // have no plan output column -> their intermediate type is the computed value's.
         for (size_t a = 0; a < values_.size(); a++) {
-            const bool col_is_na =
-                agg_results[a].empty() || agg_results[a][0].type().type() == types::logical_type::NA;
-            const auto* carried = col_is_na ? resolved_type_at(output_types_, key_count_ + a) : nullptr;
-            if (carried) {
-                out_types.push_back(*carried);
+            const size_t out_pos = key_count_ + a;
+            if (out_pos < output_types_.size()) {
+                out_types.push_back(output_types_[out_pos]);
             } else {
                 out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
                                                            : agg_results[a][0].type());
@@ -733,18 +720,17 @@ namespace components::operators {
             agg_results.push_back(std::move(results));
         }
 
-        // Plan-time types let an empty global aggregate emit a correctly-typed NULL
-        // (e.g. SUM(int) over empty -> INTEGER NULL) instead of the 0-byte NA sentinel
-        // that crashes downstream under gcc -O3. We override ONLY the NA/empty column;
-        // the data path is otherwise untouched. Output position == aggregate index here
-        // (this path has no group keys).
+        // The output column type is the plan-resolved type (the validator resolved it
+        // data-independently and forwarded it into output_types_), so a global aggregate
+        // over zero rows emits a correctly-typed NULL (e.g. SUM(int) -> INTEGER NULL)
+        // rather than the 0-byte NA sentinel. Output position == aggregate index here
+        // (no group keys). Trailing internal aggregates (HAVING/post-agg helpers, erased
+        // before output) have no plan output column -> their intermediate type is the
+        // computed value's.
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         for (size_t a = 0; a < values_.size(); a++) {
-            const bool col_is_na =
-                agg_results[a].empty() || agg_results[a][0].type().type() == types::logical_type::NA;
-            const auto* carried = col_is_na ? resolved_type_at(output_types_, a) : nullptr;
-            if (carried) {
-                out_types.push_back(*carried);
+            if (a < output_types_.size()) {
+                out_types.push_back(output_types_[a]);
             } else {
                 out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
                                                            : agg_results[a][0].type());

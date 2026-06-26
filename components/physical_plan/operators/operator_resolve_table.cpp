@@ -114,19 +114,21 @@ namespace components::operators {
             }
             std::pmr::vector<std::string> key_cols(resource_);
             key_cols.emplace_back("relname");
-            std::pmr::vector<types::logical_value_t> key_vals(resource_);
-            key_vals.emplace_back(resource_, std::string_view{relname_});
-            if (input_namespace_oid_ != catalog::INVALID_OID) {
-                key_cols.emplace_back("relnamespace");
-                key_vals.emplace_back(resource_, static_cast<std::uint32_t>(input_namespace_oid_));
-            }
-            auto [_lookup, lookup_f] =
-                actor_zeta::send(ctx->disk_address,
-                                 &services::disk::manager_disk_t::read_chunks_by_key,
-                                 exec_ctx,
-                                 kPgClass,
-                                 std::move(key_cols),
-                                 components::operators::make_key_chunk(resource_, std::move(key_vals)));
+            auto keys_chunk = [&] {
+                if (input_namespace_oid_ != catalog::INVALID_OID) {
+                    key_cols.emplace_back("relnamespace");
+                    return components::operators::make_key_chunk(resource_,
+                                                                 std::string_view{relname_},
+                                                                 static_cast<std::uint32_t>(input_namespace_oid_));
+                }
+                return components::operators::make_key_chunk(resource_, std::string_view{relname_});
+            }();
+            auto [_lookup, lookup_f] = actor_zeta::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::read_chunks_by_key,
+                                                        exec_ctx,
+                                                        kPgClass,
+                                                        std::move(key_cols),
+                                                        std::move(keys_chunk));
             auto lookup_batches = co_await std::move(lookup_f);
             if (lookup_batches.empty() || lookup_batches[0].size() == 0 || lookup_batches[0].column_count() == 0 ||
                 lookup_batches[0].value(0, 0).is_null()) {
@@ -136,35 +138,30 @@ namespace components::operators {
                 mark_executed();
                 co_return;
             }
-            table_oid_ = static_cast<catalog::oid_t>(lookup_batches[0].value(0, 0).value<std::uint32_t>());
+            table_oid_ = static_cast<catalog::oid_t>(lookup_batches[0].get_value<std::uint32_t>(0, 0));
         }
 
         // read pg_class by oid to determine relkind and relnamespace.
         // pg_class layout: [0=oid, 1=relname, 2=relnamespace, 3=relkind,
         // 4=relstoragemode]. We key by "oid" so we get a single row at most.
         {
-            types::logical_value_t toid_lv(resource_, table_oid_);
             std::pmr::vector<std::string> pc_keys(resource_);
             pc_keys.emplace_back("oid");
-            std::pmr::vector<types::logical_value_t> pc_vals(resource_);
-            pc_vals.emplace_back(toid_lv);
             auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgClass,
                                                std::move(pc_keys),
-                                               components::operators::make_key_chunk(resource_, std::move(pc_vals)));
+                                               components::operators::make_key_chunk(resource_, table_oid_));
             auto pc_batches = co_await std::move(pcf);
             if (!pc_batches.empty() && pc_batches[0].size() != 0 && pc_batches[0].column_count() >= 4) {
                 found_ = true;
-                auto ns_cell = pc_batches[0].value(2, 0);
-                if (!ns_cell.is_null()) {
-                    namespace_oid_ = static_cast<catalog::oid_t>(ns_cell.value<std::uint32_t>());
+                if (!pc_batches[0].is_null(2, 0)) {
+                    namespace_oid_ = static_cast<catalog::oid_t>(pc_batches[0].get_value<std::uint32_t>(2, 0));
                 }
-                auto rk_cell = pc_batches[0].value(3, 0);
-                if (!rk_cell.is_null()) {
-                    auto rk = rk_cell.value<std::string_view>();
-                    relkind_ = rk.empty() ? catalog::relkind::regular : rk.front();
+                if (!pc_batches[0].is_null(3, 0)) {
+                    auto rk_cell = pc_batches[0].get_value<std::string_view>(3, 0);
+                    relkind_ = rk_cell.empty() ? catalog::relkind::regular : rk_cell.front();
                 } else {
                     relkind_ = catalog::relkind::regular;
                 }
@@ -194,22 +191,18 @@ namespace components::operators {
         // here for REFRESH MATERIALIZED VIEW.
         std::string view_sql;
         if (relkind_ == catalog::relkind::view || relkind_ == catalog::relkind::materialized_view) {
-            types::logical_value_t evclass_lv(resource_, table_oid_);
             std::pmr::vector<std::string> pr_keys(resource_);
             pr_keys.emplace_back("ev_class");
-            std::pmr::vector<types::logical_value_t> pr_vals(resource_);
-            pr_vals.emplace_back(evclass_lv);
             auto [_pr, prf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgRewrite,
                                                std::move(pr_keys),
-                                               components::operators::make_key_chunk(resource_, std::move(pr_vals)));
+                                               components::operators::make_key_chunk(resource_, table_oid_));
             auto pr_batches = co_await std::move(prf);
             if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5) {
-                auto ev_action = pr_batches[0].value(4, 0);
-                if (!ev_action.is_null()) {
-                    view_sql.assign(ev_action.value<std::string_view>());
+                if (!pr_batches[0].is_null(4, 0)) {
+                    view_sql.assign(pr_batches[0].get_value<std::string_view>(4, 0));
                 }
             }
         }
@@ -242,17 +235,14 @@ namespace components::operators {
             //   - drop entries whose chosen max-version row is a tombstone
             //     (attrefcount <= 0),
             //   - sort by attoid (register-order in storage adopt_schema).
-            types::logical_value_t toid_lv(resource_, table_oid_);
             std::pmr::vector<std::string> cc_keys(resource_);
             cc_keys.emplace_back("relid");
-            std::pmr::vector<types::logical_value_t> cc_vals(resource_);
-            cc_vals.emplace_back(toid_lv);
             auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgComputedColumn,
                                                std::move(cc_keys),
-                                               components::operators::make_key_chunk(resource_, std::move(cc_vals)));
+                                               components::operators::make_key_chunk(resource_, table_oid_));
             auto cc_batches = co_await std::move(ccf);
 
             struct cc_candidate_t {
@@ -273,27 +263,21 @@ namespace components::operators {
                 if (chunk.column_count() < 7)
                     continue;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto attname_cell = chunk.value(2, i);
-                    auto attversion_cell = chunk.value(5, i);
-                    if (attname_cell.is_null() || attversion_cell.is_null())
+                    if (chunk.is_null(2, i) || chunk.is_null(5, i))
                         continue;
                     cc_candidate_t cand;
-                    cand.attname.assign(attname_cell.value<std::string_view>());
-                    auto attoid_cell = chunk.value(1, i);
-                    cand.attoid = attoid_cell.is_null()
+                    cand.attname.assign(chunk.get_value<std::string_view>(2, i));
+                    cand.attoid = chunk.is_null(1, i)
                                       ? catalog::INVALID_OID
-                                      : static_cast<catalog::oid_t>(attoid_cell.value<std::uint32_t>());
-                    auto atttypid_cell = chunk.value(3, i);
-                    cand.atttypid = atttypid_cell.is_null()
+                                      : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                    cand.atttypid = chunk.is_null(3, i)
                                         ? catalog::INVALID_OID
-                                        : static_cast<catalog::oid_t>(atttypid_cell.value<std::uint32_t>());
-                    auto atttypspec_cell = chunk.value(4, i);
-                    if (!atttypspec_cell.is_null()) {
-                        cand.atttypspec.assign(atttypspec_cell.value<std::string_view>());
+                                        : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                    if (!chunk.is_null(4, i)) {
+                        cand.atttypspec.assign(chunk.get_value<std::string_view>(4, i));
                     }
-                    cand.attversion = attversion_cell.value<std::int64_t>();
-                    auto attrefcount_cell = chunk.value(6, i);
-                    cand.attrefcount = attrefcount_cell.is_null() ? 0 : attrefcount_cell.value<std::int64_t>();
+                    cand.attversion = chunk.get_value<std::int64_t>(5, i);
+                    cand.attrefcount = chunk.is_null(6, i) ? 0 : chunk.get_value<std::int64_t>(6, i);
 
                     std::string key = cand.attname + '\x1f' + std::to_string(static_cast<unsigned>(cand.atttypid)) +
                                       '\x1f' + cand.atttypspec;
@@ -368,17 +352,14 @@ namespace components::operators {
             // pg_attribute layout: [0=attoid, 1=attrelid, 2=attname,
             // 3=atttypid, 4=attnum, 5=attnotnull, 6=atthasdefault,
             // 7=attisdropped, 8=atttypspec, 9=attdefspec].
-            types::logical_value_t toid_lv(resource_, table_oid_);
             std::pmr::vector<std::string> pa_keys(resource_);
             pa_keys.emplace_back("attrelid");
-            std::pmr::vector<types::logical_value_t> pa_vals(resource_);
-            pa_vals.emplace_back(toid_lv);
             auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::read_chunks_by_key,
                                                exec_ctx,
                                                kPgAttribute,
                                                std::move(pa_keys),
-                                               components::operators::make_key_chunk(resource_, std::move(pa_vals)));
+                                               components::operators::make_key_chunk(resource_, table_oid_));
             auto pa_batches = co_await std::move(paf);
 
             // Column visible to this snapshot iff added_at_commit_id <= start_time
@@ -390,56 +371,45 @@ namespace components::operators {
                     continue;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     // Drop tombstones (attisdropped=true).
-                    auto attisdropped_cell = chunk.value(7, i);
-                    if (!attisdropped_cell.is_null() && attisdropped_cell.value<bool>())
+                    if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                         continue;
                     if (chunk.column_count() > 10) {
-                        auto added_cell = chunk.value(10, i);
-                        if (!added_cell.is_null()) {
-                            auto added_at = static_cast<uint64_t>(added_cell.value<std::int64_t>());
+                        if (!chunk.is_null(10, i)) {
+                            auto added_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(10, i));
                             if (added_at > snapshot_start_time)
                                 continue; // column added after our snapshot — invisible
                         }
                     }
                     if (chunk.column_count() > 11) {
-                        auto dropped_cell = chunk.value(11, i);
-                        if (!dropped_cell.is_null()) {
-                            auto dropped_at = static_cast<uint64_t>(dropped_cell.value<std::int64_t>());
+                        if (!chunk.is_null(11, i)) {
+                            auto dropped_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(11, i));
                             if (dropped_at != 0 && dropped_at <= snapshot_start_time)
                                 continue; // column dropped before our snapshot
                         }
                     }
                     out_row_t r;
-                    auto attoid_cell = chunk.value(0, i);
-                    r.attoid = attoid_cell.is_null() ? catalog::INVALID_OID
-                                                     : static_cast<catalog::oid_t>(attoid_cell.value<std::uint32_t>());
-                    auto attname_cell = chunk.value(2, i);
-                    if (!attname_cell.is_null()) {
-                        r.attname.assign(attname_cell.value<std::string_view>());
+                    r.attoid = chunk.is_null(0, i) ? catalog::INVALID_OID
+                                                   : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    if (!chunk.is_null(2, i)) {
+                        r.attname.assign(chunk.get_value<std::string_view>(2, i));
                     }
-                    auto atttypid_cell = chunk.value(3, i);
-                    r.atttypid = atttypid_cell.is_null()
+                    r.atttypid = chunk.is_null(3, i)
                                      ? catalog::INVALID_OID
-                                     : static_cast<catalog::oid_t>(atttypid_cell.value<std::uint32_t>());
-                    auto attnum_cell = chunk.value(4, i);
-                    r.attnum = attnum_cell.is_null() ? 0 : attnum_cell.value<std::int32_t>();
+                                     : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                    r.attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
                     // For relkind='r' storage column order matches pg_attribute attnum
                     // (1-based), so chunk_position is simply attnum-1.
                     r.chunk_position = r.attnum > 0 ? r.attnum - 1 : -1;
-                    auto attnotnull_cell = chunk.value(5, i);
-                    r.attnotnull = !attnotnull_cell.is_null() && attnotnull_cell.value<bool>();
-                    auto atthasdefault_cell = chunk.value(6, i);
-                    r.atthasdefault = !atthasdefault_cell.is_null() && atthasdefault_cell.value<bool>();
+                    r.attnotnull = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
+                    r.atthasdefault = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
                     if (chunk.column_count() > 8) {
-                        auto atttypspec_cell = chunk.value(8, i);
-                        if (!atttypspec_cell.is_null()) {
-                            r.atttypspec.assign(atttypspec_cell.value<std::string_view>());
+                        if (!chunk.is_null(8, i)) {
+                            r.atttypspec.assign(chunk.get_value<std::string_view>(8, i));
                         }
                     }
                     if (chunk.column_count() > 9) {
-                        auto attdefspec_cell = chunk.value(9, i);
-                        if (!attdefspec_cell.is_null()) {
-                            r.attdefspec.assign(attdefspec_cell.value<std::string_view>());
+                        if (!chunk.is_null(9, i)) {
+                            r.attdefspec.assign(chunk.get_value<std::string_view>(9, i));
                         }
                     }
                     rows.push_back(std::move(r));

@@ -9,9 +9,7 @@ namespace components::operators {
         , table_oid_(table_oid)
         , rows_(resource, types::logical_type::BIGINT) {}
 
-    void primary_key_scan::append(size_t id) {
-        rows_.set_value(size_++, types::logical_value_t(resource(), static_cast<int64_t>(id)));
-    }
+    void primary_key_scan::append(size_t id) { rows_.set_value<int64_t>(size_++, static_cast<int64_t>(id)); }
 
     void primary_key_scan::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
         if (table_oid_ == components::catalog::INVALID_OID || size_ == 0)
@@ -24,7 +22,7 @@ namespace components::operators {
         // ≤DEFAULT_VECTOR_CAPACITY chunks.
         vector::vector_t ids(resource_, types::logical_type::BIGINT, size_);
         for (size_t i = 0; i < size_; i++) {
-            ids.set_value(i, types::logical_value_t{resource_, rows_.data<int64_t>()[i]});
+            ids.set_value(i, rows_.data<int64_t>()[i]);
         }
         auto [_f, ff] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::storage_fetch,

@@ -146,6 +146,14 @@ namespace components::vector {
         return sub_column->set_value(index, val);
     }
 
+    bool data_chunk_t::is_null(uint64_t col_idx, uint64_t index) const { return data[col_idx].is_null(index); }
+    bool data_chunk_t::is_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path) const {
+        return data[col_idx].is_null(path);
+    }
+    void data_chunk_t::set_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path, bool value) {
+        data[col_idx].set_null(path, value);
+    }
+
     vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) {
         vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {

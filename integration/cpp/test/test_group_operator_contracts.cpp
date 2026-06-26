@@ -35,8 +35,8 @@ TEST_CASE("group operator contracts: unresolved column key surfaces operator err
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("k");
     vector::data_chunk_t chunk(&resource, cols, 2);
-    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
-    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(2)));
+    chunk.set_value(0, 0, int64_t(1));
+    chunk.set_value(0, 1, int64_t(2));
     chunk.set_cardinality(2);
 
     boost::intrusive_ptr<operators::operator_group_t> group(new operators::operator_group_t(&resource, log_t{}));
@@ -106,8 +106,8 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
     // schema, not the NA type of the first (NULL) group key.
     REQUIRE(out.data[0].type().type() == types::logical_type::BIGINT);
     REQUIRE(out.data[0].is_null(0));
-    REQUIRE(out.value(0, 1).value<int64_t>() == 10);
-    REQUIRE(out.value(0, 2).value<int64_t>() == 20);
+    REQUIRE(out.get_value<int64_t>(0, 1) == 10);
+    REQUIRE(out.get_value<int64_t>(0, 2) == 20);
 }
 
 TEST_CASE("group operator contracts: aggregator error on empty-input global aggregate is propagated",

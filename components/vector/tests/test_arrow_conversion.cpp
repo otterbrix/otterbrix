@@ -43,56 +43,60 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
 
         for (size_t i = 0; i < chunk_size; i++) {
             // fixed
-            { chunk.set_value(0, i, logical_value_t{&resource, int64_t(i)}); }
+            { chunk.set_value(0, i, int64_t(i)); }
             // string
-            {
-                chunk.set_value(1,
-                                i,
-                                logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}});
-            }
+            { chunk.set_value(1, i, std::string_view{"long_string_with_index_" + std::to_string(i)}); }
             // double
-            { chunk.set_value(2, i, logical_value_t{&resource, double(i) + 0.1}); }
+            { chunk.set_value(2, i, double(i) + 0.1); }
             // bool
-            { chunk.set_value(3, i, logical_value_t{&resource, i % 2 != 0}); }
+            { chunk.set_value(3, i, i % 2 != 0); }
             // array_fixed
             {
-                std::vector<logical_value_t> arr;
+                std::vector<uint64_t> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(&resource, uint64_t{i * array_size + j});
+                    arr.emplace_back(uint64_t{i * array_size + j});
                 }
-                chunk.set_value(4, i, logical_value_t::create_array(&resource, logical_type::UBIGINT, arr));
+                chunk.set_value(4, i, arr);
             }
             // array_string
             {
-                std::vector<logical_value_t> arr;
-                arr.reserve(array_size);
+                std::vector<std::string> storage;
+                storage.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(&resource,
-                                     std::string{"long_string_with_index_" + std::to_string(i * array_size + j)});
+                    storage.push_back("long_string_with_index_" + std::to_string(i * array_size + j));
                 }
-                chunk.set_value(5, i, logical_value_t::create_array(&resource, logical_type::STRING_LITERAL, arr));
+                std::vector<std::string_view> arr;
+                arr.reserve(array_size);
+                for (const auto& s : storage) {
+                    arr.emplace_back(std::string_view{s});
+                }
+                chunk.set_value(5, i, arr);
             }
             // list_fixed
             {
-                std::vector<logical_value_t> list;
                 // test that each list entry can be a different length
+                std::vector<uint32_t> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(&resource, static_cast<uint32_t>(i * list_length(i) + j));
+                    list.emplace_back(static_cast<uint32_t>(i * list_length(i) + j));
                 }
-                chunk.set_value(6, i, logical_value_t::create_list(&resource, logical_type::UINTEGER, list));
+                chunk.set_value(6, i, list);
             }
             // list_string
             {
-                std::vector<logical_value_t> list;
                 // test that each list entry can be a different length
-                list.reserve(list_length(i));
+                std::vector<std::string> storage;
+                storage.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(&resource,
-                                      std::string{"long_string_with_index_" + std::to_string(i * list_length(i) + j)});
+                    storage.push_back("long_string_with_index_" + std::to_string(i * list_length(i) + j));
                 }
-                chunk.set_value(7, i, logical_value_t::create_list(&resource, logical_type::STRING_LITERAL, list));
+                std::vector<std::string_view> list;
+                list.reserve(list_length(i));
+                for (const auto& s : storage) {
+                    list.emplace_back(std::string_view{s});
+                }
+                chunk.set_value(7, i, list);
             }
             // struct
             {
@@ -162,56 +166,60 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
 
         for (size_t i = 0; i < chunk_size; i++) {
             // fixed
-            { chunk.set_value(0, i, logical_value_t{&resource, int64_t(i)}); }
+            { chunk.set_value(0, i, int64_t(i)); }
             // string
-            {
-                chunk.set_value(1,
-                                i,
-                                logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}});
-            }
+            { chunk.set_value(1, i, std::string_view{"long_string_with_index_" + std::to_string(i)}); }
             // double
-            { chunk.set_value(2, i, logical_value_t{&resource, double(i) + 0.1}); }
+            { chunk.set_value(2, i, double(i) + 0.1); }
             // bool
-            { chunk.set_value(3, i, logical_value_t{&resource, i % 2 != 0}); }
+            { chunk.set_value(3, i, i % 2 != 0); }
             // array_fixed
             {
-                std::vector<logical_value_t> arr;
+                std::vector<uint64_t> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(&resource, uint64_t{i * array_size + j});
+                    arr.emplace_back(uint64_t{i * array_size + j});
                 }
-                chunk.set_value(4, i, logical_value_t::create_array(&resource, logical_type::UBIGINT, arr));
+                chunk.set_value(4, i, arr);
             }
             // array_string
             {
-                std::vector<logical_value_t> arr;
-                arr.reserve(array_size);
+                std::vector<std::string> storage;
+                storage.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
-                    arr.emplace_back(&resource,
-                                     std::string{"long_string_with_index_" + std::to_string(i * array_size + j)});
+                    storage.push_back("long_string_with_index_" + std::to_string(i * array_size + j));
                 }
-                chunk.set_value(5, i, logical_value_t::create_array(&resource, logical_type::STRING_LITERAL, arr));
+                std::vector<std::string_view> arr;
+                arr.reserve(array_size);
+                for (const auto& s : storage) {
+                    arr.emplace_back(std::string_view{s});
+                }
+                chunk.set_value(5, i, arr);
             }
             // list_fixed
             {
-                std::vector<logical_value_t> list;
                 // test that each list entry can be a different length
+                std::vector<uint32_t> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(&resource, static_cast<uint32_t>(i * list_length(i) + j));
+                    list.emplace_back(static_cast<uint32_t>(i * list_length(i) + j));
                 }
-                chunk.set_value(6, i, logical_value_t::create_list(&resource, logical_type::UINTEGER, list));
+                chunk.set_value(6, i, list);
             }
             // list_string
             {
-                std::vector<logical_value_t> list;
                 // test that each list entry can be a different length
-                list.reserve(list_length(i));
+                std::vector<std::string> storage;
+                storage.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
-                    list.emplace_back(&resource,
-                                      std::string{"long_string_with_index_" + std::to_string(i * list_length(i) + j)});
+                    storage.push_back("long_string_with_index_" + std::to_string(i * list_length(i) + j));
                 }
-                chunk.set_value(7, i, logical_value_t::create_list(&resource, logical_type::STRING_LITERAL, list));
+                std::vector<std::string_view> list;
+                list.reserve(list_length(i));
+                for (const auto& s : storage) {
+                    list.emplace_back(std::string_view{s});
+                }
+                chunk.set_value(7, i, list);
             }
             // struct
             {

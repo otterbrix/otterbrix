@@ -685,19 +685,13 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         chunk_right.set_cardinality(100);
 
         for (int64_t num = 0, reversed = 100; num < 101; ++num, --reversed) {
-            chunk_left.set_value(0,
-                                 static_cast<size_t>(num),
-                                 types::logical_value_t{dispatcher->resource(), "Name " + std::to_string(num)});
-            chunk_left.set_value(1, static_cast<size_t>(num), types::logical_value_t{dispatcher->resource(), num});
-            chunk_left.set_value(2, static_cast<size_t>(num), types::logical_value_t{dispatcher->resource(), reversed});
+            chunk_left.set_value(0, static_cast<size_t>(num), std::string_view{"Name " + std::to_string(num)});
+            chunk_left.set_value(1, static_cast<size_t>(num), num);
+            chunk_left.set_value(2, static_cast<size_t>(num), reversed);
         }
         for (int64_t num = 0; num < 100; ++num) {
-            chunk_right.set_value(0,
-                                  static_cast<size_t>(num),
-                                  types::logical_value_t{dispatcher->resource(), (num + 25) * 2 * 10});
-            chunk_right.set_value(1,
-                                  static_cast<size_t>(num),
-                                  types::logical_value_t{dispatcher->resource(), (num + 25) * 2});
+            chunk_right.set_value(0, static_cast<size_t>(num), (num + 25) * 2 * 10);
+            chunk_right.set_value(1, static_cast<size_t>(num), (num + 25) * 2);
         }
         {
             auto session = otterbrix::session_id_t();

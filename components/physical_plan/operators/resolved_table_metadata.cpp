@@ -27,33 +27,28 @@ namespace components::operators {
             resolved_column_t col;
 
             // position int32
-            auto pos_lv = chunk.value(0, i);
-            if (!pos_lv.is_null()) {
-                col.position = pos_lv.value<std::int32_t>();
+            if (!chunk.is_null(0, i)) {
+                col.position = chunk.get_value<std::int32_t>(0, i);
             }
 
             // attoid uint32 -> catalog::oid_t
-            auto oid_lv = chunk.value(1, i);
-            if (!oid_lv.is_null()) {
-                col.attoid = static_cast<catalog::oid_t>(oid_lv.value<std::uint32_t>());
+            if (!chunk.is_null(1, i)) {
+                col.attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
             }
 
             // attname string
-            auto name_lv = chunk.value(2, i);
-            if (!name_lv.is_null()) {
-                col.attname.assign(name_lv.value<std::string_view>());
+            if (!chunk.is_null(2, i)) {
+                col.attname.assign(chunk.get_value<std::string_view>(2, i));
             }
 
             // atttypid uint32 -> catalog::oid_t
-            auto tid_lv = chunk.value(3, i);
-            if (!tid_lv.is_null()) {
-                col.atttypid = static_cast<catalog::oid_t>(tid_lv.value<std::uint32_t>());
+            if (!chunk.is_null(3, i)) {
+                col.atttypid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
             }
 
             // atttypspec string
-            auto spec_lv = chunk.value(4, i);
-            if (!spec_lv.is_null()) {
-                col.atttypspec.assign(spec_lv.value<std::string_view>());
+            if (!chunk.is_null(4, i)) {
+                col.atttypspec.assign(chunk.get_value<std::string_view>(4, i));
             }
 
             out.columns.push_back(std::move(col));

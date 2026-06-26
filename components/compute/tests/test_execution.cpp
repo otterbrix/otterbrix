@@ -31,7 +31,7 @@ static core::error_t vector_exec(kernel_context& ctx, const data_chunk_t& in, ve
     c->exec_called++;
 
     for (size_t i = 0; i < in.data.size(); ++i) {
-        auto cnt = logical_value_t(in.resource(), in.data[0].data<int>()[i] * c->multiplier);
+        auto cnt = in.data[0].data<int>()[i] * c->multiplier;
         out.set_value(i, cnt);
     }
     return core::error_t::no_error();
@@ -111,7 +111,7 @@ TEST_CASE("components::compute::vector::single") {
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t chunk(&resource, {logical_type::INTEGER});
-    chunk.set_value(0, 0, logical_value_t(chunk.resource(), 10));
+    chunk.set_value(0, 0, 10);
     chunk.set_cardinality(1);
 
     auto res = fn->execute(chunk, &opts);
@@ -133,11 +133,11 @@ TEST_CASE("components::compute::vector::batch") {
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t c1(&resource, {logical_type::INTEGER});
-    c1.set_value(0, 0, logical_value_t(c1.resource(), 1));
+    c1.set_value(0, 0, 1);
     c1.set_cardinality(1);
 
     data_chunk_t c2(&resource, {logical_type::INTEGER});
-    c2.set_value(0, 0, logical_value_t(c2.resource(), 10));
+    c2.set_value(0, 0, 10);
     c2.set_cardinality(1);
 
     std::vector<data_chunk_t> batch;
@@ -162,8 +162,8 @@ TEST_CASE("components::compute::aggregate::single") {
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t chunk(&resource, {logical_type::INTEGER}, 2);
-    chunk.set_value(0, 0, logical_value_t(chunk.resource(), 2));
-    chunk.set_value(0, 1, logical_value_t(chunk.resource(), 3));
+    chunk.set_value(0, 0, 2);
+    chunk.set_value(0, 1, 3);
     chunk.set_cardinality(2);
 
     auto res = fn->execute(chunk);
@@ -183,13 +183,13 @@ TEST_CASE("components::compute::aggregate::batch") {
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t c1(&resource, {logical_type::INTEGER}, 2);
-    c1.set_value(0, 0, logical_value_t(c1.resource(), 1));
-    c1.set_value(0, 1, logical_value_t(c1.resource(), 2));
+    c1.set_value(0, 0, 1);
+    c1.set_value(0, 1, 2);
     c1.set_cardinality(2);
 
     data_chunk_t c2(&resource, {logical_type::INTEGER}, 2);
-    c2.set_value(0, 0, logical_value_t(c2.resource(), 3));
-    c2.set_value(0, 1, logical_value_t(c2.resource(), 4));
+    c2.set_value(0, 0, 3);
+    c2.set_value(0, 1, 4);
     c2.set_cardinality(2);
 
     std::vector<data_chunk_t> batch;
@@ -213,13 +213,13 @@ TEST_CASE("components::compute::aggregate::batch_per_group") {
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t c1(&resource, {logical_type::INTEGER}, 2);
-    c1.set_value(0, 0, logical_value_t(c1.resource(), 1));
-    c1.set_value(0, 1, logical_value_t(c1.resource(), 2));
+    c1.set_value(0, 0, 1);
+    c1.set_value(0, 1, 2);
     c1.set_cardinality(2);
 
     data_chunk_t c2(&resource, {logical_type::INTEGER}, 2);
-    c2.set_value(0, 0, logical_value_t(c2.resource(), 3));
-    c2.set_value(0, 1, logical_value_t(c2.resource(), 4));
+    c2.set_value(0, 0, 3);
+    c2.set_value(0, 1, 4);
     c2.set_cardinality(2);
 
     std::vector<data_chunk_t> batch;
@@ -245,9 +245,9 @@ TEST_CASE("components::compute::row::single") {
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t chunk(&resource, {logical_type::INTEGER}, 3);
-    chunk.set_value(0, 0, logical_value_t(chunk.resource(), 1));
-    chunk.set_value(0, 1, logical_value_t(chunk.resource(), 2));
-    chunk.set_value(0, 2, logical_value_t(chunk.resource(), 3));
+    chunk.set_value(0, 0, 1);
+    chunk.set_value(0, 1, 2);
+    chunk.set_value(0, 2, 3);
     chunk.set_cardinality(3);
 
     auto res = fn->execute(chunk);
@@ -270,12 +270,12 @@ TEST_CASE("components::compute::row::batch") {
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t c1(&resource, {logical_type::INTEGER}, 2);
-    c1.set_value(0, 0, logical_value_t(c1.resource(), 5));
-    c1.set_value(0, 1, logical_value_t(c1.resource(), 7));
+    c1.set_value(0, 0, 5);
+    c1.set_value(0, 1, 7);
     c1.set_cardinality(2);
 
     data_chunk_t c2(&resource, {logical_type::INTEGER}, 1);
-    c2.set_value(0, 0, logical_value_t(c2.resource(), 10));
+    c2.set_value(0, 0, 10);
     c2.set_cardinality(1);
 
     std::vector<data_chunk_t> batch;
@@ -323,7 +323,7 @@ TEST_CASE("components::compute::options_required") {
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t chunk(&resource, {logical_type::INTEGER});
-    chunk.set_value(0, 0, logical_value_t(chunk.resource(), 1));
+    chunk.set_value(0, 0, 1);
     chunk.set_cardinality(1);
 
     auto res = fn->execute(chunk);

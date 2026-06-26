@@ -214,8 +214,8 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         const std::int64_t kvals[nrows] = {10, 20, 20, 30};
         const std::int64_t pvals[nrows] = {100, 200, 201, 300};
         for (std::uint64_t r = 0; r < nrows; ++r) {
-            chunk->set_value(0, r, logical_value_t(&fx.resource, kvals[r]));
-            chunk->set_value(1, r, logical_value_t(&fx.resource, pvals[r]));
+            chunk->set_value(0, r, kvals[r]);
+            chunk->set_value(1, r, pvals[r]);
         }
         components::execution_context_t append_ctx{session_id_t{},
                                                    components::table::transaction_data{0, 0},
@@ -247,7 +247,7 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         ktypes.push_back(std::move(kt));
         data_chunk_t keys(&fx.resource, ktypes, N);
         for (std::size_t i = 0; i < N; ++i) {
-            keys.set_value(0, i, logical_value_t(&fx.resource, probe_keys[i]));
+            keys.set_value(0, i, probe_keys[i]);
         }
         keys.set_cardinality(N);
         std::pmr::vector<std::string> key_cols{&fx.resource};

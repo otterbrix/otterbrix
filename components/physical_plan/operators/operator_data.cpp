@@ -45,49 +45,4 @@ namespace components::operators {
 
     std::pmr::memory_resource* operator_data_t::resource() const { return resource_; }
 
-    vector::data_chunk_t make_key_chunk(std::pmr::memory_resource* resource,
-                                        std::pmr::vector<types::logical_value_t> values) {
-        // Column j carries the value's own complex_logical_type, so the cell is written
-        // without a cast. Capacity is at least 1 because set_cardinality(1) below requires
-        // capacity_ >= 1 even when there are no key columns.
-        std::pmr::vector<types::complex_logical_type> types(resource);
-        types.reserve(values.size());
-        for (const auto& v : values) {
-            types.emplace_back(v.type());
-        }
-        vector::data_chunk_t chunk(resource, types, 1);
-        for (std::size_t j = 0; j < values.size(); ++j) {
-            // set_value already leaves the cell invalid for a null logical_value_t.
-            chunk.set_value(static_cast<uint64_t>(j), 0, values[j]);
-        }
-        chunk.set_cardinality(1);
-        return chunk;
-    }
-
-    vector::data_chunk_t make_keys_chunk(std::pmr::memory_resource* resource,
-                                         const std::pmr::vector<std::pmr::vector<types::logical_value_t>>& rows) {
-        // Column types are taken from the first key-tuple; every other tuple must be
-        // positionally aligned to the same key columns (same arity, same per-column type).
-        // Capacity is at least 1 because set_cardinality requires capacity_ >= 1 even when
-        // there are no rows.
-        std::pmr::vector<types::complex_logical_type> types(resource);
-        if (!rows.empty()) {
-            types.reserve(rows.front().size());
-            for (const auto& v : rows.front()) {
-                types.emplace_back(v.type());
-            }
-        }
-        const std::size_t nrows = rows.size();
-        vector::data_chunk_t chunk(resource, types, nrows == 0 ? 1 : nrows);
-        for (std::size_t i = 0; i < nrows; ++i) {
-            const auto& row = rows[i];
-            for (std::size_t j = 0; j < row.size(); ++j) {
-                // set_value already leaves the cell invalid for a null logical_value_t.
-                chunk.set_value(static_cast<uint64_t>(j), static_cast<uint64_t>(i), row[j]);
-            }
-        }
-        chunk.set_cardinality(static_cast<uint64_t>(nrows));
-        return chunk;
-    }
-
 } // namespace components::operators

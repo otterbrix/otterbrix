@@ -37,7 +37,7 @@ namespace {
             data_chunk_t chunk(resource, types, batch);
             chunk.set_cardinality(batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.set_value(0, i, logical_value_t{resource, static_cast<int64_t>(offset + i)});
+                chunk.set_value(0, i, static_cast<int64_t>(offset + i));
             }
             table_append_state state(resource);
             auto append_lock_result = table.append_lock(state);
@@ -180,8 +180,8 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
             data_chunk_t chunk(&resource, types, batch);
             chunk.set_cardinality(batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.set_value(0, i, logical_value_t{&resource, static_cast<int64_t>(offset + i)});
-                chunk.set_value(1, i, logical_value_t{&resource, static_cast<double>(offset + i) * 1.5});
+                chunk.set_value(0, i, static_cast<int64_t>(offset + i));
+                chunk.set_value(1, i, static_cast<double>(offset + i) * 1.5);
             }
             table_append_state state(&resource);
             auto append_lock_result = ts.table().append_lock(state);
@@ -246,9 +246,9 @@ TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
         data_chunk_t chunk(&resource, types, NUM_ROWS);
         chunk.set_cardinality(NUM_ROWS);
         for (uint64_t i = 0; i < NUM_ROWS; ++i) {
-            chunk.set_value(0, i, logical_value_t{&resource, static_cast<int64_t>(i)});
-            chunk.set_value(1, i, logical_value_t{&resource, static_cast<int64_t>(i * 10)});
-            chunk.set_value(2, i, logical_value_t{&resource, static_cast<int64_t>(i * 100)});
+            chunk.set_value(0, i, static_cast<int64_t>(i));
+            chunk.set_value(1, i, static_cast<int64_t>(i * 10));
+            chunk.set_value(2, i, static_cast<int64_t>(i * 100));
         }
         table_append_state state(&resource);
         auto append_lock_result = ts.table().append_lock(state);
@@ -279,8 +279,8 @@ TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
         ts.table().scan(result, scan_state);
         REQUIRE(result.size() == NUM_ROWS);
         for (uint64_t i = 0; i < result.size(); ++i) {
-            REQUIRE(result.data[0].value(i).value<int64_t>() == static_cast<int64_t>(i));
-            REQUIRE(result.data[1].value(i).value<int64_t>() == static_cast<int64_t>(i * 100));
+            REQUIRE(result.data[0].get_value<int64_t>(i) == static_cast<int64_t>(i));
+            REQUIRE(result.data[1].get_value<int64_t>(i) == static_cast<int64_t>(i * 100));
         }
     }
 

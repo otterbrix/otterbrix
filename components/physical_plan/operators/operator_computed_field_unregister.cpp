@@ -60,17 +60,14 @@ namespace components::operators {
         // and we need max(attversion).
         // pg_computed_column layout: 0=relid 1=attoid 2=attname
         // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
-        types::logical_value_t toid_lv(resource_, table_oid_);
         std::pmr::vector<std::string> r_keys(resource_);
         r_keys.emplace_back("relid");
-        std::pmr::vector<types::logical_value_t> r_vals(resource_);
-        r_vals.emplace_back(toid_lv);
         auto [_r, rf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::read_chunks_by_key,
                                          exec_ctx,
                                          pg_computed_column,
                                          std::move(r_keys),
-                                         components::operators::make_key_chunk(resource_, std::move(r_vals)));
+                                         components::operators::make_key_chunk(resource_, table_oid_));
         auto batches = co_await std::move(rf);
 
         // pick the latest live row matching attoid_ (max attversion AND attrefcount > 0).
@@ -82,35 +79,30 @@ namespace components::operators {
             if (chunk.column_count() < 7)
                 continue;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto attoid_v = chunk.value(1, i);
-                auto attversion_v = chunk.value(5, i);
-                auto refcount_v = chunk.value(6, i);
-                if (attoid_v.is_null() || attversion_v.is_null() || refcount_v.is_null())
+                if (chunk.is_null(1, i) || chunk.is_null(5, i) || chunk.is_null(6, i))
                     continue;
-                const auto row_attoid = static_cast<catalog::oid_t>(attoid_v.value<std::uint32_t>());
+                const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                 // Match by attoid when enrich stamped it; otherwise fall back to
                 // matching by attname (column_name_).
                 if (attoid_ != catalog::INVALID_OID) {
                     if (row_attoid != attoid_)
                         continue;
                 } else {
-                    auto attname_v = chunk.value(2, i);
-                    if (attname_v.is_null())
+                    if (chunk.is_null(2, i))
                         continue;
-                    if (attname_v.value<std::string_view>() != column_name_)
+                    if (chunk.get_value<std::string_view>(2, i) != column_name_)
                         continue;
                 }
-                const auto v = attversion_v.value<std::int64_t>();
-                const auto rc = refcount_v.value<std::int64_t>();
+                const auto v = chunk.get_value<std::int64_t>(5, i);
+                const auto rc = chunk.get_value<std::int64_t>(6, i);
                 if (rc <= 0)
                     continue;
                 if (v > max_version) {
-                    auto atttypid_v = chunk.value(3, i);
                     max_version = v;
                     live_attoid = row_attoid;
-                    live_atttypid = atttypid_v.is_null()
+                    live_atttypid = chunk.is_null(3, i)
                                         ? catalog::INVALID_OID
-                                        : static_cast<catalog::oid_t>(atttypid_v.value<std::uint32_t>());
+                                        : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                     found_live = true;
                 }
             }

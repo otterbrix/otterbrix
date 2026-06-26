@@ -31,6 +31,11 @@ namespace components::operators {
         }
 
         bool value_equals_raw(const vector::vector_t& vec, size_t row, const types::logical_value_t& val) {
+            // The typed fast paths below index vec.data<T>() directly, which is only valid for FLAT
+            // vectors. For dictionary/sequence/constant/sliced columns resolve through indexing instead.
+            if (vec.get_vector_type() != vector::vector_type::FLAT) {
+                return vec.value(row) == val;
+            }
             if (vec.is_null(row))
                 return val.is_null();
             if (val.is_null())

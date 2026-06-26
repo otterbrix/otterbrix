@@ -37,7 +37,7 @@ namespace {
         auto types = table.copy_types();
         auto chunk = data_chunk_t(&env.resource, types, count);
         for (uint64_t i = 0; i < count; i++) {
-            chunk.data[0].set_value(i, logical_value_t(&env.resource, start + static_cast<int64_t>(i)));
+            chunk.data[0].set_value(i, start + static_cast<int64_t>(i));
         }
         chunk.set_cardinality(count);
 
@@ -52,7 +52,7 @@ namespace {
         auto types = table.copy_types();
         auto chunk = data_chunk_t(&env.resource, types, count);
         for (uint64_t i = 0; i < count; i++) {
-            chunk.data[0].set_value(i, logical_value_t(&env.resource, start + static_cast<int64_t>(i)));
+            chunk.data[0].set_value(i, start + static_cast<int64_t>(i));
         }
         chunk.set_cardinality(count);
 
@@ -205,7 +205,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_commit_all_deletes") {
     id_type.emplace_back(logical_type::BIGINT);
     auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 5);
     for (uint64_t i = 0; i < 5; i++) {
-        row_ids_chunk.data[0].set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+        row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(i));
     }
     row_ids_chunk.set_cardinality(5);
 
@@ -242,7 +242,7 @@ TEST_CASE("components::table::mvcc::delete_rows_txn_without_commit_visible") {
     id_type.emplace_back(logical_type::BIGINT);
     auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 5);
     for (uint64_t i = 0; i < 5; i++) {
-        row_ids_chunk.data[0].set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+        row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(i));
     }
     row_ids_chunk.set_cardinality(5);
 
@@ -275,7 +275,7 @@ TEST_CASE("components::table::mvcc::cleanup_committed_deletes") {
     id_type.emplace_back(logical_type::BIGINT);
     auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 10);
     for (uint64_t i = 0; i < 10; i++) {
-        row_ids_chunk.data[0].set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+        row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(i));
     }
     row_ids_chunk.set_cardinality(10);
 
@@ -316,7 +316,7 @@ TEST_CASE("components::table::mvcc::cleanup_partial_deletes") {
     id_type.emplace_back(logical_type::BIGINT);
     auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 5);
     for (uint64_t i = 0; i < 5; i++) {
-        row_ids_chunk.data[0].set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+        row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(i));
     }
     row_ids_chunk.set_cardinality(5);
 
@@ -356,7 +356,7 @@ TEST_CASE("components::table::mvcc::compact_after_delete") {
     id_type.emplace_back(logical_type::BIGINT);
     auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 50);
     for (uint64_t i = 0; i < 50; i++) {
-        row_ids_chunk.data[0].set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+        row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(i));
     }
     row_ids_chunk.set_cardinality(50);
 
@@ -430,7 +430,7 @@ TEST_CASE("components::table::mvcc::delete_not_visible_until_commit") {
     id_type.emplace_back(logical_type::BIGINT);
     auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 5);
     for (uint64_t i = 0; i < 5; i++) {
-        row_ids_chunk.data[0].set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+        row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(i));
     }
     row_ids_chunk.set_cardinality(5);
 
@@ -501,7 +501,7 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < result.size(); i++) {
-                values.insert(result.data[0].value(i).value<int64_t>());
+                values.insert(result.data[0].get_value<int64_t>(i));
             }
         }
         return values;
@@ -511,7 +511,7 @@ namespace {
         std::pmr::vector<complex_logical_type> id_type(&env.resource);
         id_type.emplace_back(logical_type::BIGINT);
         auto row_ids_chunk = data_chunk_t(&env.resource, id_type, 1);
-        row_ids_chunk.data[0].set_value(0, logical_value_t(&env.resource, static_cast<int64_t>(0)));
+        row_ids_chunk.data[0].set_value(0, static_cast<int64_t>(0));
         row_ids_chunk.set_cardinality(1);
 
         table_delete_state del_state(&env.resource);

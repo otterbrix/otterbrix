@@ -1,5 +1,7 @@
 #include "single_field_index.hpp"
 
+#include <algorithm>
+
 namespace components::index {
 
     single_field_index_t::single_field_index_t(std::pmr::memory_resource* resource,
@@ -102,12 +104,24 @@ namespace components::index {
         auto it = pending_inserts_.find(txn_id);
         if (it == pending_inserts_.end())
             return;
-        for (const auto& [key, row_index] : it->second) {
-            auto range = storage_.equal_range(key);
+        // Group by key: sort this txn's pending entries (erased right after) so equal_range is
+        // scanned ONCE per distinct key, flipping every entry still tagged insert_id==txn_id —
+        // exactly this txn's inserts for that key (insert_txn_impl records pending and storage_
+        // in lockstep). Avoids the per-entry rescans that made a low-cardinality bulk commit
+        // O(rows^2); now O(rows log rows).
+        auto& entries = it->second;
+        comparator_t less;
+        std::sort(entries.begin(), entries.end(), [&less](const pending_entry& a, const pending_entry& b) {
+            return less(a.first, b.first);
+        });
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (i > 0 && !less(entries[i - 1].first, entries[i].first)) {
+                continue; // same key as the previous entry (sorted ascending)
+            }
+            auto range = storage_.equal_range(entries[i].first);
             for (auto sit = range.first; sit != range.second; ++sit) {
-                if (sit->second.row_index == row_index && sit->second.insert_id == txn_id) {
+                if (sit->second.insert_id == txn_id) {
                     sit->second.insert_id = commit_id;
-                    break;
                 }
             }
         }
@@ -118,12 +132,21 @@ namespace components::index {
         auto it = pending_deletes_.find(txn_id);
         if (it == pending_deletes_.end())
             return;
-        for (const auto& [key, row_index] : it->second) {
-            auto range = storage_.equal_range(key);
+        // Group by key (see commit_insert_impl): scan equal_range ONCE per distinct key,
+        // flipping every entry still tagged delete_id==txn_id. O(rows^2) -> O(rows log rows).
+        auto& entries = it->second;
+        comparator_t less;
+        std::sort(entries.begin(), entries.end(), [&less](const pending_entry& a, const pending_entry& b) {
+            return less(a.first, b.first);
+        });
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (i > 0 && !less(entries[i - 1].first, entries[i].first)) {
+                continue; // same key as the previous entry (sorted ascending)
+            }
+            auto range = storage_.equal_range(entries[i].first);
             for (auto sit = range.first; sit != range.second; ++sit) {
-                if (sit->second.row_index == row_index && sit->second.delete_id == txn_id) {
+                if (sit->second.delete_id == txn_id) {
                     sit->second.delete_id = commit_id;
-                    break;
                 }
             }
         }

@@ -3,6 +3,7 @@
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
+#include <algorithm>
 #include <cstdlib>
 #include <unordered_set>
 
@@ -211,13 +212,27 @@ namespace components::table {
         // empty / disjoint), so the old ids it frees are not referenced by row_groups_. The persisted free
         // list survives checkpoint, so reclaimed space is durable. mark_as_free under the block manager's
         // allocation lock; no live segment references the freed blocks (the old collection is being torn down).
+        //
+        // Each mark_as_free MUST be paired with unregister_block(id): returning the id to the free list while a
+        // live block_handle for that id lingers in the block manager's blocks_ registry is an ABA hazard -- a
+        // later free_block_id()/register_block() that reuses the id would resurrect the STALE handle (pointing at
+        // OLD data) instead of creating a fresh one. unregister_block drops only the registry's weak_ptr entry;
+        // the old collection's segments still own the block_handle objects (dropped when old_collection releases),
+        // and their dtors call unregister_block again -- a harmless no-op erase on an already-removed id.
         if (old_collection) {
             auto& block_manager = old_collection->block_manager();
             if (!block_manager.in_memory()) {
                 std::pmr::vector<uint64_t> reclaimable{resource_};
                 old_collection->collect_disk_block_ids(reclaimable);
+                // collect_disk_block_ids reports one id PER reloadable segment; B2 packs many segments into a
+                // single shared block, so the SAME block id appears multiple times. mark_as_free /
+                // unregister_block must run ONCE per id (free_list_ is a set so a double mark_as_free is
+                // idempotent, but unregister_block twice could race a reused id's fresh handle), so dedupe.
+                std::sort(reclaimable.begin(), reclaimable.end());
+                reclaimable.erase(std::unique(reclaimable.begin(), reclaimable.end()), reclaimable.end());
                 for (uint64_t block_id : reclaimable) {
                     block_manager.mark_as_free(block_id);
+                    block_manager.unregister_block(block_id);
                 }
             }
         }
@@ -232,6 +247,82 @@ namespace components::table {
                                     table_scan_state& state,
                                     std::pmr::memory_resource* resource) {
         state.table_state.scan_batched(types, projected_cols, batches, resource);
+    }
+
+    core::result_wrapper_t<bool> data_table_t::fetch_next_batch(vector::data_chunk_t& result,
+                                                                const std::vector<storage_index_t>& column_ids,
+                                                                const table_filter_t* filter,
+                                                                transaction_data txn,
+                                                                int64_t& next_row,
+                                                                int64_t max_row,
+                                                                bool& drained) {
+        if (drained || next_row >= max_row) {
+            drained = true;
+            return true;
+        }
+        // Resume by ABSOLUTE row position against the CURRENT (post-checkpoint) segment tree, reading
+        // forward one vector at a time until a vector yields rows OR the scan drains. A filter / all-
+        // deleted vector produces 0 rows but still advances the position; the agent and source
+        // operator treat an empty batch as end-of-scan, so this loop must keep walking past those
+        // empty vectors here rather than handing back a premature empty batch (which would stop the
+        // scan before reaching a later group that does match). The walk is geometry-agnostic: each
+        // seek re-resolves next_row against the live tree and advances only within the resolved
+        // group's [start, start+count) bounds, never assuming a fixed row_group_size.
+        while (next_row < max_row) {
+            // Transient scan state seeked to next_row, capped at max_row. initialize_scan_with_offset
+            // binds the filter and pins only ONE batch's segment(s); both release when `state`
+            // destructs at the end of each iteration — nothing pinned crosses the mailbox round-trip.
+            table_scan_state state(resource_);
+            initialize_scan_with_offset(state, column_ids, next_row, max_row);
+            state.filter = filter;
+            state.table_state.txn = txn;
+            state.local_state.txn = txn;
+            auto& css = state.table_state;
+
+            // Capture the seeked group's absolute end BEFORE the read so the advance stays within
+            // [start, start+count) of the group this seek resolved against the LIVE tree — never
+            // assuming a fixed row_group_size.
+            const row_group_t* seeked_group = css.row_group;
+            const int64_t group_end =
+                seeked_group != nullptr
+                    ? std::min(seeked_group->start + static_cast<int64_t>(seeked_group->count.load()), max_row)
+                    : max_row;
+
+            const bool produced = css.next_batch(result);
+            if (css.has_error()) {
+                return css.scan_error;
+            }
+
+            // Resume position = the absolute row just past the vector(s) next_batch consumed. Since
+            // initialize_scan_with_offset stamps vector_index in collection-absolute space (the same
+            // convention as the continuous scan), css.vector_index*CAP is the absolute next row — this
+            // correctly accounts for empty vectors next_batch skipped WITHIN the group, instead of a
+            // blind one-vector step that could re-read or skip rows. Clamp to the group end (next seek
+            // moves into the following group) and to max_row (drain).
+            const int64_t prev_row = next_row;
+            const int64_t scanned_to =
+                static_cast<int64_t>(css.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
+            next_row = std::min({scanned_to, group_end, max_row});
+
+            // No segment resolved for this position, or the position did not move forward: the scan
+            // has run out of source rows. Drain.
+            if (seeked_group == nullptr || next_row <= prev_row) {
+                drained = true;
+                return true;
+            }
+            // Produced a batch: hand it back, leaving next_row positioned for the caller's next fetch.
+            if (produced) {
+                if (next_row >= max_row) {
+                    drained = true;
+                }
+                return true;
+            }
+            // Empty vector (filtered / all-deleted) but the position advanced: keep walking forward
+            // within this call instead of returning an empty (would-be-drained) batch.
+        }
+        // Reached max_row without producing further rows.
+        drained = true;
+        return true;
     }
 
     bool data_table_t::create_index_scan(table_scan_state& state, vector::data_chunk_t& result, table_scan_type type) {
@@ -275,9 +366,8 @@ namespace components::table {
         assert(state.append_lock &&
                "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_lock) {
-            return core::error_t(
-                core::error_code_t::invalid_parameter,
-                std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
         }
         return row_groups_->initialize_append(state); // out_of_memory
     }
@@ -325,8 +415,11 @@ namespace components::table {
         create_index_scan_state state(resource_);
 
         initialize_scan_with_offset(state, column_ids, row_start, row_start + static_cast<int64_t>(count));
-        auto row_start_aligned = state.table_state.row_group->start +
-                                 static_cast<int64_t>(state.table_state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
+        // vector_index is stamped in collection-absolute space by initialize_scan_with_offset, so
+        // vector_index*CAP is already the vector-aligned absolute start row (do NOT re-add row_group
+        // start — that would double-count the group origin).
+        auto row_start_aligned =
+            static_cast<int64_t>(state.table_state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
 
         int64_t current_row = row_start_aligned;
         while (current_row < end) {
@@ -353,40 +446,6 @@ namespace components::table {
             function(chunk);
             chunk.reset();
             current_row = end_row;
-        }
-    }
-
-    std::shared_ptr<parallel_table_scan_state_t>
-    data_table_t::create_parallel_scan_state(const std::vector<storage_index_t>& column_ids,
-                                             const table_filter_t* filter) {
-        auto total_rg = row_groups_->row_group_tree()->segment_count();
-        return std::make_shared<parallel_table_scan_state_t>(column_ids, filter, total_rg);
-    }
-
-    bool data_table_t::next_parallel_chunk(parallel_table_scan_state_t& parallel_state,
-                                           table_scan_state& local_state,
-                                           vector::data_chunk_t& result) {
-        while (true) {
-            auto rg_idx = parallel_state.next_row_group_idx.fetch_add(1);
-            if (rg_idx >= parallel_state.total_row_groups) {
-                return false;
-            }
-
-            auto* rg = row_groups_->row_group_tree()->segment_at(static_cast<int64_t>(rg_idx));
-            if (!rg) {
-                return false;
-            }
-
-            local_state.initialize(parallel_state.column_ids, parallel_state.filter);
-            int64_t max_row = rg->start + static_cast<int64_t>(rg->count);
-            collection_t::initialize_scan_in_row_group(local_state.local_state, *row_groups_, *rg, 0, max_row);
-
-            result.reset();
-            local_state.local_state.scan_committed(result, table_scan_type::COMMITTED_ROWS);
-            if (result.size() > 0) {
-                return true;
-            }
-            // Empty row group (all deleted) — skip and try next
         }
     }
 
@@ -445,11 +504,10 @@ namespace components::table {
         return result;
     }
 
-    core::result_wrapper_t<std::pair<int64_t, uint64_t>>
-    data_table_t::update(table_update_state&,
-                         vector::vector_t& row_ids,
-                         // const std::vector<uint64_t>& column_ids,
-                         vector::data_chunk_t& data) {
+    core::result_wrapper_t<std::pair<int64_t, uint64_t>> data_table_t::update(table_update_state&,
+                                                                             vector::vector_t& row_ids,
+                                                                             // const std::vector<uint64_t>& column_ids,
+                                                                             vector::data_chunk_t& data) {
         assert(row_ids.type().to_physical_type() == types::physical_type::INT64);
 
         uint64_t count = data.size();
@@ -503,9 +561,9 @@ namespace components::table {
         // txn abort instead of aborting: under -fno-exceptions a throw inside an actor-zeta
         // coroutine is silently swallowed (UB).
         if (!is_root_) {
-            return core::error_t(
-                core::error_code_t::write_conflict,
-                std::pmr::string("Transaction conflict: cannot update a table that has been altered!", resource_));
+            return core::error_t(core::error_code_t::write_conflict,
+                                 std::pmr::string("Transaction conflict: cannot update a table that has been altered!",
+                                                  resource_));
         }
 
         updates.flatten();

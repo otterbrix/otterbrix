@@ -1,5 +1,4 @@
 #include "operator_union.hpp"
-#include "join_utils.hpp"
 #include "operator_data.hpp"
 
 #include <components/vector/data_chunk.hpp>
@@ -82,16 +81,13 @@ namespace components::operators {
         : read_only_operator_t(resource, log, operator_type::union_op)
         , all_(all) {}
 
-    void operator_union_t::on_execute_impl(pipeline::context_t*) {
-        if (!left_ || !right_ || !left_->output() || !right_->output()) {
-            return;
-        }
-
-        auto* res = left_->output()->resource();
-        const auto& left_chunks = left_->output()->chunks();
-        const auto& right_chunks = right_->output()->chunks();
+    void operator_union_t::emit_union_(std::pmr::memory_resource* res,
+                                       const chunks_vector_t& left_chunks,
+                                       const chunks_vector_t& right_chunks,
+                                       chunks_vector_t& out_chunks) {
+        // Output column types follow the left side (PostgreSQL UNION uses the first
+        // SELECT's column types); fall back to the right side if the left is empty.
         const auto& types = left_chunks.empty() ? right_chunks.front().types() : left_chunks.front().types();
-        chunks_vector_t out_chunks(res);
 
         if (all_) {
             auto copy_all = [&](const chunks_vector_t& src_chunks) {
@@ -109,58 +105,76 @@ namespace components::operators {
             };
             copy_all(left_chunks);
             copy_all(right_chunks);
-        } else {
-            std::pmr::unordered_map<uint64_t, std::pmr::vector<row_ref_t>> seen(res);
+            return;
+        }
 
-            auto process = [&](const vector::data_chunk_t& chunk) {
-                if (chunk.size() == 0) {
-                    return;
-                }
-                vector::vector_t hash_vec(res, types::logical_type::UBIGINT, chunk.size());
-                const_cast<vector::data_chunk_t&>(chunk).hash(hash_vec);
-                const auto* hashes = hash_vec.data<uint64_t>();
+        std::pmr::unordered_map<uint64_t, std::pmr::vector<row_ref_t>> seen(res);
 
-                std::pmr::vector<uint64_t> selected(res);
-                for (uint64_t row = 0; row < chunk.size(); ++row) {
-                    const uint64_t h = hashes[row];
-                    auto it = seen.find(h);
-                    if (it == seen.end()) {
-                        selected.push_back(row);
-                        std::pmr::vector<row_ref_t> refs(res);
-                        refs.push_back({&chunk, row});
-                        seen.emplace(h, std::move(refs));
-                    } else {
-                        bool is_dup = false;
-                        for (const auto& ref : it->second) {
-                            if (rows_equal(chunk, row, *ref.chunk, ref.row)) {
-                                is_dup = true;
-                                break;
-                            }
-                        }
-                        if (!is_dup) {
-                            selected.push_back(row);
-                            it->second.push_back({&chunk, row});
+        auto process = [&](const vector::data_chunk_t& chunk) {
+            if (chunk.size() == 0) {
+                return;
+            }
+            vector::vector_t hash_vec(res, types::logical_type::UBIGINT, chunk.size());
+            const_cast<vector::data_chunk_t&>(chunk).hash(hash_vec);
+            const auto* hashes = hash_vec.data<uint64_t>();
+
+            std::pmr::vector<uint64_t> selected(res);
+            for (uint64_t row = 0; row < chunk.size(); ++row) {
+                const uint64_t h = hashes[row];
+                auto it = seen.find(h);
+                if (it == seen.end()) {
+                    selected.push_back(row);
+                    std::pmr::vector<row_ref_t> refs(res);
+                    refs.push_back({&chunk, row});
+                    seen.emplace(h, std::move(refs));
+                } else {
+                    bool is_dup = false;
+                    for (const auto& ref : it->second) {
+                        if (rows_equal(chunk, row, *ref.chunk, ref.row)) {
+                            is_dup = true;
+                            break;
                         }
                     }
+                    if (!is_dup) {
+                        selected.push_back(row);
+                        it->second.push_back({&chunk, row});
+                    }
                 }
-
-                if (!selected.empty()) {
-                    out_chunks.emplace_back(copy_rows(chunk, selected, types, res));
-                }
-            };
-
-            for (const auto& chunk : left_chunks) {
-                process(chunk);
             }
-            for (const auto& chunk : right_chunks) {
-                process(chunk);
-            }
-        }
 
-        if (out_chunks.empty()) {
-            out_chunks.emplace_back(res, types, 0);
+            if (!selected.empty()) {
+                out_chunks.emplace_back(copy_rows(chunk, selected, types, res));
+            }
+        };
+
+        for (const auto& chunk : left_chunks) {
+            process(chunk);
         }
-        output_ = make_operator_data(res, std::move(out_chunks));
+        for (const auto& chunk : right_chunks) {
+            process(chunk);
+        }
+    }
+
+    core::error_t operator_union_t::push(pipeline::context_t*, vector::data_chunk_t&&, chunks_vector_t&) {
+        // Both inputs are materialized by separate sub-plans before this operator runs
+        // (traverse_plan_ splits the union's left and right children). The streaming
+        // pump's left batches are therefore a redundant view of left_->output(), which
+        // finalize() reads directly — so push() folds nothing and emits nothing.
+        return core::error_t::no_error();
+    }
+
+    core::error_t operator_union_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
+        // Emit the union of the two MATERIALIZED sides (the emit_union_ core).
+        if (!left_ || !left_->output()) {
+            return core::error_t::no_error();
+        }
+        auto* res = left_->output()->resource();
+        const auto& left_chunks = left_->output()->chunks();
+        chunks_vector_t empty_right(res);
+        const chunks_vector_t& right_chunks =
+            (right_ && right_->output()) ? right_->output()->chunks() : empty_right;
+        emit_union_(res, left_chunks, right_chunks, out);
+        return core::error_t::no_error();
     }
 
 } // namespace components::operators

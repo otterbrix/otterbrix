@@ -15,8 +15,7 @@ namespace services::planner::impl {
         const auto* cte_node = static_cast<const components::logical_plan::node_recursive_cte_t*>(node.get());
 
         auto op = boost::intrusive_ptr(new components::operators::operator_recursive_cte_t(context.resource,
-                                                                                           context.log.clone(),
-                                                                                           cte_node->all()));
+                                                                                           context.log.clone()));
 
         // Build anchor using the original context (no cte_working_sets entry needed).
         auto anchor_op = create_plan(context, function_registry, cte_node->children()[0], limit, params);
@@ -27,7 +26,11 @@ namespace services::planner::impl {
 
         auto recursive_op = create_plan(recursive_context, function_registry, cte_node->children()[1], limit, params);
 
-        op->set_children(std::move(anchor_op), std::move(recursive_op));
+        // The anchor + recursive term are NOT left_/right_ children: operator_recursive_cte_t
+        // owns driving them via ctx->runner->run_subplan, so it must look like a leaf to
+        // traverse_plan_ (which walks left()/right()). The cte_scan(s) inside recursive_op
+        // already hold the working_set_slot() pointer (injected above).
+        op->set_recursive_terms(std::move(anchor_op), std::move(recursive_op));
         return op;
     }
 

@@ -26,8 +26,13 @@ namespace components::operators {
 
         bool success() const noexcept { return success_; }
 
+        // Sourceless SINK leaf (no data pipeline, no children): the registry
+        // existence-check + overload drop and the pg_proc/pg_depend purge run in
+        // await_async_and_resume. The dispatcher drives this operator's async
+        // finalize directly (a single await_async_and_resume).
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         std::string function_name_;

@@ -31,6 +31,12 @@ namespace components::operators {
         // Used for constant.
         types::logical_value_t constant_value;
 
+        // Plan-time resolved output type (variant 1). The column type IS this type,
+        // authoritatively — the validator resolved it data-independently and physgen
+        // forwarded it, so a projection over zero rows still produces a correctly-typed
+        // column (the per-row type-from-first-value seed cannot run over zero rows).
+        types::complex_logical_type result_type;
+
         explicit select_column_t(std::pmr::memory_resource* r)
             : key(r)
             , operands(r)
@@ -59,13 +65,22 @@ namespace components::operators {
 
         void add_column(select_column_t&& col);
 
+        // Forward the plan-resolved output column types (one per output column, in
+        // projection order) onto the columns, so each column is correctly typed even when
+        // the projection produces zero rows.
+        void set_output_types(const std::pmr::vector<types::complex_logical_type>& types) override;
+
+        // --- Push-based streaming pipeline (STEP 3 / phase C) ---
+        // A SELECT is a pure 1-batch-in -> 1-batch-out projection: each input
+        // chunk maps to exactly one output chunk via evaluate_projection(), with
+        // no cross-batch accumulation, so it is a streaming operator. finalize()
+        // keeps the default no-op.
+        [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::streaming; }
+        [[nodiscard]] core::error_t
+        push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
+
     private:
         std::pmr::vector<select_column_t> columns_;
-
-        void on_execute_impl(pipeline::context_t* pipeline_context) override;
-
-        // Build result chunk row-by-row.
-        vector::data_chunk_t evaluate(pipeline::context_t* pipeline_context, vector::data_chunk_t& input);
     };
 
 } // namespace components::operators

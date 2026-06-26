@@ -17,21 +17,20 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::set_timezone)
         , timezone_name_(std::move(timezone_name)) {}
 
-    void operator_set_timezone_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
+    actor_zeta::unique_future<void> operator_set_timezone_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Validate the timezone name first (set_timezone returns error_t on an
         // unknown/unparseable identifier) so an invalid value never reaches disk.
-        components::catalog::session_catalog_t local_cat;
-        auto err =
-            local_cat.set_timezone(this->resource(), std::string_view{timezone_name_.data(), timezone_name_.size()});
-        if (err.contains_error()) {
-            set_error(std::move(err));
-            mark_failed();
-            return;
+        {
+            components::catalog::session_catalog_t local_cat;
+            auto err = local_cat.set_timezone(this->resource(),
+                                              std::string_view{timezone_name_.data(), timezone_name_.size()});
+            if (err.contains_error()) {
+                set_error(std::move(err));
+                mark_failed();
+                co_return;
+            }
         }
-        async_wait();
-    }
 
-    actor_zeta::unique_future<void> operator_set_timezone_t::await_async_and_resume(pipeline::context_t* ctx) {
         // IN_MEMORY-only deployment (no disk actor): no pg_settings persistence,
         // so skip the catalog write.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {

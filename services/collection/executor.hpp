@@ -4,6 +4,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
+#include <components/context/subplan_runner.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -23,6 +24,28 @@
 #include <string>
 
 namespace services::collection::executor {
+
+    // Test-observable streaming-path counter. execute_pipeline() bumps it once per
+    // entry, so a test can assert a statement actually routed through the push-based
+    // streaming path (vs the legacy materialize path) rather than only that its
+    // result is correct. Process-global + relaxed: a coarse instrumentation hook,
+    // not a synchronization primitive. Not on any hot path (one bump per sub-plan).
+    // DEV_MODE-only: the integration test target compiles with -DDEV_MODE; production
+    // binaries carry neither the counter nor these accessors.
+#ifdef DEV_MODE
+    uint64_t streaming_pipeline_runs() noexcept;
+
+    // Test-observable counter of BASE-table DML append ranges PHYSICALLY reverted on
+    // the failed-statement abort path (revert_failed_txn → storage_revert_appends).
+    // Exists to make the constraint-error-leak regression deterministically RED/GREEN
+    // through SQL: a CHECK/FK violation in autocommit appends a row BEFORE the
+    // constraint fails; if the executor's error path does not lift that recorded
+    // append range, this counter stays 0 and the physical row lingers (the bug). After
+    // the fix it bumps by exactly the number of leaked ranges reverted. Process-global
+    // + relaxed: coarse instrumentation, not a synchronization primitive; off every hot
+    // path. DEV_MODE-only, like streaming_pipeline_runs().
+    uint64_t dml_appends_reverted() noexcept;
+#endif
 
     // One range per (table, DML fragment), accumulated across sub-plans.
     // Must accumulate, not overwrite: FK cascade DELETE on >=2 tables emits a
@@ -129,7 +152,15 @@ namespace services::collection::executor {
         uint64_t commit_id{0};
     };
 
-    class executor_t final : public actor_zeta::basic_actor<executor_t> {
+    // Implements components::pipeline::subplan_runner_t so an operator (running
+    // INTRA-actor inside this executor's coroutine) can run a child sub-plan
+    // through the SAME streaming executor via ctx->runner->run_subplan(...). The
+    // executor publishes itself onto pipeline::context_t::runner before driving a
+    // plan. This is NOT cross-actor sharing: operators are owned by and run
+    // synchronously inside executor_t (operator_t is a boost::intrusive_ref_counter,
+    // not a basic_actor).
+    class executor_t final : public actor_zeta::basic_actor<executor_t>,
+                             public components::pipeline::subplan_runner_t {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
@@ -169,6 +200,15 @@ namespace services::collection::executor {
         // executor.cpp for the rationale).
         unique_future<void> poke_msg();
 
+        // subplan_runner_t override. Routes a prepared sub-plan root through the
+        // SAME streaming seam execute_sub_plan_ uses (drive_subplan_ ->
+        // execute_pipeline) and returns its output chunks. Called INTRA-actor by an
+        // operator through ctx->runner (never across the mailbox). NOT in
+        // dispatch_traits: it is a synchronous in-coroutine interface call, not a
+        // mailbox handler.
+        [[nodiscard]] unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
+        run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
+
         using dispatch_traits = actor_zeta::
             dispatch_traits<&executor_t::execute_plan_full, &executor_t::register_udf, &executor_t::poke_msg>;
 
@@ -184,6 +224,40 @@ namespace services::collection::executor {
                                                            plan_t plan_data,
                                                            components::table::transaction_data txn,
                                                            uint64_t lowest_active_start_time);
+
+        // Push-based streaming driver. Pulls one batch at a time from the pipeline
+        // source (the chain bottom), pushes it up through the streaming operators into
+        // the sink, then finalizes — peak memory is one batch plus active sink state.
+        // Also drives the sourceless-sink-bottom shapes (DDL/txn leaves, the resolve
+        // front-pass, a producing recursive_cte) by running the bottom sink's
+        // await_async_and_resume first and pumping any rows it produces up. Populates
+        // `root`'s output_, so the cursor/back-channel logic in execute_sub_plan_ is
+        // unchanged. EVERY reachable plan streams through here.
+        unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
+        execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx);
+
+        // Drive ONE prepared sub-plan root to completion through the streaming seam
+        // (execute_pipeline). On return `root` is executed with its output_ set
+        // (unless an error occurred). Shared by execute_sub_plan_ (which then reads
+        // root->output()) and run_subplan (which copies the chunks out). Returns the
+        // first error encountered (no exceptions — rule 2/9);
+        // core::error_t::no_error() on success. The caller must have already called
+        // root->prepare().
+        unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
+                                                    components::pipeline::context_t* ctx);
+
+        // Materialize the build sides of a sub-plan's left-chain before the streaming
+        // pump. execute_pipeline streams the LEFT chain and reads each join's RIGHT
+        // (build) child from its already-materialized output_; the TOP-LEVEL flow gets
+        // those build sides pre-executed because traverse_plan_ splits them into their
+        // own sub-plans. run_subplan drives a single root with NO such split (e.g. the
+        // recursive-CTE recursive term JOIN(scan, cte_scan)), so the build side would be
+        // un-materialized at first push(). This walks the left-chain and recursively
+        // drives any un-executed right subtree via drive_subplan_ — a no-op when the
+        // build sides were already split out (is_executed() short-circuits). Returns the
+        // first error; no_error() on success.
+        unique_future<core::error_t> materialize_build_sides_(components::operators::operator_ptr root,
+                                                              components::pipeline::context_t* ctx);
 
         // THE unified commit publisher: builds node_transaction_t(commit)
         // (ddl_mode adds the flush/WAL prefix) and runs it through the same

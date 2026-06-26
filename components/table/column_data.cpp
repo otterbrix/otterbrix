@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include <components/types/types.hpp>
+#include <components/vector/validation.hpp>
 
 #include "array_column_data.hpp"
 #include "column_checkpoint_state.hpp"
@@ -426,6 +427,15 @@ namespace components::table {
     column_data_t::append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t append_count) {
         uint64_t offset = 0;
         this->count_ += append_count;
+        // Own a partial_block_manager so any segments filled (and re-pointed to disk) during this append are
+        // PACKED into shared blocks via the same allocator the checkpoint path uses. A FILLED segment is a
+        // whole 256 KiB block, so the allocator gives it a dedicated block (offset 0) -- packing does not
+        // change its placement -- but routing it through the pbm keeps a single write-through code path. We
+        // flush at the END of this append so every re-pointed filled segment's block is durable BEFORE the
+        // append returns (and so before the row-group close / any scan or eviction of it): flush-before-evict.
+        // No-op for in-memory tables (transition_segment_to_disk early-returns; nothing is buffered).
+        storage::partial_block_manager_t pbm(block_manager_);
+        bool any_transitioned = false;
         while (true) {
             // append may raise out_of_memory when a string-overflow allocate fails.
             auto appended = state.current->append(state, uvf, offset, append_count);
@@ -451,10 +461,11 @@ namespace components::table {
                 // Write the now-complete segment through to the data file and swap it for a disk-backed,
                 // evictable+reloadable segment (disk tables only; no-op for in-memory). A write/alloc failure
                 // surfaces as io_error/out_of_memory and aborts the append cleanly.
-                auto transitioned = transition_segment_to_disk(l, filled_index);
+                auto transitioned = transition_segment_to_disk(l, filled_index, pbm);
                 if (transitioned.has_error()) {
                     return transitioned;
                 }
+                any_transitioned = true;
                 state.current = data_.last_segment(l);
                 auto init = state.current->initialize_append(state);
                 if (init.has_error()) {
@@ -463,6 +474,10 @@ namespace components::table {
             }
             offset += copied_elements;
             append_count -= copied_elements;
+        }
+        // Make every re-pointed filled segment's packed block durable before returning (flush-before-evict).
+        if (any_transitioned) {
+            pbm.flush_partial_blocks();
         }
         return true;
     }
@@ -682,7 +697,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::transition_segment_to_disk(std::unique_lock<std::mutex>& l,
-                                                                           uint64_t segment_index) {
+                                                                           uint64_t segment_index,
+                                                                           storage::partial_block_manager_t& pbm) {
         // In-memory tables have no backing store, so their segments must stay managed (no disk copy ->
         // clean OOM, never a crash). No-op.
         if (block_manager_.in_memory()) {
@@ -721,54 +737,89 @@ namespace components::table {
             return true;
         }
 
+        // An EMPTY segment (no rows yet -- e.g. the freshly-opened tail of a row group) has nothing to write
+        // through: re-pointing it would pack a 0-byte payload and persist a segment_size==0 disk segment,
+        // a degenerate on-disk shape the checkpoint/reload path does not expect. Leave it managed; it stays
+        // appendable and will be re-pointed once it fills (append on-fill path) or by a later checkpoint once
+        // it holds rows. (Pre-B2 this re-pointed to a full-block dedicated segment; B2's tight packing makes
+        // the empty case degenerate, so skip it explicitly.)
+        if (segment->count.load() == 0) {
+            return true;
+        }
+
         // Snapshot the segment metadata BEFORE touching the pin: the segment is destroyed by the swap below.
         const int64_t seg_start = segment->start;
         const uint64_t seg_count = segment->count.load();
-        const uint64_t segment_size = segment->segment_size();
+        const uint64_t alloc_segment_size = segment->segment_size();
         const uint64_t block_offset = segment->block_offset();
-        const auto block_size = block_manager_.block_size();
-        assert(segment_size <= block_size);
+        assert(alloc_segment_size <= block_manager_.block_size());
         const bool has_stats = segment->segment_statistics().has_stats();
         base_statistics_t seg_stats =
             has_stats ? segment->segment_statistics() : base_statistics_t(resource_, type_.type());
 
-        // Allocate a disk block id (block_id < MAXIMUM_BLOCK).
-        const uint64_t disk_block_id = block_manager_.free_block_id();
+        // The transient segment was allocated for a WHOLE block (segment_size() == block_size) but is filled with
+        // only `seg_count` rows. Packing must place the USED payload, not the full allocated block, or every
+        // segment would exceed 0.8*block_size and grab a dedicated block (no packing at all). Compute the
+        // tightly-used byte extent for this segment's physical layout -- this is exactly the byte range the
+        // scan/fetch read paths address (handle.ptr()+block_offset, indexed by row), so copying it round-trips
+        // losslessly:
+        //   * validity bitmaps (BIT): one STANDARD_MASK_SIZE chunk per DEFAULT_VECTOR_CAPACITY rows (the
+        //     layout validity_append writes);
+        //   * other raw-copyable fixed-width types: seg_count * type_size.
+        // Clamp to the allocated size as a safety net (used can never exceed the segment's own allocation).
+        uint64_t used_bytes;
+        if (phys == types::physical_type::BIT) {
+            const uint64_t vectors =
+                (seg_count + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY;
+            used_bytes = vectors * vector::validity_mask_t::STANDARD_MASK_SIZE;
+        } else {
+            used_bytes = seg_count * type_.size();
+        }
+        if (used_bytes > alloc_segment_size) {
+            used_bytes = alloc_segment_size;
+        }
+        const uint64_t segment_size = used_bytes;
 
-        // Pin the filled managed segment to read its payload, copy it into a fresh block buffer and flush
-        // that to the data file. Mirrors the checkpoint write path (partial_block_manager::write_to_block +
-        // block_manager::write): a block_t reserves the 8-byte checksum header; we copy the segment payload
-        // at offset 0 and write() stamps the checksum. The pin is released at the end of this scope, BEFORE
-        // the swap drops the old segment's block_handle -- otherwise the pin's raw handle would dangle.
-        // A pin OOM surfaces as an error_t.
+        // Allocate a COMPACT block placement via the partial-block allocator (segment packing): a segment
+        // larger than 0.8*block_size gets a dedicated whole block (offset 0), a smaller one is PACKED into a
+        // shared partial block at a (possibly non-zero) offset alongside other re-pointed segments. This is
+        // the SAME mechanism the checkpoint path uses (row_group_t::write_to_disk -> column flush), so narrow
+        // column segments no longer each consume a dedicated 256 KiB block.
+        const auto alloc = pbm.get_block_allocation(segment_size);
+
+        // Pin the filled managed segment to read its payload and copy it INTO the partial block's in-memory
+        // buffer at the allocated offset. NOTHING reaches the data file here: pbm.write_to_block only fills a
+        // zeroed in-memory block buffer; the block is flushed by the caller's pbm.flush_partial_blocks() BEFORE
+        // any eviction/reload of the re-pointed segment (flush-before-evict). The pin is released at the end of
+        // this scope, BEFORE the swap drops the old segment's block_handle -- otherwise the pin's raw handle
+        // would dangle. A pin OOM surfaces as an error_t.
+        //
+        // On pin OOM we DO NOT free alloc.block_id: a packed block may be SHARED by already-placed segments, so
+        // freeing its id would corrupt them. We just return the error; a few reserved bytes in a partial block
+        // leak until restart, matching the leak-not-corrupt policy of collect_disk_block_ids below.
         {
             auto& buffer_manager = block_manager_.buffer_manager;
             auto pinned = buffer_manager.pin(segment->block);
             if (pinned.has_error()) {
-                block_manager_.mark_as_free(disk_block_id); // reclaim the unused id
                 return pinned.convert_error<bool>();
             }
             auto* payload = pinned.value().ptr() + block_offset;
-
-            auto block = std::make_unique<storage::block_t>(buffer_manager.resource(),
-                                                            disk_block_id,
-                                                            static_cast<uint64_t>(block_size));
-            std::memset(block->buffer(), 0, static_cast<size_t>(block_size));
-            std::memcpy(block->buffer(), payload, static_cast<size_t>(segment_size));
-            block_manager_.write(*block, disk_block_id);
+            pbm.write_to_block(alloc.block_id, alloc.offset_in_block, payload, segment_size);
         }
 
-        // Build a NEW disk-backed segment over the freshly-written block (block_offset 0, same range).
-        // register_block hands back an UNLOADED handle whose is_reloadable() is true: the pool can evict it
-        // and block_handle::load() reloads it from the data file.
-        auto block_handle = block_manager_.register_block(disk_block_id);
+        // Build a NEW disk-backed segment over the packed block at the allocated offset. register_block dedupes
+        // by block_id (weak_ptr registry): segments packed into the SAME block share ONE block_handle, so the
+        // pool evicts/reloads the shared block once. The handle is UNLOADED and is_reloadable() is true: the
+        // pool can evict it and block_handle::load() reloads it from the data file (after the caller flushes).
+        // The new segment's segment_size is the TIGHT used size; scan/fetch read seg_count rows from it.
+        auto block_handle = block_manager_.register_block(alloc.block_id);
         auto new_segment = std::make_unique<column_segment_t>(block_handle,
-                                                              type_,
-                                                              seg_start,
-                                                              seg_count,
-                                                              static_cast<uint32_t>(disk_block_id),
-                                                              0U,
-                                                              segment_size);
+                                                             type_,
+                                                             seg_start,
+                                                             seg_count,
+                                                             static_cast<uint32_t>(alloc.block_id),
+                                                             alloc.offset_in_block,
+                                                             segment_size);
         new_segment->set_compression(compression::compression_type::UNCOMPRESSED);
         if (has_stats) {
             new_segment->set_segment_statistics(std::move(seg_stats));
@@ -783,39 +834,34 @@ namespace components::table {
     }
 
     void column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
-        // Collect the ids of disk blocks EXCLUSIVELY owned by this column's segments so a caller
-        // (compact's free-list reclaim) can return them to the block manager once this collection is
-        // no longer referenced. A block is freeable ONLY when this segment is a DEDICATED WHOLE block:
-        // a reloadable handle (block_id < MAXIMUM_BLOCK), at block_offset 0, AND large enough that the
-        // write-side allocator would have given it a dedicated block rather than packing it.
+        // Collect the ids of disk blocks owned by this column's segments so the SOLE caller
+        // (data_table_t::compact's free-list reclaim) can return them to the block manager once the WHOLE
+        // collection these segments belong to is being torn down (replaced by the compacted one). Because
+        // the entire owning collection is discarded, EVERY reloadable disk block it references is freeable,
+        // INCLUDING packed/shared partial blocks: a block packed with several of this collection's segments
+        // at distinct offsets is referenced ONLY by this (about-to-drop) collection, so freeing its id once
+        // is safe -- no live segment elsewhere points at it, and the compacted collection allocated FRESH,
+        // disjoint ids via the write-through allocator.
         //
-        // block_offset()==0 alone is NOT sufficient: the checkpointer packs many narrow columns into ONE
-        // shared partial block at distinct offsets, and the FIRST packed column sits at offset 0. An
-        // offset==0-only test would wrongly qualify the shared block as exclusively owned and free it,
-        // recycling its id and letting a later write clobber the still-live packed segments at non-zero
-        // offsets (reopen corruption). We mirror the write-side dedicated-vs-packed decision
-        // (partial_block_manager_t::get_block_allocation, which uses block_size() * FULL_THRESHOLD) so a
-        // packed offset-0 segment is NOT treated as whole-block owner. Packed/shared partial blocks are
-        // never freed here (a leak-until-restart is acceptable; corruption is not). FULL_THRESHOLD lives on
-        // partial_block_manager_t so the two sides cannot drift.
-        const auto dedicated_min = static_cast<uint64_t>(static_cast<double>(block_manager_.block_size()) *
-                                                         storage::partial_block_manager_t::FULL_THRESHOLD);
+        // B2 made packing the COMMON case (narrow column segments share blocks), so the previous
+        // dedicated-block-only discriminator (block_offset()==0 && segment_size() > 0.8*block) leaked nearly
+        // every block on each compaction -> unbounded file growth. We now emit one entry per reloadable
+        // segment; the caller DEDUPES before freeing (multiple packed segments report the SAME block id).
         for (auto& segment : const_cast<segment_tree_t<column_segment_t>&>(data_).segments()) {
-            if (segment.block && segment.block->is_reloadable() && segment.block_offset() == 0 &&
-                segment.segment_size() > dedicated_min) {
+            if (segment.block && segment.block->is_reloadable()) {
                 out.push_back(segment.block->block_id());
             }
         }
     }
 
-    core::result_wrapper_t<bool> column_data_t::transition_to_disk() {
+    core::result_wrapper_t<bool> column_data_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
         if (block_manager_.in_memory()) {
             return true; // no backing store -> segments stay managed (clean OOM, never a crash)
         }
         auto l = data_.lock();
         const uint64_t count = data_.segment_count(l);
         for (uint64_t i = 0; i < count; i++) {
-            auto transitioned = transition_segment_to_disk(l, i);
+            auto transitioned = transition_segment_to_disk(l, i, pbm);
             if (transitioned.has_error()) {
                 return transitioned; // io_error / out_of_memory
             }
@@ -976,10 +1022,17 @@ namespace components::table {
         // the live tree (it references the partial_block_manager's allocations), so the re-point cannot
         // corrupt the checkpoint. No-op for in-memory tables and for already-disk-backed segments. A
         // write/alloc failure surfaces as io_error/out_of_memory.
-        auto repointed = transition_to_disk();
+        //
+        // Use a SEPARATE short-lived partial_block_manager (NOT the checkpoint's `partial_block_manager`,
+        // which collection_t::checkpoint already flushed): the re-point packs the live tail's segments into
+        // their own shared blocks, and we flush HERE so every re-pointed live segment's block is durable
+        // before the post-checkpoint table is scanned/evicted (flush-before-evict).
+        storage::partial_block_manager_t repoint_pbm(block_manager_);
+        auto repointed = transition_to_disk(repoint_pbm);
         if (repointed.has_error()) {
             return repointed.convert_error<persistent_column_data_t>();
         }
+        repoint_pbm.flush_partial_blocks();
         return persistent;
     }
 
@@ -1024,6 +1077,12 @@ namespace components::table {
         // the eviction guard pins them all resident and reopening a large table under a small pool
         // exhausts it. The transient segment's column_segment_t ctor 0xFF-fills the bitmap
         // (all-valid) before the transition copies it to disk, so reloaded validity reads all-valid.
+        //
+        // Own a partial_block_manager so the all-valid validity segments are PACKED into shared blocks
+        // (segment packing) and flush it at the end of the loop -- the flush is the flush-before-evict
+        // guarantee: every re-pointed validity segment's block is durable before the reopened table is
+        // scanned/evicted.
+        storage::partial_block_manager_t pbm(block_manager_);
         auto l = data_.lock();
         for (const auto& dp : persistent_data.data_pointers) {
             // Disk-load path: segments are sized for known on-disk tuple counts. An OOM here
@@ -1042,9 +1101,10 @@ namespace components::table {
             // disk-backed, evictable+reloadable block (no-op for in-memory tables). A write/alloc
             // failure surfaces as io_error/out_of_memory; the disk-load path is not threaded to an
             // agent boundary, so assert and keep the managed segment on failure.
-            auto transitioned = transition_segment_to_disk(l, seg_index);
+            auto transitioned = transition_segment_to_disk(l, seg_index, pbm);
             assert(!transitioned.has_error() && "initialize_column_validity: write-through failed");
         }
+        pbm.flush_partial_blocks();
         if (!persistent_data.data_pointers.empty()) {
             uint64_t total = 0;
             for (const auto& dp : persistent_data.data_pointers) {

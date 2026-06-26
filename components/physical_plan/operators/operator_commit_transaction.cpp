@@ -24,13 +24,6 @@ namespace components::operators {
     operator_commit_transaction_t::operator_commit_transaction_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, std::move(log), operator_type::commit_transaction) {}
 
-    void operator_commit_transaction_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // A dispatcher round-trip (txn_commit_drain_msg) plus async disk/WAL
-        // sends. Defer the entire body to await_async_and_resume so every send
-        // participates in the pipeline's await chain.
-        async_wait();
-    }
-
     actor_zeta::unique_future<void> operator_commit_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
         // In DDL-commit mode, prepend the durability barrier + WAL commit record.
         if (is_ddl_commit_) {

@@ -5,10 +5,12 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
+#include "disk_contract.hpp" // fetch_batch_t reply payload for storage_fetch_next_batch_inner
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/log/log.hpp>
+#include <components/storage/storage.hpp> // scan_position_t for the index-resume active_scan_t
 #include <components/table/data_table.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/date/timezones.hpp>
@@ -250,6 +252,33 @@ namespace services::disk {
                            std::vector<size_t> projected_cols,
                            components::table::transaction_data txn);
 
+        // storage_fetch_next_batch_inner — streaming fetch-next scan source (STEP 3 / phase B).
+        //   POSITION-ONLY index-resume: unlike storage_scan_inner (which materializes the
+        //   whole batch vector), the cursor in active_scans_ stores ONLY the absolute resume
+        //   position + the scan params; every fetch re-seeks a TRANSIENT scan state from that
+        //   position (storage_t::fetch_next_batch), reads ONE batch, advances the stored position,
+        //   and releases the pins before returning — so peak scan memory is one batch and ZERO
+        //   pins survive the round-trip.
+        //     cursor_id==0  -> OPEN: resolve the owned entry, snapshot max_row = total_rows, move
+        //                      (filter, projected_cols, txn, limit) into a position-only cursor,
+        //                      mint id = (session, next_scan_cursor_id_++) per R16, store it in
+        //                      active_scans_, then advance once.
+        //     cursor_id!=0  -> ADVANCE: look up active_scans_[cursor_id], re-seek to its stored
+        //                      position and read exactly one batch.
+        //   A produced batch (cardinality>0) replies {batch, cursor_id}. A drained cursor (scan
+        //   exhausted / matched-row limit reached) ERASES active_scans_[cursor_id] and replies an
+        //   EMPTY chunk (cardinality 0) + cursor_id. Not-owned oid / record-only marker / unknown
+        //   cursor replies an empty (drained) batch. Buffer-pool OOM / data_corruption ride the
+        //   wrapper as a value (no throw across the mailbox), like scan_local.
+        unique_future<core::result_wrapper_t<fetch_batch_t>>
+        storage_fetch_next_batch_inner(session_id_t session,
+                                       components::catalog::oid_t table_oid,
+                                       uint64_t cursor_id,
+                                       std::unique_ptr<components::table::table_filter_t> filter,
+                                       int64_t limit,
+                                       std::vector<size_t> projected_cols,
+                                       components::table::transaction_data txn);
+
         // storage_scan_segment_inner — start-offset / count window scan. Returns the
         //   segment as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks (as storage yields them).
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
@@ -463,6 +492,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_delete_rows_inner,
                                                             &agent_disk_t::storage_fetch_inner,
                                                             &agent_disk_t::storage_scan_inner,
+                                                            &agent_disk_t::storage_fetch_next_batch_inner,
                                                             &agent_disk_t::storage_scan_segment_inner,
                                                             &agent_disk_t::scan_by_keys_inner,
                                                             &agent_disk_t::read_chunks_by_key_inner,
@@ -523,6 +553,47 @@ namespace services::disk {
         // This agent's storage slice (incomplete value type safe via the deferred
         // instantiation noted at the top of this header).
         std::pmr::unordered_map<components::catalog::oid_t, std::unique_ptr<collection_storage_entry_t>> storages_;
+
+        // ACTIVE (active_scan_t / active_scans_ / next_scan_cursor_id_): the position-only bounded
+        // fetch-next scan state. The streaming scan sources (full_scan / transfer_scan source_next)
+        // drive it per-batch via storage_fetch_next_batch (OPEN/ADVANCE), one batch per round-trip.
+        // Per-cursor streaming-scan state for storage_fetch_next_batch_inner. POSITION-ONLY
+        // index-resume (STEP 3): the entry holds NO buffered batches and NO live scan state —
+        // only the absolute resume position (`pos`) plus the immutable scan params needed to
+        // re-seek the table each fetch. On every fetch the handler rebuilds a TRANSIENT
+        // table_scan_state from `pos`, reads ONE batch, advances `pos`, and lets the scan state
+        // (with its pins) destruct, so ZERO pins survive a mailbox round-trip and peak scan
+        // memory is one batch. Agent-owned (the agent thread serializes every handler, so this
+        // map needs no lock and is never shared). Keyed by the agent-minted cursor_id =
+        // (session counter), which scopes a source to one query.
+        struct active_scan_t {
+            components::catalog::oid_t table_oid{components::catalog::INVALID_OID}; // gates compact() on this oid
+            components::storage::scan_position_t pos;         // absolute resume position (re-seek each fetch)
+            std::unique_ptr<components::table::table_filter_t> filter; // owned; bound into the transient state per fetch
+            std::vector<std::size_t> projected_cols;          // empty == all columns
+            components::table::transaction_data txn{0, 0};    // MVCC snapshot for the whole scan
+            int64_t matched_limit{-1};                        // post-filter matched-row cap (-1 == unbounded)
+            uint64_t matched_emitted{0};                      // running matched rows handed out (enforces matched_limit)
+            explicit active_scan_t(std::pmr::memory_resource*) {}
+        };
+        std::pmr::unordered_map<uint64_t, active_scan_t> active_scans_;
+        // Monotonic per-agent cursor-id counter, combined with the session at mint time so the id
+        // is (session, counter) per R16. 0 is reserved for the OPEN request sentinel.
+        uint64_t next_scan_cursor_id_{1};
+
+        // compact() gate: a live index-resume cursor holds an ABSOLUTE row position into the current
+        // (un-swapped) collection, so compact()'s atomic row_groups_ swap on that oid would shift the
+        // positions out from under the cursor (R17 result drift). true == at least one open cursor
+        // targets `oid`; the three compact sites skip such oids. Agent-thread only (active_scans_ is
+        // agent-owned and the mailbox serializes every access), so no lock is needed.
+        [[nodiscard]] bool has_active_scan_for_oid(components::catalog::oid_t oid) const noexcept {
+            for (const auto& [_cursor, scan] : active_scans_) {
+                if (scan.table_oid == oid) {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         // Per-agent GC slice — sole owner of GC state. Populated by
         // register_dropped_storage_inner_sync; on_horizon_advanced_inner removes entries

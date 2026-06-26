@@ -11,7 +11,6 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
-#include <set>
 #include <utility>
 #include <vector>
 
@@ -35,8 +34,6 @@ namespace components::operators {
         , column_name_(std::move(column_name))
         , attoid_(attoid)
         , behavior_(behavior) {}
-
-    void operator_alter_column_drop_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_alter_column_drop_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};

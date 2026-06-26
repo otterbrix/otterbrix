@@ -20,11 +20,8 @@ namespace components::operators {
         operator_data_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
         operator_data_t(std::pmr::memory_resource* resource, chunks_vector_t&& chunks);
 
-        ptr copy() const;
-
         // Total rows across all chunks.
         std::size_t size() const;
-        std::size_t chunk_count() const { return chunks_.size(); }
 
         // Multi-chunk API. Each chunk in the vector must contain ≤ DEFAULT_VECTOR_CAPACITY rows.
         chunks_vector_t& chunks() { return chunks_; }
@@ -39,6 +36,9 @@ namespace components::operators {
     };
 
     using operator_data_ptr = operator_data_t::ptr;
+
+    // Splits a data_chunk_t into ≤DEFAULT_VECTOR_CAPACITY-sized chunks. Input is consumed.
+    chunks_vector_t split_chunk_into_batches(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
 
     inline operator_data_ptr make_operator_data(std::pmr::memory_resource* resource,
                                                 const std::pmr::vector<types::complex_logical_type>& types,

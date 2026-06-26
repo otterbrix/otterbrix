@@ -20,8 +20,8 @@ namespace components::table::storage {
         // A segment larger than FULL_THRESHOLD of the block payload gets a DEDICATED whole block
         // (offset 0, never shared). At/below it, the segment is PACKED into a shared partial block
         // at a (possibly non-zero) offset alongside other columns' segments. This is the single
-        // source of truth for the write-side "dedicated vs shared" decision; the free-side
-        // discriminator in column_data_t::collect_disk_block_ids mirrors it so the two cannot drift.
+        // source of truth for the write-side "dedicated vs shared" decision (used by both the
+        // checkpoint flush path and the B2 write-through transition).
         static constexpr double FULL_THRESHOLD = 0.8;
 
         explicit partial_block_manager_t(block_manager_t& block_manager, double full_threshold = FULL_THRESHOLD);

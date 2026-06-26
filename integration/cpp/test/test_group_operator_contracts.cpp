@@ -23,6 +23,35 @@ namespace {
             new operators::operator_empty_t(resource, operators::make_operator_data(resource, std::move(chunk))));
     }
 
+    // Drive a group operator through its public streaming sink entries (push every
+    // child output chunk, then finalize) — the same path execute_pipeline uses for a
+    // sink — and publish the finalized chunks as the operator's output_. This is what
+    // the executor's streaming drive does; the legacy on_execute() materialized entry
+    // (now deleted) folded the same accumulate()/materialize_groups()/
+    // empty_aggregate_result() cores finalize() reaches, so the error contracts below
+    // are unchanged.
+    void drive_group(operators::operator_group_t* group,
+                     std::pmr::memory_resource* resource,
+                     pipeline::context_t* ctx) {
+        group->prepare();
+        operators::chunks_vector_t out(resource);
+        if (auto child = group->left(); child && child->output()) {
+            for (const auto& c : child->output()->chunks()) {
+                auto err = group->push(ctx, c.partial_copy(resource, 0, c.size()), out);
+                if (err.contains_error()) {
+                    group->set_error(err);
+                    return;
+                }
+            }
+        }
+        auto fin_err = group->finalize(ctx, out);
+        if (fin_err.contains_error()) {
+            group->set_error(fin_err);
+            return;
+        }
+        group->set_output(operators::make_operator_data(resource, std::move(out)));
+    }
+
 } // namespace
 
 TEST_CASE("group operator contracts: unresolved column key surfaces operator error", "[group_contracts]") {
@@ -49,7 +78,7 @@ TEST_CASE("group operator contracts: unresolved column key surfaces operator err
     group->set_children(make_child(&resource, std::move(chunk)));
 
     pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
-    group->on_execute(&ctx);
+    drive_group(group.get(), &resource, &ctx);
 
     REQUIRE(group->has_error());
     REQUIRE(group->get_error().type == core::error_code_t::schema_error);
@@ -95,7 +124,7 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
     group->set_children(make_child(&resource, std::move(chunk)));
 
     pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
-    group->on_execute(&ctx);
+    drive_group(group.get(), &resource, &ctx);
 
     REQUIRE_FALSE(group->has_error());
     REQUIRE(group->output());
@@ -141,7 +170,7 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
     logical_plan::storage_parameters params{&resource};
     logical_plan::add_parameter(params, core::parameter_id_t(1), std::string("not_a_number"));
     pipeline::context_t ctx(std::move(params));
-    group->on_execute(&ctx);
+    drive_group(group.get(), &resource, &ctx);
 
     REQUIRE(group->has_error());
 }

@@ -45,8 +45,6 @@ namespace components::operators {
         output_schema_.back().set_alias("database_oid");
     }
 
-    void operator_resolve_database_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_resolve_database_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgDatabase = catalog::well_known_oid::pg_database_table;
 

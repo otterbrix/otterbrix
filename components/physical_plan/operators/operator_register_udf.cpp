@@ -25,12 +25,6 @@ namespace components::operators {
         , function_(std::move(function))
         , executor_uids_(std::move(executor_uids)) {}
 
-    void operator_register_udf_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // All work is async (conflict-detection read + pg_proc writes). Defer to
-        // await_async_and_resume.
-        async_wait();
-    }
-
     actor_zeta::unique_future<void> operator_register_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;
         if (!function_) {

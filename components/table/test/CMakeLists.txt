@@ -10,7 +10,6 @@ set(${PROJECT_NAME}_SOURCES
         test_transaction_manager.cpp
         test_mvcc_operations.cpp
         test_statistics.cpp
-        test_parallel_scan.cpp
         test_block_e_procarray.cpp
         test_disk_backed_scan.cpp
 )

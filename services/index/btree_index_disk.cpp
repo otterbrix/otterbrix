@@ -114,6 +114,33 @@ namespace services::index {
         }
     }
 
+    void btree_index_disk_t::insert_bulk_unchecked(const value_t& key, size_t value) {
+        // Bulk fast path: append (key,value) WITHOUT the per-insert find() dedup
+        // (insert()'s O(items-per-key) scan + msgpack unpack) and WITHOUT a per-insert
+        // flush. The caller (bulk load / repopulate) guarantees uniqueness, so the
+        // dedup is unnecessary; force_flush() persists once at the end. This turns a
+        // bulk load from O(rows^2) into O(rows).
+        msgpack::sbuffer sbuf;
+        msgpack::packer packer(sbuf);
+        packer.pack_array(2);
+        packer.pack(key);
+        packer.pack(value);
+        db_->append(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
+        mark_operation_dirty();
+    }
+
+    void btree_index_disk_t::remove_bulk_unchecked(const value_t& key, size_t row_id) {
+        // Bulk fast path: erase the (key,row_id) entry directly WITHOUT the per-remove
+        // find() guard. The caller guarantees the entry is present; force_flush() once.
+        msgpack::sbuffer sbuf;
+        msgpack::packer packer(sbuf);
+        packer.pack_array(2);
+        packer.pack(key);
+        packer.pack(row_id);
+        db_->remove(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
+        mark_operation_dirty();
+    }
+
     void btree_index_disk_t::force_flush() {
         if (is_dirty() && db_) {
             db_->flush();

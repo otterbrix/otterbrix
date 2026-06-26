@@ -28,10 +28,15 @@ namespace components::operators {
                                           components::catalog::oid_t seed_objid,
                                           components::catalog::drop_behavior_t behavior);
 
-    private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
+        // Sourceless SINK leaf (no data pipeline, no children): the executor
+        // admits it as a streaming sink-root and drives await_async_and_resume via
+        // the bottom-up needs_async_finalize pass. push()/finalize() inherit the
+        // no-op defaults.
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
+    private:
         components::catalog::oid_t seed_classid_;
         components::catalog::oid_t seed_objid_;
         components::catalog::drop_behavior_t behavior_;

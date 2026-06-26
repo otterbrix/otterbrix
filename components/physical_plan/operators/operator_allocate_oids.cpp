@@ -16,8 +16,6 @@ namespace components::operators {
         , count_(count)
         , target_node_(target_node) {}
 
-    void operator_allocate_oids_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_allocate_oids_t::await_async_and_resume(pipeline::context_t* ctx) {
         if (target_node_ == nullptr || count_ == 0 || ctx->disk_address == actor_zeta::address_t::empty_address()) {
             mark_executed();

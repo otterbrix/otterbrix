@@ -16,6 +16,23 @@ namespace services::planner::impl {
         const auto* node_update = static_cast<const components::logical_plan::node_update_t*>(node.get());
         auto returning = build_returning_columns(context.resource, node_update->returning(), params);
 
+        // Forward the plan-resolved RETURNING output types (stamped on the update node by
+        // validate_schema) onto the RETURNING projection columns, mirroring the SELECT path
+        // (create_plan_aggregate -> operator_select_t::set_output_types). evaluate_projection
+        // reads select_column_t::result_type AUTHORITATIVELY for coalesce/case_when/deep-field
+        // columns, so a RETURNING projection over zero affected rows stays correctly typed
+        // instead of collapsing to an untyped (NA) column. No RETURNING -> output_types() empty
+        // -> guard skips (no-op). Column order is aligned by construction: build_returning_columns
+        // walks node_update->returning() in order producing one select_column_t per scalar expr,
+        // and validate_schema resolves/expands the SAME returning() vector in the SAME order, so
+        // returning[i] corresponds to output_types()[i]. No data-derived fallback (rule 6).
+        if (node->has_output_types()) {
+            const auto& output_types = node->output_types();
+            for (size_t i = 0; i < returning.size() && i < output_types.size(); ++i) {
+                returning[i].result_type = output_types[i];
+            }
+        }
+
         components::logical_plan::node_ptr node_match = nullptr;
         components::logical_plan::node_ptr node_limit = nullptr;
         components::logical_plan::node_ptr node_raw_data = nullptr;

@@ -69,8 +69,18 @@ namespace components::operators {
         components::catalog::oid_t resolved_namespace() const noexcept { return namespace_oid_; }
         components::catalog::oid_t resolved_table_oid() const noexcept { return table_oid_; }
 
+        // Sourceless SINK leaf (catalog read, no data pipeline, no children).
+        // The executor admits the resolve front-pass as an all-sink chain and drives
+        // await_async_and_resume via the bottom-up needs_async_finalize pass —
+        // deepest-first, so a preceding resolve_namespace (its left in the chain)
+        // commits and stamps its node BEFORE this resolve_table reads it. The async
+        // pg_class / pg_attribute / pg_computed_column scan emits the column-schema
+        // chunk into output_ and stamps namespace_oid_/table_oid_ onto target_node_;
+        // push()/finalize() inherit the no-op defaults (the metadata handoff is the
+        // node stamp, read later via plan_resolve_index).
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         // When table_oid_ == INVALID_OID we use (input_namespace_oid_,

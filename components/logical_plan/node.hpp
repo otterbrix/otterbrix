@@ -1,6 +1,7 @@
 #pragma once
 
 #include "forward.hpp"
+#include <components/types/types.hpp>
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
@@ -67,6 +68,20 @@ namespace components::logical_plan {
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
 
+        // Plan-time resolved output column types (Postgres TupleDesc analogue), one per
+        // output column. Stamped by validate_schema during binding from the resolved
+        // schema; read by the physical-plan generator so operators can build correctly-
+        // typed results over ZERO input rows instead of falling back to logical_type::NA.
+        // Empty when not stamped (control/DDL nodes, or a node the validator skipped)
+        // -> consumers degrade to today's data-derived behavior, never a hard error.
+        const std::pmr::vector<components::types::complex_logical_type>& output_types() const noexcept {
+            return output_types_;
+        }
+        void set_output_types(std::pmr::vector<components::types::complex_logical_type> types) {
+            output_types_ = std::move(types);
+        }
+        bool has_output_types() const noexcept { return !output_types_.empty(); }
+
         std::string to_string() const;
         std::pmr::memory_resource* resource() const noexcept;
 
@@ -78,6 +93,9 @@ namespace components::logical_plan {
         // See table_oid()/set_table_oid() above. Default INVALID_OID; enrich
         // is responsible for stamping the resolved oid before plan execution.
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
+        // Resolved output column types (see output_types()). Allocated on this node's
+        // resource (set in the ctor); empty until the validator stamps it.
+        std::pmr::vector<components::types::complex_logical_type> output_types_;
 
         void table_oid_dependencies_(std::unordered_set<components::catalog::oid_t>& upper_dependencies);
 

@@ -2,7 +2,6 @@
 #include "join_utils.hpp"
 #include "predicates/predicate.hpp"
 
-#include <algorithm>
 #include <components/vector/vector_operations.hpp>
 
 namespace components::operators {
@@ -17,256 +16,151 @@ namespace components::operators {
         , join_type_(join_type)
         , expression_(expression) {}
 
-    void operator_join_t::on_execute_impl(pipeline::context_t* context) {
-        if (!left_ || !right_) {
-            return;
-        }
-        if (!left_->output() || !right_->output()) {
-            return;
-        }
+    void operator_join_t::build_layout_(pipeline::context_t* context, const vector::data_chunk_t& probe_front) {
+        // Lazily derive the output layout, predicate and (right/full) the matched
+        // marker once, from the materialized build (right) side and one probe
+        // (left) schema chunk. Used by push().
+        const auto& build_chunks = right_->output()->chunks();
+        // operator_data_t always holds at least one (possibly empty) chunk.
+        assert(!build_chunks.empty());
 
-        auto left_out = left_->output();
-        auto right_out = right_->output();
-        auto& left_chunks = left_out->chunks();
-        auto& right_chunks = right_out->chunks();
-
-        // operator_data_t always holds at least one (possibly empty) chunk per side.
-        assert(!left_chunks.empty());
-        assert(!right_chunks.empty());
-
-        std::pmr::vector<types::complex_logical_type> res_types{left_out->resource()};
-        join_detail::compute_join_layout(left_chunks.front(),
-                                         right_chunks.front(),
-                                         res_types,
+        res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
+        join_detail::compute_join_layout(probe_front,
+                                         build_chunks.front(),
+                                         res_types_,
                                          indices_left_,
                                          indices_right_);
 
-        if (log_.is_valid()) {
-            trace(log(), "operator_join::left_size(): {}", left_out->size());
-            trace(log(), "operator_join::right_size(): {}", right_out->size());
+        predicate_ = expression_ ? predicates::create_predicate(resource_,
+                                                                context->function_registry,
+                                                                expression_,
+                                                                probe_front.types(),
+                                                                build_chunks.front().types(),
+                                                                &context->parameters,
+                                                                context->session_tz)
+                                  : predicates::create_all_true_predicate(resource_);
+
+        // RIGHT/FULL: size the flat matched marker over all build rows, with
+        // per-chunk start offsets so build row (chunk,row) maps to
+        // build_matched_[build_chunk_offsets_[chunk] + row].
+        build_matched_.clear();
+        build_chunk_offsets_.clear();
+        build_chunk_offsets_.reserve(build_chunks.size());
+        uint64_t total = 0;
+        for (const auto& B : build_chunks) {
+            build_chunk_offsets_.push_back(total);
+            total += B.size();
+        }
+        if (join_type_ == type::right || join_type_ == type::full) {
+            build_matched_.assign(total, 0);
         }
 
-        auto predicate = expression_ ? predicates::create_predicate(left_out->resource(),
-                                                                    context->function_registry,
-                                                                    expression_,
-                                                                    left_chunks.front().types(),
-                                                                    right_chunks.front().types(),
-                                                                    &context->parameters,
-                                                                    context->session_tz)
-                                     : predicates::create_all_true_predicate(left_out->resource());
-
-        auto* res_resource = left_out->resource();
-        chunks_vector_t out_chunks(res_resource);
-
-        switch (join_type_) {
-            case type::inner:
-                inner_join_(predicate, context, res_types, out_chunks);
-                break;
-            case type::full:
-                outer_full_join_(predicate, context, res_types, out_chunks);
-                break;
-            case type::left:
-                outer_left_join_(predicate, context, res_types, out_chunks);
-                break;
-            case type::right:
-                outer_right_join_(predicate, context, res_types, out_chunks);
-                break;
-            case type::cross:
-                cross_join_(context, res_types, out_chunks);
-                break;
-            default:
-                break;
-        }
-
-        if (out_chunks.empty()) {
-            out_chunks.emplace_back(res_resource, res_types, 0);
-        }
-        output_ = operators::make_operator_data(res_resource, std::move(out_chunks));
-
-        if (log_.is_valid()) {
-            trace(log(), "operator_join::result_size(): {}", output_->size());
-        }
+        layout_built_ = true;
     }
 
-    void operator_join_t::inner_join_(const predicates::predicate_ptr& predicate,
-                                      pipeline::context_t*,
-                                      const std::pmr::vector<types::complex_logical_type>& out_types,
-                                      chunks_vector_t& out_chunks) {
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        auto* resource = left_->output()->resource();
-        join_builder builder(resource, out_types, indices_left_, indices_right_, out_chunks);
+    void operator_join_t::probe_batch_(const vector::data_chunk_t& probe, chunks_vector_t& out) {
+        // Probe ONE left batch against the materialized build (right) chunks and
+        // emit per join_type_, in left-major order (mirrors operator_hash_join_t):
+        // for each probe row, emit matched rows across the build chunks (build-chunk
+        // order); inner emits only matches, left/full also emit a left-only row when
+        // no build row matched, right/full additionally mark matched build rows so
+        // finalize() can NULL-pad the unmatched ones. NULL padding and the output
+        // column layout are produced by the shared join_builder, so the result is
+        // identical to operator_hash_join_t and to the nested-loop reference.
+        const auto& build_chunks = right_->output()->chunks();
+        const bool left_outer = (join_type_ == type::left || join_type_ == type::full);
+        const bool mark_matched = (join_type_ == type::right || join_type_ == type::full);
 
-        for (const auto& L : left_chunks) {
-            for (uint64_t li = 0; li < L.size(); ++li) {
-                for (const auto& R : right_chunks) {
-                    if (R.size() == 0) {
-                        continue;
-                    }
-                    auto results = predicates::batch_check_1vN(predicate, L, R, li, R.size());
-                    if (results.has_error()) {
-                        set_error(results.error());
-                        return;
-                    }
-                    const auto& mask = results.value();
-                    for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                        if (mask[rj]) {
-                            builder.emit_matched(L, li, R, rj);
+        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+
+        const uint64_t n = probe.size();
+        for (uint64_t li = 0; li < n; ++li) {
+            bool matched = false;
+            for (size_t ci = 0; ci < build_chunks.size(); ++ci) {
+                const auto& B = build_chunks[ci];
+                if (B.size() == 0) {
+                    continue;
+                }
+                auto results = predicates::batch_check_1vN(predicate_, probe, B, li, B.size());
+                if (results.has_error()) {
+                    set_error(results.error());
+                    builder.flush();
+                    return;
+                }
+                const auto& mask = results.value();
+                for (uint64_t rj = 0; rj < B.size(); ++rj) {
+                    if (mask[rj]) {
+                        builder.emit_matched(probe, li, B, rj);
+                        matched = true;
+                        if (mark_matched) {
+                            build_matched_[build_chunk_offsets_[ci] + rj] = 1;
                         }
                     }
                 }
             }
+            if (!matched && left_outer) {
+                builder.emit_left_only(probe, li);
+            }
         }
         builder.flush();
     }
 
-    void operator_join_t::outer_full_join_(const predicates::predicate_ptr& predicate,
-                                           pipeline::context_t*,
-                                           const std::pmr::vector<types::complex_logical_type>& out_types,
-                                           chunks_vector_t& out_chunks) {
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        auto* resource = left_->output()->resource();
-        join_builder builder(resource, out_types, indices_left_, indices_right_, out_chunks);
-
-        // visited_right[ci_r][rj] — tracks which right rows got matched during the probe.
-        std::vector<std::vector<bool>> visited_right(right_chunks.size());
-        for (size_t ci_r = 0; ci_r < right_chunks.size(); ++ci_r) {
-            visited_right[ci_r].assign(right_chunks[ci_r].size(), false);
+    void operator_join_t::emit_unmatched_build_(chunks_vector_t& out) {
+        // RIGHT/FULL only: drain build rows that no probe row matched, NULL-padded
+        // on the left side. Inner/left finalize to a no-op here.
+        if (join_type_ != type::right && join_type_ != type::full) {
+            return;
         }
-
-        for (const auto& L : left_chunks) {
-            for (uint64_t li = 0; li < L.size(); ++li) {
-                bool any_match = false;
-                for (size_t ci_r = 0; ci_r < right_chunks.size(); ++ci_r) {
-                    const auto& R = right_chunks[ci_r];
-                    if (R.size() == 0) {
-                        continue;
-                    }
-                    auto results = predicates::batch_check_1vN(predicate, L, R, li, R.size());
-                    if (results.has_error()) {
-                        set_error(results.error());
-                        return;
-                    }
-                    const auto& mask = results.value();
-                    for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                        if (mask[rj]) {
-                            any_match = true;
-                            visited_right[ci_r][rj] = true;
-                            builder.emit_matched(L, li, R, rj);
-                        }
-                    }
-                }
-                if (!any_match) {
-                    builder.emit_left_only(L, li);
-                }
-            }
+        if (!right_ || !right_->output()) {
+            return;
         }
-
-        // Emit all right rows not visited by any left row — NULL-padded on the left side.
-        for (size_t ci_r = 0; ci_r < right_chunks.size(); ++ci_r) {
-            const auto& R = right_chunks[ci_r];
-            for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                if (!visited_right[ci_r][rj]) {
-                    builder.emit_right_only(R, rj);
+        const auto& build_chunks = right_->output()->chunks();
+        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+        for (size_t ci = 0; ci < build_chunks.size(); ++ci) {
+            const auto& B = build_chunks[ci];
+            const uint64_t base = build_chunk_offsets_[ci];
+            for (uint64_t rj = 0; rj < B.size(); ++rj) {
+                if (build_matched_[base + rj] == 0) {
+                    builder.emit_right_only(B, rj);
                 }
             }
         }
         builder.flush();
     }
 
-    void operator_join_t::outer_left_join_(const predicates::predicate_ptr& predicate,
-                                           pipeline::context_t*,
-                                           const std::pmr::vector<types::complex_logical_type>& out_types,
-                                           chunks_vector_t& out_chunks) {
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        auto* resource = left_->output()->resource();
-        join_builder builder(resource, out_types, indices_left_, indices_right_, out_chunks);
-
-        for (const auto& L : left_chunks) {
-            for (uint64_t li = 0; li < L.size(); ++li) {
-                bool any_match = false;
-                for (const auto& R : right_chunks) {
-                    if (R.size() == 0) {
-                        continue;
-                    }
-                    auto results = predicates::batch_check_1vN(predicate, L, R, li, R.size());
-                    if (results.has_error()) {
-                        set_error(results.error());
-                        return;
-                    }
-                    const auto& mask = results.value();
-                    for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                        if (mask[rj]) {
-                            any_match = true;
-                            builder.emit_matched(L, li, R, rj);
-                        }
-                    }
-                }
-                if (!any_match) {
-                    builder.emit_left_only(L, li);
-                }
-            }
+    core::error_t
+    operator_join_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        // The build (right) side is materialized by a separate sub-plan before the
+        // first push and always holds at least one (possibly empty) chunk. A truly
+        // absent right_ is a degenerate plan: emit nothing (no build rows to
+        // preserve, no layout to pad against).
+        if (!right_ || !right_->output()) {
+            layout_built_ = true;
+            return core::error_t::no_error();
         }
-        builder.flush();
+        if (!layout_built_) {
+            build_layout_(ctx, input);
+        }
+        probe_batch_(input, out);
+        if (has_error()) {
+            return get_error();
+        }
+        return core::error_t::no_error();
     }
 
-    void operator_join_t::outer_right_join_(const predicates::predicate_ptr& predicate,
-                                            pipeline::context_t*,
-                                            const std::pmr::vector<types::complex_logical_type>& out_types,
-                                            chunks_vector_t& out_chunks) {
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        auto* resource = left_->output()->resource();
-        join_builder builder(resource, out_types, indices_left_, indices_right_, out_chunks);
-
-        for (const auto& R : right_chunks) {
-            for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                bool any_match = false;
-                for (const auto& L : left_chunks) {
-                    if (L.size() == 0) {
-                        continue;
-                    }
-                    auto results = predicates::batch_check_Nv1(predicate, L, R, L.size(), rj);
-                    if (results.has_error()) {
-                        set_error(results.error());
-                        return;
-                    }
-                    const auto& mask = results.value();
-                    for (uint64_t li = 0; li < L.size(); ++li) {
-                        if (mask[li]) {
-                            any_match = true;
-                            builder.emit_matched(L, li, R, rj);
-                        }
-                    }
-                }
-                if (!any_match) {
-                    builder.emit_right_only(R, rj);
-                }
-            }
+    core::error_t operator_join_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
+        // RIGHT/FULL: drain unmatched build rows, NULL-padded on the left side.
+        //
+        // If push() never ran (the probe source emitted its drain sentinel before
+        // any schema'd batch), the layout is unbuilt and res_types_ is empty: with no
+        // probe schema there is no left column layout to NULL-pad against, so the
+        // only safe action is to skip emission. The common 0-row-probe case still
+        // pushes a schema'd batch, so res_types_ is set and this branch is not taken.
+        if (!layout_built_ || res_types_.empty()) {
+            return core::error_t::no_error();
         }
-        builder.flush();
-    }
-
-    void operator_join_t::cross_join_(pipeline::context_t*,
-                                      const std::pmr::vector<types::complex_logical_type>& out_types,
-                                      chunks_vector_t& out_chunks) {
-        auto& left_chunks = left_->output()->chunks();
-        auto& right_chunks = right_->output()->chunks();
-        auto* resource = left_->output()->resource();
-        join_builder builder(resource, out_types, indices_left_, indices_right_, out_chunks);
-
-        for (const auto& L : left_chunks) {
-            for (uint64_t li = 0; li < L.size(); ++li) {
-                for (const auto& R : right_chunks) {
-                    for (uint64_t rj = 0; rj < R.size(); ++rj) {
-                        builder.emit_matched(L, li, R, rj);
-                    }
-                }
-            }
-        }
-        builder.flush();
+        emit_unmatched_build_(out);
+        return core::error_t::no_error();
     }
 
 } // namespace components::operators

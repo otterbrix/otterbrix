@@ -71,6 +71,9 @@ namespace services::index {
         void force_flush() override;
         void load_entries(entries_t& entries) const;
         void enqueue_task(std::function<void()> task);
+        // bitcask-internal rehash-suppression window (pre-existing optimization, called
+        // via the bitcask path in index_agent_disk::insert_many). Not part of the
+        // index_disk_t interface — btree needs no such window.
         void set_bulk_mode(bool enabled);
         // M3.5 error channel: the txn-log write path can fail on a file open /
         // write / sync, and surfaces a core::error_t so the manager's commit
@@ -82,7 +85,11 @@ namespace services::index {
                                                       const std::vector<std::pair<value_t, size_t>>& values);
         [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id,
                                                       const std::vector<std::pair<value_t, size_t>>& values);
-        void insert_bulk_unchecked(const value_t& key, size_t value);
+        void insert_bulk_unchecked(const value_t& key, size_t value) override;
+        // bitcask remove is already O(1) (hash lookup) and honours bulk mode
+        // (flush_if_needed skips while bulk), so the bulk remove is the normal
+        // remove path — no per-key find()-scan to avoid (that is a btree concern).
+        void remove_bulk_unchecked(const value_t& key, size_t row_id) override;
 
         bool load_hash_key_at(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;
         bool load_hash_key_at_unlocked(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;

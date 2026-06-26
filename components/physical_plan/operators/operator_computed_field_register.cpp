@@ -90,17 +90,17 @@ namespace components::operators {
                 if (chunk.column_count() < 7)
                     continue;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto attversion_v = chunk.get_value<std::int64_t>(5, i);
-                    if (!attversion_v)
+                    if (chunk.is_null(5, i))
                         continue;
-                    const auto v = *attversion_v;
+                    const auto v = chunk.get_value<std::int64_t>(5, i);
                     if (v > max_version) {
                         max_version = v;
-                        auto atttypid_v = chunk.get_value<std::uint32_t>(3, i);
-                        latest_atttypid = atttypid_v ? static_cast<catalog::oid_t>(*atttypid_v) : catalog::INVALID_OID;
-                        auto atttypspec_v = chunk.get_value<std::string_view>(4, i);
-                        latest_atttypspec = atttypspec_v ? std::string(*atttypspec_v) : std::string{};
-                        latest_refcount = chunk.get_value<std::int64_t>(6, i).value_or(0);
+                        latest_atttypid = chunk.is_null(3, i)
+                                              ? catalog::INVALID_OID
+                                              : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                        latest_atttypspec =
+                            chunk.is_null(4, i) ? std::string{} : std::string(chunk.get_value<std::string_view>(4, i));
+                        latest_refcount = chunk.is_null(6, i) ? 0 : chunk.get_value<std::int64_t>(6, i);
                     }
                 }
             }
@@ -133,8 +133,8 @@ namespace components::operators {
                                          components::operators::make_key_chunk(resource_, std::string_view{lookup}));
                     auto type_batches = co_await std::move(tf);
                     if (!type_batches.empty() && type_batches[0].size() != 0 && type_batches[0].column_count() > 0) {
-                        if (auto typoid_v = type_batches[0].get_value<std::uint32_t>(0, 0)) {
-                            atttypid = static_cast<catalog::oid_t>(*typoid_v);
+                        if (!type_batches[0].is_null(0, 0)) {
+                            atttypid = static_cast<catalog::oid_t>(type_batches[0].get_value<std::uint32_t>(0, 0));
                         }
                     }
                 }

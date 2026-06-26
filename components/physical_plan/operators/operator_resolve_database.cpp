@@ -76,8 +76,8 @@ namespace components::operators {
 
         bool resolved = false;
         if (!db_batches.empty() && db_batches[0].size() != 0 && db_batches[0].column_count() >= 1) {
-            if (auto db_oid_v = db_batches[0].get_value<std::uint32_t>(0, 0)) {
-                const auto oid_val = static_cast<catalog::oid_t>(*db_oid_v);
+            if (!db_batches[0].is_null(0, 0)) {
+                const auto oid_val = static_cast<catalog::oid_t>(db_batches[0].get_value<std::uint32_t>(0, 0));
                 out_chunk.set_cardinality(1);
                 set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
                 if (target_node_) {

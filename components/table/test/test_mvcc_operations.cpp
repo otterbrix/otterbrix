@@ -501,7 +501,7 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < result.size(); i++) {
-                values.insert(result.data[0].get_value_unchecked<int64_t>(i));
+                values.insert(result.data[0].get_value<int64_t>(i));
             }
         }
         return values;

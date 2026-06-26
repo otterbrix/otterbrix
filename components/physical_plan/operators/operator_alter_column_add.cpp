@@ -75,10 +75,9 @@ namespace components::operators {
             if (chunk.column_count() < 5)
                 continue;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto attnum_cell = chunk.get_value<std::int32_t>(4, i);
-                if (!attnum_cell)
+                if (chunk.is_null(4, i))
                     continue;
-                auto n = *attnum_cell;
+                auto n = chunk.get_value<std::int32_t>(4, i);
                 if (n >= next_attnum)
                     next_attnum = n + 1;
             }

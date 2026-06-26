@@ -76,28 +76,26 @@ namespace components::operators {
                 continue;
             bool found = false;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto c0 = chunk.get_value<std::uint32_t>(0, i);
-                if (!c0)
+                if (chunk.is_null(0, i))
                     continue;
-                auto c7 = chunk.get_value<bool>(7, i);
-                if (c7 && *c7)
+                if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                     continue; // dropped
-                attoid = static_cast<catalog::oid_t>(*c0);
-                auto c3 = chunk.get_value<std::uint32_t>(3, i);
-                atttypid = c3 ? static_cast<catalog::oid_t>(*c3) : catalog::INVALID_OID;
-                attnum = chunk.get_value<std::int32_t>(4, i).value_or(0);
-                att_not_null = chunk.get_value<bool>(5, i).value_or(false);
-                att_has_default = chunk.get_value<bool>(6, i).value_or(false);
-                if (auto c8 = chunk.get_value<std::string_view>(8, i))
-                    att_typspec = std::string(*c8);
-                if (auto c9 = chunk.get_value<std::string_view>(9, i))
-                    att_defspec = std::string(*c9);
+                attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
+                                               : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
+                att_not_null = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
+                att_has_default = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
+                if (!chunk.is_null(8, i))
+                    att_typspec = std::string(chunk.get_value<std::string_view>(8, i));
+                if (!chunk.is_null(9, i))
+                    att_defspec = std::string(chunk.get_value<std::string_view>(9, i));
                 // Column 10 = added_at_commit_id. Rows written before the MVCC
                 // commit_id columns landed have only 10 columns; tolerate a missing
                 // slot as 0.
                 if (chunk.column_count() > 10) {
-                    if (auto c10 = chunk.get_value<std::int64_t>(10, i))
-                        att_added_at_commit_id = *c10;
+                    if (!chunk.is_null(10, i))
+                        att_added_at_commit_id = chunk.get_value<std::int64_t>(10, i);
                 }
                 found = true;
                 break;

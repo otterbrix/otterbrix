@@ -52,7 +52,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
             { chunk.set_value(3, i, i % 2 != 0); }
             // array_fixed
             {
-                std::vector<std::optional<uint64_t>> arr;
+                std::vector<uint64_t> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
                     arr.emplace_back(uint64_t{i * array_size + j});
@@ -66,7 +66,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
                 for (size_t j = 0; j < array_size; j++) {
                     storage.push_back("long_string_with_index_" + std::to_string(i * array_size + j));
                 }
-                std::vector<std::optional<std::string_view>> arr;
+                std::vector<std::string_view> arr;
                 arr.reserve(array_size);
                 for (const auto& s : storage) {
                     arr.emplace_back(std::string_view{s});
@@ -76,7 +76,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
             // list_fixed
             {
                 // test that each list entry can be a different length
-                std::vector<std::optional<uint32_t>> list;
+                std::vector<uint32_t> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
                     list.emplace_back(static_cast<uint32_t>(i * list_length(i) + j));
@@ -91,7 +91,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
                 for (size_t j = 0; j < list_length(i); j++) {
                     storage.push_back("long_string_with_index_" + std::to_string(i * list_length(i) + j));
                 }
-                std::vector<std::optional<std::string_view>> list;
+                std::vector<std::string_view> list;
                 list.reserve(list_length(i));
                 for (const auto& s : storage) {
                     list.emplace_back(std::string_view{s});
@@ -175,7 +175,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
             { chunk.set_value(3, i, i % 2 != 0); }
             // array_fixed
             {
-                std::vector<std::optional<uint64_t>> arr;
+                std::vector<uint64_t> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
                     arr.emplace_back(uint64_t{i * array_size + j});
@@ -189,7 +189,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
                 for (size_t j = 0; j < array_size; j++) {
                     storage.push_back("long_string_with_index_" + std::to_string(i * array_size + j));
                 }
-                std::vector<std::optional<std::string_view>> arr;
+                std::vector<std::string_view> arr;
                 arr.reserve(array_size);
                 for (const auto& s : storage) {
                     arr.emplace_back(std::string_view{s});
@@ -199,7 +199,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
             // list_fixed
             {
                 // test that each list entry can be a different length
-                std::vector<std::optional<uint32_t>> list;
+                std::vector<uint32_t> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
                     list.emplace_back(static_cast<uint32_t>(i * list_length(i) + j));
@@ -214,7 +214,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
                 for (size_t j = 0; j < list_length(i); j++) {
                     storage.push_back("long_string_with_index_" + std::to_string(i * list_length(i) + j));
                 }
-                std::vector<std::optional<std::string_view>> list;
+                std::vector<std::string_view> list;
                 list.reserve(list_length(i));
                 for (const auto& s : storage) {
                     list.emplace_back(std::string_view{s});

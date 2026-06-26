@@ -140,9 +140,10 @@ namespace components::operators {
                     continue;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     catalog::dependency_t d;
-                    d.classid = static_cast<catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(0, i));
-                    d.objid = static_cast<catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(1, i));
-                    const auto dv = chunk.get_value<std::string_view>(4, i).value_or(std::string_view{"n"});
+                    d.classid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    d.objid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                    const auto dv =
+                        chunk.is_null(4, i) ? std::string_view{"n"} : chunk.get_value<std::string_view>(4, i);
                     d.deptype = dv.empty() ? 'n' : dv[0];
                     deps.push_back(d);
                     stack.push_back(encode_key(d.classid, d.objid));
@@ -231,7 +232,8 @@ namespace components::operators {
                 if (pc_batches.empty() || pc_batches[0].size() == 0 || pc_batches[0].column_count() < 4)
                     continue;
 
-                const auto rkv = pc_batches[0].get_value<std::string_view>(3, 0).value_or(std::string_view{"r"});
+                const auto rkv = pc_batches[0].is_null(3, 0) ? std::string_view{"r"}
+                                                             : pc_batches[0].get_value<std::string_view>(3, 0);
                 const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
 
                 // Only regular and computing tables back actual storage. Index/

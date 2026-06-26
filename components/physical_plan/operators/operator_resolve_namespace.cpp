@@ -92,8 +92,8 @@ namespace components::operators {
             // First row's col 0 = namespace_oid. Mirrors
             // manager_disk_t::resolve_namespace (manager_disk_resolve.cpp:9-32)
             // which returns the first match.
-            if (auto ns_oid_v = ns_batches[0].get_value<std::uint32_t>(0, 0)) {
-                const auto oid_val = static_cast<catalog::oid_t>(*ns_oid_v);
+            if (!ns_batches[0].is_null(0, 0)) {
+                const auto oid_val = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
                 out_chunk.set_cardinality(1);
                 set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
                 // Stamp the resolved oid onto the logical-plan node so the

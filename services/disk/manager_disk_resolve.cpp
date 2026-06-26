@@ -62,14 +62,12 @@ namespace services::disk {
         for (auto& chunk : batches) {
             bool stop = false;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto oid_v = chunk.get_value<std::uint32_t>(0, i);
-                auto name_v = chunk.get_value<std::string_view>(1, i);
-                if (!oid_v || !name_v)
+                if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
-                if (*name_v != name)
+                if (chunk.get_value<std::string_view>(1, i) != name)
                     continue;
                 out.found = true;
-                out.oid = static_cast<components::catalog::oid_t>(*oid_v);
+                out.oid = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 out.name = name;
                 stop = true;
                 break;
@@ -95,17 +93,17 @@ namespace services::disk {
                 resolve_function_result_t r(resource());
                 r.found = true;
                 r.name = name;
-                r.oid = static_cast<components::catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(0, i));
-                if (auto ns_v = chunk.get_value<std::uint32_t>(2, i))
-                    r.namespace_oid = static_cast<components::catalog::oid_t>(*ns_v);
-                if (auto nargs_v = chunk.get_value<std::int32_t>(3, i))
-                    r.pronargs = *nargs_v;
-                if (auto uid_v = chunk.get_value<std::uint64_t>(4, i))
-                    r.prouid = *uid_v;
-                if (auto args_v = chunk.get_value<std::string_view>(5, i))
-                    r.proargmatchers = std::string(*args_v);
-                if (auto ret_v = chunk.get_value<std::string_view>(6, i))
-                    r.prorettype = std::string(*ret_v);
+                r.oid = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                if (!chunk.is_null(2, i))
+                    r.namespace_oid = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
+                if (!chunk.is_null(3, i))
+                    r.pronargs = chunk.get_value<std::int32_t>(3, i);
+                if (!chunk.is_null(4, i))
+                    r.prouid = chunk.get_value<std::uint64_t>(4, i);
+                if (!chunk.is_null(5, i))
+                    r.proargmatchers = std::string(chunk.get_value<std::string_view>(5, i));
+                if (!chunk.is_null(6, i))
+                    r.prorettype = std::string(chunk.get_value<std::string_view>(6, i));
                 out.push_back(std::move(r));
             }
         }
@@ -120,8 +118,8 @@ namespace services::disk {
                                            std::vector<std::size_t>{0, 1});
         for (auto& chunk : batches) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (auto name_v = chunk.get_value<std::string_view>(1, i)) {
-                    out.emplace_back(std::string(*name_v));
+                if (!chunk.is_null(1, i)) {
+                    out.emplace_back(std::string(chunk.get_value<std::string_view>(1, i)));
                 }
             }
         }

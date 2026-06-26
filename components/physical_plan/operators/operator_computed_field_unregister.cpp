@@ -79,33 +79,30 @@ namespace components::operators {
             if (chunk.column_count() < 7)
                 continue;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto attoid_v = chunk.get_value<std::uint32_t>(1, i);
-                auto attversion_v = chunk.get_value<std::int64_t>(5, i);
-                auto refcount_v = chunk.get_value<std::int64_t>(6, i);
-                if (!attoid_v || !attversion_v || !refcount_v)
+                if (chunk.is_null(1, i) || chunk.is_null(5, i) || chunk.is_null(6, i))
                     continue;
-                const auto row_attoid = static_cast<catalog::oid_t>(*attoid_v);
+                const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                 // Match by attoid when enrich stamped it; otherwise fall back to
                 // matching by attname (column_name_).
                 if (attoid_ != catalog::INVALID_OID) {
                     if (row_attoid != attoid_)
                         continue;
                 } else {
-                    auto attname_v = chunk.get_value<std::string_view>(2, i);
-                    if (!attname_v)
+                    if (chunk.is_null(2, i))
                         continue;
-                    if (*attname_v != column_name_)
+                    if (chunk.get_value<std::string_view>(2, i) != column_name_)
                         continue;
                 }
-                const auto v = *attversion_v;
-                const auto rc = *refcount_v;
+                const auto v = chunk.get_value<std::int64_t>(5, i);
+                const auto rc = chunk.get_value<std::int64_t>(6, i);
                 if (rc <= 0)
                     continue;
                 if (v > max_version) {
                     max_version = v;
                     live_attoid = row_attoid;
-                    auto atttypid_v = chunk.get_value<std::uint32_t>(3, i);
-                    live_atttypid = atttypid_v ? static_cast<catalog::oid_t>(*atttypid_v) : catalog::INVALID_OID;
+                    live_atttypid = chunk.is_null(3, i)
+                                        ? catalog::INVALID_OID
+                                        : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                     found_live = true;
                 }
             }

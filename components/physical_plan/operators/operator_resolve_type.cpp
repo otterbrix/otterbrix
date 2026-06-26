@@ -94,8 +94,8 @@ namespace components::operators {
                                      components::operators::make_key_chunk(resource_, std::string_view{dbname_}));
                 auto ns_batches = co_await std::move(nf);
                 if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1) {
-                    if (auto ns_oid_v = ns_batches[0].get_value<std::uint32_t>(0, 0)) {
-                        namespace_oid_ = static_cast<catalog::oid_t>(*ns_oid_v);
+                    if (!ns_batches[0].is_null(0, 0)) {
+                        namespace_oid_ = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
                     }
                 }
             }
@@ -118,19 +118,20 @@ namespace components::operators {
 
             if (!batches.empty() && batches.front().size() != 0 && batches.front().column_count() >= 4) {
                 const auto& batch = batches.front();
-                auto v0 = batch.get_value<std::uint32_t>(0, 0);
-                auto v1 = batch.get_value<std::string_view>(1, 0);
-                auto v2 = batch.get_value<std::uint32_t>(2, 0);
-                auto v3 = batch.get_value<std::string_view>(3, 0);
-                if (v0 && v1 && v2) {
-                    set_uint32(chunk, 0, 0, *v0);
-                    set_str(chunk, 1, 0, *v1, resource_);
-                    set_uint32(chunk, 2, 0, *v2);
+                const bool has_v3 = !batch.is_null(3, 0);
+                if (!batch.is_null(0, 0) && !batch.is_null(1, 0) && !batch.is_null(2, 0)) {
+                    auto v0 = batch.get_value<std::uint32_t>(0, 0);
+                    auto v1 = batch.get_value<std::string_view>(1, 0);
+                    auto v2 = batch.get_value<std::uint32_t>(2, 0);
+                    auto v3 = has_v3 ? batch.get_value<std::string_view>(3, 0) : std::string_view{};
+                    set_uint32(chunk, 0, 0, v0);
+                    set_str(chunk, 1, 0, v1, resource_);
+                    set_uint32(chunk, 2, 0, v2);
                     // Preserve original behaviour: when typdefspec is null,
                     // still write an empty string (not a null cell) so any
                     // downstream consumer sees the same shape it used to.
-                    if (v3) {
-                        set_str(chunk, 3, 0, *v3, resource_);
+                    if (has_v3) {
+                        set_str(chunk, 3, 0, v3, resource_);
                     } else {
                         set_str(chunk, 3, 0, std::string_view{}, resource_);
                     }
@@ -141,11 +142,11 @@ namespace components::operators {
                     // plan_resolve_index.
                     if (target_node_) {
                         components::logical_plan::resolved_type_metadata_t md;
-                        md.type_oid = static_cast<catalog::oid_t>(*v0);
-                        md.namespace_oid = static_cast<catalog::oid_t>(*v2);
-                        md.name = std::string(*v1);
-                        if (v3) {
-                            md.typdefspec = std::string(*v3);
+                        md.type_oid = static_cast<catalog::oid_t>(v0);
+                        md.namespace_oid = static_cast<catalog::oid_t>(v2);
+                        md.name = std::string(v1);
+                        if (has_v3) {
+                            md.typdefspec = std::string(v3);
                         }
                         if (!md.typdefspec.empty()) {
                             md.type = catalog::decode_type_spec(resource_, md.typdefspec);

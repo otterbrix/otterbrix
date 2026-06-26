@@ -108,16 +108,16 @@ namespace components::operators {
         for (const auto& pg_class_rows : pg_class_batches) {
             for (std::uint64_t i = 0; i < pg_class_rows.size(); ++i) {
                 // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode
-                const auto rkv = pg_class_rows.get_value<std::string_view>(3, i).value_or(std::string_view{"r"});
+                const auto rkv = pg_class_rows.is_null(3, i) ? std::string_view{"r"}
+                                                             : pg_class_rows.get_value<std::string_view>(3, i);
                 const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
                 if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed) {
                     continue;
                 }
 
-                auto oid_v = pg_class_rows.get_value<std::uint32_t>(0, i);
-                if (!oid_v)
+                if (pg_class_rows.is_null(0, i))
                     continue;
-                const auto this_oid = static_cast<catalog::oid_t>(*oid_v);
+                const auto this_oid = static_cast<catalog::oid_t>(pg_class_rows.get_value<std::uint32_t>(0, i));
                 if (this_oid == catalog::INVALID_OID)
                     continue;
 
@@ -237,14 +237,12 @@ namespace components::operators {
                     if (chunk.column_count() < 7)
                         continue;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
-                        auto attoid_v = chunk.get_value<std::uint32_t>(1, i);
-                        auto refcount_v = chunk.get_value<std::int64_t>(6, i);
-                        if (!attoid_v || !refcount_v)
+                        if (chunk.is_null(1, i) || chunk.is_null(6, i))
                             continue;
-                        const auto rc = *refcount_v;
+                        const auto rc = chunk.get_value<std::int64_t>(6, i);
                         if (rc > 0)
                             continue;
-                        dead_attoids.push_back(static_cast<catalog::oid_t>(*attoid_v));
+                        dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i)));
                     }
                 }
 
@@ -266,19 +264,15 @@ namespace components::operators {
                     if (chunk.column_count() < 7)
                         continue;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
-                        auto attoid_v = chunk.get_value<std::uint32_t>(1, i);
-                        auto attname_v = chunk.get_value<std::string_view>(2, i);
-                        auto attversion_v = chunk.get_value<std::int64_t>(5, i);
-                        auto refcount_v = chunk.get_value<std::int64_t>(6, i);
-                        if (!attoid_v || !attname_v || !attversion_v || !refcount_v) {
+                        if (chunk.is_null(1, i) || chunk.is_null(2, i) || chunk.is_null(5, i) || chunk.is_null(6, i)) {
                             continue;
                         }
                         // Skip rows already queued for deletion as tombstones.
-                        if (*refcount_v <= 0)
+                        if (chunk.get_value<std::int64_t>(6, i) <= 0)
                             continue;
-                        auto attname = *attname_v;
-                        auto attversion = *attversion_v;
-                        auto attoid = static_cast<catalog::oid_t>(*attoid_v);
+                        auto attname = chunk.get_value<std::string_view>(2, i);
+                        auto attversion = chunk.get_value<std::int64_t>(5, i);
+                        auto attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                         grouped[std::string(attname)].push_back({attoid, attversion});
                     }
                 }
@@ -332,13 +326,11 @@ namespace components::operators {
                         if (chunk.column_count() < 7)
                             continue;
                         for (uint64_t i = 0; i < chunk.size(); ++i) {
-                            auto attname_v = chunk.get_value<std::string_view>(2, i);
-                            auto refcount_v = chunk.get_value<std::int64_t>(6, i);
-                            if (!attname_v || !refcount_v)
+                            if (chunk.is_null(2, i) || chunk.is_null(6, i))
                                 continue;
-                            if (*refcount_v <= 0)
+                            if (chunk.get_value<std::int64_t>(6, i) <= 0)
                                 continue;
-                            live_attnames.emplace(std::string(*attname_v));
+                            live_attnames.emplace(std::string(chunk.get_value<std::string_view>(2, i)));
                         }
                     }
 

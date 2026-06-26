@@ -424,7 +424,7 @@ TEST_CASE("checkpoint_load: CONSTANT compression — all identical values") {
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                REQUIRE(chunk.data[0].get_value_unchecked<int64_t>(i) == CONSTANT_VALUE);
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == CONSTANT_VALUE);
             }
             scanned += chunk.size();
         });
@@ -485,7 +485,7 @@ TEST_CASE("checkpoint_load: RLE compression — sorted runs") {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 uint64_t global_idx = scanned + i;
                 int64_t expected = static_cast<int64_t>(global_idx / 100 + 1);
-                REQUIRE(chunk.data[0].get_value_unchecked<int64_t>(i) == expected);
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == expected);
             }
             scanned += chunk.size();
         });
@@ -546,7 +546,7 @@ TEST_CASE("checkpoint_load: DICTIONARY compression — low cardinality cycling")
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 uint64_t global_idx = scanned + i;
                 int64_t expected = static_cast<int64_t>(global_idx % 5 + 1);
-                REQUIRE(chunk.data[0].get_value_unchecked<int64_t>(i) == expected);
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == expected);
             }
             scanned += chunk.size();
         });
@@ -603,7 +603,7 @@ TEST_CASE("checkpoint_load: UNCOMPRESSED fallback — high cardinality") {
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                REQUIRE(chunk.data[0].get_value_unchecked<int64_t>(i) == static_cast<int64_t>(scanned + i));
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(scanned + i));
             }
             scanned += chunk.size();
         });
@@ -673,7 +673,7 @@ TEST_CASE("checkpoint_load: mixed row groups — constant + varied") {
                 } else {
                     expected = static_cast<int64_t>(global_idx - CONST_ROWS);
                 }
-                REQUIRE(chunk.data[0].get_value_unchecked<int64_t>(i) == expected);
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == expected);
             }
             scanned += chunk.size();
         });
@@ -730,7 +730,7 @@ TEST_CASE("checkpoint_load: DOUBLE column — constant compression") {
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                REQUIRE(chunk.data[0].get_value_unchecked<double>(i) == Approx(CONSTANT_DOUBLE));
+                REQUIRE(chunk.data[0].get_value<double>(i) == Approx(CONSTANT_DOUBLE));
             }
             scanned += chunk.size();
         });
@@ -788,7 +788,7 @@ TEST_CASE("checkpoint_load: small segment — 2 rows edge case") {
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                REQUIRE(chunk.data[0].get_value_unchecked<int64_t>(i) == VALUE);
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == VALUE);
             }
             scanned += chunk.size();
         });

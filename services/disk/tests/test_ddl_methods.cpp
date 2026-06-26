@@ -195,7 +195,7 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     std::uint64_t total = 0;
     for (const auto& c : batches) total += c.size();
     REQUIRE(total == 1);
-    REQUIRE(batches[0].get_value_unchecked<std::int64_t>(6, 0) == 1);
+    REQUIRE(batches[0].get_value<std::int64_t>(6, 0) == 1);
 
     auto rs = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("agg"));
     REQUIRE(rs.found);
@@ -277,8 +277,8 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     for (const auto& chunk : batches) {
         REQUIRE(chunk.column_count() >= 7);
         for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-            const auto v = chunk.get_value_unchecked<std::int64_t>(5, i);
-            const auto rc = chunk.get_value_unchecked<std::int64_t>(6, i);
+            const auto v = chunk.get_value<std::int64_t>(5, i);
+            const auto rc = chunk.get_value<std::int64_t>(6, i);
             if (rc > 0) {
                 found_live = true;
                 live_v = v;
@@ -370,22 +370,20 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         for (const auto& chunk : batches) {
             REQUIRE(chunk.column_count() >= 7);
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                const auto attname = std::string(chunk.get_value_unchecked<std::string_view>(2, i));
-                const auto v = chunk.get_value_unchecked<std::int64_t>(5, i);
-                const auto rc = chunk.get_value_unchecked<std::int64_t>(6, i);
+                const auto attname = std::string(chunk.get_value<std::string_view>(2, i));
+                const auto v = chunk.get_value<std::int64_t>(5, i);
+                const auto rc = chunk.get_value<std::int64_t>(6, i);
                 if (attname == "a") {
                     ++rows_a;
                 } else if (attname == "b") {
                     if (rc > 0) {
                         ++rows_b_live;
                         b_live_v = v;
-                        observed_b_live_attoid =
-                            static_cast<catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(1, i));
+                        observed_b_live_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                     } else {
                         ++rows_b_tomb;
                         b_tomb_v = v;
-                        observed_b_tomb_attoid =
-                            static_cast<catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(1, i));
+                        observed_b_tomb_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                     }
                 }
             }
@@ -510,9 +508,9 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         for (const auto& chunk : batches) {
             REQUIRE(chunk.column_count() >= 7);
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                const auto rc = chunk.get_value_unchecked<std::int64_t>(6, i);
+                const auto rc = chunk.get_value<std::int64_t>(6, i);
                 if (rc <= 0) {
-                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(1, i)));
+                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i)));
                 }
             }
         }
@@ -545,7 +543,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
         std::vector<std::string> names;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                names.emplace_back(chunk.get_value_unchecked<std::string_view>(2, i));
+                names.emplace_back(chunk.get_value<std::string_view>(2, i));
             }
         }
         std::sort(names.begin(), names.end());
@@ -638,8 +636,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.get_value_unchecked<std::int64_t>(6, i) <= 0) {
-                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value_unchecked<std::uint32_t>(1, i)));
+                if (chunk.get_value<std::int64_t>(6, i) <= 0) {
+                    dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i)));
                 }
             }
         }

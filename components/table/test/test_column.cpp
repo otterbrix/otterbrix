@@ -226,7 +226,7 @@ TEST_CASE("components::table::column") {
         {
             vector_t v(&resource, complex_logical_type::create_array(logical_type::UBIGINT, array_size), test_size);
             for (size_t i = 0; i < test_size; i++) {
-                std::vector<std::optional<uint64_t>> arr;
+                std::vector<uint64_t> arr;
                 arr.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
                     arr.emplace_back(uint64_t{i * array_size + j});
@@ -331,7 +331,7 @@ TEST_CASE("components::table::column") {
                 for (size_t j = 0; j < array_size; j++) {
                     storage.push_back(generate_string(i * array_size + j));
                 }
-                std::vector<std::optional<std::string_view>> arr;
+                std::vector<std::string_view> arr;
                 arr.reserve(array_size);
                 for (const auto& s : storage) {
                     arr.emplace_back(std::string_view{s});
@@ -439,7 +439,7 @@ TEST_CASE("components::table::column") {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
             for (size_t i = 0; i < test_size; i++) {
                 // test that each list entry can be a different length
-                std::vector<std::optional<uint64_t>> list;
+                std::vector<uint64_t> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
                     list.emplace_back(uint64_t{i * list_length(i) + j});
@@ -490,7 +490,7 @@ TEST_CASE("components::table::column") {
             ids.reserve(update_size);
             vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), update_size);
             for (size_t i = 0; i < update_size; i++) {
-                std::vector<std::optional<uint64_t>> list;
+                std::vector<uint64_t> list;
                 list.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
                     list.emplace_back(uint64_t{1000000 + i * list_length(i) + j});
@@ -548,7 +548,7 @@ TEST_CASE("components::table::column") {
                 for (size_t j = 0; j < list_length(i); j++) {
                     storage.push_back(generate_string(i * list_length(i) + j));
                 }
-                std::vector<std::optional<std::string_view>> list;
+                std::vector<std::string_view> list;
                 list.reserve(list_length(i));
                 for (const auto& s : storage) {
                     list.emplace_back(std::string_view{s});
@@ -608,7 +608,7 @@ TEST_CASE("components::table::column") {
                 for (size_t j = 0; j < list_length(i); j++) {
                     storage.push_back(generate_string(1000000 + i * list_length(i) + j));
                 }
-                std::vector<std::optional<std::string_view>> list;
+                std::vector<std::string_view> list;
                 list.reserve(list_length(i));
                 for (const auto& s : storage) {
                     list.emplace_back(std::string_view{s});

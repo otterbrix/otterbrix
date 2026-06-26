@@ -46,23 +46,22 @@ namespace components::operators::alter_validators {
             out.reserve(out.size() + chunk.size());
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 // attname required
-                auto attname = chunk.get_value<std::string_view>(2, i);
-                if (!attname)
+                if (chunk.is_null(2, i))
                     continue;
                 // attisdropped boolean tombstone (fast reject)
-                if (chunk.get_value<bool>(7, i).value_or(false))
+                if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                     continue;
-                if (auto added_at_cell = chunk.get_value<std::int64_t>(10, i)) {
-                    const auto added_at = static_cast<std::uint64_t>(*added_at_cell);
+                if (!chunk.is_null(10, i)) {
+                    const auto added_at = static_cast<std::uint64_t>(chunk.get_value<std::int64_t>(10, i));
                     if (added_at > horizon)
                         continue;
                 }
-                if (auto dropped_at_cell = chunk.get_value<std::int64_t>(11, i)) {
-                    const auto dropped_at = static_cast<std::uint64_t>(*dropped_at_cell);
+                if (!chunk.is_null(11, i)) {
+                    const auto dropped_at = static_cast<std::uint64_t>(chunk.get_value<std::int64_t>(11, i));
                     if (dropped_at != 0 && dropped_at <= horizon)
                         continue;
                 }
-                out.emplace_back(std::string(*attname));
+                out.emplace_back(std::string(chunk.get_value<std::string_view>(2, i)));
             }
         }
         co_return out;
@@ -100,12 +99,10 @@ namespace components::operators::alter_validators {
                 continue;
             out.reserve(out.size() + chunk.size());
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto classid_cell = chunk.get_value<std::uint32_t>(0, i);
-                auto objid_cell = chunk.get_value<std::uint32_t>(1, i);
-                if (!classid_cell || !objid_cell)
+                if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
-                const auto classid = static_cast<catalog::oid_t>(*classid_cell);
-                const auto objid = static_cast<catalog::oid_t>(*objid_cell);
+                const auto classid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                const auto objid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                 out.emplace_back(static_cast<int>(classid), objid);
             }
         }

@@ -75,22 +75,20 @@ namespace components::operators {
                 continue;
             bool found = false;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto c0 = chunk.get_value<std::uint32_t>(0, i);
-                if (!c0)
+                if (chunk.is_null(0, i))
                     continue;
-                auto c7 = chunk.get_value<bool>(7, i);
-                if (c7 && *c7)
+                if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                     continue; // already dropped
-                attoid = static_cast<catalog::oid_t>(*c0);
-                auto c3 = chunk.get_value<std::uint32_t>(3, i);
-                atttypid = c3 ? static_cast<catalog::oid_t>(*c3) : catalog::INVALID_OID;
-                attnum = chunk.get_value<std::int32_t>(4, i).value_or(0);
-                att_not_null = chunk.get_value<bool>(5, i).value_or(false);
-                att_has_default = chunk.get_value<bool>(6, i).value_or(false);
-                if (auto c8 = chunk.get_value<std::string_view>(8, i))
-                    att_typspec = std::string(*c8);
-                if (auto c9 = chunk.get_value<std::string_view>(9, i))
-                    att_defspec = std::string(*c9);
+                attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
+                                               : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
+                att_not_null = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
+                att_has_default = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
+                if (!chunk.is_null(8, i))
+                    att_typspec = std::string(chunk.get_value<std::string_view>(8, i));
+                if (!chunk.is_null(9, i))
+                    att_defspec = std::string(chunk.get_value<std::string_view>(9, i));
                 found = true;
                 break;
             }
@@ -127,12 +125,10 @@ namespace components::operators {
             if (chunk.column_count() < 2)
                 continue;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto d0 = chunk.get_value<std::uint32_t>(0, i);
-                auto d1 = chunk.get_value<std::uint32_t>(1, i);
-                if (!d0 || !d1)
+                if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
-                const auto dep_cls = static_cast<catalog::oid_t>(*d0);
-                const auto dep_oid = static_cast<catalog::oid_t>(*d1);
+                const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                 dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
             }
         }
@@ -165,12 +161,10 @@ namespace components::operators {
             if (chunk.column_count() < 2)
                 continue;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto d0 = chunk.get_value<std::uint32_t>(0, i);
-                auto d1 = chunk.get_value<std::uint32_t>(1, i);
-                if (!d0 || !d1)
+                if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
-                const auto dep_cls = static_cast<catalog::oid_t>(*d0);
-                const auto dep_oid = static_cast<catalog::oid_t>(*d1);
+                const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                 if (dep_cls == catalog::well_known_oid::pg_class_table) {
                     // Dependent index: scrub pg_index (by indexrelid=oid_col_idx 0),
                     // pg_depend.objid (idx 1), pg_depend.refobjid (idx 3), pg_class.oid.

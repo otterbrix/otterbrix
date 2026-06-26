@@ -138,7 +138,7 @@ namespace components::operators {
                 mark_executed();
                 co_return;
             }
-            table_oid_ = static_cast<catalog::oid_t>(lookup_batches[0].get_value_unchecked<std::uint32_t>(0, 0));
+            table_oid_ = static_cast<catalog::oid_t>(lookup_batches[0].get_value<std::uint32_t>(0, 0));
         }
 
         // read pg_class by oid to determine relkind and relnamespace.
@@ -156,11 +156,12 @@ namespace components::operators {
             auto pc_batches = co_await std::move(pcf);
             if (!pc_batches.empty() && pc_batches[0].size() != 0 && pc_batches[0].column_count() >= 4) {
                 found_ = true;
-                if (auto ns_cell = pc_batches[0].get_value<std::uint32_t>(2, 0)) {
-                    namespace_oid_ = static_cast<catalog::oid_t>(*ns_cell);
+                if (!pc_batches[0].is_null(2, 0)) {
+                    namespace_oid_ = static_cast<catalog::oid_t>(pc_batches[0].get_value<std::uint32_t>(2, 0));
                 }
-                if (auto rk_cell = pc_batches[0].get_value<std::string_view>(3, 0)) {
-                    relkind_ = rk_cell->empty() ? catalog::relkind::regular : rk_cell->front();
+                if (!pc_batches[0].is_null(3, 0)) {
+                    auto rk_cell = pc_batches[0].get_value<std::string_view>(3, 0);
+                    relkind_ = rk_cell.empty() ? catalog::relkind::regular : rk_cell.front();
                 } else {
                     relkind_ = catalog::relkind::regular;
                 }
@@ -200,8 +201,8 @@ namespace components::operators {
                                                components::operators::make_key_chunk(resource_, table_oid_));
             auto pr_batches = co_await std::move(prf);
             if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5) {
-                if (auto ev_action = pr_batches[0].get_value<std::string_view>(4, 0)) {
-                    view_sql.assign(*ev_action);
+                if (!pr_batches[0].is_null(4, 0)) {
+                    view_sql.assign(pr_batches[0].get_value<std::string_view>(4, 0));
                 }
             }
         }
@@ -262,21 +263,21 @@ namespace components::operators {
                 if (chunk.column_count() < 7)
                     continue;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto attname_cell = chunk.get_value<std::string_view>(2, i);
-                    auto attversion_cell = chunk.get_value<std::int64_t>(5, i);
-                    if (!attname_cell || !attversion_cell)
+                    if (chunk.is_null(2, i) || chunk.is_null(5, i))
                         continue;
                     cc_candidate_t cand;
-                    cand.attname.assign(*attname_cell);
-                    auto attoid_cell = chunk.get_value<std::uint32_t>(1, i);
-                    cand.attoid = attoid_cell ? static_cast<catalog::oid_t>(*attoid_cell) : catalog::INVALID_OID;
-                    auto atttypid_cell = chunk.get_value<std::uint32_t>(3, i);
-                    cand.atttypid = atttypid_cell ? static_cast<catalog::oid_t>(*atttypid_cell) : catalog::INVALID_OID;
-                    if (auto atttypspec_cell = chunk.get_value<std::string_view>(4, i)) {
-                        cand.atttypspec.assign(*atttypspec_cell);
+                    cand.attname.assign(chunk.get_value<std::string_view>(2, i));
+                    cand.attoid = chunk.is_null(1, i)
+                                      ? catalog::INVALID_OID
+                                      : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                    cand.atttypid = chunk.is_null(3, i)
+                                        ? catalog::INVALID_OID
+                                        : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                    if (!chunk.is_null(4, i)) {
+                        cand.atttypspec.assign(chunk.get_value<std::string_view>(4, i));
                     }
-                    cand.attversion = *attversion_cell;
-                    cand.attrefcount = chunk.get_value<std::int64_t>(6, i).value_or(0);
+                    cand.attversion = chunk.get_value<std::int64_t>(5, i);
+                    cand.attrefcount = chunk.is_null(6, i) ? 0 : chunk.get_value<std::int64_t>(6, i);
 
                     std::string key = cand.attname + '\x1f' + std::to_string(static_cast<unsigned>(cand.atttypid)) +
                                       '\x1f' + cand.atttypspec;
@@ -370,44 +371,45 @@ namespace components::operators {
                     continue;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     // Drop tombstones (attisdropped=true).
-                    if (chunk.get_value<bool>(7, i).value_or(false))
+                    if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                         continue;
                     if (chunk.column_count() > 10) {
-                        if (auto added_cell = chunk.get_value<std::int64_t>(10, i)) {
-                            auto added_at = static_cast<uint64_t>(*added_cell);
+                        if (!chunk.is_null(10, i)) {
+                            auto added_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(10, i));
                             if (added_at > snapshot_start_time)
                                 continue; // column added after our snapshot — invisible
                         }
                     }
                     if (chunk.column_count() > 11) {
-                        if (auto dropped_cell = chunk.get_value<std::int64_t>(11, i)) {
-                            auto dropped_at = static_cast<uint64_t>(*dropped_cell);
+                        if (!chunk.is_null(11, i)) {
+                            auto dropped_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(11, i));
                             if (dropped_at != 0 && dropped_at <= snapshot_start_time)
                                 continue; // column dropped before our snapshot
                         }
                     }
                     out_row_t r;
-                    auto attoid_cell = chunk.get_value<std::uint32_t>(0, i);
-                    r.attoid = attoid_cell ? static_cast<catalog::oid_t>(*attoid_cell) : catalog::INVALID_OID;
-                    if (auto attname_cell = chunk.get_value<std::string_view>(2, i)) {
-                        r.attname.assign(*attname_cell);
+                    r.attoid = chunk.is_null(0, i) ? catalog::INVALID_OID
+                                                   : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    if (!chunk.is_null(2, i)) {
+                        r.attname.assign(chunk.get_value<std::string_view>(2, i));
                     }
-                    auto atttypid_cell = chunk.get_value<std::uint32_t>(3, i);
-                    r.atttypid = atttypid_cell ? static_cast<catalog::oid_t>(*atttypid_cell) : catalog::INVALID_OID;
-                    r.attnum = chunk.get_value<std::int32_t>(4, i).value_or(0);
+                    r.atttypid = chunk.is_null(3, i)
+                                     ? catalog::INVALID_OID
+                                     : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                    r.attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
                     // For relkind='r' storage column order matches pg_attribute attnum
                     // (1-based), so chunk_position is simply attnum-1.
                     r.chunk_position = r.attnum > 0 ? r.attnum - 1 : -1;
-                    r.attnotnull = chunk.get_value<bool>(5, i).value_or(false);
-                    r.atthasdefault = chunk.get_value<bool>(6, i).value_or(false);
+                    r.attnotnull = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
+                    r.atthasdefault = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
                     if (chunk.column_count() > 8) {
-                        if (auto atttypspec_cell = chunk.get_value<std::string_view>(8, i)) {
-                            r.atttypspec.assign(*atttypspec_cell);
+                        if (!chunk.is_null(8, i)) {
+                            r.atttypspec.assign(chunk.get_value<std::string_view>(8, i));
                         }
                     }
                     if (chunk.column_count() > 9) {
-                        if (auto attdefspec_cell = chunk.get_value<std::string_view>(9, i)) {
-                            r.attdefspec.assign(*attdefspec_cell);
+                        if (!chunk.is_null(9, i)) {
+                            r.attdefspec.assign(chunk.get_value<std::string_view>(9, i));
                         }
                     }
                     rows.push_back(std::move(r));

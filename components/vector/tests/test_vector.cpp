@@ -39,7 +39,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::UBIGINT);
         for (size_t i = 0; i < test_size; i++) {
-            REQUIRE(v.get_value_unchecked<uint64_t>(i) == i);
+            REQUIRE(v.get_value<uint64_t>(i) == i);
         }
     }
     INFO("string") {
@@ -51,7 +51,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::STRING_LITERAL);
         for (size_t i = 0; i < test_size; i++) {
-            std::string result{v.get_value_unchecked<std::string_view>(i)};
+            std::string result{v.get_value<std::string_view>(i)};
             REQUIRE(result == std::string{"long_string_with_index_" + std::to_string(i)});
         }
     }
@@ -61,7 +61,7 @@ TEST_CASE("components::vector::vector") {
             components::types::complex_logical_type::create_array(components::types::logical_type::UBIGINT, array_size),
             test_size);
         for (size_t i = 0; i < test_size; i++) {
-            std::vector<std::optional<uint64_t>> arr;
+            std::vector<uint64_t> arr;
             arr.reserve(array_size);
             for (size_t j = 0; j < array_size; j++) {
                 arr.emplace_back(uint64_t{i * array_size + j});
@@ -71,7 +71,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::ARRAY);
         for (size_t i = 0; i < test_size; i++) {
-            auto arr = v.get_value_unchecked<std::vector<std::optional<uint64_t>>>(i);
+            auto arr = v.get_value<std::vector<uint64_t>>(i);
             REQUIRE(arr.size() == array_size);
             for (size_t j = 0; j < array_size; j++) {
                 REQUIRE(arr[j] == i * array_size + j);
@@ -91,7 +91,7 @@ TEST_CASE("components::vector::vector") {
             for (size_t j = 0; j < array_size; j++) {
                 storage.push_back("long_string_with_index_" + std::to_string(i * array_size + j));
             }
-            std::vector<std::optional<std::string_view>> arr;
+            std::vector<std::string_view> arr;
             arr.reserve(array_size);
             for (const auto& s : storage) {
                 arr.emplace_back(std::string_view{s});
@@ -101,10 +101,10 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::ARRAY);
         for (size_t i = 0; i < test_size; i++) {
-            auto arr = v.get_value_unchecked<std::vector<std::optional<std::string_view>>>(i);
+            auto arr = v.get_value<std::vector<std::string_view>>(i);
             REQUIRE(arr.size() == array_size);
             for (size_t j = 0; j < array_size; j++) {
-                std::string result{*arr[j]};
+                std::string result{arr[j]};
                 REQUIRE(result == std::string{"long_string_with_index_" + std::to_string(i * array_size + j)});
             }
         }
@@ -116,7 +116,7 @@ TEST_CASE("components::vector::vector") {
             test_size);
         for (size_t i = 0; i < test_size; i++) {
             // test that each list entry can be a different length
-            std::vector<std::optional<uint64_t>> list;
+            std::vector<uint64_t> list;
             list.reserve(list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
                 list.emplace_back(uint64_t{i * list_length(i) + j});
@@ -126,7 +126,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::LIST);
         for (size_t i = 0; i < test_size; i++) {
-            auto list = v.get_value_unchecked<std::vector<std::optional<uint64_t>>>(i);
+            auto list = v.get_value<std::vector<uint64_t>>(i);
             REQUIRE(list.size() == list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
                 REQUIRE(list[j] == i * list_length(i) + j);
@@ -146,7 +146,7 @@ TEST_CASE("components::vector::vector") {
             for (size_t j = 0; j < list_length(i); j++) {
                 storage.push_back("long_string_with_index_" + std::to_string(i * list_length(i) + j));
             }
-            std::vector<std::optional<std::string_view>> list;
+            std::vector<std::string_view> list;
             list.reserve(list_length(i));
             for (const auto& s : storage) {
                 list.emplace_back(std::string_view{s});
@@ -156,10 +156,10 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(v.type().type() == components::types::logical_type::LIST);
         for (size_t i = 0; i < test_size; i++) {
-            auto list = v.get_value_unchecked<std::vector<std::optional<std::string_view>>>(i);
+            auto list = v.get_value<std::vector<std::string_view>>(i);
             REQUIRE(list.size() == list_length(i));
             for (size_t j = 0; j < list_length(i); j++) {
-                std::string result{*list[j]};
+                std::string result{list[j]};
                 REQUIRE(result == std::string{"long_string_with_index_" + std::to_string(i * list_length(i) + j)});
             }
         }
@@ -253,8 +253,7 @@ TEST_CASE("components::vector::vector") {
 
         REQUIRE(dictionary.get_vector_type() == components::vector::vector_type::DICTIONARY);
         for (size_t i = 0; i < test_size; i++) {
-            REQUIRE(dictionary.get_value_unchecked<std::string_view>(i) ==
-                    string_array.get_value_unchecked<std::string_view>(indices[i]));
+            REQUIRE(dictionary.get_value<std::string_view>(i) == string_array.get_value<std::string_view>(indices[i]));
         }
     }
     INFO("union") {
@@ -322,5 +321,78 @@ TEST_CASE("components::vector::vector") {
                     continue;
             }
         }
+    }
+}
+
+TEST_CASE("components::vector::nested_null_access") {
+    namespace types = components::types;
+    auto resource = std::pmr::synchronized_pool_resource();
+    constexpr size_t rows = 16;
+    constexpr size_t arr_len = 4;
+
+    INFO("array element nulls") {
+        components::vector::vector_t v(&resource,
+                                       types::complex_logical_type::create_array(types::logical_type::UBIGINT, arr_len),
+                                       rows);
+        for (size_t i = 0; i < rows; i++) {
+            std::vector<uint64_t> arr(arr_len);
+            for (size_t j = 0; j < arr_len; j++) {
+                arr[j] = i * arr_len + j;
+            }
+            v.set_value(i, arr);
+        }
+
+        // Freshly set elements are all present.
+        for (uint64_t i = 0; i < rows; i++) {
+            for (uint64_t j = 0; j < arr_len; j++) {
+                REQUIRE_FALSE(v.is_null({i, j}));
+            }
+        }
+
+        // Mark individual elements null and read them back.
+        v.set_null({2, 1}, true);
+        v.set_null({5, 3}, true);
+        REQUIRE(v.is_null({2, 1}));
+        REQUIRE(v.is_null({5, 3}));
+        REQUIRE_FALSE(v.is_null({2, 0}));
+        REQUIRE_FALSE(v.is_null({5, 2}));
+        // The owning rows stay present.
+        REQUIRE_FALSE(v.is_null(2));
+        REQUIRE_FALSE(v.is_null(5));
+
+        // Clearing an element restores it.
+        v.set_null({2, 1}, false);
+        REQUIRE_FALSE(v.is_null({2, 1}));
+
+        // A null row makes every element report null.
+        v.set_null(uint64_t{7}, true);
+        for (uint64_t j = 0; j < arr_len; j++) {
+            REQUIRE(v.is_null({7, j}));
+        }
+    }
+
+    INFO("list element nulls") {
+        components::vector::vector_t v(&resource,
+                                       types::complex_logical_type::create_list(types::logical_type::UBIGINT),
+                                       rows);
+        auto length = [](size_t i) { return (i % 4) + 1; }; // 1..4, never empty
+        for (size_t i = 0; i < rows; i++) {
+            std::vector<uint64_t> list(length(i));
+            for (size_t j = 0; j < length(i); j++) {
+                list[j] = i * 100 + j;
+            }
+            v.set_value(i, list);
+        }
+
+        for (uint64_t i = 0; i < rows; i++) {
+            for (uint64_t j = 0; j < length(i); j++) {
+                REQUIRE_FALSE(v.is_null({i, j}));
+            }
+        }
+
+        v.set_null({6, 2}, true); // row 6 has length 3
+        REQUIRE(v.is_null({6, 2}));
+        REQUIRE_FALSE(v.is_null({6, 0}));
+        REQUIRE_FALSE(v.is_null({6, 1}));
     }
 }

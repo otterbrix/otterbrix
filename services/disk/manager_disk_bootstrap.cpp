@@ -376,11 +376,10 @@ namespace services::disk {
                     break;
                 }
                 for (uint64_t i = 0; i < chunk.size(); i++) {
-                    auto val = chunk.get_value<std::uint32_t>(0, i);
-                    if (!val) {
+                    if (chunk.is_null(0, i)) {
                         continue;
                     }
-                    const auto seen = static_cast<components::catalog::oid_t>(*val);
+                    const auto seen = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                     if (seen > high_water) {
                         high_water = seen;
                     }
@@ -432,14 +431,14 @@ namespace services::disk {
 
         std::uint64_t max_commit_id = 0;
         for (uint64_t i = 0; i < chunk.size(); ++i) {
-            if (auto added_cell = chunk.get_value<std::int64_t>(kAddedAtCol, i)) {
-                const auto v = *added_cell;
+            if (!chunk.is_null(kAddedAtCol, i)) {
+                const auto v = chunk.get_value<std::int64_t>(kAddedAtCol, i);
                 if (v > 0 && static_cast<std::uint64_t>(v) > max_commit_id) {
                     max_commit_id = static_cast<std::uint64_t>(v);
                 }
             }
-            if (auto dropped_cell = chunk.get_value<std::int64_t>(kDroppedAtCol, i)) {
-                const auto v = *dropped_cell;
+            if (!chunk.is_null(kDroppedAtCol, i)) {
+                const auto v = chunk.get_value<std::int64_t>(kDroppedAtCol, i);
                 if (v > 0 && static_cast<std::uint64_t>(v) > max_commit_id) {
                     max_commit_id = static_cast<std::uint64_t>(v);
                 }
@@ -561,16 +560,16 @@ namespace services::disk {
                 if (chunk.size() == 0)
                     break;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto oid_v = chunk.get_value<std::uint32_t>(0, i);
-                    if (!oid_v)
+                    if (chunk.is_null(0, i))
                         continue;
-                    const auto oid = static_cast<catalog::oid_t>(*oid_v);
+                    const auto oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                     if (oid < catalog::FIRST_USER_OID)
                         continue;
                     if (has_storage(oid))
                         continue;
-                    auto rk_v = chunk.get_value<std::string_view>(3, i);
-                    const char relkind = (!rk_v || rk_v->empty()) ? catalog::relkind::regular : rk_v->front();
+                    const bool rk_null = chunk.is_null(3, i);
+                    const auto rk_v = rk_null ? std::string_view{} : chunk.get_value<std::string_view>(3, i);
+                    const char relkind = (rk_null || rk_v.empty()) ? catalog::relkind::regular : rk_v.front();
                     // Only relkinds with physical row storage. Views, computed/
                     // virtual tables, sequences etc. have no append-target storage.
                     if (relkind != catalog::relkind::regular && relkind != catalog::relkind::materialized_view) {
@@ -626,29 +625,30 @@ namespace services::disk {
                 if (chunk.size() == 0)
                     break;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto relid_v = chunk.get_value<std::uint32_t>(1, i);
-                    if (!relid_v)
+                    if (chunk.is_null(1, i))
                         continue;
-                    const auto relid = static_cast<catalog::oid_t>(*relid_v);
+                    const auto relid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                     if (wanted.find(relid) == wanted.end())
                         continue;
-                    if (chunk.get_value<bool>(7, i).value_or(false))
+                    if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                         continue; // tombstoned column
                     rehydrate_col_t rc;
-                    if (auto attname_v = chunk.get_value<std::string_view>(2, i)) {
-                        rc.name.assign(attname_v->data(), attname_v->size());
+                    if (!chunk.is_null(2, i)) {
+                        auto attname_v = chunk.get_value<std::string_view>(2, i);
+                        rc.name.assign(attname_v.data(), attname_v.size());
                     }
-                    rc.attnum = chunk.get_value<std::int32_t>(4, i).value_or(0);
+                    rc.attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
                     std::string typspec;
-                    if (auto typspec_v = chunk.get_value<std::string_view>(8, i)) {
-                        typspec.assign(typspec_v->data(), typspec_v->size());
+                    if (!chunk.is_null(8, i)) {
+                        auto typspec_v = chunk.get_value<std::string_view>(8, i);
+                        typspec.assign(typspec_v.data(), typspec_v.size());
                     }
                     if (!typspec.empty()) {
                         rc.type = catalog::decode_type_spec(resource_, typspec);
                     } else {
-                        auto atttypid_v = chunk.get_value<std::uint32_t>(3, i);
-                        const auto atttypid =
-                            atttypid_v ? static_cast<catalog::oid_t>(*atttypid_v) : catalog::INVALID_OID;
+                        const auto atttypid = chunk.is_null(3, i)
+                                                  ? catalog::INVALID_OID
+                                                  : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                         rc.type = components::types::complex_logical_type(catalog::oid_to_builtin_type(atttypid));
                     }
                     if (!rc.name.empty() && !rc.type.has_alias()) {
@@ -751,14 +751,12 @@ namespace services::disk {
             if (chunk.size() == 0)
                 break;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto oid_val = chunk.get_value<std::uint32_t>(0, i);
-                auto kind_val = chunk.get_value<std::string_view>(3, i);
-                if (!oid_val || !kind_val)
+                if (chunk.is_null(0, i) || chunk.is_null(3, i))
                     continue;
-                const auto seen = static_cast<catalog::oid_t>(*oid_val);
+                const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 if (seen < catalog::FIRST_USER_OID)
                     continue;
-                const auto kind = *kind_val;
+                const auto kind = chunk.get_value<std::string_view>(3, i);
                 if (kind.size() != 1)
                     continue;
                 const char k = kind.front();
@@ -811,21 +809,18 @@ namespace services::disk {
                 if (chunk.size() == 0)
                     break;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto idxrelid_v = chunk.get_value<std::uint32_t>(0, i);
-                    auto indrelid_v = chunk.get_value<std::uint32_t>(1, i);
-                    auto indkey_v = chunk.get_value<std::string_view>(2, i);
-                    auto indisvalid_v = chunk.get_value<bool>(3, i);
-                    if (!idxrelid_v || !indrelid_v)
+                    if (chunk.is_null(0, i) || chunk.is_null(1, i))
                         continue;
                     pg_index_row_t row{resource_};
-                    row.oid = static_cast<catalog::oid_t>(*idxrelid_v);
-                    row.table_oid = static_cast<catalog::oid_t>(*indrelid_v);
+                    row.oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                    row.table_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                     // indisvalid → ready_since sentinel (1 = alive, 0 = skip; see pg_index_row_t).
-                    const bool valid = indisvalid_v.value_or(false);
+                    const bool valid = chunk.is_null(3, i) ? false : chunk.get_value<bool>(3, i);
                     row.ready_since = valid ? std::uint64_t{1} : std::uint64_t{0};
                     std::pmr::string raw_indkey{resource_};
-                    if (indkey_v) {
-                        raw_indkey.assign(indkey_v->data(), indkey_v->size());
+                    if (!chunk.is_null(2, i)) {
+                        auto indkey_v = chunk.get_value<std::string_view>(2, i);
+                        raw_indkey.assign(indkey_v.data(), indkey_v.size());
                     }
                     raw_indkeys.push_back(std::move(raw_indkey));
                     result.push_back(std::move(row));
@@ -858,12 +853,10 @@ namespace services::disk {
                     if (chunk.size() == 0)
                         break;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
-                        auto oid_v = chunk.get_value<std::uint32_t>(0, i);
-                        auto name_v = chunk.get_value<std::string_view>(1, i);
-                        if (!oid_v || !name_v)
+                        if (chunk.is_null(0, i) || chunk.is_null(1, i))
                             continue;
-                        const auto cls_oid = static_cast<catalog::oid_t>(*oid_v);
-                        auto sv = *name_v;
+                        const auto cls_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                        auto sv = chunk.get_value<std::string_view>(1, i);
                         class_names.emplace(cls_oid, std::pmr::string{sv.data(), sv.size(), resource_});
                     }
                 }
@@ -907,12 +900,12 @@ namespace services::disk {
                     if (chunk.size() == 0)
                         break;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
-                        auto oid_v = chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, i);
-                        auto name_v = chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname, i);
-                        if (!oid_v || !name_v)
+                        if (chunk.is_null(catalog::pg_attribute_col::attoid, i) ||
+                            chunk.is_null(catalog::pg_attribute_col::attname, i))
                             continue;
-                        const auto att_oid = static_cast<catalog::oid_t>(*oid_v);
-                        auto sv = *name_v;
+                        const auto att_oid = static_cast<catalog::oid_t>(
+                            chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, i));
+                        auto sv = chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname, i);
                         attoid_to_name.emplace(att_oid, std::pmr::string{sv.data(), sv.size(), resource_});
                     }
                 }
@@ -973,10 +966,9 @@ namespace services::disk {
             if (chunk.size() == 0)
                 break;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto val = chunk.get_value<std::uint32_t>(0, i);
-                if (!val)
+                if (chunk.is_null(0, i))
                     continue;
-                const auto seen = static_cast<catalog::oid_t>(*val);
+                const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 if (seen >= catalog::FIRST_USER_OID) {
                     alive.insert(seen);
                 }
@@ -1025,10 +1017,9 @@ namespace services::disk {
                     break;
                 }
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto val = chunk.get_value<std::uint32_t>(0, i);
-                    if (!val)
+                    if (chunk.is_null(0, i))
                         continue;
-                    const auto seen = static_cast<catalog::oid_t>(*val);
+                    const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                     if (seen >= catalog::FIRST_USER_OID) {
                         all_user_oids.insert(seen);
                     }
@@ -1080,13 +1071,12 @@ namespace services::disk {
                 break;
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto key_val = chunk.get_value<std::string_view>(0, i);
-                if (!key_val) {
+                if (chunk.is_null(0, i)) {
                     continue;
                 }
-                if (*key_val == name) {
-                    if (auto setting_val = chunk.get_value<std::string_view>(1, i)) {
-                        last_value = std::string{*setting_val};
+                if (chunk.get_value<std::string_view>(0, i) == name) {
+                    if (!chunk.is_null(1, i)) {
+                        last_value = std::string{chunk.get_value<std::string_view>(1, i)};
                     }
                 }
             }

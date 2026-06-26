@@ -112,42 +112,49 @@ namespace components::operators {
             if (con_chunk.column_count() <= catalog::pg_constraint_col::confupdtype)
                 continue;
             for (uint64_t ci = 0; ci < con_chunk.size(); ++ci) {
+                if (con_chunk.is_null(catalog::pg_constraint_col::contype, ci))
+                    continue;
                 const auto contype_cell =
                     con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::contype, ci);
-                if (!contype_cell || contype_cell->empty())
+                if (contype_cell.empty())
                     continue;
-                const char contype = (*contype_cell)[0];
+                const char contype = contype_cell[0];
 
                 if (contype == 'f') {
                     pending_fk_t pending;
                     catalog::fk_info_t& fk = pending.fk;
                     fk.constraint_oid = static_cast<catalog::oid_t>(
-                        con_chunk.get_value_unchecked<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
+                        con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
                     if (direction == direction_t::outgoing) {
                         fk.child_table_oid = table_oid;
                         fk.parent_table_oid = static_cast<catalog::oid_t>(
-                            con_chunk.get_value_unchecked<std::uint32_t>(catalog::pg_constraint_col::confrelid, ci));
+                            con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::confrelid, ci));
                     } else {
                         fk.child_table_oid = static_cast<catalog::oid_t>(
-                            con_chunk.get_value_unchecked<std::uint32_t>(catalog::pg_constraint_col::conrelid, ci));
+                            con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::conrelid, ci));
                         fk.parent_table_oid = table_oid;
                     }
-                    const auto confmatch =
-                        con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confmatch, ci);
-                    fk.matchtype = confmatch ? (*confmatch)[0] : 's';
-                    const auto confdeltype =
-                        con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confdeltype, ci);
-                    fk.del_action = confdeltype ? (*confdeltype)[0] : 'a';
-                    const auto confupdtype =
-                        con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confupdtype, ci);
-                    fk.upd_action = confupdtype ? (*confupdtype)[0] : 'a';
+                    fk.matchtype =
+                        con_chunk.is_null(catalog::pg_constraint_col::confmatch, ci)
+                            ? 's'
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confmatch, ci)[0];
+                    fk.del_action =
+                        con_chunk.is_null(catalog::pg_constraint_col::confdeltype, ci)
+                            ? 'a'
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confdeltype, ci)[0];
+                    fk.upd_action =
+                        con_chunk.is_null(catalog::pg_constraint_col::confupdtype, ci)
+                            ? 'a'
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confupdtype, ci)[0];
 
-                    pending.child_attoids = catalog::parse_oid_csv(
-                        std::string(con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conkey, ci)
-                                        .value_or(std::string_view{})));
-                    pending.parent_attoids = catalog::parse_oid_csv(
-                        std::string(con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confkey, ci)
-                                        .value_or(std::string_view{})));
+                    pending.child_attoids = catalog::parse_oid_csv(std::string(
+                        con_chunk.is_null(catalog::pg_constraint_col::conkey, ci)
+                            ? std::string_view{}
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conkey, ci)));
+                    pending.parent_attoids = catalog::parse_oid_csv(std::string(
+                        con_chunk.is_null(catalog::pg_constraint_col::confkey, ci)
+                            ? std::string_view{}
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confkey, ci)));
 
                     // One key row per FK, positionally aligned to pending_fks — child by
                     // child_table_oid, parent by parent_table_oid (both keyed "attrelid").
@@ -156,15 +163,16 @@ namespace components::operators {
 
                     pending_fks.push_back(std::move(pending));
                 } else if (contype == 'c' && direction == direction_t::outgoing) {
-                    const auto conexpr_cell =
-                        con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conexpr, ci);
-                    if (!conexpr_cell || conexpr_cell->empty())
+                    if (con_chunk.is_null(catalog::pg_constraint_col::conexpr, ci))
                         continue;
-                    const auto conexpr_sv = *conexpr_cell;
+                    const auto conexpr_sv =
+                        con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conexpr, ci);
+                    if (conexpr_sv.empty())
+                        continue;
                     std::string name;
-                    if (auto conname_cell =
-                            con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci)) {
-                        name = std::string(*conname_cell);
+                    if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
+                        name =
+                            std::string(con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
                     }
                     check_exprs.emplace_back(std::move(name), std::string(conexpr_sv));
                 }
@@ -222,12 +230,11 @@ namespace components::operators {
                             bool found = false;
                             for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
                                 auto row_attoid = static_cast<catalog::oid_t>(
-                                    attr_chunk.get_value_unchecked<std::uint32_t>(catalog::pg_attribute_col::attoid,
-                                                                                  ai));
+                                    attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
                                 if (row_attoid == wanted_oid) {
-                                    names.emplace_back(std::string(attr_chunk.get_value_unchecked<std::string_view>(
-                                        catalog::pg_attribute_col::attname,
-                                        ai)));
+                                    names.emplace_back(std::string(
+                                        attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname,
+                                                                               ai)));
                                     found = true;
                                     break;
                                 }
@@ -257,17 +264,18 @@ namespace components::operators {
                         if (attr_chunk.column_count() <= kAttisdropped)
                             continue;
                         for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
-                            if (attr_chunk.get_value<bool>(kAttisdropped, ai).value_or(false))
+                            if (!attr_chunk.is_null(kAttisdropped, ai) && attr_chunk.get_value<bool>(kAttisdropped, ai))
                                 continue;
                             row_meta_t r;
-                            if (auto attname =
-                                    attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname, ai)) {
-                                r.attname.assign(*attname);
+                            if (!attr_chunk.is_null(catalog::pg_attribute_col::attname, ai)) {
+                                r.attname.assign(
+                                    attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname, ai));
                             }
-                            r.attnum = attr_chunk.get_value<std::int32_t>(kAttnum, ai).value_or(0);
+                            r.attnum =
+                                attr_chunk.is_null(kAttnum, ai) ? 0 : attr_chunk.get_value<std::int32_t>(kAttnum, ai);
                             if (attr_chunk.column_count() > kAttdefspec) {
-                                if (auto attdefspec = attr_chunk.get_value<std::string_view>(kAttdefspec, ai)) {
-                                    r.attdefspec.assign(*attdefspec);
+                                if (!attr_chunk.is_null(kAttdefspec, ai)) {
+                                    r.attdefspec.assign(attr_chunk.get_value<std::string_view>(kAttdefspec, ai));
                                 }
                             }
                             ordered.push_back(std::move(r));
@@ -301,12 +309,11 @@ namespace components::operators {
                             bool found = false;
                             for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
                                 auto row_attoid = static_cast<catalog::oid_t>(
-                                    attr_chunk.get_value_unchecked<std::uint32_t>(catalog::pg_attribute_col::attoid,
-                                                                                  ai));
+                                    attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
                                 if (row_attoid == wanted_oid) {
-                                    names.emplace_back(std::string(attr_chunk.get_value_unchecked<std::string_view>(
-                                        catalog::pg_attribute_col::attname,
-                                        ai)));
+                                    names.emplace_back(std::string(
+                                        attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname,
+                                                                               ai)));
                                     found = true;
                                     break;
                                 }
@@ -336,11 +343,11 @@ namespace components::operators {
                     auto cls_batches = co_await std::move(fut_cls);
                     if (!cls_batches.empty() && cls_batches[0].size() != 0 &&
                         cls_batches[0].column_count() > catalog::pg_class_col::relname) {
-                        fk.child_collection_name = std::string(
-                            cls_batches[0].get_value_unchecked<std::string_view>(catalog::pg_class_col::relname, 0));
+                        fk.child_collection_name =
+                            std::string(cls_batches[0].get_value<std::string_view>(catalog::pg_class_col::relname, 0));
                         fk.child_database = "";
                         const auto ns_oid = static_cast<catalog::oid_t>(
-                            cls_batches[0].get_value_unchecked<std::uint32_t>(catalog::pg_class_col::relnamespace, 0));
+                            cls_batches[0].get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, 0));
                         std::pmr::vector<std::string> ns_keys(resource_);
                         ns_keys.emplace_back("oid");
                         auto [_ns, fut_ns] = actor_zeta::send(ctx->disk_address,
@@ -353,8 +360,7 @@ namespace components::operators {
                         if (!ns_batches.empty() && ns_batches[0].size() != 0 &&
                             ns_batches[0].column_count() > catalog::pg_namespace_col::nspname) {
                             fk.child_schema = std::string(
-                                ns_batches[0].get_value_unchecked<std::string_view>(catalog::pg_namespace_col::nspname,
-                                                                                    0));
+                                ns_batches[0].get_value<std::string_view>(catalog::pg_namespace_col::nspname, 0));
                         }
                     }
                 }

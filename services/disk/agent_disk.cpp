@@ -623,18 +623,19 @@ namespace services::disk {
 
                 if (existing_id_col >= 0 && existing->size() > 0) {
                     std::unordered_set<std::string> existing_ids;
+                    auto& existing_id_vec = existing->data[static_cast<size_t>(existing_id_col)];
                     for (uint64_t i = 0; i < existing->size(); i++) {
-                        if (auto val =
-                                existing->data[static_cast<size_t>(existing_id_col)].get_value<std::string_view>(i)) {
-                            existing_ids.emplace(*val);
+                        if (!existing_id_vec.is_null(i)) {
+                            existing_ids.emplace(existing_id_vec.get_value<std::string_view>(i));
                         }
                     }
 
                     std::vector<uint64_t> keep_rows;
                     keep_rows.reserve(data->size());
+                    auto& id_vec = data->data[static_cast<size_t>(id_col)];
                     for (uint64_t i = 0; i < data->size(); i++) {
-                        auto val = data->data[static_cast<size_t>(id_col)].get_value<std::string_view>(i);
-                        if (!val || existing_ids.find(std::string(*val)) == existing_ids.end()) {
+                        if (id_vec.is_null(i) || existing_ids.find(std::string(
+                                                     id_vec.get_value<std::string_view>(i))) == existing_ids.end()) {
                             keep_rows.push_back(i);
                         }
                     }
@@ -1900,10 +1901,10 @@ namespace services::disk {
                             {oid_col_idx},
                             &scan_resource,
                             [&, oid_col_idx](components::vector::data_chunk_t& chunk, uint64_t i) {
-                                auto v = chunk.get_value<std::uint32_t>(static_cast<uint64_t>(oid_col_idx), i);
-                                if (!v)
+                                if (chunk.is_null(static_cast<uint64_t>(oid_col_idx), i))
                                     return true;
-                                if (static_cast<components::catalog::oid_t>(*v) == target_oid) {
+                                auto v = chunk.get_value<std::uint32_t>(static_cast<uint64_t>(oid_col_idx), i);
+                                if (static_cast<components::catalog::oid_t>(v) == target_oid) {
                                     row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
                                 }
                                 return true;
@@ -1968,10 +1969,10 @@ namespace services::disk {
                             all_col_indices,
                             &scan_resource,
                             [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                                auto v0 = chunk.get_value<std::uint32_t>(0, i);
-                                if (!v0)
+                                if (chunk.is_null(0, i))
                                     return true;
-                                if (static_cast<components::catalog::oid_t>(*v0) != attoid)
+                                if (static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)) !=
+                                    attoid)
                                     return true;
                                 row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
                                 for (std::size_t c = 0; c < col_count; ++c) {

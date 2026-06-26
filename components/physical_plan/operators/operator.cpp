@@ -1,7 +1,5 @@
 #include "operator.hpp"
 
-#include "resolved_table_metadata.hpp"
-
 namespace components::operators {
 
     operator_t::operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
@@ -12,7 +10,6 @@ namespace components::operators {
 
     void operator_t::prepare() {
         if (!prepared_) {
-            on_prepare_impl();
             prepared_ = true;
         }
         if (left_) {
@@ -65,8 +62,6 @@ namespace components::operators {
         constraint_input_ = nullptr;
     }
 
-    void operator_t::on_prepare_impl() {}
-
     actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) { co_return; }
 
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
@@ -83,10 +78,6 @@ namespace components::operators {
 
     core::error_t operator_t::finalize(pipeline::context_t* /*ctx*/, chunks_vector_t& /*out*/) {
         return core::error_t::no_error();
-    }
-
-    void operator_t::accept_resolved_metadata(resolved_table_metadata_t /*metadata*/) {
-        // Default: drop on the floor. DML operators override to capture it.
     }
 
     void operator_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& /*types*/) {

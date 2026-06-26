@@ -25,17 +25,9 @@ namespace components::operators {
         , returning_(std::move(returning))
         , returning_from_chunks_(resource) {}
 
-    void operator_update::accept_resolved_metadata(resolved_table_metadata_t metadata) {
-        // See operator_insert for the contract.
-        if (table_oid_ == components::catalog::INVALID_OID && metadata.table_oid != components::catalog::INVALID_OID) {
-            table_oid_ = metadata.table_oid;
-        }
-        resolved_metadata_ = std::move(metadata);
-    }
-
     namespace {
         // Applies all update expressions to out_chunk[0..match_count) and
-        // populates modified_/no_modified_ lists.
+        // records the modified rows in the modified_ list.
         void apply_updates(std::pmr::memory_resource* resource,
                            const std::pmr::vector<expressions::update_expr_ptr>& updates,
                            vector::data_chunk_t& out_chunk,
@@ -43,8 +35,7 @@ namespace components::operators {
                            uint64_t match_count,
                            const logical_plan::storage_parameters& parameters,
                            core::date::timezone_offset_t session_tz,
-                           operators::operator_write_data_ptr& modified,
-                           operators::operator_write_data_ptr& no_modified) {
+                           operators::operator_write_data_ptr& modified) {
             std::pmr::vector<bool> any_modified(match_count, false, resource);
             for (const auto& expr : updates) {
                 auto row_flags = expr->execute(resource, out_chunk, from_chunk, match_count, &parameters, session_tz);
@@ -57,8 +48,6 @@ namespace components::operators {
             for (uint64_t i = 0; i < match_count; i++) {
                 if (any_modified[i]) {
                     modified->append(i);
-                } else {
-                    no_modified->append(i);
                 }
             }
         }
@@ -69,7 +58,6 @@ namespace components::operators {
             return;
         }
         modified_ = operators::make_operator_write_data(resource_);
-        no_modified_ = operators::make_operator_write_data(resource_);
         // Accumulator for the NEW updated rows; consume_batch_ appends one out_chunk
         // per matched batch. await_async_and_resume iterates output_->chunks().
         output_ = operators::make_operator_data(resource_, chunks_vector_t{resource_});
@@ -140,8 +128,7 @@ namespace components::operators {
                       index,
                       pipeline_context->parameters,
                       pipeline_context->session_tz,
-                      modified_,
-                      no_modified_);
+                      modified_);
         output_->append_chunk(std::move(out_chunk));
         return core::error_t::no_error();
     }
@@ -154,7 +141,7 @@ namespace components::operators {
         // (FROM) build chunks: a semi-join (a target row is updated once regardless
         // of how many FROM rows it matches). Per matched LEFT row it builds the
         // updated out_chunk (matched columns, SET applied), accumulates it into
-        // output_ + modified_/no_modified_, stages the matched OLD rows for the index
+        // output_ + modified_, stages the matched OLD rows for the index
         // mirror (aligned by row_id with the NEW rows), and — for RETURNING — keeps
         // the matched FROM rows in lockstep so a joined RETURNING column reads them.
         // push() calls it per LEFT batch. await_async_and_resume drains it all.
@@ -247,8 +234,7 @@ namespace components::operators {
                       index,
                       pipeline_context->parameters,
                       pipeline_context->session_tz,
-                      modified_,
-                      no_modified_);
+                      modified_);
         output_->append_chunk(std::move(out_chunk));
         // Keep the matched FROM rows aligned with the updated rows so RETURNING can
         // project joined (right-side) columns.
@@ -261,7 +247,7 @@ namespace components::operators {
     core::error_t
     operator_update::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
         // STREAMING DML SINK: fold one scan batch into the updated-rows accumulator
-        // (output_), modified_/no_modified_, and the index-old staging. Emits
+        // (output_), modified_, and the index-old staging. Emits
         // nothing; await_async_and_resume drains the staged state into the single
         // WAL->storage->index commit. FROM-join shape: probe the LEFT batch against
         // the materialized RIGHT (FROM) build chunks; otherwise the simple fold.
@@ -339,19 +325,6 @@ namespace components::operators {
                 continue;
             }
             const uint64_t n = out_chunk.size();
-
-            // If a resolver sibling supplied catalog metadata, surface alias drift.
-            // See operator_insert::await_async_and_resume for the rationale.
-            if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
-                auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
-                for (std::size_t i = 0; i < translation.size(); ++i) {
-                    if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
-                        trace(log_,
-                              "operator_update: resolved metadata has no column matching chunk alias '{}'",
-                              std::string(out_chunk.data[i].type().alias()));
-                    }
-                }
-            }
 
             // storage_update needs a row_ids vector_t + payload copy per chunk.
             vector_t row_ids(resource_, types::logical_type::BIGINT, n);

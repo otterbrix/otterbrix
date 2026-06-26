@@ -142,47 +142,6 @@ namespace components::operators::aggregate {
         assert(func);
     }
 
-    core::result_wrapper_t<types::logical_value_t>
-    operator_func_t::aggregate_impl(pipeline::context_t* pipeline_context) {
-        auto result = types::logical_value_t(resource_, types::logical_type::NA);
-        if (left_ && left_->output()) {
-            // Single-chunk callback: aggregate_batch_impl drives the multi-chunk case
-            // and feeds each chunk here one at a time (wrapped via operator_empty), so
-            // the input always carries exactly one chunk.
-            auto& chunk = left_->output()->chunks().front();
-
-            std::vector<vector::vector_t> computed_vecs;
-            if (!compute_expression_args(left_->output()->resource(),
-                                         args_,
-                                         chunk,
-                                         *this,
-                                         pipeline_context,
-                                         computed_vecs)) {
-                return result;
-            }
-
-            std::pmr::vector<columns_var> columns(left_->output()->resource());
-            columns.reserve(args_.size());
-            resolve_columns(args_, chunk, pipeline_context, columns, computed_vecs);
-
-            if (columns.size() == args_.size()) {
-                auto c = build_arg_chunk(left_->output()->resource(), columns, chunk);
-                auto types = c.types();
-                if (distinct_) {
-                    apply_distinct(resource_, c, types);
-                }
-                auto res = func_->execute(c);
-                if (res.has_error()) {
-                    return res.convert_error<types::logical_value_t>();
-                } else {
-                    result = std::get<std::pmr::vector<types::logical_value_t>>(res.value())[0];
-                }
-            }
-        }
-        result.set_alias(func_->name());
-        return result;
-    }
-
     core::result_wrapper_t<compute::datum_t>
     operator_func_t::aggregate_batch_impl(pipeline::context_t* pipeline_context) {
         auto& batch_chunks = left_->output()->chunks();
@@ -232,7 +191,5 @@ namespace components::operators::aggregate {
         }
         return std::move(res.value());
     }
-
-    std::string operator_func_t::key_impl() const { return func_->name(); }
 
 } // namespace components::operators::aggregate

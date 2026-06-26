@@ -17,18 +17,6 @@ namespace components::operators {
         , table_oid_(table_oid)
         , returning_(std::move(returning)) {}
 
-    void operator_insert::accept_resolved_metadata(resolved_table_metadata_t metadata) {
-        // Capture metadata so await_async_and_resume can build a
-        // chunk_position -> table_position translation before storage_append.
-        // Adopt table_oid_ from the resolver when this operator was constructed
-        // without one (oid-only DML routing typically passes the oid through
-        // node_insert, but the resolve-sibling form is the alternative).
-        if (table_oid_ == catalog::INVALID_OID && metadata.table_oid != catalog::INVALID_OID) {
-            table_oid_ = metadata.table_oid;
-        }
-        resolved_metadata_ = std::move(metadata);
-    }
-
     core::error_t
     operator_insert::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
         // STREAMING DML SINK: fold each scan batch into a bounded accumulator and
@@ -121,22 +109,6 @@ namespace components::operators {
         for (auto& out_chunk : input->chunks()) {
             if (out_chunk.size() == 0) {
                 continue;
-            }
-            // When a resolver sibling supplied catalog metadata, compute a
-            // chunk_position -> table_position translation via alias matching.
-            // The disk-actor's storage_append already aligns by alias (with
-            // positional fallback), so the translation is built only to surface
-            // resolver/data drift at trace level — the wiring hook for a future
-            // storage_append(...,key_translation) signature change.
-            if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
-                auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
-                for (std::size_t i = 0; i < translation.size(); ++i) {
-                    if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
-                        trace(log_,
-                              "operator_insert: resolved metadata has no column matching chunk alias '{}'",
-                              std::string(out_chunk.data[i].type().alias()));
-                    }
-                }
             }
             append_data.emplace_back(copy_of(out_chunk));
             if (mirror_index) {

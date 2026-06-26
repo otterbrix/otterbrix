@@ -20,18 +20,15 @@ namespace components::operators::aggregate {
     protected:
         operator_aggregate_t(std::pmr::memory_resource* resource, log_t log);
 
-        types::logical_value_t aggregate_result_;
         compute::datum_t batch_results_{std::pmr::vector<types::logical_value_t>{resource_}};
 
-        virtual core::result_wrapper_t<types::logical_value_t>
-        aggregate_impl(pipeline::context_t* pipeline_context) = 0;
-        virtual core::result_wrapper_t<compute::datum_t> aggregate_batch_impl(pipeline::context_t* pipeline_context);
-        virtual std::string key_impl() const = 0;
+        virtual core::result_wrapper_t<compute::datum_t>
+        aggregate_batch_impl(pipeline::context_t* pipeline_context) = 0;
 
     private:
-        // Shared dispatch reached by compute(): selects batch vs scalar aggregation
-        // depending on the source child's type and stamps batch_results_/
-        // aggregate_result_. The source child is already wired as left_ by the caller.
+        // Reached by compute(): runs the batch aggregation over the source child
+        // (always an already-executed operator_batch_t wired as left_ by the caller)
+        // and stamps batch_results_.
         void run_aggregation(pipeline::context_t* pipeline_context);
     };
 

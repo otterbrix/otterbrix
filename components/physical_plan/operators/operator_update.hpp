@@ -6,9 +6,6 @@
 
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
-#include <components/physical_plan/operators/resolved_table_metadata.hpp>
-
-#include <optional>
 
 namespace components::operators {
 
@@ -28,11 +25,11 @@ namespace components::operators {
         // scan input:
         //   - SIMPLE predicate-scan UPDATE (no FROM): push() folds each scan batch
         //     via consume_batch_ — matching, applying the SET expressions into
-        //     out_chunks accumulated in output_, modified_/no_modified_, and staging
+        //     out_chunks accumulated in output_, modified_, and staging
         //     the matched OLD scan rows for the index mirror.
         //   - UPDATE ... FROM (right_ = the materialized FROM scan): push() probes
         //     each LEFT batch against right_->output() via consume_join_batch_ —
-        //     same semi-join match, SET application, modified_/no_modified_, index-old
+        //     same semi-join match, SET application, modified_, index-old
         //     staging and lockstep FROM rows for joined RETURNING.
         // The LEFT scan streams; the RIGHT (FROM) build side is fully materialized
         // before the first push (the executor materializes join build sides —
@@ -48,30 +45,24 @@ namespace components::operators {
         // swap-info, then mark_executed.
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        // Accept pre-resolved table metadata from an upstream resolver
-        // sibling. See operator_insert::accept_resolved_metadata.
-        void accept_resolved_metadata(resolved_table_metadata_t metadata) override;
-        bool wants_resolved_metadata() const noexcept override { return true; }
-        bool has_resolved_metadata() const noexcept { return resolved_metadata_.has_value(); }
-
     private:
         // Shared SIMPLE-path core. Matches expr_ (all-true when null — the scan
         // already filtered) over ONE scan chunk; builds the updated out_chunk
         // (matched rows, SET applied), appends it to output_, accumulates
-        // modified_/no_modified_, and stages the matched OLD scan rows for the
+        // modified_, and stages the matched OLD scan rows for the
         // index mirror. push() calls it per batch.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
         // Shared UPDATE...FROM core. Probes ONE LEFT (target) scan chunk against
         // the fully-materialized RIGHT (FROM) build chunks as a semi-join, and
         // stages the SAME bounded state consume_batch_ does — the updated out_chunk
         // (matched columns, DICTIONARY row-id fallback, SET applied) appended to
-        // output_, modified_/no_modified_, the matched OLD rows for the index
+        // output_, modified_, the matched OLD rows for the index
         // mirror, and (for RETURNING) the matched FROM rows in lockstep. push()
         // calls it per LEFT batch. await_async_and_resume drains it.
         core::error_t consume_join_batch_(pipeline::context_t* ctx,
                                           const vector::data_chunk_t& chunk_left,
                                           const chunks_vector_t& right_chunks);
-        // Lazily create modified_/no_modified_/output_ accumulator + staging for
+        // Lazily create modified_/output_ accumulator + staging for
         // the per-operator init.
         void ensure_simple_init_();
 
@@ -79,7 +70,6 @@ namespace components::operators {
         std::pmr::vector<expressions::update_expr_ptr> updates_;
         expressions::expression_ptr expr_;
         bool upsert_;
-        std::optional<resolved_table_metadata_t> resolved_metadata_;
         std::pmr::vector<select_column_t> returning_;
         // UPDATE ... FROM RETURNING: the matched FROM rows, gathered in lockstep
         // with the updated rows so a joined RETURNING column reads the right chunk.

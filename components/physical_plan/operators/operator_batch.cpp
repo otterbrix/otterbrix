@@ -14,15 +14,4 @@ namespace components::operators {
         set_output(make_operator_data(resource, std::move(chunks)));
         mark_executed();
     }
-
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
-    operator_batch_t::source_next(pipeline::context_t* /*ctx*/) {
-        // Stream the pre-materialized chunks one at a time; once past the end, return
-        // the 0-column drain sentinel so execute_pipeline stops the pump.
-        if (output_ && emit_index_ < output_->chunks().size()) {
-            auto& chunk = output_->chunks()[emit_index_++];
-            co_return chunk.partial_copy(resource_, 0, chunk.size());
-        }
-        co_return vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0};
-    }
 } // namespace components::operators

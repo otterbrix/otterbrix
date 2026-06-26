@@ -68,7 +68,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_resolve_type.cpp
         operators/operator_resolve_constraint.cpp
         operators/operator_allocate_oids.cpp
-        operators/resolved_table_metadata.cpp
 
         operators/arithmetic_eval.cpp
 )

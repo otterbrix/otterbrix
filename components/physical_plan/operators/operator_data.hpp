@@ -28,12 +28,6 @@ namespace components::operators {
         const chunks_vector_t& chunks() const { return chunks_; }
         void append_chunk(vector::data_chunk_t&& chunk);
 
-        // Backward-compat single-chunk API. Lazily concatenates all chunks into one
-        // the first time it is called; subsequent calls are O(1). Callers that still
-        // rely on a single-chunk view go through this accessor.
-        vector::data_chunk_t& data_chunk();
-        const vector::data_chunk_t& data_chunk() const;
-
         std::pmr::memory_resource* resource() const;
 
     private:

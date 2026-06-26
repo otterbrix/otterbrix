@@ -31,14 +31,6 @@ namespace components::operators {
         , oid_col_idx_(oid_col_idx)
         , target_oid_(target_oid) {}
 
-    void operator_delete::accept_resolved_metadata(resolved_table_metadata_t metadata) {
-        // See operator_insert for the contract.
-        if (table_oid_ == components::catalog::INVALID_OID && metadata.table_oid != components::catalog::INVALID_OID) {
-            table_oid_ = metadata.table_oid;
-        }
-        resolved_metadata_ = std::move(metadata);
-    }
-
     void operator_delete::ensure_simple_init_() {
         if (simple_init_done_) {
             return;
@@ -366,28 +358,6 @@ namespace components::operators {
         auto& ids = modified_->ids();
         const size_t modified_size = modified_->size();
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
-
-        // When a resolver sibling supplied catalog metadata, build a
-        // translation against the scan-output chunk to surface any
-        // alias/schema drift. operator_delete only ships row ids to the
-        // disk actor (no per-column data), so the translation itself isn't
-        // fed downstream — this is purely a diagnostic + wiring hook for
-        // future metadata-aware delete paths (e.g. index-only deletes).
-        if (resolved_metadata_.has_value() && left_ && left_->output() && !left_->output()->chunks().empty()) {
-            // Schema is identical across chunks, so the first chunk drives the
-            // alias/translation diagnostic.
-            auto& scan_chunk = left_->output()->chunks().front();
-            if (scan_chunk.column_count() > 0) {
-                auto translation = build_column_key_translation(*resolved_metadata_, scan_chunk);
-                for (std::size_t i = 0; i < translation.size(); ++i) {
-                    if (translation[i] < 0 && scan_chunk.data[i].type().has_alias()) {
-                        trace(log_,
-                              "operator_delete: resolved metadata has no column matching scan alias '{}'",
-                              std::string(scan_chunk.data[i].type().alias()));
-                    }
-                }
-            }
-        }
 
         // 1. Capture WAL row IDs. The row_ids come from the upstream scan, so they
         //    are fully known before any storage mutation — unlike INSERT (whose final

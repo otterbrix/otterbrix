@@ -4,9 +4,6 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
 #include <components/physical_plan/operators/predicates/predicate.hpp>
-#include <components/physical_plan/operators/resolved_table_metadata.hpp>
-
-#include <optional>
 
 namespace components::operators {
 
@@ -57,12 +54,6 @@ namespace components::operators {
         // swap-info, then mark_executed.
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        // Accept pre-resolved table metadata from an upstream resolver
-        // sibling. See operator_insert::accept_resolved_metadata.
-        void accept_resolved_metadata(resolved_table_metadata_t metadata) override;
-        bool wants_resolved_metadata() const noexcept override { return true; }
-        bool has_resolved_metadata() const noexcept { return resolved_metadata_.has_value(); }
-
     private:
         // Shared SIMPLE-path core. Matches expression_ (all-true when null — the
         // scan already filtered) over ONE scan chunk; appends matched ABSOLUTE
@@ -85,7 +76,6 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid_;
         expressions::expression_ptr expression_;
-        std::optional<resolved_table_metadata_t> resolved_metadata_;
         std::pmr::vector<select_column_t> returning_;
         // SIMPLE-path staging (filled by consume_batch_, drained in
         // await_async_and_resume). returning_staged_ holds the projected RETURNING

@@ -9,12 +9,6 @@
 
 namespace components::operators {
 
-    [[nodiscard]] core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
-    transform_predicate(std::pmr::memory_resource* resource,
-                        const expressions::compare_expression_ptr& expression,
-                        const std::pmr::vector<types::complex_logical_type>& types,
-                        const logical_plan::storage_parameters* parameters);
-
     class full_scan final : public read_only_operator_t {
     public:
         full_scan(std::pmr::memory_resource* resource,

@@ -15,10 +15,6 @@ namespace components::expressions {
 
 namespace components::operators {
 
-    // Forward decl: DML operators receive parsed metadata via
-    // accept_resolved_metadata(). Defined in resolved_table_metadata.hpp.
-    struct resolved_table_metadata_t;
-
     enum class operator_type
     {
         unused = 0x0,
@@ -69,11 +65,6 @@ namespace components::operators {
         // cleanup index versions, rebuild and re-populate indexes per table.
         // Iterates pg_class to discover user tables (no dispatcher state).
         vacuum,
-        // GET_SCHEMA — self-resolving leaf operator that returns
-        // one complex_logical_type per (database, collection) id by reading
-        // pg_namespace+pg_class+pg_attribute. Used by
-        // manager_dispatcher_t::get_schema.
-        get_schema,
         // REGISTER_UDF / UNREGISTER_UDF — operator-pipeline replacements
         // for inline manager_dispatcher_t::{register,unregister}_udf.
         // operator_register_udf_t fans out to per-executor registries, mirrors
@@ -268,19 +259,6 @@ namespace components::operators {
         bool has_error() const noexcept;
         const core::error_t& get_error() const noexcept;
 
-        // Sibling-resolve plumbing. When an operator_resolve_table_t runs
-        // as an upstream step inside a sequence_t (or as a flattened
-        // left-child), its output chunk is parsed into
-        // resolved_table_metadata_t and handed to the next consumer via this
-        // hook. Default no-op; DML operators override (operator_insert /
-        // operator_update / operator_delete).
-        virtual void accept_resolved_metadata(resolved_table_metadata_t metadata);
-        // True when accept_resolved_metadata() may meaningfully be invoked
-        // on this operator. Used by operator_sequence_t to route the
-        // resolver's output to the appropriate sibling without inspecting
-        // operator_type.
-        virtual bool wants_resolved_metadata() const noexcept { return false; }
-
         // Plan-time resolved output column types (one per output column, in output
         // order), forwarded by the physical-plan generator from the logical node's
         // output_types(). Default no-op; operators that emit a typed result (group /
@@ -296,14 +274,11 @@ namespace components::operators {
         ptr right_{nullptr};
         operator_data_ptr output_{nullptr};
         operator_write_data_ptr modified_{nullptr};
-        operator_write_data_ptr no_modified_{nullptr};
         // Snapshot of the written rows for a parent constraint operator (see
         // constraint_input()). Populated by DML operators only.
         operator_data_ptr constraint_input_{nullptr};
 
     private:
-        virtual void on_prepare_impl();
-
         operator_type type_;
         operator_state state_{operator_state::created};
         bool root{false};

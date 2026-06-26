@@ -122,7 +122,7 @@ namespace services::wal {
     wal_worker_t::unique_future<wal::id_t>
     wal_worker_t::write_physical_insert(session_id_t /*session*/,
                                         components::catalog::oid_t table_oid,
-                                        std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+                                        std::pmr::vector<components::vector::data_chunk_t> chunks,
                                         uint64_t row_start,
                                         uint64_t row_count,
                                         uint64_t txn_id,
@@ -142,7 +142,7 @@ namespace services::wal {
                                   wal_id,
                                   txn_id,
                                   table_oid,
-                                  *data_chunk,
+                                  chunks,
                                   row_start,
                                   row_count);
 
@@ -183,7 +183,7 @@ namespace services::wal {
     wal_worker_t::write_physical_update(session_id_t /*session*/,
                                         components::catalog::oid_t table_oid,
                                         std::pmr::vector<int64_t> row_ids,
-                                        std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                        std::pmr::vector<components::vector::data_chunk_t> new_chunks,
                                         uint64_t count,
                                         uint64_t txn_id,
                                         wal::id_t wal_id) {
@@ -199,7 +199,7 @@ namespace services::wal {
                                   txn_id,
                                   table_oid,
                                   row_ids.data(),
-                                  *new_data,
+                                  new_chunks,
                                   count);
 
         ensure_writer();

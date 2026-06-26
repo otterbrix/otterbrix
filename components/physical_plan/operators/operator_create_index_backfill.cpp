@@ -107,15 +107,18 @@ namespace components::operators {
                                                    table_oid_,
                                                    int64_t{0},
                                                    total_rows);
-                auto scan_data = co_await std::move(ssf);
-                if (scan_data) {
-                    const auto count = scan_data->size();
+                auto idx_chunks = co_await std::move(ssf); // vector of ≤CAP chunks
+                if (!idx_chunks.empty()) {
+                    uint64_t count = 0;
+                    for (const auto& chunk : idx_chunks) {
+                        count += chunk.size();
+                    }
                     auto [_ir, irf] = actor_zeta::send(
                         ctx->index_address,
                         &services::index::manager_index_t::insert_rows,
                         services::index::execution_context_t{ctx->session, ctx->txn, ctx->session_tz, table_oid_},
                         table_oid_,
-                        std::move(scan_data),
+                        std::move(idx_chunks),
                         uint64_t{0},
                         count);
                     co_await std::move(irf);
@@ -184,9 +187,9 @@ namespace components::operators {
             // A record's OLD-delete apply consumes the OLD chunk fetched for the
             // SAME record, so the fetch await (phase 2) must complete before the
             // matching apply send (phase 3) — the phase split guarantees that.
-            std::pmr::vector<std::unique_ptr<components::vector::data_chunk_t>> old_chunks(resource_);
+            std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> old_chunks(resource_);
             old_chunks.resize(wal_records.size());
-            std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<components::vector::data_chunk_t>>>
+            std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>>
                 fetch_futures(resource_);
             std::pmr::vector<std::size_t> fetch_slots(resource_);
             for (std::size_t r = 0; r < wal_records.size(); ++r) {
@@ -206,9 +209,9 @@ namespace components::operators {
                     continue;
                 }
 
-                // Recover the OLD key chunk for DELETE/UPDATE. If the fetch can't
-                // run or returns empty (rows physically gone), forward nullptr:
-                // manager_index logs+skips and the convergence guard catches any
+                // Recover the OLD key chunks for DELETE/UPDATE. If the fetch can't
+                // run or returns empty (rows physically gone), the slot stays an empty
+                // batch: manager_index logs+skips and the convergence guard catches any
                 // persistent divergence next iteration.
                 const bool needs_old_chunk = (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||
                                               rec.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) &&

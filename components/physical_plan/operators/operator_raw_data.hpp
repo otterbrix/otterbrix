@@ -8,6 +8,7 @@ namespace components::operators {
     public:
         explicit operator_raw_data_t(vector::data_chunk_t&& chunk);
         explicit operator_raw_data_t(const vector::data_chunk_t& chunk);
+        explicit operator_raw_data_t(const std::pmr::vector<vector::data_chunk_t>& chunks);
 
         std::pmr::memory_resource* resource() const noexcept override;
 

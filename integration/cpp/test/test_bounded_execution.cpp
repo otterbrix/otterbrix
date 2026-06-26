@@ -114,14 +114,13 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         INFO("GROUP BY error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumGroups);
-        auto& chunk = cur->chunk_data();
         for (unsigned g = 0; g < kNumGroups; ++g) {
             // grp column (ordered ascending == group index)
-            REQUIRE(chunk.value(0, g).value<int64_t>() == static_cast<int64_t>(g));
+            REQUIRE(cur->value(0, g).value<int64_t>() == static_cast<int64_t>(g));
             // SUM(val) folded incrementally across ~20 batches
-            REQUIRE(chunk.value(1, g).value<int64_t>() == expected_sum[g]);
+            REQUIRE(cur->value(1, g).value<int64_t>() == expected_sum[g]);
             // COUNT(name) folded incrementally across ~20 batches
-            REQUIRE(chunk.value(2, g).value<uint64_t>() == expected_count[g]);
+            REQUIRE(cur->value(2, g).value<uint64_t>() == expected_count[g]);
         }
     }
 
@@ -133,8 +132,7 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         INFO("scalar aggregate error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto& chunk = cur->chunk_data();
-        REQUIRE(chunk.value(0, 0).value<int64_t>() == expected_total_sum);
-        REQUIRE(chunk.value(1, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        REQUIRE(cur->value(0, 0).value<int64_t>() == expected_total_sum);
+        REQUIRE(cur->value(1, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
     }
 }

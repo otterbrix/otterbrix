@@ -33,9 +33,10 @@ namespace services::wal {
         uint64_t commit_id{0};
         wal_record_type record_type{wal_record_type::COMMIT};
 
-        // Physical WAL fields
+        // Physical WAL fields. physical_data holds the record's payload as a batch of
+        // ≤DEFAULT_VECTOR_CAPACITY chunks (empty for DELETE / no-payload records).
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
-        std::unique_ptr<components::vector::data_chunk_t> physical_data;
+        std::pmr::vector<components::vector::data_chunk_t> physical_data{std::pmr::get_default_resource()};
         std::pmr::vector<int64_t> physical_row_ids{std::pmr::get_default_resource()};
         uint64_t physical_row_start{0};
         uint64_t physical_row_count{0};

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include <algorithm>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -743,16 +744,25 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
     }
 
     // Load more rows than a single scan chunk so backfill must stitch batches.
+    // Each INSERT ... VALUES list materializes one data_chunk, which must stay within
+    // the ≤DEFAULT_VECTOR_CAPACITY bound, so the rows are loaded in capped batches.
     {
-        auto session = otterbrix::session_id_t();
-        std::stringstream q;
-        q << "INSERT INTO TestDatabase.TestCollection (count) VALUES ";
-        for (int i = 0; i < kRows; ++i) {
-            q << "(" << (i + 1) << ")" << (i + 1 == kRows ? ";" : ", ");
+        constexpr int kBatch = 500;
+        static_assert(kBatch <= kVectorCapacity);
+        int inserted = 0;
+        while (inserted < kRows) {
+            const int batch = std::min(kBatch, kRows - inserted);
+            auto session = otterbrix::session_id_t();
+            std::stringstream q;
+            q << "INSERT INTO TestDatabase.TestCollection (count) VALUES ";
+            for (int i = 0; i < batch; ++i) {
+                q << "(" << (inserted + i + 1) << ")" << (i + 1 == batch ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, q.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == static_cast<std::size_t>(batch));
+            inserted += batch;
         }
-        auto cur = dispatcher->execute_sql(session, q.str());
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == static_cast<std::size_t>(kRows));
     }
 
     {

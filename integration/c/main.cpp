@@ -260,9 +260,9 @@ extern "C" cursor_ptr drop_database(otterbrix_ptr ptr, string_view_t database_na
             database,
             components::logical_plan::make_node_drop(dispatcher->resource(),
                                                      components::logical_plan::drop_target_kind::database));
-        auto cursor = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        auto cursor =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
@@ -285,9 +285,9 @@ extern "C" cursor_ptr drop_collection(otterbrix_ptr ptr, string_view_t database_
             collection,
             components::logical_plan::make_node_drop(dispatcher->resource(),
                                                      components::logical_plan::drop_target_kind::collection));
-        auto cursor = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
+        auto cursor =
+            dispatcher->execute_plan(session,
+                                     components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});
         return store_cursor(std::move(cursor));
     } catch (const std::exception& ex) {
         return exception_cursor(pod_space, ex);
@@ -309,14 +309,13 @@ extern "C" int32_t cursor_size(cursor_ptr ptr) {
 
 extern "C" int32_t cursor_column_count(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
-    return static_cast<int32_t>(storage->cursor->chunk_data().column_count());
+    return static_cast<int32_t>(storage->cursor->column_count());
 }
 
 extern "C" int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index) {
     try {
         auto storage = convert_cursor(ptr);
-        const auto& chunk = storage->cursor->chunk_data();
-        auto types = chunk.types();
+        const auto& types = storage->cursor->type_data();
         if (column_index < 0 || static_cast<size_t>(column_index) >= types.size()) {
             return -1;
         }
@@ -359,8 +358,7 @@ extern "C" error_message cursor_get_error(cursor_ptr ptr) {
 extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
     try {
         auto storage = convert_cursor(ptr);
-        const auto& chunk = storage->cursor->chunk_data();
-        auto types = chunk.types();
+        const auto& types = storage->cursor->type_data();
         if (static_cast<size_t>(column_index) < types.size()) {
             auto name = types[static_cast<size_t>(column_index)].alias();
             char* str_ptr = new char[name.size() + 1];
@@ -375,22 +373,23 @@ extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
 
 extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t column_index) {
     auto storage = convert_cursor(ptr);
-    const auto& chunk = storage->cursor->chunk_data();
+    auto& cursor = *storage->cursor;
 
-    if (static_cast<size_t>(row_index) >= chunk.size() || static_cast<size_t>(column_index) >= chunk.column_count()) {
+    if (row_index < 0 || column_index < 0 || static_cast<size_t>(row_index) >= cursor.size() ||
+        static_cast<size_t>(column_index) >= cursor.column_count()) {
         return nullptr;
     }
 
     auto value_storage = std::make_unique<value_storage_t>();
     value_storage->state = state_t::created;
-    value_storage->value = chunk.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index));
+    // value() spans the result batch — it locates the chunk owning the global row.
+    value_storage->value = cursor.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index));
     return reinterpret_cast<void*>(value_storage.release());
 }
 
 extern "C" value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index, string_view_t column_name) {
     auto storage = convert_cursor(ptr);
-    const auto& chunk = storage->cursor->chunk_data();
-    auto types = chunk.types();
+    const auto& types = storage->cursor->type_data();
 
     std::string name(column_name.data, column_name.size);
     for (size_t col = 0; col < types.size(); ++col) {

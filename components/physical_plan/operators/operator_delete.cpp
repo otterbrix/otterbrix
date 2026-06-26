@@ -146,16 +146,18 @@ namespace components::operators {
 
     core::error_t operator_delete::consume_join_batch_(pipeline::context_t* pipeline_context,
                                                        const vector::data_chunk_t& chunk_left,
-                                                       const vector::data_chunk_t& chunk_right) {
+                                                       const chunks_vector_t& right_chunks) {
         // DELETE ... USING shared core (R6: one implementation, two entry points).
         // Probes ONE LEFT (target) scan batch against the fully-materialized RIGHT
-        // (USING) build chunk: a semi-join (a target row is deleted once regardless
+        // (USING) build chunks: a semi-join (a target row is deleted once regardless
         // of how many USING rows match). Per matched LEFT row it stages the SAME
         // bounded state the simple path does — matched ABSOLUTE row-ids in modified_,
         // the matched OLD left rows + their ids for the index mirror, and (per batch,
         // gathered in lockstep) the projected RETURNING rows from the matched
-        // left+right pair. push() calls it per LEFT batch. await_async_and_resume
-        // drains it all.
+        // left+right pair. The RIGHT side is taken PER-CHUNK (chunks_vector_t),
+        // never merged into one data_chunk_t — a USING/build table > DEFAULT_VECTOR_
+        // CAPACITY would overflow a single chunk's capacity assert. push() calls it
+        // per LEFT batch. await_async_and_resume drains it all.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -163,7 +165,15 @@ namespace components::operators {
         }
         const bool collect_returning = !returning_.empty();
         auto types_left = chunk_left.types();
-        auto types_right = chunk_right.types();
+        // Right column types come from the first non-empty right chunk (every chunk
+        // shares the build-side schema); an all-empty build side yields no matches.
+        std::pmr::vector<types::complex_logical_type> types_right(resource_);
+        for (const auto& rc : right_chunks) {
+            if (rc.size() > 0) {
+                types_right = rc.types();
+                break;
+            }
+        }
 
         auto predicate = expression_ ? predicates::create_predicate(resource_,
                                                                     pipeline_context->function_registry,
@@ -187,40 +197,52 @@ namespace components::operators {
         // target batch can match far more rows than the right chunk holds (every left
         // row joins the same handful of right rows), so an indexing-copy whose
         // source_count exceeds the right chunk size is invalid — copy the chosen right
-        // row into slot `index` directly instead.
+        // row into slot `index` directly instead. Bounded by chunk_left.size()
+        // (<=DEFAULT_VECTOR_CAPACITY): the semi-join takes at most one right row per
+        // left row.
         data_chunk_t affected_right(resource_, types_right, chunk_left.size());
 
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
-            for (size_t j = 0; j < chunk_right.size(); j++) {
-                auto check_result = predicate->check(chunk_left, chunk_right, i, j);
-                if (check_result.has_error()) {
-                    return check_result.error();
-                }
-                if (!check_result.value()) {
+            bool row_matched = false;
+            for (const auto& chunk_right : right_chunks) {
+                if (chunk_right.size() == 0) {
                     continue;
                 }
-                // Storage / index delete keys on the ABSOLUTE table row id of the
-                // matched left row, NOT the left-chunk loop index — the two diverge
-                // once the table has gaps, multiple row groups, or a non-zero
-                // row-group start. Mirror the simple branch's DICTIONARY fallback.
-                int64_t abs_id;
-                if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                    abs_id = static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
-                } else {
-                    abs_id = chunk_left.row_ids.data<int64_t>()[i];
-                }
-                batch_ids.data<int64_t>()[index] = abs_id;
-                matched_indexing.set_index(index, i);
-                if (collect_returning) {
-                    for (size_t k = 0; k < chunk_right.column_count(); ++k) {
-                        vector::vector_ops::copy(chunk_right.data[k], affected_right.data[k], j + 1, j, index);
+                for (size_t j = 0; j < chunk_right.size(); j++) {
+                    auto check_result = predicate->check(chunk_left, chunk_right, i, j);
+                    if (check_result.has_error()) {
+                        return check_result.error();
                     }
+                    if (!check_result.value()) {
+                        continue;
+                    }
+                    // Storage / index delete keys on the ABSOLUTE table row id of the
+                    // matched left row, NOT the left-chunk loop index — the two diverge
+                    // once the table has gaps, multiple row groups, or a non-zero
+                    // row-group start. Mirror the simple branch's DICTIONARY fallback.
+                    int64_t abs_id;
+                    if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
+                        abs_id = static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
+                    } else {
+                        abs_id = chunk_left.row_ids.data<int64_t>()[i];
+                    }
+                    batch_ids.data<int64_t>()[index] = abs_id;
+                    matched_indexing.set_index(index, i);
+                    if (collect_returning) {
+                        for (size_t k = 0; k < chunk_right.column_count(); ++k) {
+                            vector::vector_ops::copy(chunk_right.data[k], affected_right.data[k], j + 1, j, index);
+                        }
+                    }
+                    index++;
+                    vector::validate_chunk_capacity(affected_right, index);
+                    // Semi-join: stop after the first matching USING row.
+                    row_matched = true;
+                    break;
                 }
-                index++;
-                vector::validate_chunk_capacity(affected_right, index);
-                // Semi-join: stop after the first matching USING row.
-                break;
+                if (row_matched) {
+                    break;
+                }
             }
         }
         if (index == 0) {
@@ -290,7 +312,7 @@ namespace components::operators {
         // USING-join shape: probe the LEFT batch against the materialized RIGHT
         // (USING) build chunk; otherwise the simple predicate-scan fold.
         if (right_ && right_->output()) {
-            return consume_join_batch_(ctx, input, right_->output()->data_chunk());
+            return consume_join_batch_(ctx, input, right_->output()->chunks());
         }
         return consume_batch_(ctx, input);
     }
@@ -351,8 +373,10 @@ namespace components::operators {
         // disk actor (no per-column data), so the translation itself isn't
         // fed downstream — this is purely a diagnostic + wiring hook for
         // future metadata-aware delete paths (e.g. index-only deletes).
-        if (resolved_metadata_.has_value() && left_ && left_->output()) {
-            auto& scan_chunk = left_->output()->data_chunk();
+        if (resolved_metadata_.has_value() && left_ && left_->output() && !left_->output()->chunks().empty()) {
+            // Schema is identical across chunks, so the first chunk drives the
+            // alias/translation diagnostic.
+            auto& scan_chunk = left_->output()->chunks().front();
             if (scan_chunk.column_count() > 0) {
                 auto translation = build_column_key_translation(*resolved_metadata_, scan_chunk);
                 for (std::size_t i = 0; i < translation.size(); ++i) {
@@ -414,17 +438,35 @@ namespace components::operators {
         //    SIMPLE path via consume_batch_ (push()), the USING-join path in its
         //    match loop. So the index delete_rows always receives the matched rows
         //    paired with their own ids — never the first-N scan rows — even when
-        //    streaming leaves left_->output() empty.
+        //    streaming leaves left_->output() empty. delete_rows takes the staged
+        //    chunks as a chunks_vector_t (multi-chunk index I/O); index_old_chunks_
+        //    already holds ≤DEFAULT_VECTOR_CAPACITY-sized batches aligned to
+        //    index_old_row_ids_.
         if (ctx->index_address != actor_zeta::address_t::empty_address() && !index_old_chunks_.empty()) {
-            auto old_data = make_operator_data(resource_, std::move(index_old_chunks_));
-            auto& merged = old_data->data_chunk();
-            auto idx_data = std::make_unique<data_chunk_t>(resource_, merged.types(), merged.size());
-            merged.copy(*idx_data, 0);
+            // Send an OWNED deep copy of the staged old rows across the mailbox. The
+            // fk_cascade snapshot above built constraint_input_ from partial_copy()
+            // slices of these same chunks — those slices SHARE buffers (shared_ptr)
+            // with index_old_chunks_ (vector_t slice = reference(other)). Moving
+            // index_old_chunks_ into the manager_index actor would put a buffer on a
+            // mailbox while a retained executor object (constraint_input_) still owns
+            // it. Deep-copy each (<=DEFAULT_VECTOR_CAPACITY) chunk into fresh FLAT
+            // vectors instead, leaving index_old_chunks_/constraint_input_ entirely
+            // executor-owned. index_old_row_ids_ carries no shared buffers, so it is
+            // moved as before; the copied chunks stay aligned to it row-for-row.
+            chunks_vector_t index_old_copy(resource_);
+            index_old_copy.reserve(index_old_chunks_.size());
+            for (const auto& c : index_old_chunks_) {
+                data_chunk_t owned(resource_, c.types(), c.size() == 0 ? 1 : c.size());
+                if (c.size() > 0) {
+                    c.copy(owned, 0);
+                }
+                index_old_copy.emplace_back(std::move(owned));
+            }
             auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::delete_rows,
                                                exec_ctx,
                                                table_oid_,
-                                               std::move(idx_data),
+                                               std::move(index_old_copy),
                                                std::move(index_old_row_ids_));
             co_await std::move(ixf);
         }
@@ -446,9 +488,25 @@ namespace components::operators {
                                              ctx->session,
                                              table_oid_);
             auto types = co_await std::move(tf);
-            data_chunk_t chunk(resource_, types, modified_size);
-            chunk.set_cardinality(modified_size);
-            set_output(make_operator_data(resource_, std::move(chunk)));
+            // The result carries only the affected-row count as cardinality (no row data),
+            // so emit it as a batch of ≤DEFAULT_VECTOR_CAPACITY chunks — a single chunk
+            // cannot exceed one vector's worth of rows.
+            const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
+            chunks_vector_t batches(resource_);
+            if (modified_size == 0) {
+                data_chunk_t chunk(resource_, types, 1);
+                chunk.set_cardinality(0);
+                batches.emplace_back(std::move(chunk));
+            } else {
+                batches.reserve((modified_size + cap - 1) / cap);
+                for (uint64_t base = 0; base < modified_size; base += cap) {
+                    const uint64_t window = std::min<uint64_t>(cap, modified_size - base);
+                    data_chunk_t chunk(resource_, types, window);
+                    chunk.set_cardinality(window);
+                    batches.emplace_back(std::move(chunk));
+                }
+            }
+            set_output(make_operator_data(resource_, std::move(batches)));
         }
         mark_executed();
     }

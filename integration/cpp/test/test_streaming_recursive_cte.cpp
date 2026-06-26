@@ -88,8 +88,8 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::fixpoint_streams_and_is_co
                         "SELECT name FROM hierarchy ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "CEO");
-        REQUIRE(cur->chunk_data().value(0, 4).value<std::string_view>() == "Designer");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "CEO");
+        REQUIRE(cur->value(0, 4).value<std::string_view>() == "Designer");
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
     // The anchor sub-plan + each recursive-term pass are streamed sub-plans, AND the
@@ -159,8 +159,8 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::subtree_and_depth_stream")
                         "SELECT name FROM subtree ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "VP Eng");
-        REQUIRE(cur->chunk_data().value(0, 1).value<std::string_view>() == "Engineer");
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "VP Eng");
+        REQUIRE(cur->value(0, 1).value<std::string_view>() == "Engineer");
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
     REQUIRE(runs_after > runs_before);

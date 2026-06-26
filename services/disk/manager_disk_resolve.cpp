@@ -7,7 +7,7 @@ namespace services::disk {
     using namespace detail;
 
     // Every catalog read here goes through scan_table → agent-0's
-    // storage_scan_batched_inner (catalog oids route to agent-0). Reading via the
+    // storage_scan_inner (catalog oids route to agent-0). Reading via the
     // mailbox — not a borrowed storage_entry_sync pointer — serialises against
     // agent-0's compact path (checkpoint/vacuum/maybe_cleanup_inner) running on the
     // scheduler_disk_ threads, avoiding a borrowed-pointer race. transaction_data{}
@@ -33,7 +33,7 @@ namespace services::disk {
             co_return empty;
         }
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                              &agent_disk_t::storage_scan_batched_inner,
+                                                              &agent_disk_t::storage_scan_inner,
                                                               table_oid,
                                                               std::move(filter),
                                                               int64_t{-1},

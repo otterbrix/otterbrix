@@ -88,9 +88,11 @@ namespace services::wal {
         // M1.1 truncation/replay-gate invariant.
         unique_future<void> run_auto_checkpoint(session_id_t session);
 
+        // Writes ONE physical-insert record covering [row_start, row_start + row_count).
+        // The chunks are concatenated into a single payload in vector order.
         unique_future<wal::id_t> write_physical_insert(session_id_t session,
                                                        components::catalog::oid_t table_oid,
-                                                       std::unique_ptr<components::vector::data_chunk_t> data_chunk,
+                                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
                                                        uint64_t row_start,
                                                        uint64_t row_count,
                                                        uint64_t txn_id,
@@ -103,10 +105,13 @@ namespace services::wal {
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid);
 
+        // Writes ONE physical-update record. row_ids is the flat list of updated
+        // storage row-ids; new_data chunks are concatenated into a single payload in
+        // vector order and must total `count` rows aligned to row_ids.
         unique_future<wal::id_t> write_physical_update(session_id_t session,
                                                        components::catalog::oid_t table_oid,
                                                        std::pmr::vector<int64_t> row_ids,
-                                                       std::unique_ptr<components::vector::data_chunk_t> new_data,
+                                                       std::pmr::vector<components::vector::data_chunk_t> new_data,
                                                        uint64_t count,
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid);

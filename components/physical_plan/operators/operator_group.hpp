@@ -191,9 +191,12 @@ namespace components::operators {
         // typed hash + typed verify for single- AND multi-column keys.
         vector::data_chunk_t make_key_probe(const vector::data_chunk_t& input);
 
-        // Materializes the accumulated group table into the result chunk (key columns
-        // + finalized aggregates), runs post-aggregate arithmetic + HAVING.
-        vector::data_chunk_t materialize_groups(pipeline::context_t* pipeline_context);
+        // Materializes the accumulated group table into <=DEFAULT_VECTOR_CAPACITY-group
+        // result chunks appended to `out` (key columns + finalized aggregates), running
+        // post-aggregate arithmetic + HAVING per slice. Slicing here (never building a
+        // chunk with capacity > 1024) is what keeps the data_chunk_t ctor invariant for
+        // an unbounded number of groups. Errors are reported via set_error()/has_error().
+        void materialize_groups(pipeline::context_t* pipeline_context, chunks_vector_t& out);
 
         // Builds the single-row result for a global aggregate (no GROUP BY keys) over
         // an EMPTY input — e.g. SELECT COUNT(*) FROM empty_table.

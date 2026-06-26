@@ -85,7 +85,7 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM MatchDb.t WHERE name LIKE 'match%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kExpectedMatches));
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kExpectedMatches));
     }
 }
 
@@ -244,13 +244,53 @@ TEST_CASE("integration::cpp::streaming_match::delete_where_in_group_subquery_lan
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
     {
         auto cur = exec(dispatcher, "SELECT id FROM SinkDb.emp WHERE dept_id = 3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 6); // dave
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 6); // dave
+    }
+}
+
+TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does_not_overflow") {
+    // REGRESSION (defect 3): DELETE ... USING where the USING/build table holds
+    // > DEFAULT_VECTOR_CAPACITY (1024) rows. The build side materializes into many
+    // <=1024-row chunks; the pre-fix push() fed right_->output()->data_chunk(),
+    // which merge_chunks() into ONE data_chunk_t sized to the TOTAL row count and
+    // aborted on the capacity<=1024 ctor assert. After the fix consume_join_batch_
+    // iterates the build side per chunk, so the delete lands.
+    auto config = test_create_config("/tmp/test_streaming_match_delete_using_large");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(exec(dispatcher, "CREATE DATABASE BigDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE BigDb.target (id bigint, k bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE BigDb.using_tbl (k bigint);")->is_success());
+    // Target: 3 rows keyed 0,1,2. USING: 2000 rows (> 1024) all keyed 1, so the
+    // build side spans multiple chunks and joins only the single target row k=1.
+    REQUIRE(exec(dispatcher,
+                 "INSERT INTO BigDb.target (id, k) VALUES (0,0), (1,1), (2,2);")
+                ->is_success());
+    constexpr unsigned kBuildRows = 2000;
+    for (unsigned i = 0; i < kBuildRows; ++i) {
+        REQUIRE(exec(dispatcher, "INSERT INTO BigDb.using_tbl (k) VALUES (1);")->is_success());
+    }
+    {
+        auto cur = exec(dispatcher,
+                        "DELETE FROM BigDb.target USING BigDb.using_tbl "
+                        "WHERE BigDb.target.k = BigDb.using_tbl.k;");
+        INFO("DELETE USING large-build error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // only the k=1 target row, deleted once (semi-join)
+    }
+    {
+        auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM BigDb.target;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2); // k=0 and k=2 remain
     }
 }
 
@@ -280,11 +320,11 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filt
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
     }
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp WHERE name LIKE 'a%';");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 0);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 0);
     }
 }

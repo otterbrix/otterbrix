@@ -27,18 +27,17 @@ namespace components::operators {
         components::logical_plan::index_type preferred_index_type() const { return preferred_index_type_; }
         const logical_plan::limit_t& limit() const { return limit_; }
 
-        // --- Push-based streaming pipeline source (WINDOWED point-fetch, bounded) ---
+        // --- Push-based streaming pipeline source (buffered batch point-fetch) ---
         // The index search is ONE-SHOT — it returns the whole matched row-id set in a single
-        // future — so this source materializes the ids ONCE (the FIRST source_next call), applies
-        // OFFSET/LIMIT to a [pos_, end_) window over them, and then WINDOWS the per-row-id
-        // storage_fetch: each subsequent call fetches exactly one ≤ DEFAULT_VECTOR_CAPACITY slice
-        // of ids and returns it as ONE chunk (no split). Peak fetch memory is one window, not the
-        // whole matched set. The fetched chunk carries the absolute row_ids (the agent stamps them),
-        // so a downstream DELETE/UPDATE/index sees the same ids the materialized path produced.
-        //   The N sequential cross-actor co_awaits (one index search + one fetch per window) live in
-        // this NESTED operator coroutine (driven by co_await from execute_pipeline), not in a
-        // behavior() handler, so the actor-zeta single-slot awaited continuation is
-        // republished+cleared between sequential awaits — no lost-wakeup.
+        // future — so this source materializes the ids ONCE (the FIRST source_next call) and applies
+        // OFFSET/LIMIT to a [pos_, end_) window over them. It then issues ONE storage_fetch for the
+        // whole window; the disk agent batches the reply into ≤ DEFAULT_VECTOR_CAPACITY chunks (each
+        // stamped with its absolute row_ids, so a downstream DELETE/UPDATE/index sees the same ids the
+        // materialized path produced), which this source buffers in batch_ and emits one-chunk-per-call.
+        //   The FIRST call's sequential cross-actor co_awaits (index search + storage_types + the one
+        // window storage_fetch) live in this NESTED operator coroutine (driven by co_await from
+        // execute_pipeline), not in a behavior() handler, so the actor-zeta single-slot awaited
+        // continuation is republished+cleared between sequential awaits — no lost-wakeup.
         //   index_scan is built ONLY when create_plan_match_ proves an index exists on a real table
         // (can_use_index), so table_oid_ is always valid in practice; the INVALID_OID sentinel is a
         // degenerate shape that source_next drains to an empty guard. role() is therefore
@@ -51,12 +50,15 @@ namespace components::operators {
         // one-shot index search from scratch (recursive-CTE recursive term, per iteration).
         void reset_pipeline_state() noexcept override {
             opened_ = false;
+            fetched_ = false;
             drained_ = false;
             emitted_any_ = false;
             pos_ = 0;
             end_ = 0;
             row_ids_vec_.clear();
             guard_types_.clear();
+            batch_.clear();
+            batch_pos_ = 0;
         }
 
     private:
@@ -65,14 +67,11 @@ namespace components::operators {
         // no index service or the search matched nothing, leaves an empty window.
         actor_zeta::unique_future<void> open_index_window(pipeline::context_t* ctx);
 
-        // Fetch the absolute-row-id window [start, start+count) as ONE chunk via the existing
-        // per-row-id storage_fetch handler (no new agent_disk handler). On a null fetch reply,
-        // returns a schema'd 0-row chunk via storage_types (await). count must be > 0.
-        actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
-        fetch_window(pipeline::context_t* ctx, size_t start, size_t count);
-
-        // Schema'd 0-row chunk for the empty/drained case (storage_types await).
-        actor_zeta::unique_future<vector::data_chunk_t> make_empty_chunk(pipeline::context_t* ctx);
+        // Fetch the whole matched window [pos_, end_) in ONE storage_fetch. The disk agent batches the
+        // reply into ≤ DEFAULT_VECTOR_CAPACITY chunks (each stamped with its absolute row_ids), which
+        // source_next buffers in batch_. An empty window yields an empty vector.
+        actor_zeta::unique_future<std::pmr::vector<vector::data_chunk_t>>
+        fetch_matched_window(pipeline::context_t* ctx);
 
         components::catalog::oid_t table_oid_;
         const expressions::key_t key_;
@@ -81,22 +80,29 @@ namespace components::operators {
         const components::logical_plan::index_type preferred_index_type_;
         const logical_plan::limit_t limit_;
 
-        // Windowed point-fetch cursor state (mirrors full_scan's source cursor):
+        // Buffered point-fetch state:
         //   opened_   : false until the first source_next runs open_index_window (the one-shot
         //               index search + OFFSET/LIMIT window computation).
+        //   fetched_  : false until the first source_next issues the whole-window storage_fetch.
         //   row_ids_vec_ : the materialized matched row-id set (the one-shot search result).
-        //   pos_ / end_  : the live [pos_, end_) window cursor over row_ids_vec_ AFTER offset/limit.
-        //   drained_  : pos_ reached end_ ⇒ source exhausted.
+        //   pos_ / end_  : the [pos_, end_) window over row_ids_vec_ AFTER offset/limit (the fetch range).
+        //   batch_ / batch_pos_ : the disk-batched chunks of the window + the read cursor over them.
+        //   drained_  : batch_ exhausted ⇒ source exhausted.
         //   emitted_any_ / guard_types_: if the scan drains having produced zero rows, emit ONE
         //               schema'd 0-row guard chunk (scalar aggregate COUNT=0 / OUTER-join NULL-pad),
         //               then the 0-column drain sentinel.
         bool opened_{false};
+        bool fetched_{false};
         bool drained_{false};
         bool emitted_any_{false};
         size_t pos_{0};
         size_t end_{0};
         std::pmr::vector<int64_t> row_ids_vec_{resource_};
         std::pmr::vector<types::complex_logical_type> guard_types_{resource_};
+        // Buffered fetched batches: the single whole-window storage_fetch returns the disk-batched
+        // chunks here; source_next emits them one-per-call.
+        std::pmr::vector<vector::data_chunk_t> batch_{resource_};
+        size_t batch_pos_{0};
     };
 
 } // namespace components::operators

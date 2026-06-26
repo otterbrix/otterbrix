@@ -71,14 +71,19 @@ namespace components::operators {
         co_return;
     }
 
-    // Fetch the absolute-row-id window [start, start+count) as ONE chunk via the existing per-row-id
-    // storage_fetch handler. Caller guarantees count > 0. Null reply ⇒ schema'd 0-row chunk.
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
-    index_scan::fetch_window(pipeline::context_t* ctx, size_t start, size_t count) {
-        // Build the row_ids vector for this window (absolute ids — the agent stamps them onto the
-        // fetched chunk's row_ids so a downstream DELETE/UPDATE/index sees the right rows).
+    // Fetch the whole matched window [pos_, end_) in ONE storage_fetch. The disk agent windows the
+    // request into ≤ DEFAULT_VECTOR_CAPACITY chunks and stamps each chunk's absolute row_ids (so a
+    // downstream DELETE/UPDATE/index sees the right rows), returning them as a vector that source_next
+    // buffers. An empty window (or an OID this agent does not own) yields an empty vector.
+    actor_zeta::unique_future<std::pmr::vector<vector::data_chunk_t>>
+    index_scan::fetch_matched_window(pipeline::context_t* ctx) {
+        const size_t count = (end_ > pos_) ? (end_ - pos_) : 0;
+        if (count == 0) {
+            co_return std::pmr::vector<vector::data_chunk_t>{resource_};
+        }
+        // Build the absolute-row-id vector for the whole window.
         vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
-        std::memcpy(row_ids.data(), row_ids_vec_.data() + start, count * sizeof(int64_t));
+        std::memcpy(row_ids.data(), row_ids_vec_.data() + pos_, count * sizeof(int64_t));
 
         auto [_f, ff] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::storage_fetch,
@@ -86,30 +91,18 @@ namespace components::operators {
                                          table_oid_,
                                          std::move(row_ids),
                                          count);
-        auto data = co_await std::move(ff);
-        if (data) {
-            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(*data));
-        }
-        co_return core::result_wrapper_t<vector::data_chunk_t>(co_await make_empty_chunk(ctx));
+        co_return co_await std::move(ff);
     }
 
-    actor_zeta::unique_future<vector::data_chunk_t> index_scan::make_empty_chunk(pipeline::context_t* ctx) {
-        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_types,
-                                         ctx->session,
-                                         table_oid_);
-        auto types = co_await std::move(tf);
-        co_return vector::data_chunk_t{resource_, types, 0};
-    }
-
-    // --- Push-based streaming pipeline source (WINDOWED point-fetch) ----------------------------
-    // FIRST call: open_index_window (await #1: the one-shot index search) + compute [pos_, end_).
-    // EACH call: fetch the next ≤ DEFAULT_VECTOR_CAPACITY window [pos_, ..) (await #2: storage_fetch)
-    //   and return it as ONE chunk; advance pos_.
-    // DRAIN: pos_ >= end_ ⇒ if nothing was emitted, ONE schema'd 0-row guard (storage_types await),
-    //   else the 0-column drain sentinel.
-    // Each call does at most ONE cross-actor fetch await; the N awaits are sequential across calls in
-    // this nested operator coroutine (driven by execute_pipeline), so the single-slot awaited
+    // --- Push-based streaming pipeline source (buffered batch point-fetch) ----------------------
+    // FIRST call: open_index_window (await #1: the one-shot index search) + cache schema (await #2:
+    //   storage_types) + ONE storage_fetch over the whole [pos_, end_) window (await #3). The disk
+    //   agent batches the reply into ≤ DEFAULT_VECTOR_CAPACITY chunks, buffered in batch_.
+    // EACH call: emit the next buffered chunk (no await); advance batch_pos_.
+    // DRAIN: batch_ exhausted ⇒ if nothing was emitted, ONE schema'd 0-row guard (scalar aggregate
+    //   COUNT=0 / OUTER-join NULL-pad), else the 0-column drain sentinel.
+    // The FIRST call's sequential cross-actor awaits live in this nested operator coroutine (driven by
+    // co_await from execute_pipeline), not a behavior() handler, so the single-slot awaited
     // continuation is republished+cleared between awaits — no lost-wakeup.
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     index_scan::source_next(pipeline::context_t* ctx) {
@@ -129,31 +122,31 @@ namespace components::operators {
             guard_types_ = co_await std::move(tf);
         }
 
-        // DRAIN: the window is exhausted (or never had rows).
-        if (pos_ >= end_) {
-            drained_ = true;
-            if (!emitted_any_) {
-                // ONE schema'd 0-row guard so a scalar aggregate emits COUNT=0 and an OUTER join
-                // NULL-pads, then the 0-column sentinel next call.
-                emitted_any_ = true;
-                co_return core::result_wrapper_t<vector::data_chunk_t>(
-                    vector::data_chunk_t{resource_, guard_types_, 0});
-            }
-            co_return core::result_wrapper_t<vector::data_chunk_t>(
-                vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0});
+        // FIRST fetch: pull the whole matched window in ONE storage_fetch; the disk batches it into
+        // ≤ DEFAULT_VECTOR_CAPACITY chunks buffered in batch_. Subsequent calls just drain the buffer.
+        if (!fetched_) {
+            fetched_ = true;
+            batch_ = co_await fetch_matched_window(ctx);
+            batch_pos_ = 0;
         }
 
-        // Fetch the next window (≤ DEFAULT_VECTOR_CAPACITY ids) as ONE chunk.
-        const size_t count = std::min<size_t>(vector::DEFAULT_VECTOR_CAPACITY, end_ - pos_);
-        auto fetched = co_await fetch_window(ctx, pos_, count);
-        if (fetched.has_error()) {
-            set_error(fetched.error());
-            mark_failed();
-            co_return core::result_wrapper_t<vector::data_chunk_t>(fetched.error());
+        // Emit the next buffered chunk.
+        if (batch_pos_ < batch_.size()) {
+            emitted_any_ = true;
+            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(batch_[batch_pos_++]));
         }
-        pos_ += count;
-        emitted_any_ = true;
-        co_return std::move(fetched);
+
+        // Buffer exhausted ⇒ drain.
+        drained_ = true;
+        if (!emitted_any_) {
+            // ONE schema'd 0-row guard so a scalar aggregate emits COUNT=0 and an OUTER join
+            // NULL-pads, then the 0-column sentinel next call.
+            emitted_any_ = true;
+            co_return core::result_wrapper_t<vector::data_chunk_t>(
+                vector::data_chunk_t{resource_, guard_types_, 0});
+        }
+        co_return core::result_wrapper_t<vector::data_chunk_t>(
+            vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0});
     }
 
 } // namespace components::operators

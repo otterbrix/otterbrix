@@ -41,10 +41,10 @@ namespace services::planner::impl {
         if (join_node->algo() == join_algo::hash) {
             components::operators::operator_ptr hash_join =
                 boost::intrusive_ptr(new components::operators::operator_hash_join_t(resource,
-                                                                                    log.clone(),
-                                                                                    join_node->type(),
-                                                                                    join_node->left_col(),
-                                                                                    join_node->right_col()));
+                                                                                     log.clone(),
+                                                                                     join_node->type(),
+                                                                                     join_node->left_col(),
+                                                                                     join_node->right_col()));
             // Push the LIMIT down to whichever side an outer join preserves. The hash
             // path covers inner/left/right/full only (cross never carries an equi-key).
             auto hash_limit_left = components::logical_plan::limit_t::unlimit();

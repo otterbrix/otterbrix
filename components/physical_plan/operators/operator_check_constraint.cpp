@@ -237,6 +237,10 @@ namespace components::operators {
         if (!left_)
             return;
 
+        const auto has_columns = [](const operator_data_ptr& data) {
+            return data && !data->chunks().empty() && data->chunks().front().column_count() > 0;
+        };
+
         // Prefer the DML child's snapshot of the just-written rows (populated in
         // BOTH paths, the only source available when streaming). Fall back to the
         // legacy lookup (the DML's output_, then its data source) for any caller
@@ -245,10 +249,10 @@ namespace components::operators {
         if (left_->constraint_input() && left_->constraint_input()->size() > 0) {
             data_src = left_->constraint_input();
         }
-        if (!data_src || data_src->data_chunk().column_count() == 0) {
+        if (!has_columns(data_src)) {
             data_src = left_->output();
         }
-        if (!data_src || data_src->data_chunk().column_count() == 0) {
+        if (!has_columns(data_src)) {
             if (left_->left() && left_->left()->output()) {
                 data_src = left_->left()->output();
             }
@@ -259,60 +263,67 @@ namespace components::operators {
         // exactly as the legacy on_execute did.
         output_ = left_->output();
 
-        if (!data_src || data_src->data_chunk().size() == 0)
+        if (!data_src || data_src->size() == 0)
             return;
-        const auto& chunk = data_src->data_chunk();
 
-        // NOT NULL checks.
-        for (const auto& col_name : not_null_columns_) {
-            for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-                if (chunk.data[col].type().alias() != col_name)
-                    continue;
-                for (uint64_t row = 0; row < chunk.size(); ++row) {
-                    if (!chunk.data[col].validity().row_is_valid(row)) {
-                        set_error(core::error_t{
-                            core::error_code_t::other_error,
-                            std::pmr::string{"NOT NULL constraint violated for column: " + col_name, resource_}});
-                        return;
-                    }
-                }
-                break;
+        // Constraints are validated independently on every chunk of the input.
+        for (const auto& chunk : data_src->chunks()) {
+            if (chunk.size() == 0) {
+                continue;
             }
-        }
 
-        // Fixed-ARRAY length checks. A NOT NULL fixed ARRAY column with no DEFAULT cannot
-        // pad a value shorter than its declared size (there is nothing to fill the missing
-        // slots with), so such a value must be rejected here rather than silently dropped
-        // at the append. Validated per column: a single short element fails the operation.
-        for (const auto& [col_name, required_size] : array_size_reqs_) {
-            for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-                if (chunk.data[col].type().alias() != col_name)
-                    continue;
+            // NOT NULL checks.
+            for (const auto& col_name : not_null_columns_) {
+                for (uint64_t col = 0; col < chunk.column_count(); ++col) {
+                    if (chunk.data[col].type().alias() != col_name)
+                        continue;
+                    for (uint64_t row = 0; row < chunk.size(); ++row) {
+                        if (!chunk.data[col].validity().row_is_valid(row)) {
+                            set_error(core::error_t{
+                                core::error_code_t::other_error,
+                                std::pmr::string{"NOT NULL constraint violated for column: " + col_name, resource_}});
+                            return;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // Fixed-ARRAY length checks. A NOT NULL fixed ARRAY column with no DEFAULT cannot
+            // pad a value shorter than its declared size (there is nothing to fill the missing
+            // slots with), so such a value must be rejected here rather than silently dropped
+            // at the append. Validated per column: a single short element fails the operation.
+            for (const auto& [col_name, required_size] : array_size_reqs_) {
+                for (uint64_t col = 0; col < chunk.column_count(); ++col) {
+                    if (chunk.data[col].type().alias() != col_name)
+                        continue;
+                    for (uint64_t row = 0; row < chunk.size(); ++row) {
+                        if (!chunk.data[col].validity().row_is_valid(row))
+                            continue; // NULL handled by the NOT NULL check above
+                        if (chunk.data[col].value(row).children().size() < required_size) {
+                            set_error(core::error_t{
+                                core::error_code_t::other_error,
+                                std::pmr::string{"value for NOT NULL array column '" + col_name + "' has fewer than " +
+                                                     std::to_string(required_size) +
+                                                     " elements and the column has no default to pad from",
+                                                 resource_}});
+                            return;
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // CHECK expression evaluation.
+            for (const auto& [name, pred] : check_predicates_) {
                 for (uint64_t row = 0; row < chunk.size(); ++row) {
-                    if (!chunk.data[col].validity().row_is_valid(row))
-                        continue; // NULL handled by the NOT NULL check above
-                    if (chunk.data[col].value(row).children().size() < required_size) {
+                    auto check_result = pred->check(chunk, row);
+                    if (check_result.has_error() || !check_result.value()) {
                         set_error(
                             core::error_t{core::error_code_t::other_error,
-                                          std::pmr::string{"value for NOT NULL array column '" + col_name +
-                                                               "' has fewer than " + std::to_string(required_size) +
-                                                               " elements and the column has no default to pad from",
-                                                           resource_}});
+                                          std::pmr::string{"CHECK constraint \"" + name + "\" violated", resource_}});
                         return;
                     }
-                }
-                break;
-            }
-        }
-
-        // CHECK expression evaluation.
-        for (const auto& [name, pred] : check_predicates_) {
-            for (uint64_t row = 0; row < chunk.size(); ++row) {
-                auto check_result = pred->check(chunk, row);
-                if (check_result.has_error() || !check_result.value()) {
-                    set_error(core::error_t{core::error_code_t::other_error,
-                                            std::pmr::string{"CHECK constraint \"" + name + "\" violated", resource_}});
-                    return;
                 }
             }
         }

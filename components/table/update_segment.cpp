@@ -325,10 +325,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> update_segment_t::update(uint64_t column_index,
-                                                         vector::vector_t& update,
-                                                         int64_t* ids,
-                                                         uint64_t count,
-                                                         vector::vector_t& base_data) {
+                                                          vector::vector_t& update,
+                                                          int64_t* ids,
+                                                          uint64_t count,
+                                                          vector::vector_t& base_data) {
         auto write_lock = std::unique_lock(m_);
 
         update.flatten(count);

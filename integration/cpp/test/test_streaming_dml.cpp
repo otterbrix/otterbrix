@@ -88,7 +88,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.dst;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
     }
     {
         // Analytic spot-check of the streamed payload: SUM(val) == 2 * sum(0..N-1).
@@ -99,7 +99,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
         auto cur = exec(dispatcher, "SELECT SUM(val) AS s FROM StreamDb.dst;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == expected_sum);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == expected_sum);
     }
 }
 
@@ -134,13 +134,13 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.t;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 3);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 3);
     }
     {
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 20);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 20);
     }
 }
 
@@ -175,7 +175,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 10);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
     }
 }
 
@@ -226,7 +226,7 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.t;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() ==
+        REQUIRE(cur->value(0, 0).value<uint64_t>() ==
                 static_cast<uint64_t>(kRowCount - kThreshold));
     }
     // INDEX CONSISTENCY: a deleted key (id == 5, val 5 < threshold) is gone via the
@@ -240,7 +240,7 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
         auto cur = exec(dispatcher, "SELECT id FROM StreamDb.t WHERE id = 4000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 4000);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 4000);
     }
 }
 
@@ -296,14 +296,14 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 5;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 5 + kBump);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5 + kBump);
     }
     // A non-updated row keeps its original value.
     {
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 3000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3000);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 3000);
     }
     // INDEX CONSISTENCY: the OLD val (5) is gone from the index; the NEW val
     // (5 + kBump) is found. This proves the index mirror's delete-old + insert-new
@@ -317,7 +317,7 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
         auto cur = exec(dispatcher, "SELECT id FROM StreamDb.t WHERE val = " + std::to_string(5 + kBump) + ";");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 5);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
     }
 }
 
@@ -384,7 +384,7 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.child;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
     }
 
     // FK VIOLATION through the streaming path: referencing a missing parent surfaces
@@ -439,7 +439,7 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.items;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
     }
 
     // CHECK VIOLATION through the streaming path: age <= 0 surfaces as an error
@@ -493,11 +493,11 @@ TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.child WHERE parent_id = 1;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 0);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
     }
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.child WHERE parent_id = 2;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount / 2));
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount / 2));
     }
 }

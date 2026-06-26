@@ -124,12 +124,12 @@ TEST_CASE("integration::cpp::streaming_join::left_join_null_padding_content") {
     REQUIRE(cur->size() == 3); // k=1 left-only, k=2, k=3 matched
     // Ordered by lv: row0 lv=10 (k=1, left-only -> right NULL); row1 lv=20 (k=2 -> rv=200);
     // row2 lv=30 (k=3 -> rv=300). Right columns are positions 2 (r.k) and 3 (r.rv).
-    REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
-    REQUIRE(cur->chunk_data().value(3, 0).is_null());
-    REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 2);
-    REQUIRE(cur->chunk_data().value(3, 1).value<int64_t>() == 200);
-    REQUIRE(cur->chunk_data().value(0, 2).value<int64_t>() == 3);
-    REQUIRE(cur->chunk_data().value(3, 2).value<int64_t>() == 300);
+    REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+    REQUIRE(cur->value(3, 0).is_null());
+    REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
+    REQUIRE(cur->value(3, 1).value<int64_t>() == 200);
+    REQUIRE(cur->value(0, 2).value<int64_t>() == 3);
+    REQUIRE(cur->value(3, 2).value<int64_t>() == 300);
 }
 
 TEST_CASE("integration::cpp::streaming_join::cross_join_materialized") {
@@ -203,8 +203,8 @@ TEST_CASE("integration::cpp::streaming_join::no_from_constants_stream") {
         auto cur = exec(dispatcher, "SELECT 2 + 3 AS five, 10 * 5 AS fifty;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 5);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 50);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 50);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
     REQUIRE(runs_after > runs_before); // streamed (no longer the legacy materialize path)
@@ -214,7 +214,7 @@ TEST_CASE("integration::cpp::streaming_join::no_from_constants_stream") {
         auto cur = exec(dispatcher, "SELECT 1 AS one;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 }
 
@@ -245,7 +245,7 @@ TEST_CASE("integration::cpp::streaming_join::union_distinct_sinks") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         for (size_t row = 0; row < 4; ++row) {
-            REQUIRE(cur->chunk_data().value(0, row).value<int64_t>() == static_cast<int64_t>(row));
+            REQUIRE(cur->value(0, row).value<int64_t>() == static_cast<int64_t>(row));
         }
     }
 

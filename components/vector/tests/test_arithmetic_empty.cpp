@@ -46,10 +46,10 @@ TEST_CASE("compute_binary_arithmetic: empty chunk operands, count==0 does not de
     // Without the count==0 guard this dereferences left->type() on a dangling
     // vector → SIGSEGV. Reaching the assertions below proves the guard ran.
     auto out = components::vector::compute_binary_arithmetic(&resource,
-                                                            components::vector::arithmetic_op::multiply,
-                                                            *left,
-                                                            *right,
-                                                            /*count=*/0);
+                                                             components::vector::arithmetic_op::multiply,
+                                                             *left,
+                                                             *right,
+                                                             /*count=*/0);
 
     // A flat numeric result vector of the promoted arithmetic type, carrying no
     // rows (count==0 was requested).

@@ -43,7 +43,7 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->column_count() == 2);
     }
 
     // Second INSERT: same schema
@@ -60,7 +60,7 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->column_count() == 2);
     }
 }
 
@@ -104,7 +104,7 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->column_count() == 2);
     }
 
     // WHERE on 'value' should find only row 4
@@ -113,7 +113,7 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t2 WHERE value = 100;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->column_count() == 2);
     }
 }
 
@@ -141,10 +141,10 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
         auto cur = exec("SELECT * FROM cs_testdb.mt ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().column_count() == 3);
+        REQUIRE(cur->column_count() == 3);
 
         // Locate the two 'val' columns by physical type.
-        const auto& chunk = cur->chunk_data();
+        const auto& chunk = cur->chunks().front();
         int bigint_val = -1, string_val = -1;
         for (size_t c = 0; c < chunk.column_count(); ++c) {
             if (std::string(chunk.data[c].type().alias()) != "val") {
@@ -177,7 +177,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
         auto cur = exec("SELECT id FROM cs_testdb.mt ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 }
 
@@ -219,7 +219,7 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM cs_testdb.t3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->column_count() == 2);
     }
 }
 
@@ -247,51 +247,51 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
         auto cur = exec("SELECT x, j -> 'a' ->> 'b' AS b FROM cs_testdb.j ORDER BY x;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().column_count() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 1);
-        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 10);
+        REQUIRE(cur->column_count() == 2);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 10);
     }
 
     SECTION("->> on a top-level field") {
         auto cur = exec("SELECT j ->> 'x' AS xx FROM cs_testdb.j ORDER BY x;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 9);
-        REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 90);
-        REQUIRE(std::string(cur->chunk_data().data[0].type().alias()) == "xx");
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 9);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 90);
+        REQUIRE(std::string(cur->chunks().front().data[0].type().alias()) == "xx");
     }
 
     SECTION("#>> with dotted path and PG-array path are equivalent") {
         auto dotted = exec("SELECT j #>> 'a.c' AS c FROM cs_testdb.j ORDER BY x;");
         REQUIRE(dotted->is_success());
-        REQUIRE(dotted->chunk_data().value(0, 0).value<int64_t>() == 2);
-        REQUIRE(dotted->chunk_data().value(0, 1).value<int64_t>() == 20);
+        REQUIRE(dotted->value(0, 0).value<int64_t>() == 2);
+        REQUIRE(dotted->value(0, 1).value<int64_t>() == 20);
 
         auto arr = exec("SELECT j #>> '{a,c}' AS c FROM cs_testdb.j ORDER BY x;");
         REQUIRE(arr->is_success());
-        REQUIRE(arr->chunk_data().value(0, 0).value<int64_t>() == 2);
-        REQUIRE(arr->chunk_data().value(0, 1).value<int64_t>() == 20);
+        REQUIRE(arr->value(0, 0).value<int64_t>() == 2);
+        REQUIRE(arr->value(0, 1).value<int64_t>() == 20);
     }
 
     SECTION("jsonb scalar usable in WHERE") {
         auto cur = exec("SELECT x FROM cs_testdb.j WHERE j -> 'a' ->> 'b' = 10;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 90);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 90);
 
         auto cur2 = exec("SELECT x FROM cs_testdb.j WHERE j #>> '{a,c}' = 2;");
         REQUIRE(cur2->is_success());
         REQUIRE(cur2->size() == 1);
-        REQUIRE(cur2->chunk_data().value(0, 0).value<int64_t>() == 9);
+        REQUIRE(cur2->value(0, 0).value<int64_t>() == 9);
     }
 
     SECTION("a chain still ending in -> resolves to a single leaf column") {
         // j -> 'a' -> 'b' : prefix a/b is a leaf -> one column named 'b'
         auto cur = exec("SELECT j -> 'a' -> 'b' FROM cs_testdb.j ORDER BY x;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().column_count() == 1);
-        REQUIRE(std::string(cur->chunk_data().data[0].type().alias()) == "b");
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 10);
+        REQUIRE(cur->column_count() == 1);
+        REQUIRE(std::string(cur->chunks().front().data[0].type().alias()) == "b");
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 10);
     }
 }
 
@@ -322,21 +322,21 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
         auto cur = exec("SELECT qe -> 'a' ->> 'b' AS b FROM cs_testdb.qe WHERE qe ? 'x';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 
     SECTION("?| any-of") {
         auto cur = exec("SELECT qe -> 'a' ->> 'b' AS b FROM cs_testdb.qe WHERE qe ?| '{x}';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 
     SECTION("?& all-of") {
         auto cur = exec("SELECT qe -> 'a' ->> 'b' AS b FROM cs_testdb.qe WHERE qe ?& '{x}';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 
     SECTION("existence on a nested path prefix") {
@@ -363,8 +363,8 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
     };
     auto alias_set = [](const auto& cur) {
         std::set<std::string> s;
-        for (size_t c = 0; c < cur->chunk_data().column_count(); ++c) {
-            s.insert(std::string(cur->chunk_data().data[c].type().alias()));
+        for (size_t c = 0; c < cur->column_count(); ++c) {
+            s.insert(std::string(cur->chunks().front().data[c].type().alias()));
         }
         return s;
     };
@@ -411,8 +411,8 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
     };
     auto alias_set = [](const auto& cur) {
         std::set<std::string> s;
-        for (size_t c = 0; c < cur->chunk_data().column_count(); ++c) {
-            s.insert(std::string(cur->chunk_data().data[c].type().alias()));
+        for (size_t c = 0; c < cur->column_count(); ++c) {
+            s.insert(std::string(cur->chunks().front().data[c].type().alias()));
         }
         return s;
     };
@@ -436,9 +436,9 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
     SECTION("-> to a leaf yields a single rerooted column with the value") {
         auto cur = exec("SELECT je -> 'a' -> 'c' FROM cs_testdb.je;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().column_count() == 1);
-        REQUIRE(std::string(cur->chunk_data().data[0].type().alias()) == "c");
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 2);
+        REQUIRE(cur->column_count() == 1);
+        REQUIRE(std::string(cur->chunks().front().data[0].type().alias()) == "c");
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
     }
 }
 
@@ -466,28 +466,28 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
         auto cur = exec("SELECT id, val::?string FROM cs_testdb.t4 ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().column_count() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).is_null());
-        REQUIRE(cur->chunk_data().value(1, 1).is_null());
-        REQUIRE(cur->chunk_data().value(1, 2).value<std::string_view>() == "hello");
+        REQUIRE(cur->column_count() == 2);
+        REQUIRE(cur->value(1, 0).is_null());
+        REQUIRE(cur->value(1, 1).is_null());
+        REQUIRE(cur->value(1, 2).value<std::string_view>() == "hello");
     }
 
     SECTION("::?bigint selects the bigint variant (string row is NULL)") {
         auto cur = exec("SELECT id, val::?bigint FROM cs_testdb.t4 ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().column_count() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 1);
-        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 2);
-        REQUIRE(cur->chunk_data().value(1, 2).is_null());
+        REQUIRE(cur->column_count() == 2);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 2);
+        REQUIRE(cur->value(1, 2).is_null());
     }
 
     SECTION("::?type works in WHERE") {
         auto cur = exec("SELECT id, val::?bigint FROM cs_testdb.t4 WHERE val::?bigint > 0 ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 1);
-        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 2);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 2);
     }
 
     SECTION("an unselected multi-type reference is an error") {
@@ -511,8 +511,8 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
     };
     auto alias_set = [](const auto& cur) {
         std::set<std::string> s;
-        for (size_t c = 0; c < cur->chunk_data().column_count(); ++c) {
-            s.insert(std::string(cur->chunk_data().data[c].type().alias()));
+        for (size_t c = 0; c < cur->column_count(); ++c) {
+            s.insert(std::string(cur->chunks().front().data[c].type().alias()));
         }
         return s;
     };
@@ -527,15 +527,15 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
         auto cur = exec("SELECT m ->> 'x' FROM cs_testdb.m ORDER BY x;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
     }
 
     SECTION("-> ... ->> resolves a nested single-type leaf") {
         auto cur = exec("SELECT m -> 'a' ->> 'b' FROM cs_testdb.m ORDER BY x;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 100);
-        REQUIRE(cur->chunk_data().value(0, 1).is_null());
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 100);
+        REQUIRE(cur->value(0, 1).is_null());
     }
 
     SECTION("'-' drops every variant of the multi-type field") {
@@ -557,7 +557,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
     SECTION("::? still selects the multi-type variant") {
         auto cur = exec("SELECT v::?bigint FROM cs_testdb.m WHERE x = 1;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 10);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
     }
 }
 
@@ -587,8 +587,8 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
         auto cur = exec("SELECT id FROM cs_testdb.mm WHERE mm ? 'v' ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2); // rows 1 (bigint) and 2 (string); row 3 excluded
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
     }
 
     SECTION("nested '?' over a multi-type leaf") {
@@ -601,17 +601,17 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
         auto cur = exec("SELECT id, mm -> 'a' ->> 'b' ::? bigint AS b FROM cs_testdb.mm ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 100); // row1: bigint a/b
-        REQUIRE(cur->chunk_data().value(1, 1).is_null());               // row2: string variant
-        REQUIRE(cur->chunk_data().value(1, 2).is_null());               // row3: absent
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 100); // row1: bigint a/b
+        REQUIRE(cur->value(1, 1).is_null());               // row2: string variant
+        REQUIRE(cur->value(1, 2).is_null());               // row3: absent
     }
 
     SECTION("'::?' composes onto a jsonb-nav chain (string variant)") {
         auto cur = exec("SELECT id, mm -> 'a' ->> 'b' ::? string AS b FROM cs_testdb.mm ORDER BY id;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(1, 0).is_null());
-        REQUIRE(cur->chunk_data().value(1, 1).value<std::string_view>() == "sb");
-        REQUIRE(cur->chunk_data().value(1, 2).is_null());
+        REQUIRE(cur->value(1, 0).is_null());
+        REQUIRE(cur->value(1, 1).value<std::string_view>() == "sb");
+        REQUIRE(cur->value(1, 2).is_null());
     }
 
     SECTION("scalar nav to a multi-type leaf without ::? is ambiguous") {
@@ -622,7 +622,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
         auto cur = exec("SELECT id FROM cs_testdb.mm WHERE mm -> 'a' ->> 'b' ::? bigint > 50 ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1); // only row 1 (a/b bigint = 100); row 2 is string, row 3 absent
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 }
 
@@ -648,6 +648,6 @@ TEST_CASE("integration::cpp::test_computed_schema::unary_minus_not_jsonb_delete"
     auto cur = exec("SELECT -x FROM cs_testdb.u ORDER BY x;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == -5);
-    REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == -7);
+    REQUIRE(cur->value(0, 0).value<int64_t>() == -5);
+    REQUIRE(cur->value(0, 1).value<int64_t>() == -7);
 }

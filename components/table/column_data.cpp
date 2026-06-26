@@ -453,7 +453,8 @@ namespace components::table {
                 // segment so we can re-point it to disk. state.current is moved to the new segment below, so the
                 // filled segment is no longer referenced by the append state.
                 const uint64_t filled_index = data_.segment_count(l) - 1;
-                auto created = apend_transient_segment(l, state.current->start + static_cast<int64_t>(state.current->count));
+                auto created =
+                    apend_transient_segment(l, state.current->start + static_cast<int64_t>(state.current->count));
                 if (created.has_error()) {
                     return created; // out_of_memory
                 }
@@ -588,9 +589,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::update(uint64_t column_index,
-                                                      vector::vector_t& update_vector,
-                                                      int64_t* row_ids,
-                                                      uint64_t update_count) {
+                                                       vector::vector_t& update_vector,
+                                                       int64_t* row_ids,
+                                                       uint64_t update_count) {
         vector::vector_t base_vector(resource_, type_, count_);
         column_scan_state state;
         auto fetch_count = fetch(state, row_ids[0], base_vector);
@@ -600,10 +601,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                            vector::vector_t& update_vector,
-                                                            int64_t* row_ids,
-                                                            uint64_t update_count,
-                                                            uint64_t) {
+                                                              vector::vector_t& update_vector,
+                                                              int64_t* row_ids,
+                                                              uint64_t update_count,
+                                                              uint64_t) {
         return column_data_t::update(column_path[0], update_vector, row_ids, update_count);
     }
 
@@ -696,8 +697,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::transition_segment_to_disk(std::unique_lock<std::mutex>& l,
-                                                                          uint64_t segment_index,
-                                                                          storage::partial_block_manager_t& pbm) {
+                                                                           uint64_t segment_index,
+                                                                           storage::partial_block_manager_t& pbm) {
         // In-memory tables have no backing store, so their segments must stay managed (no disk copy ->
         // clean OOM, never a crash). No-op.
         if (block_manager_.in_memory()) {
@@ -991,10 +992,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::update_internal(uint64_t column_index,
-                                                              vector::vector_t& update_vector,
-                                                              int64_t* row_ids,
-                                                              uint64_t update_count,
-                                                              vector::vector_t& base_vector) {
+                                                                vector::vector_t& update_vector,
+                                                                int64_t* row_ids,
+                                                                uint64_t update_count,
+                                                                vector::vector_t& base_vector) {
         std::lock_guard update_guard(update_lock_);
         if (!updates_) {
             updates_ = std::make_unique<update_segment_t>(*this);

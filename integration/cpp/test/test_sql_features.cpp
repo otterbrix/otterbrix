@@ -55,10 +55,10 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*), COUNT(value) FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().column_count() == 2);
-        REQUIRE(cur->chunk_data().size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 5);
-        REQUIRE(cur->chunk_data().value(1, 0).value<uint64_t>() == 3);
+        REQUIRE(cur->column_count() == 2);
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 5);
+        REQUIRE(cur->value(1, 0).value<uint64_t>() == 3);
     }
 
     INFO("IS NULL") {
@@ -101,7 +101,7 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
                                            "WHERE value IS NOT NULL;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 3);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 3);
     }
 
     INFO("DELETE with IS NULL") {
@@ -454,7 +454,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
             dispatcher->execute_sql(session, "SELECT COUNT(DISTINCT name) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 10);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 10);
     }
 
     INFO("COUNT(DISTINCT category)") {
@@ -463,7 +463,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
                                            "SELECT COUNT(DISTINCT category) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 5);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 5);
     }
 
     INFO("COUNT(DISTINCT) vs COUNT") {
@@ -472,7 +472,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 100);
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == 100);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -480,7 +480,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
                                                "SELECT COUNT(DISTINCT name) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 10);
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == 10);
         }
     }
 }
@@ -647,8 +647,8 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
                                                "WHERE count >= 10 ORDER BY count LIMIT 5;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 5);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 10);
-            REQUIRE(cur->chunk_data().value(1, 4).value<int64_t>() == 14);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 10);
+            REQUIRE(cur->value(1, 4).value<int64_t>() == 14);
         }
     }
 
@@ -680,7 +680,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 5000);
+            REQUIRE(cur->value(0, 0).value<uint64_t>() == 5000);
         }
     }
 }
@@ -849,8 +849,8 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 255);
+        REQUIRE(cur->column_count() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 255);
     }
 
     INFO("SUM over CASE without ELSE (NULL skipped)") {
@@ -860,7 +860,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 255);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 255);
     }
 
     INFO("counter pattern") {
@@ -870,7 +870,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
     }
 
     INFO("multiple branches") {
@@ -883,7 +883,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 11);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
     }
 
     INFO("per-name aggregation") {
@@ -895,11 +895,11 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "GROUP BY name;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->column_count() == 2);
         // Sum across groups: 95+72+0+88+0 = 255.
         int64_t group_sum = 0;
         for (size_t row = 0; row < cur->size(); ++row) {
-            group_sum += cur->chunk_data().value(1, row).value<int64_t>();
+            group_sum += cur->value(1, row).value<int64_t>();
         }
         REQUIRE(group_sum == 255);
     }
@@ -912,7 +912,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 
     // For MIN/MAX/AVG with CASE use ELSE to avoid the NULL skipping (default 0 in unmatched slots)
@@ -924,7 +924,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 72);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 72);
     }
 
     INFO("MAX(CASE WHEN ... THEN col ELSE -1 END) — max over passing rows") {
@@ -935,7 +935,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 95);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 95);
     }
 
     INFO("AVG(CASE WHEN ... THEN col ELSE 0 END) — average over all rows with zero default") {
@@ -946,7 +946,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 51);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 51);
     }
 
     INFO("MIN/MAX/AVG/SUM(CASE) in one query") {
@@ -960,11 +960,11 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 4);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 72);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 95);
-        REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 51);
-        REQUIRE(cur->chunk_data().value(3, 0).value<int64_t>() == 255);
+        REQUIRE(cur->column_count() == 4);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 72);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 95);
+        REQUIRE(cur->value(2, 0).value<int64_t>() == 51);
+        REQUIRE(cur->value(3, 0).value<int64_t>() == 255);
     }
 }
 
@@ -1095,7 +1095,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE d = DATE '2024-03-15';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-03-15"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-03-15"));
     }
 
     INFO("WHERE less than on DATE") {
@@ -1112,7 +1112,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE d > DATE '2024-06-01';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-12-31"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-12-31"));
     }
 
     INFO("ORDER BY DATE ASC") {
@@ -1120,9 +1120,9 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY d;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        auto d0 = cur->chunk_data().value(0, 0).value<core::date::date_t>();
-        auto d1 = cur->chunk_data().value(0, 1).value<core::date::date_t>();
-        auto d2 = cur->chunk_data().value(0, 2).value<core::date::date_t>();
+        auto d0 = cur->value(0, 0).value<core::date::date_t>();
+        auto d1 = cur->value(0, 1).value<core::date::date_t>();
+        auto d2 = cur->value(0, 2).value<core::date::date_t>();
         REQUIRE(d0 == *core::date::parse_date("2024-01-01"));
         REQUIRE(d1 == *core::date::parse_date("2024-03-15"));
         REQUIRE(d2 == *core::date::parse_date("2024-12-31"));
@@ -1133,9 +1133,9 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY d DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        auto d0 = cur->chunk_data().value(0, 0).value<core::date::date_t>();
-        auto d1 = cur->chunk_data().value(0, 1).value<core::date::date_t>();
-        auto d2 = cur->chunk_data().value(0, 2).value<core::date::date_t>();
+        auto d0 = cur->value(0, 0).value<core::date::date_t>();
+        auto d1 = cur->value(0, 1).value<core::date::date_t>();
+        auto d2 = cur->value(0, 2).value<core::date::date_t>();
         REQUIRE(d0 == *core::date::parse_date("2024-12-31"));
         REQUIRE(d1 == *core::date::parse_date("2024-03-15"));
         REQUIRE(d2 == *core::date::parse_date("2024-01-01"));
@@ -1148,7 +1148,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             "SELECT * FROM TestDatabase.TestCollection WHERE ts = TIMESTAMP '2024-03-15 12:30:45';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(1, 0).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(1, 0).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-03-15 12:30:45"));
     }
 
@@ -1166,9 +1166,9 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY ts DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        auto t0 = cur->chunk_data().value(1, 0).value<core::date::timestamp_t>();
-        auto t1 = cur->chunk_data().value(1, 1).value<core::date::timestamp_t>();
-        auto t2 = cur->chunk_data().value(1, 2).value<core::date::timestamp_t>();
+        auto t0 = cur->value(1, 0).value<core::date::timestamp_t>();
+        auto t1 = cur->value(1, 1).value<core::date::timestamp_t>();
+        auto t2 = cur->value(1, 2).value<core::date::timestamp_t>();
         REQUIRE(t0 == *core::date::parse_timestamp("2024-12-31 23:59:59"));
         REQUIRE(t1 == *core::date::parse_timestamp("2024-03-15 12:30:45"));
         REQUIRE(t2 == *core::date::parse_timestamp("2024-01-01 08:00:00"));
@@ -1189,7 +1189,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE t = TIME '12:30:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(3, 0).value<core::date::time_t>() == *core::date::parse_time("12:30:00"));
+        REQUIRE(cur->value(3, 0).value<core::date::time_t>() == *core::date::parse_time("12:30:00"));
     }
 
     INFO("WHERE less than on TIME") {
@@ -1205,9 +1205,9 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY t;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        auto t0 = cur->chunk_data().value(3, 0).value<core::date::time_t>();
-        auto t1 = cur->chunk_data().value(3, 1).value<core::date::time_t>();
-        auto t2 = cur->chunk_data().value(3, 2).value<core::date::time_t>();
+        auto t0 = cur->value(3, 0).value<core::date::time_t>();
+        auto t1 = cur->value(3, 1).value<core::date::time_t>();
+        auto t2 = cur->value(3, 2).value<core::date::time_t>();
         REQUIRE(t0 == *core::date::parse_time("08:00:00"));
         REQUIRE(t1 == *core::date::parse_time("12:30:00"));
         REQUIRE(t2 == *core::date::parse_time("23:59:59"));
@@ -1220,8 +1220,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
                                     "SELECT * FROM TestDatabase.TestCollection WHERE tz = TIMETZ '12:30:00+00:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(4, 0).value<core::date::timetz_t>() ==
-                *core::date::parse_timetz("12:30:00+00:00"));
+        REQUIRE(cur->value(4, 0).value<core::date::timetz_t>() == *core::date::parse_timetz("12:30:00+00:00"));
     }
 
     INFO("WHERE greater than on TIME WITH TIME ZONE") {
@@ -1246,9 +1245,9 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY iv;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        auto i0 = cur->chunk_data().value(5, 0).value<core::date::interval_t>();
-        auto i1 = cur->chunk_data().value(5, 1).value<core::date::interval_t>();
-        auto i2 = cur->chunk_data().value(5, 2).value<core::date::interval_t>();
+        auto i0 = cur->value(5, 0).value<core::date::interval_t>();
+        auto i1 = cur->value(5, 1).value<core::date::interval_t>();
+        auto i2 = cur->value(5, 2).value<core::date::interval_t>();
         REQUIRE(i0 == *core::date::parse_interval("1 day"));
         REQUIRE(i1 == *core::date::parse_interval("7 day"));
         REQUIRE(i2 == *core::date::parse_interval("30 day"));
@@ -1261,7 +1260,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             "SELECT * FROM TestDatabase.TestCollection WHERE d = TIMESTAMP '2024-03-15 00:00:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-03-15"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-03-15"));
     }
 
     INFO("DATE column less than TIMESTAMP literal") {
@@ -1287,7 +1286,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE ts > DATE '2024-06-01';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(1, 0).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(1, 0).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-12-31 23:59:59"));
     }
 
@@ -1315,8 +1314,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE tz = TIME '12:30:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(4, 0).value<core::date::timetz_t>() ==
-                *core::date::parse_timetz("12:30:00+00:00"));
+        REQUIRE(cur->value(4, 0).value<core::date::timetz_t>() == *core::date::parse_timetz("12:30:00+00:00"));
     }
 
     INFO("TIME_TZ column greater than TIME literal") {
@@ -1347,7 +1345,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE d = DATE '2024-06-15';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(1, 0).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(1, 0).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-06-15 00:00:00"));
     }
 
@@ -1357,7 +1355,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE d = DATE '2024-06-15';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(2, 0).value<core::date::timestamptz_t>() ==
+        REQUIRE(cur->value(2, 0).value<core::date::timestamptz_t>() ==
                 *core::date::parse_timestamptz("2024-06-15 06:00:00+00:00"));
     }
 
@@ -1367,8 +1365,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
             dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE d = DATE '2024-06-15';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(4, 0).value<core::date::timetz_t>() ==
-                *core::date::parse_timetz("15:30:00+00:00"));
+        REQUIRE(cur->value(4, 0).value<core::date::timetz_t>() == *core::date::parse_timetz("15:30:00+00:00"));
     }
 }
 
@@ -1407,13 +1404,13 @@ TEST_CASE("integration::cpp::test_sql_features::decimal_type") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 4);
 
-            auto dec_type = cur->chunk_data().data[0].type();
+            auto dec_type = cur->chunks().front().data[0].type();
             const auto* ext =
                 reinterpret_cast<const components::types::decimal_logical_type_extension*>(dec_type.extension());
             // decimal(10,2) should fall into int64_t range
             REQUIRE(dec_type.to_physical_type() == components::types::physical_type::INT64);
             for (size_t i = 0; i < 4; i++) {
-                REQUIRE(components::types::decimal_to_string(*(cur->chunk_data().data[0].data<int64_t>()),
+                REQUIRE(components::types::decimal_to_string(*(cur->chunks().front().data[0].data<int64_t>()),
                                                              ext->width(),
                                                              ext->scale()) == "500.20");
             }
@@ -2284,7 +2281,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null_rollback_restores_fk
 
 namespace {
     bool has_column(const components::cursor::cursor_t& cur, std::string_view name) {
-        const auto& chunk = cur.chunk_data();
+        const auto& chunk = cur.chunks().front();
         for (uint64_t i = 0; i < chunk.column_count(); ++i) {
             if (chunk.data[i].type().alias() == name)
                 return true;
@@ -3266,9 +3263,9 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_orderby") {
             WARN("TODO: SQL planner rejects ORDER BY on relkind='g' column");
         } else {
             REQUIRE(cur->size() == 3);
-            REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "a");
-            REQUIRE(cur->chunk_data().value(0, 1).value<std::string_view>() == "b");
-            REQUIRE(cur->chunk_data().value(0, 2).value<std::string_view>() == "c");
+            REQUIRE(cur->value(0, 0).value<std::string_view>() == "a");
+            REQUIRE(cur->value(0, 1).value<std::string_view>() == "b");
+            REQUIRE(cur->value(0, 2).value<std::string_view>() == "c");
         }
     }
 }
@@ -4408,7 +4405,7 @@ TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_af
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE count = 7;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 7);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 7);
         }
         {
             // Boundary keys (first and last of the batch) are visible too.
@@ -4472,8 +4469,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty c
 
     INFO("CREATE SEQUENCE returns an empty cursor") {
         auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session, "CREATE SEQUENCE DdlEmptyDb.ddl_seq START 10 INCREMENT 2;");
+        auto cur = dispatcher->execute_sql(session, "CREATE SEQUENCE DdlEmptyDb.ddl_seq START 10 INCREMENT 2;");
         REQUIRE(cur->is_success());
         REQUIRE_FALSE(cur->is_error());
         REQUIRE(cur->size() == 0);

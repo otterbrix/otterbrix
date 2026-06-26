@@ -318,28 +318,31 @@ namespace services::disk {
 
     // --- Storage data operations ---
 
-    manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    manager_disk_t::storage_scan(session_id_t session,
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
+    manager_disk_t::storage_scan(session_id_t /*session*/,
                                  catalog::oid_t table_oid,
                                  std::unique_ptr<components::table::table_filter_t> filter,
-                                 int limit,
+                                 int64_t limit,
+                                 std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn) {
+        // Transparent router: the agent reply carries the scan_error; forward the wrapper
+        // unchanged so the scan operators turn it into an error cursor.
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_scan,
-                                                                  session,
+                                                                  &agent_disk_t::storage_scan_inner,
                                                                   table_oid,
                                                                   std::move(filter),
                                                                   limit,
+                                                                  projected_cols,
                                                                   txn);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
             co_return co_await std::move(fut);
         }
-        co_return nullptr;
+        co_return std::pmr::vector<components::vector::data_chunk_t>{resource()};
     }
 
     manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
@@ -380,7 +383,7 @@ namespace services::disk {
             cursor_id};
     }
 
-    manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
@@ -398,10 +401,10 @@ namespace services::disk {
             }
             co_return co_await std::move(fut);
         }
-        co_return nullptr;
+        co_return std::pmr::vector<components::vector::data_chunk_t>(resource());
     }
 
-    manager_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     manager_disk_t::storage_scan_segment(session_id_t /*session*/,
                                          catalog::oid_t table_oid,
                                          int64_t start,
@@ -419,65 +422,108 @@ namespace services::disk {
             }
             co_return co_await std::move(fut);
         }
-        co_return nullptr;
+        co_return std::pmr::vector<components::vector::data_chunk_t>(resource());
     }
 
     manager_disk_t::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
     manager_disk_t::storage_append(execution_context_t ctx,
                                    catalog::oid_t table_oid,
-                                   std::unique_ptr<components::vector::data_chunk_t> data) {
+                                   std::pmr::vector<components::vector::data_chunk_t> data) {
         // The full preprocessing pipeline (schema adoption/growth, column
         // expansion, NOT NULL, dedup, type promotion) and the canonical write live
         // in the agent twin, so every same-oid access is serialized by the agent's
-        // mailbox — no borrowed-pointer access from the manager loop thread.
-        // Transparent router: forward the agent's result_wrapper_t (write_conflict /
-        // out_of_memory) unchanged so operator_insert surfaces the error.
-        if (!data || data->size() == 0) {
+        // mailbox — no borrowed-pointer access from the manager loop thread. The agent
+        // owns the WAL-first write; the chunks append sequentially through the same mailbox,
+        // so the per-chunk segments stay contiguous and coalesce into one [range_start, total)
+        // range. The agent reply wraps a write_conflict / out_of_memory; the first error aborts
+        // the batch (the wrapper is forwarded unchanged so operator_insert surfaces it).
+        if (agents_.empty()) {
             co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
-        if (!agents_.empty()) {
-            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[idx];
-            if (agent != nullptr) {
-                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                       &agent_disk_t::storage_append_inner,
-                                                                       ctx,
-                                                                       table_oid,
-                                                                       std::move(data));
-                if (needs_sched) {
-                    scheduler_disk_->enqueue(agent.get());
-                }
-                co_return co_await std::move(fut);
-            }
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        auto& agent = agents_[idx];
+        if (agent == nullptr) {
+            co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
-        co_return std::make_pair(uint64_t{0}, uint64_t{0});
+        uint64_t range_start = 0;
+        uint64_t total_count = 0;
+        bool have_range = false;
+        for (auto& chunk : data) {
+            if (chunk.size() == 0) {
+                continue;
+            }
+            auto one = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::storage_append_inner,
+                                                                  ctx,
+                                                                  table_oid,
+                                                                  std::move(one));
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            auto append_r = co_await std::move(fut);
+            if (append_r.has_error()) {
+                co_return std::move(append_r);
+            }
+            auto [start_row, actual_count] = append_r.value();
+            if (actual_count == 0) {
+                continue;
+            }
+            if (!have_range) {
+                range_start = start_row;
+                have_range = true;
+            }
+            total_count += actual_count;
+        }
+        co_return std::make_pair(range_start, total_count);
     }
 
     manager_disk_t::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
     manager_disk_t::storage_update(execution_context_t ctx,
                                    catalog::oid_t table_oid,
-                                   components::vector::vector_t row_ids,
-                                   std::unique_ptr<components::vector::data_chunk_t> data) {
-        // Pure router to the agent twin — the agent's mailbox serializes
-        // the canonical write with every other same-oid access. Transparent: forward the
-        // agent's result_wrapper_t (write_conflict / out_of_memory) unchanged.
-        if (!agents_.empty()) {
-            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[idx];
-            if (agent != nullptr) {
-                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                      &agent_disk_t::storage_update_inner,
-                                                                      table_oid,
-                                                                      std::move(row_ids),
-                                                                      std::move(data),
-                                                                      ctx.txn);
-                if (needs_sched) {
-                    scheduler_disk_->enqueue(agent.get());
-                }
-                co_return co_await std::move(fut);
-            }
+                                   std::pmr::vector<components::vector::vector_t> row_ids,
+                                   std::pmr::vector<components::vector::data_chunk_t> data) {
+        // Router to the agent twin — the agent's mailbox serializes the canonical write with
+        // every other same-oid access. row_ids[i] pairs with data[i]; the per-chunk new-row
+        // segments are contiguous and coalesce into one range. The agent reply wraps a
+        // write_conflict / out_of_memory; the first error aborts the batch.
+        if (agents_.empty()) {
+            co_return std::pair<int64_t, uint64_t>{0, 0};
         }
-        co_return std::pair<int64_t, uint64_t>{0, 0};
+        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+        auto& agent = agents_[idx];
+        if (agent == nullptr) {
+            co_return std::pair<int64_t, uint64_t>{0, 0};
+        }
+        int64_t range_start = 0;
+        uint64_t total_count = 0;
+        bool have_range = false;
+        for (std::size_t i = 0; i < data.size(); ++i) {
+            if (data[i].size() == 0) {
+                continue;
+            }
+            auto one = std::make_unique<components::vector::data_chunk_t>(std::move(data[i]));
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::storage_update_inner,
+                                                                  table_oid,
+                                                                  std::move(row_ids[i]),
+                                                                  std::move(one),
+                                                                  ctx.txn);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            auto update_r = co_await std::move(fut);
+            if (update_r.has_error()) {
+                co_return std::move(update_r);
+            }
+            auto [upd_start, upd_count] = update_r.value();
+            if (!have_range) {
+                range_start = upd_start;
+                have_range = true;
+            }
+            total_count += upd_count;
+        }
+        co_return std::pair<int64_t, uint64_t>{range_start, total_count};
     }
 
     manager_disk_t::unique_future<uint64_t> manager_disk_t::storage_delete_rows(execution_context_t ctx,

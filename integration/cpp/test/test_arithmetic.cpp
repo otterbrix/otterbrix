@@ -71,8 +71,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == static_cast<int64_t>(i + 1 + 10));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == static_cast<int64_t>(i + 1 + 10));
         }
     }
 
@@ -85,8 +85,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == static_cast<int64_t>(i + 1 - 5));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == static_cast<int64_t>(i + 1 - 5));
         }
     }
 
@@ -99,8 +99,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == static_cast<int64_t>((i + 1) * 2));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == static_cast<int64_t>((i + 1) * 2));
         }
     }
 
@@ -113,8 +113,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == static_cast<int64_t>((i + 1) / 3));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == static_cast<int64_t>((i + 1) / 3));
         }
     }
 
@@ -127,8 +127,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == static_cast<int64_t>((i + 1) % 7));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 1));
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == static_cast<int64_t>((i + 1) % 7));
         }
     }
 
@@ -143,8 +143,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         for (size_t i = 0; i < cur->size(); i++) {
             double expected_double = static_cast<double>(i + 1) + 0.1;
             double tax = expected_double * 0.13;
-            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i], expected_double));
-            REQUIRE(core::is_equals(cur->chunk_data().data[1].data<double>()[i], tax));
+            REQUIRE(core::is_equals(cur->chunks().front().data[0].data<double>()[i], expected_double));
+            REQUIRE(core::is_equals(cur->chunks().front().data[1].data<double>()[i], tax));
         }
     }
 
@@ -159,9 +159,9 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         for (size_t i = 0; i < cur->size(); i++) {
             auto count_val = static_cast<int64_t>(i + 1);
             double count_double_val = static_cast<double>(i + 1) + 0.1;
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == count_val);
-            REQUIRE(core::is_equals(cur->chunk_data().data[1].data<double>()[i], count_double_val));
-            REQUIRE(core::is_equals(cur->chunk_data().data[2].data<double>()[i],
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == count_val);
+            REQUIRE(core::is_equals(cur->chunks().front().data[1].data<double>()[i], count_double_val));
+            REQUIRE(core::is_equals(cur->chunks().front().data[2].data<double>()[i],
                                     static_cast<double>(count_val) * count_double_val));
         }
     }
@@ -176,8 +176,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
             auto v = static_cast<int64_t>(i + 1);
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == v);
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == v * 2 + 10);
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == v);
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == v * 2 + 10);
         }
     }
 
@@ -191,8 +191,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
             auto v = static_cast<int64_t>(i + 1);
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == v);
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == (v + 5) * (v - 5));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == v);
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == (v + 5) * (v - 5));
         }
     }
 
@@ -207,9 +207,9 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         for (size_t i = 0; i < cur->size(); i++) {
             auto v = static_cast<int64_t>(i + 1);
             double tax = static_cast<double>(v) * 0.13;
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == v);
-            REQUIRE(core::is_equals(cur->chunk_data().data[1].data<double>()[i], tax));
-            REQUIRE(core::is_equals(cur->chunk_data().data[2].data<double>()[i], static_cast<double>(v) - tax));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == v);
+            REQUIRE(core::is_equals(cur->chunks().front().data[1].data<double>()[i], tax));
+            REQUIRE(core::is_equals(cur->chunks().front().data[2].data<double>()[i], static_cast<double>(v) - tax));
         }
     }
 
@@ -223,8 +223,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
             auto v = static_cast<int64_t>(i + 1);
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == v);
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == -v);
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == v);
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == -v);
         }
     }
 
@@ -233,8 +233,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         auto cur = dispatcher->execute_sql(session, R"_(SELECT 2 + 3 AS five, 10 * 5 AS fifty;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 5);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[0] == 50);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 5);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 50);
     }
 
     INFO("A8. type promotion int * double") {
@@ -246,7 +246,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i], static_cast<double>(i + 1) * 1.5));
+            REQUIRE(core::is_equals(cur->chunks().front().data[0].data<double>()[i], static_cast<double>(i + 1) * 1.5));
         }
     }
 
@@ -264,7 +264,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         // count * 2 > 150 => count > 75 => count 76..100 => 25 rows
         REQUIRE(cur->size() == 25);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(76 + i));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(76 + i));
         }
     }
 
@@ -295,7 +295,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         // count * 2 > 100 => count > 50; count * 2 < 150 => count < 75 => count 51..74 => 24 rows
         REQUIRE(cur->size() == 24);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(51 + i));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(51 + i));
         }
     }
 
@@ -335,7 +335,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         // count 95..100 => 6 rows
         REQUIRE(cur->size() == 6);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(95 + i));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(95 + i));
         }
     }
 
@@ -351,7 +351,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         // sum(1..100) = 5050, val = 5050 * 2 = 10100
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 10100);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 10100);
     }
 
     INFO("C2. SUM of column * column") {
@@ -366,7 +366,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         for (int i = 1; i <= 100; i++) {
             expected += static_cast<double>(i) * (static_cast<double>(i) + 0.1);
         }
-        REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[0], expected));
+        REQUIRE(core::is_equals(cur->chunks().front().data[0].data<double>()[0], expected));
     }
 
     INFO("C3. AVG of expression") {
@@ -378,7 +378,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == 1);
         // avg(1..100) = 50.5, val = 50.5 * 10 = 505
         // AVG might return int or double depending on implementation
-        auto val = cur->chunk_data().data[0].data<int64_t>()[0];
+        auto val = cur->chunks().front().data[0].data<int64_t>()[0];
         REQUIRE(val == 505);
     }
 
@@ -389,8 +389,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                            R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 2);
-        REQUIRE(cur->chunk_data().data[1].data<int64_t>()[0] == 200);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 2);
+        REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 200);
     }
 
     INFO("C5pre. COUNT(*) without WHERE") {
@@ -400,7 +400,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                            R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<uint64_t>()[0] == kNumInserts);
+        REQUIRE(cur->chunks().front().data[0].data<uint64_t>()[0] == kNumInserts);
     }
 
     INFO("C5. COUNT with arithmetic WHERE") {
@@ -412,7 +412,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         // count * 3 > 200 => count > 66.67 => count >= 67 => 34 rows
-        REQUIRE(cur->chunk_data().data[0].data<uint64_t>()[0] == 34);
+        REQUIRE(cur->chunks().front().data[0].data<uint64_t>()[0] == 34);
     }
 
     // ================================================================
@@ -455,7 +455,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         // 5050 * 2 = 10100
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 10100);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 10100);
     }
 
     INFO("E2. arithmetic on multiple aggregates") {
@@ -466,7 +466,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         // 5050 / 100 = 50 (integer division) or 50.5
-        auto val = cur->chunk_data().data[0].data<int64_t>()[0];
+        auto val = cur->chunks().front().data[0].data<int64_t>()[0];
         // integer division: 5050 / 100 = 50
         REQUIRE(val == 50);
     }
@@ -482,7 +482,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         for (int i = 1; i <= 100; i++) {
             sum_val += static_cast<double>(i) * (static_cast<double>(i) + 0.1);
         }
-        auto actual_val = cur->chunk_data().data[0].data<double>()[0];
+        auto actual_val = cur->chunks().front().data[0].data<double>()[0];
         auto expected_val = sum_val * 0.3;
         REQUIRE(std::abs(actual_val - expected_val) < 1.0);
     }
@@ -497,8 +497,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         for (size_t i = 0; i < cur->size(); i++) {
-            auto total = cur->chunk_data().data[1].data<int64_t>()[i];
-            auto doubled = cur->chunk_data().data[2].data<int64_t>()[i];
+            auto total = cur->chunks().front().data[1].data<int64_t>()[i];
+            auto doubled = cur->chunks().front().data[2].data<int64_t>()[i];
             REQUIRE(doubled == total * 2);
         }
     }
@@ -512,10 +512,10 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                            R"_(GROUP BY count_bool;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().column_count() == 3);
+        REQUIRE(cur->column_count() == 3);
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[1].data<int64_t>()[i] == static_cast<int64_t>((50 + i) * 100));
-            REQUIRE(cur->chunk_data().data[2].data<int64_t>()[i] == 50);
+            REQUIRE(cur->chunks().front().data[1].data<int64_t>()[i] == static_cast<int64_t>((50 + i) * 100));
+            REQUIRE(cur->chunks().front().data[2].data<int64_t>()[i] == 50);
         }
     }
 
@@ -533,7 +533,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == kNumInserts);
         // count * -1 ascending => count descending
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(kNumInserts - i));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(kNumInserts - i));
         }
     }
 
@@ -548,8 +548,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         for (size_t i = 0; i < cur->size(); i++) {
             double expected_double = static_cast<double>(i + 1) + 0.1;
             double tax = expected_double * 0.13;
-            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i], expected_double));
-            REQUIRE(core::is_equals(cur->chunk_data().data[1].data<double>()[i], tax));
+            REQUIRE(core::is_equals(cur->chunks().front().data[0].data<double>()[i], expected_double));
+            REQUIRE(core::is_equals(cur->chunks().front().data[1].data<double>()[i], tax));
         }
     }
 
@@ -567,8 +567,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         for (size_t i = 0; i < cur->size(); i++) {
             double expected_double = static_cast<double>(kNumInserts - i) + 0.1;
             double tax = expected_double * 0.13;
-            REQUIRE(core::is_equals(cur->chunk_data().data[0].data<double>()[i], expected_double));
-            REQUIRE(core::is_equals(cur->chunk_data().data[1].data<double>()[i], tax));
+            REQUIRE(core::is_equals(cur->chunks().front().data[0].data<double>()[i], expected_double));
+            REQUIRE(core::is_equals(cur->chunks().front().data[1].data<double>()[i], tax));
         }
     }
 
@@ -582,7 +582,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == 5);
         // highest count + count_double first: count=100, count_double=100.1 → 200.1
         for (size_t i = 0; i < cur->size(); i++) {
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == static_cast<int64_t>(kNumInserts - i));
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(kNumInserts - i));
         }
     }
 
@@ -621,7 +621,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
             // Need to verify some rows were updated
             bool found_even = false;
             for (size_t i = 0; i < cur->size(); i++) {
-                auto v = cur->chunk_data().data[0].data<int64_t>()[i];
+                auto v = cur->chunks().front().data[0].data<int64_t>()[i];
                 if (v == 2)
                     found_even = true;
             }
@@ -645,7 +645,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                                R"_(SELECT COUNT(*) AS cnt )_"
                                                R"_(FROM TestDatabase.TestCollection;)_");
             REQUIRE(cur->is_success());
-            count_before = cur->chunk_data().data[0].data<uint64_t>()[0];
+            count_before = cur->chunks().front().data[0].data<uint64_t>()[0];
         }
         // Delete rows where count * 3 > 270 => count > 90
         {
@@ -662,7 +662,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                                R"_(SELECT COUNT(*) AS cnt )_"
                                                R"_(FROM TestDatabase.TestCollection;)_");
             REQUIRE(cur->is_success());
-            auto count_after = cur->chunk_data().data[0].data<uint64_t>()[0];
+            auto count_after = cur->chunks().front().data[0].data<uint64_t>()[0];
             REQUIRE(count_after < count_before);
         }
     }
@@ -918,9 +918,9 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
             auto v = static_cast<int64_t>(i + 1);
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == v);
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == v);
             double expected = v > 50 ? static_cast<double>(v) * 0.9 : static_cast<double>(v) * 1.0;
-            REQUIRE(core::is_equals(cur->chunk_data().data[1].data<double>()[i], expected));
+            REQUIRE(core::is_equals(cur->chunks().front().data[1].data<double>()[i], expected));
         }
     }
 
@@ -935,9 +935,9 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
             auto v = static_cast<int64_t>(i + 1);
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == v);
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == v);
             std::string_view expected = v * 2 > 100 ? "high" : "low";
-            REQUIRE(cur->chunk_data().data[1].data<std::string_view>()[i] == expected);
+            REQUIRE(cur->chunks().front().data[1].data<std::string_view>()[i] == expected);
         }
     }
 
@@ -956,7 +956,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         REQUIRE(cur->size() == kNumInserts);
         for (size_t i = 0; i < cur->size(); i++) {
             auto v = static_cast<int64_t>(i + 1);
-            REQUIRE(cur->chunk_data().data[0].data<int64_t>()[i] == v);
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == v);
             std::string_view expected;
             if (v * 10 > 500)
                 expected = "tier3";
@@ -964,7 +964,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
                 expected = "tier2";
             else
                 expected = "tier1";
-            REQUIRE(cur->chunk_data().data[1].data<std::string_view>()[i] == expected);
+            REQUIRE(cur->chunks().front().data[1].data<std::string_view>()[i] == expected);
         }
     }
 }
@@ -1031,7 +1031,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         // 100^4 = 100000000
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 100000000);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 100000000);
     }
 
     INFO("M3. mixed nested: arithmetic inside aggregate inside arithmetic") {
@@ -1042,7 +1042,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         // SUM(count*2) = 10100, MAX(count) = 100, val = 10200
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 10200);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 10200);
     }
 }
 
@@ -1091,15 +1091,15 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
                                            R"_(GROUP BY region, category;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->chunk_data().column_count() == 4);
+        REQUIRE(cur->column_count() == 4);
 
         // SELECT order: col[0]=region, col[1]=doubled(SUM*2), col[2]=category, col[3]=cnt(COUNT)
         std::map<std::pair<std::string, std::string>, std::pair<int64_t, int64_t>> rows;
         for (size_t i = 0; i < cur->size(); i++) {
-            auto region = std::string(cur->chunk_data().data[0].data<std::string_view>()[i]);
-            auto doubled = cur->chunk_data().data[1].data<int64_t>()[i];
-            auto category = std::string(cur->chunk_data().data[2].data<std::string_view>()[i]);
-            auto cnt = static_cast<int64_t>(cur->chunk_data().data[3].data<uint64_t>()[i]);
+            auto region = std::string(cur->chunks().front().data[0].data<std::string_view>()[i]);
+            auto doubled = cur->chunks().front().data[1].data<int64_t>()[i];
+            auto category = std::string(cur->chunks().front().data[2].data<std::string_view>()[i]);
+            auto cnt = static_cast<int64_t>(cur->chunks().front().data[3].data<uint64_t>()[i]);
             rows[{region, category}] = {doubled, cnt};
         }
         REQUIRE(rows.size() == 4);
@@ -1129,15 +1129,15 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
                                     R"_(GROUP BY region, category;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->chunk_data().column_count() == 4);
+        REQUIRE(cur->column_count() == 4);
 
         // SELECT order: col[0]=region, col[1]=cnt(COUNT), col[2]=shifted(SUM+100), col[3]=category
         std::map<std::pair<std::string, std::string>, std::pair<int64_t, int64_t>> rows;
         for (size_t i = 0; i < cur->size(); i++) {
-            auto region = std::string(cur->chunk_data().data[0].data<std::string_view>()[i]);
-            auto cnt = static_cast<int64_t>(cur->chunk_data().data[1].data<uint64_t>()[i]);
-            auto shifted = cur->chunk_data().data[2].data<int64_t>()[i];
-            auto category = std::string(cur->chunk_data().data[3].data<std::string_view>()[i]);
+            auto region = std::string(cur->chunks().front().data[0].data<std::string_view>()[i]);
+            auto cnt = static_cast<int64_t>(cur->chunks().front().data[1].data<uint64_t>()[i]);
+            auto shifted = cur->chunks().front().data[2].data<int64_t>()[i];
+            auto category = std::string(cur->chunks().front().data[3].data<std::string_view>()[i]);
             rows[{region, category}] = {cnt, shifted};
         }
         REQUIRE(rows.size() == 4);
@@ -1278,7 +1278,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
                                            R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 10 + 40;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 50);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 50);
     }
 
     // ================================================================
@@ -1291,9 +1291,9 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
                                            R"_(ORDER BY count ASC LIMIT 3;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 11);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[1] == 12);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[2] == 13);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 11);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 12);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[2] == 13);
     }
 
     // ================================================================
@@ -1319,7 +1319,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
                                            R"_(WHERE 5 = 7 OR count = 50;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 50);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 50);
     }
 
     // ================================================================
@@ -1332,7 +1332,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
                                            R"_(WHERE count = (2 + 3) * 10;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 50);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 50);
     }
 
     // ================================================================
@@ -1344,7 +1344,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
             dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 99.5;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 100);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 100);
     }
 
     // ================================================================
@@ -1356,7 +1356,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
                                            R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 100 - 1;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 99);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 99);
     }
 
     // ================================================================
@@ -1369,7 +1369,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
                                     R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 103 % 10;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().data[0].data<int64_t>()[0] == 3);
+        REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 3);
     }
 }
 
@@ -1458,11 +1458,11 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // 2024-01-01 + 1 day = 2024-01-02
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
         // 2024-03-15 + 1 day = 2024-03-16
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-16"));
+        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-16"));
         // 2024-12-31 + 1 day = 2025-01-01
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-01"));
+        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-01"));
     }
 
     // ================================================================
@@ -1477,11 +1477,11 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // 2024-01-01 - 7 = 2023-12-25
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2023-12-25"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2023-12-25"));
         // 2024-03-15 - 7 = 2024-03-08
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-08"));
+        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-08"));
         // 2024-12-31 - 7 = 2024-12-24
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2024-12-24"));
+        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2024-12-24"));
     }
 
     // ================================================================
@@ -1496,11 +1496,11 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // 2024-01-01 + 1 day = 2024-01-02
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
         // 2024-03-15 + 7 days = 2024-03-22
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-22"));
+        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-22"));
         // 2024-12-31 + 30 days = 2025-01-30
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-30"));
+        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-30"));
     }
 
     // ================================================================
@@ -1515,13 +1515,13 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // 2024-01-01 00:00:00 + 1 day = 2024-01-02 00:00:00
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 0).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-01-02 00:00:00"));
         // 2024-03-15 12:30:00 + 1 day = 2024-03-16 12:30:00
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 1).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-03-16 12:30:00"));
         // 2024-12-31 23:59:00 + 1 day = 2025-01-01 23:59:00
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 2).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2025-01-01 23:59:00"));
     }
 
@@ -1537,13 +1537,13 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // 2024-01-01 00:00:00 - 1 day = 2023-12-31 00:00:00
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 0).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2023-12-31 00:00:00"));
         // 2024-03-15 12:30:00 - 1 day = 2024-03-14 12:30:00
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 1).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-03-14 12:30:00"));
         // 2024-12-31 23:59:00 - 1 day = 2024-12-30 23:59:00
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 2).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-12-30 23:59:00"));
     }
 
@@ -1559,13 +1559,13 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // 2024-01-01 00:00:00 + 1 day = 2024-01-02 00:00:00
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 0).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-01-02 00:00:00"));
         // 2024-03-15 12:30:00 + 7 days = 2024-03-22 12:30:00
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 1).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-03-22 12:30:00"));
         // 2024-12-31 23:59:00 + 30 days = 2025-01-30 23:59:00
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 2).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2025-01-30 23:59:00"));
     }
 
@@ -1581,7 +1581,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE d = DATE '2024-03-15';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto iv = cur->chunk_data().value(0, 0).value<core::date::interval_t>();
+        auto iv = cur->value(0, 0).value<core::date::interval_t>();
         // 2024 is a leap year: Jan=31, Feb=29, Mar 1..15=15 → 31+29+15-1=74 days
         REQUIRE(iv.day.count() == 74);
         REQUIRE(iv.time.count() == 0);
@@ -1600,11 +1600,11 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // iv=1 day + 3 days = 4 days
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 4);
+        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 4);
         // iv=7 days + 3 days = 10 days
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 10);
+        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 10);
         // iv=30 days + 3 days = 33 days
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 33);
+        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 33);
     }
 
     // ================================================================
@@ -1619,11 +1619,11 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // iv=1 day - 1 day = 0 days
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 0);
+        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 0);
         // iv=7 days - 1 day = 6 days
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 6);
+        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 6);
         // iv=30 days - 1 day = 29 days
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 29);
+        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 29);
     }
 
     // ================================================================
@@ -1651,7 +1651,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE ts = TIMESTAMP '2024-03-15 12:30:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto iv = cur->chunk_data().value(0, 0).value<core::date::interval_t>();
+        auto iv = cur->value(0, 0).value<core::date::interval_t>();
         // 74 days + 12h30m = 74*86400 + 12*3600 + 30*60 = 6393600 + 43200 + 1800 = 6438600 seconds
         // = 6438600 * 1'000'000 microseconds stored in .time, .day = 0 since ts-ts goes into .time
         auto expected_us =
@@ -1673,11 +1673,11 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // iv=1 day * 3 = 3 days
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 3);
+        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 3);
         // iv=7 days * 3 = 21 days
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 21);
+        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 21);
         // iv=30 days * 3 = 90 days
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 90);
+        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 90);
     }
 
     // ================================================================
@@ -1692,11 +1692,11 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // iv=1 day / 2 → llround(0.5) = 1 day
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 1);
+        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 1);
         // iv=7 days / 2 = 4 days (llround(3.5) = 4)
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 4);
+        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 4);
         // iv=30 days / 2 = 15 days
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 15);
+        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 15);
     }
 
     // ================================================================
@@ -1710,9 +1710,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 2);
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::interval_t>().day.count() == 14);
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::interval_t>().day.count() == 60);
+        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 2);
+        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 14);
+        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 60);
     }
 
     // ================================================================
@@ -1726,7 +1726,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE d = DATE '2024-01-01';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::interval_t>().day.count() == 15);
+        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 15);
     }
 
     // ================================================================
@@ -1740,10 +1740,10 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY t ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::time_t>() == *core::date::parse_time("09:00:00"));
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::time_t>() == *core::date::parse_time("13:30:00"));
+        REQUIRE(cur->value(0, 0).value<core::date::time_t>() == *core::date::parse_time("09:00:00"));
+        REQUIRE(cur->value(0, 1).value<core::date::time_t>() == *core::date::parse_time("13:30:00"));
         // 23:59 + 1h wraps past midnight → 00:59
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::time_t>() == *core::date::parse_time("00:59:00"));
+        REQUIRE(cur->value(0, 2).value<core::date::time_t>() == *core::date::parse_time("00:59:00"));
     }
 
     // ================================================================
@@ -1757,9 +1757,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY t ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::time_t>() == *core::date::parse_time("07:30:00"));
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::time_t>() == *core::date::parse_time("12:00:00"));
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::time_t>() == *core::date::parse_time("23:29:00"));
+        REQUIRE(cur->value(0, 0).value<core::date::time_t>() == *core::date::parse_time("07:30:00"));
+        REQUIRE(cur->value(0, 1).value<core::date::time_t>() == *core::date::parse_time("12:00:00"));
+        REQUIRE(cur->value(0, 2).value<core::date::time_t>() == *core::date::parse_time("23:29:00"));
     }
 
     // ================================================================
@@ -1774,7 +1774,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         // 08:00 - 10h = -2h → wraps to 22:00
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::time_t>() == *core::date::parse_time("22:00:00"));
+        REQUIRE(cur->value(0, 0).value<core::date::time_t>() == *core::date::parse_time("22:00:00"));
     }
 
     // ================================================================
@@ -1788,7 +1788,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE t = TIME '08:00:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto iv = cur->chunk_data().value(0, 0).value<core::date::interval_t>();
+        auto iv = cur->value(0, 0).value<core::date::interval_t>();
         // 08:00 - 06:00 = 2 hours = 2 * 3600 * 1_000_000 µs
         REQUIRE(iv.time.count() == 2LL * 3600LL * 1'000'000LL);
         REQUIRE(iv.day.count() == 0);
@@ -1806,9 +1806,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-01"));
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-04-15"));
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-31"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-01"));
+        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-04-15"));
+        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-31"));
     }
 
     // ================================================================
@@ -1822,7 +1822,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE d = DATE '2024-01-01';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-29"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-29"));
     }
 
     // ================================================================
@@ -1836,12 +1836,12 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY ts ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 0).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-03-01 00:00:00"));
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 1).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-05-15 12:30:00"));
         // 2024-12-31 + 2 months = 2025-02-31 → clamped to 2025-02-28
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamp_t>() ==
+        REQUIRE(cur->value(0, 2).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2025-02-28 23:59:00"));
     }
 
@@ -1856,9 +1856,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-22"));
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-30"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
+        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-22"));
+        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-30"));
     }
 
     // ================================================================
@@ -1887,11 +1887,11 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY tstz ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::timestamptz_t>() ==
+        REQUIRE(cur->value(0, 0).value<core::date::timestamptz_t>() ==
                 *core::date::parse_timestamptz("2024-01-02 00:00:00+00:00"));
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::timestamptz_t>() ==
+        REQUIRE(cur->value(0, 1).value<core::date::timestamptz_t>() ==
                 *core::date::parse_timestamptz("2024-03-16 12:30:00+00:00"));
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::timestamptz_t>() ==
+        REQUIRE(cur->value(0, 2).value<core::date::timestamptz_t>() ==
                 *core::date::parse_timestamptz("2025-01-01 23:59:00+00:00"));
     }
 
@@ -1906,7 +1906,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE tstz = TIMESTAMPTZ '2024-03-15 12:30:00+00:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto iv = cur->chunk_data().value(0, 0).value<core::date::interval_t>();
+        auto iv = cur->value(0, 0).value<core::date::interval_t>();
         // same span as N11: 74 days + 12h30m = 6438600s = 6438600000000 µs
         auto expected_us =
             int64_t{74} * 86400LL * 1'000'000LL + 12LL * 3600LL * 1'000'000LL + 30LL * 60LL * 1'000'000LL;
@@ -1929,11 +1929,11 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // Row 0: d=2024-01-01 matches WHEN, result = 2024-01-02
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
         // Row 1: d=2024-03-15 falls through to ELSE, result = 2024-03-15
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-15"));
+        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-15"));
         // Row 2: d=2024-12-31 falls through to ELSE, result = 2024-12-31
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2024-12-31"));
+        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2024-12-31"));
     }
 
     // ================================================================
@@ -1950,9 +1950,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // Each d is unique so each group has cnt=1, bucket = d + 1 month
-        REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-01"));
-        REQUIRE(cur->chunk_data().value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-04-15"));
-        REQUIRE(cur->chunk_data().value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-31"));
+        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-01"));
+        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-04-15"));
+        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-31"));
     }
 
     // ================================================================
@@ -1977,7 +1977,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                                "WHERE d = DATE '2024-01-08';");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-08"));
+            REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-08"));
         }
         // Verify old value is gone
         {

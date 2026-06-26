@@ -1529,9 +1529,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<uint64_t> column_segment_t::append(column_append_state& state,
-                                                             vector::unified_vector_format& data,
-                                                             uint64_t offset,
-                                                             uint64_t count) {
+                                                              vector::unified_vector_format& data,
+                                                              uint64_t offset,
+                                                              uint64_t count) {
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:

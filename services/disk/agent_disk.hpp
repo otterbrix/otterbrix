@@ -166,17 +166,6 @@ namespace services::disk {
 
         unique_future<void> fix_wal_id(wal::id_t wal_id);
 
-        // storage_* mailbox handlers: the manager forwards to
-        // agents_[pool_idx_for_oid(table_oid)] via send (mailbox-only; payload by
-        // rvalue unique_ptr / by-value PMR containers, no shared state). A not-owned
-        // OID returns nullptr and the caller surfaces an empty chunk.
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-        storage_scan(session_id_t session,
-                     components::catalog::oid_t table_oid,
-                     std::unique_ptr<components::table::table_filter_t> filter,
-                     int limit,
-                     components::table::transaction_data txn);
-
         // Mutation handlers: these inner bodies are the SOLE owner of each mutation;
         // manager-side bodies are pure routers. Not-owned OIDs no-op.
         //
@@ -244,26 +233,27 @@ namespace services::disk {
                                                           components::table::transaction_data txn);
 
         // storage_fetch_inner — read-path mirror for point-fetches by row_id.
-        //   Returns nullptr when the agent doesn't own the OID.
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        //   Returns the fetched rows as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks
+        //   (empty when the agent doesn't own the OID).
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_fetch_inner(components::catalog::oid_t table_oid, components::vector::vector_t row_ids, uint64_t count);
 
         // Read-path handlers (scan_batched / scan_segment / types / total_rows).
         // Not-owned OIDs return an empty/zero sentinel.
         //
-        // storage_scan_batched_inner — batched + projected scan; the reply wraps a PMR vector
-        //   of data_chunk_t batches (≤ DEFAULT_VECTOR_CAPACITY rows each), carrying any
+        // storage_scan_inner — batched + projected scan; the reply wraps a PMR vector of
+        //   data_chunk_t batches (≤ DEFAULT_VECTOR_CAPACITY rows each), carrying any
         //   buffer-pool OOM / data_corruption the table-layer scan left in scan_error as a
         //   value (no throw across the mailbox).
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_scan_batched_inner(components::catalog::oid_t table_oid,
-                                   std::unique_ptr<components::table::table_filter_t> filter,
-                                   int64_t limit,
-                                   std::vector<size_t> projected_cols,
-                                   components::table::transaction_data txn);
+        storage_scan_inner(components::catalog::oid_t table_oid,
+                           std::unique_ptr<components::table::table_filter_t> filter,
+                           int64_t limit,
+                           std::vector<size_t> projected_cols,
+                           components::table::transaction_data txn);
 
         // storage_fetch_next_batch_inner — streaming fetch-next scan source (STEP 3 / phase B).
-        //   POSITION-ONLY index-resume: unlike storage_scan_batched_inner (which materializes the
+        //   POSITION-ONLY index-resume: unlike storage_scan_inner (which materializes the
         //   whole batch vector), the cursor in active_scans_ stores ONLY the absolute resume
         //   position + the scan params; every fetch re-seeks a TRANSIENT scan state from that
         //   position (storage_t::fetch_next_batch), reads ONE batch, advances the stored position,
@@ -279,7 +269,7 @@ namespace services::disk {
         //   exhausted / matched-row limit reached) ERASES active_scans_[cursor_id] and replies an
         //   EMPTY chunk (cardinality 0) + cursor_id. Not-owned oid / record-only marker / unknown
         //   cursor replies an empty (drained) batch. Buffer-pool OOM / data_corruption ride the
-        //   wrapper as a value (no throw across the mailbox), like scan_batched_local.
+        //   wrapper as a value (no throw across the mailbox), like scan_local.
         unique_future<core::result_wrapper_t<fetch_batch_t>>
         storage_fetch_next_batch_inner(session_id_t session,
                                        components::catalog::oid_t table_oid,
@@ -289,8 +279,9 @@ namespace services::disk {
                                        std::vector<size_t> projected_cols,
                                        components::table::transaction_data txn);
 
-        // storage_scan_segment_inner — start-offset / count window scan.
-        unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+        // storage_scan_segment_inner — start-offset / count window scan. Returns the
+        //   segment as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks (as storage yields them).
+        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count);
 
         // scan_by_keys_inner — batched keyed scan for one owned table. Resolves the
@@ -492,7 +483,6 @@ namespace services::disk {
         void set_manager_wal_sync(actor_zeta::address_t address);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&agent_disk_t::fix_wal_id,
-                                                            &agent_disk_t::storage_scan,
                                                             &agent_disk_t::storage_append_inner,
                                                             &agent_disk_t::storage_publish_commits_inner,
                                                             &agent_disk_t::storage_publish_deletes_inner,
@@ -501,7 +491,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_update_inner,
                                                             &agent_disk_t::storage_delete_rows_inner,
                                                             &agent_disk_t::storage_fetch_inner,
-                                                            &agent_disk_t::storage_scan_batched_inner,
+                                                            &agent_disk_t::storage_scan_inner,
                                                             &agent_disk_t::storage_fetch_next_batch_inner,
                                                             &agent_disk_t::storage_scan_segment_inner,
                                                             &agent_disk_t::scan_by_keys_inner,
@@ -529,17 +519,17 @@ namespace services::disk {
 
     private:
         // Non-mailbox committed-scan over an OWNED slice entry (D6: callers on the agent
-        // thread — storage_scan_batched_inner and read_chunks_by_keys_inner — read their own
+        // thread — storage_scan_inner and read_chunks_by_keys_inner — read their own
         // slice directly here, never by self-sending a mailbox message). Returns empty batches
         // when the oid isn't owned or is a record-only marker. `filter` may be nullptr;
         // `projected_cols` may be nullptr for all columns. The wrapper carries any buffer-pool
         // OOM / data_corruption surfaced by the table-layer scan as a value.
         [[nodiscard]] core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
-        scan_batched_local(components::catalog::oid_t table_oid,
-                           components::table::table_filter_t* filter,
-                           int64_t limit,
-                           const std::vector<std::size_t>* projected_cols,
-                           const components::table::transaction_data& txn);
+        scan_local(components::catalog::oid_t table_oid,
+                   components::table::table_filter_t* filter,
+                   int64_t limit,
+                   const std::vector<std::size_t>* projected_cols,
+                   const components::table::transaction_data& txn);
 
         // Canonical single-oid erase + .otbx removal, used by
         // drop_storage_many_inner. Synchronous; agent-thread callers only.

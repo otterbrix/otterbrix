@@ -621,10 +621,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> row_group_t::update(vector::data_chunk_t& update_chunk,
-                                                    int64_t* ids,
-                                                    uint64_t offset,
-                                                    uint64_t count,
-                                                    const std::vector<uint64_t>& column_ids) {
+                                                     int64_t* ids,
+                                                     uint64_t offset,
+                                                     uint64_t count,
+                                                     const std::vector<uint64_t>& column_ids) {
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             auto column = column_ids[i];
             assert(column != std::numeric_limits<uint64_t>::max());
@@ -646,8 +646,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> row_group_t::update_column(vector::data_chunk_t& updates,
-                                                          vector::vector_t& row_ids,
-                                                          const std::vector<uint64_t>& column_path) {
+                                                            vector::vector_t& row_ids,
+                                                            const std::vector<uint64_t>& column_path) {
         assert(updates.column_count() == 1);
         auto ids = row_ids.data<int64_t>();
 

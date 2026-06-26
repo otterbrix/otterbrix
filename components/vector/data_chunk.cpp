@@ -13,6 +13,7 @@ namespace components::vector {
         : resource_(resource)
         , capacity_(capacity)
         , row_ids(resource, types::logical_type::BIGINT, capacity) {
+        assert(capacity <= DEFAULT_VECTOR_CAPACITY);
         for (uint64_t i = 0; i < types.size(); i++) {
             data.emplace_back(resource_, types[i], capacity_);
         }
@@ -25,6 +26,7 @@ namespace components::vector {
         : resource_(resource)
         , capacity_(capacity)
         , row_ids(resource, types::logical_type::BIGINT, capacity) {
+        assert(capacity <= DEFAULT_VECTOR_CAPACITY);
         // Build a fast lookup: which column indices need real buffers
         std::vector<bool> needed(all_types.size(), false);
         for (size_t idx : projected_cols) {

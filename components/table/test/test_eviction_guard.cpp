@@ -48,10 +48,10 @@ namespace {
     // an eviction pass deterministically. evict_blocks() never throws: it returns
     // {found, reservation}.
     struct test_buffer_pool_t final : buffer_pool_t {
-        using buffer_pool_t::buffer_pool_t;
         using buffer_pool_t::add_to_eviction_queue;
-        using buffer_pool_t::eviction_result; // protected nested type -> make namable here
+        using buffer_pool_t::buffer_pool_t;
         using buffer_pool_t::evict_blocks;
+        using buffer_pool_t::eviction_result; // protected nested type -> make namable here
         using buffer_pool_t::maximum_memory;
     };
 
@@ -171,8 +171,7 @@ TEST_CASE("buffer manager: re-pinning an evicted managed block does not crash", 
 // last one that still fits), so the (N+1)-th over-subscribes the limit with
 // nothing to evict and must fail. We make several attempts past N to be safe.
 // ---------------------------------------------------------------------------
-TEST_CASE("buffer manager: pool exhaustion of pinned managed blocks returns out_of_memory, not throw",
-          "[step1]") {
+TEST_CASE("buffer manager: pool exhaustion of pinned managed blocks returns out_of_memory, not throw", "[step1]") {
     using namespace components::table::storage;
 
     // Provisional limit large enough that the first registrations never trip OOM

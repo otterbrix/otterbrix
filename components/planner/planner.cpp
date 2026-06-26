@@ -38,8 +38,8 @@ namespace components::planner {
         // pg_catalog table and whose single data child carries the ready-made
         // row. create_plan lowers it to operator_insert's catalog branch
         // (append_pg_catalog_row).
-        node_ptr make_catalog_write(std::pmr::memory_resource* r, catalog::oid_t catalog_table_oid,
-                                    vector::data_chunk_t&& row) {
+        node_ptr
+        make_catalog_write(std::pmr::memory_resource* r, catalog::oid_t catalog_table_oid, vector::data_chunk_t&& row) {
             auto ins = logical_plan::make_node_insert(r, std::move(row));
             ins->set_table_oid(catalog_table_oid);
             return ins;

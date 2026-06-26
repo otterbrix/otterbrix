@@ -61,12 +61,11 @@ namespace components::operators {
         build_output_schema(output_schema_);
     }
 
-    operator_resolve_table_t::operator_resolve_table_t(
-        std::pmr::memory_resource* resource,
-        log_t log,
-        catalog::oid_t namespace_oid,
-        std::string relname,
-        components::logical_plan::node_catalog_resolve_t* target_node)
+    operator_resolve_table_t::operator_resolve_table_t(std::pmr::memory_resource* resource,
+                                                       log_t log,
+                                                       catalog::oid_t namespace_oid,
+                                                       std::string relname,
+                                                       components::logical_plan::node_catalog_resolve_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
         , table_oid_(catalog::INVALID_OID)
         , input_namespace_oid_(namespace_oid)
@@ -91,7 +90,7 @@ namespace components::operators {
         // harnesses).
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             output_ = make_operator_data(resource_, output_schema_, 0);
-            output_->data_chunk().set_cardinality(0);
+            output_->chunks().front().set_cardinality(0);
             mark_executed();
             co_return;
         }
@@ -102,7 +101,7 @@ namespace components::operators {
         if (table_oid_ == catalog::INVALID_OID) {
             if (relname_.empty()) {
                 output_ = make_operator_data(resource_, output_schema_, 0);
-                output_->data_chunk().set_cardinality(0);
+                output_->chunks().front().set_cardinality(0);
                 mark_executed();
                 co_return;
             }
@@ -126,7 +125,7 @@ namespace components::operators {
                 lookup_batches[0].value(0, 0).is_null()) {
                 // Not found — emit empty output, leave found_=false.
                 output_ = make_operator_data(resource_, output_schema_, 0);
-                output_->data_chunk().set_cardinality(0);
+                output_->chunks().front().set_cardinality(0);
                 mark_executed();
                 co_return;
             }
@@ -176,7 +175,7 @@ namespace components::operators {
         if (!found_) {
             // Table not found: emit an empty, correctly-typed chunk.
             output_ = make_operator_data(resource_, output_schema_, 0);
-            output_->data_chunk().set_cardinality(0);
+            output_->chunks().front().set_cardinality(0);
             mark_executed();
             co_return;
         }
@@ -487,7 +486,7 @@ namespace components::operators {
         const auto row_count = rows.size();
         const uint64_t capacity = std::max<uint64_t>(row_count, vector::DEFAULT_VECTOR_CAPACITY);
         output_ = make_operator_data(resource_, output_schema_, capacity);
-        auto& out_chunk = output_->data_chunk();
+        auto& out_chunk = output_->chunks().front();
         for (std::size_t i = 0; i < row_count; ++i) {
             const auto& r = rows[i];
             // Direct typed writes — schema is INTEGER, UINTEGER, STRING,

@@ -35,15 +35,15 @@ TEST_CASE("integration::list_array::fixed_array_crud") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.arr;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().column_count() == 1);
+        REQUIRE(cur->column_count() == 1);
 
-        auto row0 = cur->chunk_data().value(0, 0);
+        auto row0 = cur->value(0, 0);
         REQUIRE(row0.children().size() == 3);
         REQUIRE(row0.children()[0].value<int32_t>() == 10);
         REQUIRE(row0.children()[1].value<int32_t>() == 20);
         REQUIRE(row0.children()[2].value<int32_t>() == 30);
 
-        auto row1 = cur->chunk_data().value(0, 1);
+        auto row1 = cur->value(0, 1);
         REQUIRE(row1.children().size() == 3);
         REQUIRE(row1.children()[0].value<int32_t>() == 40);
         REQUIRE(row1.children()[2].value<int32_t>() == 60);
@@ -52,15 +52,15 @@ TEST_CASE("integration::list_array::fixed_array_crud") {
     INFO("subscript READ v[i] is 1-based and projects one scalar column per index") {
         auto cur = exec(dispatcher, "SELECT v[1], v[2], v[3] FROM TestDatabase.arr;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().column_count() == 3);
+        REQUIRE(cur->column_count() == 3);
         REQUIRE(cur->size() == 2);
         // row 0 == {10,20,30}
-        REQUIRE(cur->chunk_data().value(0, 0).value<int32_t>() == 10);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int32_t>() == 20);
-        REQUIRE(cur->chunk_data().value(2, 0).value<int32_t>() == 30);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 10);
+        REQUIRE(cur->value(1, 0).value<int32_t>() == 20);
+        REQUIRE(cur->value(2, 0).value<int32_t>() == 30);
         // row 1 == {40,50,60}
-        REQUIRE(cur->chunk_data().value(0, 1).value<int32_t>() == 40);
-        REQUIRE(cur->chunk_data().value(2, 1).value<int32_t>() == 60);
+        REQUIRE(cur->value(0, 1).value<int32_t>() == 40);
+        REQUIRE(cur->value(2, 1).value<int32_t>() == 60);
     }
 
     INFO("subscript UPDATE v[i] = x mutates a single element in place") {
@@ -69,7 +69,7 @@ TEST_CASE("integration::list_array::fixed_array_crud") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.arr WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 99); // changed
         REQUIRE(v.children()[1].value<int32_t>() == 20); // untouched
@@ -96,9 +96,9 @@ TEST_CASE("integration::list_array::fixed_array_element_types") {
         auto cur = exec(dispatcher, "SELECT flags, vals FROM TestDatabase.t;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).children().size() == 3);
-        REQUIRE(cur->chunk_data().value(1, 0).children().size() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).children()[0].value<double>() == Approx(1.5));
+        REQUIRE(cur->value(0, 0).children().size() == 3);
+        REQUIRE(cur->value(1, 0).children().size() == 2);
+        REQUIRE(cur->value(1, 0).children()[0].value<double>() == Approx(1.5));
     }
 }
 
@@ -125,14 +125,14 @@ TEST_CASE("integration::list_array::variadic_list_crud") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.l;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().column_count() == 1);
+        REQUIRE(cur->column_count() == 1);
 
-        auto row0 = cur->chunk_data().value(0, 0);
+        auto row0 = cur->value(0, 0);
         REQUIRE(row0.children().size() == 2);
         REQUIRE(row0.children()[0].value<int32_t>() == 10);
         REQUIRE(row0.children()[1].value<int32_t>() == 20);
 
-        auto row1 = cur->chunk_data().value(0, 1);
+        auto row1 = cur->value(0, 1);
         REQUIRE(row1.children().size() == 3);
         REQUIRE(row1.children()[0].value<int32_t>() == 30);
         REQUIRE(row1.children()[2].value<int32_t>() == 50);
@@ -141,23 +141,23 @@ TEST_CASE("integration::list_array::variadic_list_crud") {
     INFO("explicit projection of the list column round-trips identically") {
         auto cur = exec(dispatcher, "SELECT id, v FROM TestDatabase.l;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->column_count() == 2);
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).children().size() == 2);
-        REQUIRE(cur->chunk_data().value(1, 1).children().size() == 3);
+        REQUIRE(cur->value(1, 0).children().size() == 2);
+        REQUIRE(cur->value(1, 1).children().size() == 3);
     }
 
     INFO("subscript READ v[i] on a LIST is 1-based, per-row element access") {
         auto cur = exec(dispatcher, "SELECT v[1], v[2] FROM TestDatabase.l;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->column_count() == 2);
         REQUIRE(cur->size() == 2);
         // row 0 == {10,20}
-        REQUIRE(cur->chunk_data().value(0, 0).value<int32_t>() == 10);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int32_t>() == 20);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 10);
+        REQUIRE(cur->value(1, 0).value<int32_t>() == 20);
         // row 1 == {30,40,50}
-        REQUIRE(cur->chunk_data().value(0, 1).value<int32_t>() == 30);
-        REQUIRE(cur->chunk_data().value(1, 1).value<int32_t>() == 40);
+        REQUIRE(cur->value(0, 1).value<int32_t>() == 30);
+        REQUIRE(cur->value(1, 1).value<int32_t>() == 40);
     }
 
     INFO("subscript UPDATE v[i] = x mutates a single LIST element in place") {
@@ -166,7 +166,7 @@ TEST_CASE("integration::list_array::variadic_list_crud") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.l WHERE id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 30); // untouched
         REQUIRE(v.children()[1].value<int32_t>() == 40); // untouched
@@ -195,7 +195,7 @@ TEST_CASE("integration::list_array::list_array_conversion") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.dst_list;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 5);
         REQUIRE(v.children()[2].value<int32_t>() == 7);
@@ -208,7 +208,7 @@ TEST_CASE("integration::list_array::list_array_conversion") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.dst_arr;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 1);
         REQUIRE(v.children()[2].value<int32_t>() == 3);
@@ -236,7 +236,7 @@ TEST_CASE("integration::list_array::list_to_array_length") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.dst WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 10);
         REQUIRE(v.children()[1].value<int32_t>() == 20);
@@ -246,7 +246,7 @@ TEST_CASE("integration::list_array::list_to_array_length") {
     INFO("exact-length list maps element-for-element") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.dst WHERE id = 2;");
         REQUIRE(cur->is_success());
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 30);
         REQUIRE(v.children()[2].value<int32_t>() == 50);
@@ -255,7 +255,7 @@ TEST_CASE("integration::list_array::list_to_array_length") {
     INFO("over-long list is truncated to the array size") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.dst WHERE id = 3;");
         REQUIRE(cur->is_success());
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 60);
         REQUIRE(v.children()[1].value<int32_t>() == 70);
@@ -279,7 +279,7 @@ TEST_CASE("integration::list_array::empty_array_literal") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.l WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).children().size() == 0);
+        REQUIRE(cur->value(0, 0).children().size() == 0);
     }
 
     INFO("empty ARRAY[] into a nullable fixed int[3] column pads NULL to the array size") {
@@ -288,7 +288,7 @@ TEST_CASE("integration::list_array::empty_array_literal") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.a WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].is_null());
         REQUIRE(v.children()[2].is_null());
@@ -310,7 +310,7 @@ TEST_CASE("integration::list_array::array_default_padding") {
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.n (id, v) VALUES (1, ARRAY[7,8]);")->is_success());
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.n WHERE id = 1;");
         REQUIRE(cur->is_success());
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 7);
         REQUIRE(v.children()[1].value<int32_t>() == 8);
@@ -323,7 +323,7 @@ TEST_CASE("integration::list_array::array_default_padding") {
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.d (id, v) VALUES (1, ARRAY[10,20]);")->is_success());
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.d WHERE id = 1;");
         REQUIRE(cur->is_success());
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 10); // provided
         REQUIRE(v.children()[1].value<int32_t>() == 20); // provided
@@ -348,7 +348,7 @@ TEST_CASE("integration::list_array::array_default_padding") {
         auto sel = exec(dispatcher, "SELECT v FROM TestDatabase.nn WHERE id = 2;");
         REQUIRE(sel->is_success());
         REQUIRE(sel->size() == 1);
-        auto v = sel->chunk_data().value(0, 0);
+        auto v = sel->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[2].value<int32_t>() == 3); // 4 truncated
     }
@@ -387,7 +387,7 @@ TEST_CASE("integration::list_array::subscript_in_where") {
         auto cur2 = exec(dispatcher, "SELECT id FROM TestDatabase.arr WHERE v[1] = 70;");
         REQUIRE(cur2->is_success());
         REQUIRE(cur2->size() == 1);
-        REQUIRE(cur2->chunk_data().value(0, 0).value<int64_t>() == 3);
+        REQUIRE(cur2->value(0, 0).value<int64_t>() == 3);
     }
 
     INFO("variadic LIST: WHERE v[i] = x filters per-row by element") {
@@ -400,13 +400,13 @@ TEST_CASE("integration::list_array::subscript_in_where") {
         auto cur = exec(dispatcher, "SELECT id FROM TestDatabase.l WHERE v[1] = 10;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
 
         // v[2] == 40 matches only row 2 (row 1's v[2]=20, row 3's v[2]=99).
         auto cur2 = exec(dispatcher, "SELECT id FROM TestDatabase.l WHERE v[2] = 40;");
         REQUIRE(cur2->is_success());
         REQUIRE(cur2->size() == 1);
-        REQUIRE(cur2->chunk_data().value(0, 0).value<int64_t>() == 2);
+        REQUIRE(cur2->value(0, 0).value<int64_t>() == 2);
     }
 }
 
@@ -472,7 +472,7 @@ TEST_CASE("integration::list_array::full_array_update") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.arr WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 7);
         REQUIRE(v.children()[1].value<int32_t>() == 8);
@@ -486,7 +486,7 @@ TEST_CASE("integration::list_array::full_array_update") {
 
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.arr2 WHERE id = 1;");
         REQUIRE(cur->is_success());
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 2);
         REQUIRE(v.children()[0].value<int32_t>() == 5);
         REQUIRE(v.children()[1].value<int32_t>() == 6);
@@ -512,7 +512,7 @@ TEST_CASE("integration::list_array::full_list_update") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.l WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 100);
         REQUIRE(v.children()[1].value<int32_t>() == 200);
@@ -524,7 +524,7 @@ TEST_CASE("integration::list_array::full_list_update") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.l WHERE id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 1);
         REQUIRE(v.children()[0].value<int32_t>() == 7);
     }
@@ -532,7 +532,7 @@ TEST_CASE("integration::list_array::full_list_update") {
     INFO("the untouched row keeps its original list; the grown row is unchanged by the second update") {
         auto cur = exec(dispatcher, "SELECT v FROM TestDatabase.l WHERE id = 1;");
         REQUIRE(cur->is_success());
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         REQUIRE(v.children().size() == 3);
         REQUIRE(v.children()[0].value<int32_t>() == 100);
         REQUIRE(v.children()[2].value<int32_t>() == 300);

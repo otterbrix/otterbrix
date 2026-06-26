@@ -549,8 +549,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> data_table_t::update_column(vector::vector_t& row_ids,
-                                                           const std::vector<uint64_t>& column_path,
-                                                           vector::data_chunk_t& updates) {
+                                                             const std::vector<uint64_t>& column_path,
+                                                             vector::data_chunk_t& updates) {
         assert(row_ids.type().type() == types::logical_type::BIGINT);
         assert(updates.column_count() == 1);
         if (updates.size() == 0) {

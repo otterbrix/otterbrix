@@ -9,7 +9,7 @@
 namespace {
 
     int find_column(const components::cursor::cursor_t& cur, std::string_view name) {
-        const auto& chunk = cur.chunk_data();
+        const auto& chunk = cur.chunks().front();
         for (uint64_t i = 0; i < chunk.column_count(); ++i) {
             if (chunk.data[i].type().alias() == name) {
                 return static_cast<int>(i);
@@ -22,8 +22,8 @@ namespace {
     void check_int_array_1_2_3(const components::cursor::cursor_t& cur) {
         REQUIRE(cur.is_success());
         REQUIRE(cur.size() == 1);
-        REQUIRE(cur.chunk_data().column_count() == 1);
-        auto v = cur.chunk_data().value(0, 0);
+        REQUIRE(cur.column_count() == 1);
+        auto v = cur.value(0, 0);
         const auto& children = v.children();
         REQUIRE(children.size() == 3);
         REQUIRE(children[0].value<Int>() == static_cast<Int>(1));
@@ -124,15 +124,15 @@ TEST_CASE("integration::cpp::correctness_bugs::alias_collision") {
         INFO("alias_collision error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 2);
+        REQUIRE(cur->column_count() == 2);
 
         int ai = find_column(*cur, "aname");
         int bi = find_column(*cur, "bname");
         REQUIRE(ai >= 0);
         REQUIRE(bi >= 0);
         REQUIRE(ai != bi);
-        REQUIRE(cur->chunk_data().value(static_cast<uint64_t>(ai), 0).value<std::string_view>() == "A1");
-        REQUIRE(cur->chunk_data().value(static_cast<uint64_t>(bi), 0).value<std::string_view>() == "B1");
+        REQUIRE(cur->value(static_cast<uint64_t>(ai), 0).value<std::string_view>() == "A1");
+        REQUIRE(cur->value(static_cast<uint64_t>(bi), 0).value<std::string_view>() == "B1");
     }
 }
 
@@ -172,7 +172,7 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
             INFO("table-qualified star error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().column_count() == 3);
+            REQUIRE(cur->column_count() == 3);
 
             int id_i = find_column(*cur, "id");
             int a_i = find_column(*cur, "a");
@@ -180,9 +180,9 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
             REQUIRE(id_i >= 0);
             REQUIRE(a_i >= 0);
             REQUIRE(b_i >= 0);
-            REQUIRE(cur->chunk_data().value(static_cast<uint64_t>(id_i), 0).value<int32_t>() == 1);
-            REQUIRE(cur->chunk_data().value(static_cast<uint64_t>(a_i), 0).value<std::string_view>() == "a");
-            REQUIRE(cur->chunk_data().value(static_cast<uint64_t>(b_i), 0).value<std::string_view>() == "b");
+            REQUIRE(cur->value(static_cast<uint64_t>(id_i), 0).value<int32_t>() == 1);
+            REQUIRE(cur->value(static_cast<uint64_t>(a_i), 0).value<std::string_view>() == "a");
+            REQUIRE(cur->value(static_cast<uint64_t>(b_i), 0).value<std::string_view>() == "b");
         }
     }
 
@@ -252,8 +252,8 @@ TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
         INFO("COUNT(CASE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 3);
+        REQUIRE(cur->column_count() == 1);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 3);
     }
 
     {
@@ -263,7 +263,7 @@ TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
         INFO("SUM(CASE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
     }
 }
 
@@ -294,7 +294,7 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
         INFO("MIN(CASE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int32_t>() == 72);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 72);
     }
 
     {
@@ -303,7 +303,7 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
         INFO("MAX(CASE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int32_t>() == 85);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 85);
     }
 
     {
@@ -312,7 +312,7 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
         INFO("AVG(CASE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->chunk_data().value(0, 0);
+        auto v = cur->value(0, 0);
         const auto& t = v.type();
         if (t.type() == components::types::logical_type::DOUBLE) {
             REQUIRE(core::is_equals(v.value<double>(), 78.5));
@@ -330,7 +330,7 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
         INFO("baseline MIN(CASE ELSE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int32_t>() == 72);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 72);
     }
 }
 
@@ -447,7 +447,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
         INFO("post-violation COUNT error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 0);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
     }
     {
         auto session = otterbrix::session_id_t();
@@ -470,7 +470,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM t.acc;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 1);
     }
 }
 
@@ -523,7 +523,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
         INFO("post-FK-violation COUNT error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 0);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
     }
     {
         auto session = otterbrix::session_id_t();
@@ -546,7 +546,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM t.child;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 1);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 1);
     }
 }
 
@@ -675,7 +675,7 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
         INFO("COUNT(id) empty error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<uint64_t>() == 0);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
     }
 
     SECTION("SUM(column) over empty table is NULL") {
@@ -684,12 +684,12 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
         INFO("SUM(value) empty error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).is_null());
+        REQUIRE(cur->value(0, 0).is_null());
         // Plan-time type resolution (variant 1): the empty SUM(bigint) result must be a
         // typed BIGINT NULL, not the 0-byte logical_type::NA sentinel (which crashes
         // downstream under gcc -O3). The type is config-invariant, so this also fails on
         // clang before the fix.
-        REQUIRE(cur->chunk_data().types()[0].type() == components::types::logical_type::BIGINT);
+        REQUIRE(cur->chunks().front().types()[0].type() == components::types::logical_type::BIGINT);
     }
 
     SECTION("MIN(column) over empty table is NULL") {
@@ -698,8 +698,8 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
         INFO("MIN(value) empty error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).is_null());
-        REQUIRE(cur->chunk_data().types()[0].type() == components::types::logical_type::BIGINT);
+        REQUIRE(cur->value(0, 0).is_null());
+        REQUIRE(cur->chunks().front().types()[0].type() == components::types::logical_type::BIGINT);
     }
 
     SECTION("MAX(column) over empty table is NULL") {
@@ -708,8 +708,8 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
         INFO("MAX(value) empty error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).is_null());
-        REQUIRE(cur->chunk_data().types()[0].type() == components::types::logical_type::BIGINT);
+        REQUIRE(cur->value(0, 0).is_null());
+        REQUIRE(cur->chunks().front().types()[0].type() == components::types::logical_type::BIGINT);
     }
 }
 
@@ -741,8 +741,8 @@ TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
         REQUIRE(cur->size() == 0);
         // Over empty input the projection must still expose its (one) typed column, not
         // drop the schema (0 columns) or emit a 0-byte logical_type::NA column.
-        REQUIRE(cur->chunk_data().column_count() == 1);
-        REQUIRE(cur->chunk_data().types()[0].type() != components::types::logical_type::NA);
+        REQUIRE(cur->column_count() == 1);
+        REQUIRE(cur->chunks().front().types()[0].type() != components::types::logical_type::NA);
     };
 
     SECTION("COALESCE over empty table keeps column type") {

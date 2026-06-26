@@ -843,15 +843,24 @@ namespace {
     // patterns so a cross-column clobber is detectable.
     int64_t pg_attr_value(uint64_t col, uint64_t row) {
         switch (col) {
-            case 0: return static_cast<int64_t>(row);          // attrelid-like, RLE-ish runs
-            case 1: return static_cast<int64_t>(20 + row % 3); // atttypid: {20,21,22}
-            case 2: return static_cast<int64_t>(row % 8 + 1);  // attnum: 1..8 cycling (DICTIONARY)
-            case 3: return 1;                                  // attnotnull: CONSTANT
-            case 4: return 0;                                  // atthasdefault: CONSTANT
-            case 5: return 0;                                  // attisdropped: CONSTANT 0 (the SSB symptom)
-            case 6: return 1000;                               // added_at_commit_id: CONSTANT
-            case 7: return 0;                                  // dropped_at_commit_id: CONSTANT 0
-            default: return static_cast<int64_t>(col * 100 + row % 4);
+            case 0:
+                return static_cast<int64_t>(row); // attrelid-like, RLE-ish runs
+            case 1:
+                return static_cast<int64_t>(20 + row % 3); // atttypid: {20,21,22}
+            case 2:
+                return static_cast<int64_t>(row % 8 + 1); // attnum: 1..8 cycling (DICTIONARY)
+            case 3:
+                return 1; // attnotnull: CONSTANT
+            case 4:
+                return 0; // atthasdefault: CONSTANT
+            case 5:
+                return 0; // attisdropped: CONSTANT 0 (the SSB symptom)
+            case 6:
+                return 1000; // added_at_commit_id: CONSTANT
+            case 7:
+                return 0; // dropped_at_commit_id: CONSTANT 0
+            default:
+                return static_cast<int64_t>(col * 100 + row % 4);
         }
     }
 
@@ -884,9 +893,7 @@ namespace {
         }
     }
 
-    void scan_and_verify_pg_attr(components::table::data_table_t& table,
-                                 uint64_t num_cols,
-                                 uint64_t total_rows) {
+    void scan_and_verify_pg_attr(components::table::data_table_t& table, uint64_t num_cols, uint64_t total_rows) {
         using namespace components::vector;
         uint64_t scanned = 0;
         table.scan_table_segment(0, total_rows, [&](data_chunk_t& chunk) {

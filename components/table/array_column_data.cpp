@@ -169,9 +169,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> array_column_data_t::update(uint64_t column_index,
-                                                           vector::vector_t& update_vector,
-                                                           int64_t* row_ids,
-                                                           uint64_t update_count) {
+                                                             vector::vector_t& update_vector,
+                                                             int64_t* row_ids,
+                                                             uint64_t update_count) {
         size_t arr_size = array_size();
         size_t remaining_count = arr_size * update_count;
         std::pmr::vector<int64_t> sub_column_ids(resource_);
@@ -208,10 +208,10 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> array_column_data_t::update_column(const std::vector<uint64_t>& column_path,
-                                                                 vector::vector_t& update_vector,
-                                                                 int64_t* row_ids,
-                                                                 uint64_t update_count,
-                                                                 uint64_t depth) {
+                                                                    vector::vector_t& update_vector,
+                                                                    int64_t* row_ids,
+                                                                    uint64_t update_count,
+                                                                    uint64_t depth) {
         size_t arr_size = array_size();
         size_t remaining_count = arr_size * update_count;
         std::pmr::vector<int64_t> sub_column_ids(resource_);

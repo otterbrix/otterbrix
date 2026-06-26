@@ -166,39 +166,62 @@ namespace components::operators {
             return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
         }
 
-        // Row-wise concatenation of the per-batch gathers of ONE group into a single
-        // chunk (same schema, cardinality = sum of parts). The non-vectorizable
-        // aggregate path needs every row of a group in ONE batch entry: the
-        // operator_func_t batch path emits one aggregate value per chunk, so a group
-        // must map to exactly one chunk. fuse() is column-wise (appends columns,
-        // asserts equal row counts) and is wrong here; this appends rows with the same
-        // vector_ops::copy primitive the gather step itself uses (line copying input
-        // rows into grp), including row_ids, so results match the legacy single-batch
-        // materialize path exactly.
-        vector::data_chunk_t concat_parts_rowwise(std::pmr::memory_resource* resource, chunks_vector_t& parts) {
+        // Row-wise concatenation of the per-batch gathers of ONE group into a sequence
+        // of <=DEFAULT_VECTOR_CAPACITY chunks (same schema; total cardinality = sum of
+        // parts). CORE INVARIANT: a data_chunk_t may never be constructed with capacity
+        // > DEFAULT_VECTOR_CAPACITY (data_chunk.cpp:16 asserts and aborts), so a group
+        // whose rows exceed 1024 must NOT be fused into one chunk. The aggregate batch
+        // path treats every chunk of one compute() batch as the SAME logical group:
+        // aggregate_executor consumes+merges each chunk into one running state and
+        // finalizes once (kernel_executor.cpp:197), so the parts fold to a single value
+        // regardless of how the group's rows are split. Rows (and row_ids) are appended
+        // with the same vector_ops::copy primitive the gather step uses, in order, so
+        // the folded value matches the legacy single-fused-chunk path exactly.
+        chunks_vector_t concat_parts_into_batches(std::pmr::memory_resource* resource, chunks_vector_t& parts) {
             assert(!parts.empty());
             uint64_t total = 0;
             for (auto& part : parts) {
                 total += part.size();
             }
             auto types = parts.front().types();
-            uint64_t cap = total > 0 ? total : 1;
-            vector::data_chunk_t merged(resource, types, cap);
-            merged.set_cardinality(total);
             size_t col_count = types.size();
-            uint64_t row_offset = 0;
-            for (auto& part : parts) {
-                uint64_t part_rows = part.size();
-                if (part_rows == 0) {
-                    continue;
-                }
-                for (size_t c = 0; c < col_count; c++) {
-                    vector::vector_ops::copy(part.data[c], merged.data[c], part_rows, 0, row_offset);
-                }
-                vector::vector_ops::copy(part.row_ids, merged.row_ids, part_rows, 0, row_offset);
-                row_offset += part_rows;
+            chunks_vector_t out(resource);
+            if (total == 0) {
+                vector::data_chunk_t empty(resource, types, 1);
+                empty.set_cardinality(0);
+                out.emplace_back(std::move(empty));
+                return out;
             }
-            return merged;
+            out.reserve((total + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY);
+            // Flatten the group's rows into back-to-back <=1024-row chunks. A source part
+            // may straddle a chunk boundary, so copy it in (possibly two) windows.
+            uint64_t part_idx = 0;
+            uint64_t part_pos = 0; // rows already copied out of parts[part_idx]
+            uint64_t remaining = total;
+            while (remaining > 0) {
+                uint64_t cap = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, remaining);
+                vector::data_chunk_t chunk(resource, types, cap);
+                chunk.set_cardinality(cap);
+                uint64_t filled = 0;
+                while (filled < cap) {
+                    while (part_idx < parts.size() && parts[part_idx].size() == part_pos) {
+                        part_idx++;
+                        part_pos = 0;
+                    }
+                    auto& part = parts[part_idx];
+                    uint64_t avail = part.size() - part_pos;
+                    uint64_t take = std::min<uint64_t>(avail, cap - filled);
+                    for (size_t c = 0; c < col_count; c++) {
+                        vector::vector_ops::copy(part.data[c], chunk.data[c], take, part_pos, filled);
+                    }
+                    vector::vector_ops::copy(part.row_ids, chunk.row_ids, take, part_pos, filled);
+                    part_pos += take;
+                    filled += take;
+                }
+                remaining -= cap;
+                out.emplace_back(std::move(chunk));
+            }
+            return out;
         }
     } // anonymous namespace
 
@@ -545,7 +568,7 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
-    vector::data_chunk_t operator_group_t::materialize_groups(pipeline::context_t* pipeline_context) {
+    void operator_group_t::materialize_groups(pipeline::context_t* pipeline_context, chunks_vector_t& out) {
         size_t num_groups = group_count_;
 
         // Output types: key column types (straight off the key chunk — always typed,
@@ -562,31 +585,36 @@ namespace components::operators {
         std::pmr::vector<std::pmr::vector<types::logical_value_t>> agg_results(resource_);
         agg_results.reserve(values_.size());
 
-        // Gather-once shared batch for the non-vectorizable aggregators: one fused
-        // chunk per group (each group = one batch entry), mirroring the old
-        // dual-path fallback exactly so multi-chunk/node_data semantics match.
-        boost::intrusive_ptr<operator_batch_t> shared_batch;
+        // Build the per-group operator batches ONCE, BEFORE the per-aggregate loop, and reuse them
+        // across every non-vectorizable aggregator. The gathered parts are MOVED into a batch, so
+        // rebuilding inside the aggregate loop would feed a moved-from (0-column) chunk to the second
+        // aggregator (the SUM(CASE...) + internal-aggregate case). Each group is one logical unit: a
+        // group fitting in <=DEFAULT_VECTOR_CAPACITY rows is one fused chunk (legacy semantics, incl.
+        // cross-part DISTINCT); a larger group is fed as multiple <=1024 chunks the aggregate batch
+        // path folds into ONE value (kernel_executor consume-all + finalize-once). Per-group compute
+        // also fixes the old single-shared-batch hazard where one func_->execute over num_groups
+        // chunks folded ALL groups into one value (group0=value, group1..n=NULL). compute() restores
+        // the batch chunk to its base columns after each call, so reuse across aggregators is safe.
+        std::pmr::vector<boost::intrusive_ptr<operator_batch_t>> group_batches(resource_);
         if (need_row_gather_) {
-            chunks_vector_t group_chunks(resource_);
-            group_chunks.reserve(num_groups);
+            group_batches.reserve(num_groups);
             for (size_t g = 0; g < num_groups; g++) {
                 auto& parts = gathered_rows_per_group_[g];
+                chunks_vector_t group_chunks(resource_);
                 if (parts.empty()) {
                     std::pmr::vector<types::complex_logical_type> empty_types(resource_);
                     vector::data_chunk_t empty(resource_, empty_types, 1);
                     empty.set_cardinality(0);
                     group_chunks.emplace_back(std::move(empty));
-                    continue;
+                } else if (parts.size() == 1) {
+                    group_chunks.emplace_back(std::move(parts.front()));
+                } else {
+                    // >1 part: flatten into <=1024-row chunks (one chunk if the group fits,
+                    // several the aggregator folds as one logical group when it exceeds 1024).
+                    group_chunks = concat_parts_into_batches(resource_, parts);
                 }
-                // ROW-WISE concat: one chunk per group holding ALL the group's rows
-                // (same schema, summed cardinality). The single-batch case (parts.size()
-                // == 1) just moves the lone part through. Column-wise fuse() was wrong:
-                // it appended the second batch's columns and asserted equal row counts.
-                vector::data_chunk_t merged =
-                    parts.size() == 1 ? std::move(parts.front()) : concat_parts_rowwise(resource_, parts);
-                group_chunks.emplace_back(std::move(merged));
+                group_batches.emplace_back(make_operator_batch(resource_, std::move(group_chunks)));
             }
-            shared_batch = make_operator_batch(resource_, std::move(group_chunks));
         }
 
         for (size_t a = 0; a < values_.size(); a++) {
@@ -606,32 +634,27 @@ namespace components::operators {
                 }
             } else {
                 auto& aggregator = values_[a].aggregator;
-                aggregator->compute(pipeline_context, shared_batch);
-                if (aggregator->has_error()) {
-                    set_error(aggregator->get_error());
-                    return vector::data_chunk_t(resource_,
-                                                std::pmr::vector<types::complex_logical_type>{resource_},
-                                                1);
-                }
-                auto datum = aggregator->take_batch_values();
-                if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
-                    auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
-                    for (auto& v : vals) {
-                        v.set_alias(std::string(values_[a].name));
-                        results.push_back(std::move(v));
+                for (size_t g = 0; g < num_groups; g++) {
+                    aggregator->compute(pipeline_context, group_batches[g]);
+                    if (aggregator->has_error()) {
+                        set_error(aggregator->get_error());
+                        return;
                     }
-                } else {
-                    auto& result_chunk = std::get<vector::data_chunk_t>(datum);
-                    for (size_t i = 0; i < num_groups && i < result_chunk.size(); i++) {
-                        auto val = result_chunk.data.empty()
-                                       ? types::logical_value_t(resource_, types::logical_type::NA)
-                                       : result_chunk.value(0, i);
-                        val.set_alias(std::string(values_[a].name));
-                        results.push_back(std::move(val));
+                    auto datum = aggregator->take_batch_values();
+                    types::logical_value_t val(resource_, types::logical_type::NA);
+                    if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(datum)) {
+                        auto& vals = std::get<std::pmr::vector<types::logical_value_t>>(datum);
+                        if (!vals.empty()) {
+                            val = std::move(vals.front());
+                        }
+                    } else {
+                        auto& result_chunk = std::get<vector::data_chunk_t>(datum);
+                        if (!result_chunk.data.empty() && result_chunk.size() > 0) {
+                            val = result_chunk.value(0, 0);
+                        }
                     }
-                }
-                while (results.size() < num_groups) {
-                    results.emplace_back(resource_, types::logical_type::NA);
+                    val.set_alias(std::string(values_[a].name));
+                    results.push_back(std::move(val));
                 }
             }
             agg_results.push_back(std::move(results));
@@ -651,48 +674,69 @@ namespace components::operators {
             }
         }
 
-        uint64_t cap = num_groups > 0 ? static_cast<uint64_t>(num_groups) : 1;
-        vector::data_chunk_t result(resource_, out_types, cap);
-        result.set_cardinality(static_cast<uint64_t>(num_groups));
+        // CORE INVARIANT: never construct a data_chunk_t with capacity > 1024. Emit the
+        // group table in <=DEFAULT_VECTOR_CAPACITY-group slices straight into `out`
+        // (loop num_groups in steps of 1024). Each slice carries its own key window +
+        // per-group aggregate values, and runs post-aggregate arithmetic / internal-
+        // aggregate erase / HAVING independently (all are per-row/per-group operations,
+        // so a per-slice pass is identical to the whole-chunk pass). This makes the
+        // post-hoc split_chunk_into_batches in finalize() redundant.
+        const uint64_t total_groups = static_cast<uint64_t>(num_groups);
+        uint64_t emitted = 0;
+        do {
+            const uint64_t slice = std::min<uint64_t>(vector::DEFAULT_VECTOR_CAPACITY, total_groups - emitted);
+            const uint64_t cap = slice > 0 ? slice : 1;
+            vector::data_chunk_t result(resource_, out_types, cap);
+            result.set_cardinality(slice);
 
-        // Key columns: copy straight from the typed per-group key chunk.
-        if (num_groups > 0 && key_count_ > 0 && !group_key_chunk_storage_.empty()) {
-            auto& key_chunk = group_key_chunk_storage_.front();
-            for (size_t k = 0; k < key_count_; k++) {
-                vector::vector_ops::copy(key_chunk.data[k], result.data[k], num_groups, 0, 0);
-            }
-        }
-
-        // Aggregate columns. NULL cells keep their NA-typed logical_value; the COLUMN
-        // type (out_types above) carries the plan-resolved type, so a null cell becomes a
-        // typed NULL of a storable column instead of a 0-byte NA column.
-        for (size_t a = 0; a < values_.size(); a++) {
-            for (size_t g = 0; g < num_groups; g++) {
-                if (g < agg_results[a].size()) {
-                    result.set_value(key_count_ + a, g, std::move(agg_results[a][g]));
-                } else {
-                    result.set_value(key_count_ + a, g, types::logical_value_t(resource_, types::logical_type::NA));
+            // Key columns: copy the [emitted, emitted+slice) window of the typed per-group
+            // key chunk (the key chunk may legally exceed 1024 — it grows via
+            // data_chunk_t::resize, which has no capacity assert).
+            if (slice > 0 && key_count_ > 0 && !group_key_chunk_storage_.empty()) {
+                auto& key_chunk = group_key_chunk_storage_.front();
+                for (size_t k = 0; k < key_count_; k++) {
+                    // 5-arg copy is (source, target, source_count, source_offset, target_offset) and
+                    // copies source_count - source_offset elements; to copy the [emitted, emitted+slice)
+                    // window the source_count must be the END index, not the slice length.
+                    vector::vector_ops::copy(key_chunk.data[k], result.data[k], emitted + slice, emitted, 0);
                 }
             }
-        }
 
-        // Post-aggregate arithmetic (columnar).
-        size_t size_before_post = result.data.size();
-        calc_post_aggregates(pipeline_context, result);
+            // Aggregate columns. NULL cells keep their NA-typed logical_value; the COLUMN
+            // type (out_types above) carries the plan-resolved type, so a null cell
+            // becomes a typed NULL of a storable column instead of a 0-byte NA column.
+            for (size_t a = 0; a < values_.size(); a++) {
+                for (uint64_t r = 0; r < slice; r++) {
+                    const size_t g = static_cast<size_t>(emitted + r);
+                    if (g < agg_results[a].size()) {
+                        result.set_value(key_count_ + a, r, std::move(agg_results[a][g]));
+                    } else {
+                        result.set_value(key_count_ + a,
+                                         r,
+                                         types::logical_value_t(resource_, types::logical_type::NA));
+                    }
+                }
+            }
 
-        // Remove internal aggregate columns by position.
-        if (internal_aggregate_count_ > 0) {
-            auto it_end = result.data.begin() + static_cast<std::ptrdiff_t>(size_before_post);
-            auto it_begin = it_end - static_cast<std::ptrdiff_t>(internal_aggregate_count_);
-            result.data.erase(it_begin, it_end);
-        }
+            // Post-aggregate arithmetic (columnar, per-slice).
+            size_t size_before_post = result.data.size();
+            calc_post_aggregates(pipeline_context, result);
 
-        // HAVING filter (columnar).
-        if (having_) {
-            filter_having(pipeline_context, result);
-        }
+            // Remove internal aggregate columns by position.
+            if (internal_aggregate_count_ > 0) {
+                auto it_end = result.data.begin() + static_cast<std::ptrdiff_t>(size_before_post);
+                auto it_begin = it_end - static_cast<std::ptrdiff_t>(internal_aggregate_count_);
+                result.data.erase(it_begin, it_end);
+            }
 
-        return result;
+            // HAVING filter (columnar, per-slice — a per-row filter, independent per group).
+            if (having_) {
+                filter_having(pipeline_context, result);
+            }
+
+            out.emplace_back(std::move(result));
+            emitted += slice;
+        } while (emitted < total_groups);
     }
 
     vector::data_chunk_t operator_group_t::empty_aggregate_result(pipeline::context_t* pipeline_context) {
@@ -972,15 +1016,13 @@ namespace components::operators {
 
     core::error_t operator_group_t::finalize(pipeline::context_t* ctx, chunks_vector_t& out) {
         if (any_input_) {
-            // Materialize the accumulated group table into the result chunk(s).
-            auto result = materialize_groups(ctx);
+            // Materialize the accumulated group table directly into <=1024-group result
+            // chunks. materialize_groups now slices internally, so no post-hoc
+            // split_chunk_into_batches is needed (it was dead code for the >1024-group
+            // crash anyway: the oversized chunk aborted in its ctor before finalize ran).
+            materialize_groups(ctx, out);
             if (has_error()) {
                 return get_error();
-            }
-            // Match split_large_output: keep each emitted chunk within DEFAULT_VECTOR_CAPACITY.
-            auto batches = operators::split_chunk_into_batches(resource_, std::move(result));
-            for (auto& c : batches) {
-                out.emplace_back(std::move(c));
             }
             return core::error_t::no_error();
         }

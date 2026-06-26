@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -306,26 +308,42 @@ namespace components::sql::transform {
         if (pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists) {
             auto vals = pg_ptr_cast<List>(pg_ptr_cast<SelectStmt>(node.selectStmt)->valuesLists)->lst;
 
-            vector::data_chunk_t chunk(resource_, {}, vals.size());
-            chunk.set_cardinality(vals.size());
-            size_t row_index = 0;
+            // A parameterised INSERT binds rows by absolute index in transform_result,
+            // which materialises them into a single working chunk — so keep one chunk for
+            // that path. A literal INSERT splits into ≤DEFAULT_VECTOR_CAPACITY chunks so no
+            // oversized data_chunk_t is ever built. Detect the case up front.
             bool has_params = false;
-
             for (auto row : vals) {
-                auto values = pg_ptr_cast<List>(row.data)->lst;
+                for (auto value : pg_ptr_cast<List>(row.data)->lst) {
+                    if (nodeTag(value.data) == T_ParamRef) {
+                        has_params = true;
+                        break;
+                    }
+                }
+                if (has_params) {
+                    break;
+                }
+            }
+
+            // Fills one row of `chunk` at chunk-local index `chunk_row` from the value list
+            // of global row `global_row`. Discovers/promotes columns in `chunk` as it goes
+            // and records ParamRef slots (keyed by global row) in parameter_insert_map_.
+            // Returns false (and sets error_) on a malformed row.
+            auto fill_row =
+                [&](vector::data_chunk_t& chunk, size_t chunk_row, size_t global_row, List* values_list) -> bool {
+                auto values = values_list->lst;
                 if (values.size() != fields.size()) {
                     error_ =
                         core::error_t(core::error_code_t::sql_parse_error,
                                       std::pmr::string{"INSERT has more expressions than target columns", resource_});
-                    return nullptr;
+                    return false;
                 }
 
                 auto it_field = key_translation.begin();
                 for (auto it_value = values.begin(); it_value != values.end(); ++it_field, ++it_value) {
                     if (nodeTag(it_value->data) == T_ParamRef) {
-                        has_params = true;
                         auto ref = pg_ptr_cast<ParamRef>(it_value->data);
-                        auto loc = std::make_pair(row_index, it_field->as_string());
+                        auto loc = std::make_pair(global_row, it_field->as_string());
 
                         if (auto it = parameter_insert_map_.find(ref->number); it != parameter_insert_map_.end()) {
                             it->second.emplace_back(std::move(loc));
@@ -340,7 +358,7 @@ namespace components::sql::transform {
                         auto value = evaluate_const_a_expr(resource_, pg_ptr_cast<A_Expr>(it_value->data));
                         if (value.has_error()) {
                             error_ = value.error();
-                            return nullptr;
+                            return false;
                         }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
@@ -350,7 +368,7 @@ namespace components::sql::transform {
                         if (it == chunk.data.end()) {
                             value.value().set_alias(it_field->as_string());
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
-                            chunk.set_value(column_index, row_index, std::move(value.value()));
+                            chunk.set_value(column_index, chunk_row, std::move(value.value()));
                         } else {
                             auto col_type = it->type().type();
                             auto val_type = value.value().type().type();
@@ -358,20 +376,20 @@ namespace components::sql::transform {
                                 auto promoted = types::promote_type(col_type, val_type);
                                 if (promoted != col_type) {
                                     chunk.data[column_index] =
-                                        promote_column(resource_, *it, row_index, promoted, chunk.capacity());
+                                        promote_column(resource_, *it, chunk_row, promoted, chunk.capacity());
                                 }
                                 chunk.set_value(column_index,
-                                                row_index,
+                                                chunk_row,
                                                 numeric_widen(resource_, value.value(), promoted));
                             } else {
-                                chunk.set_value(column_index, row_index, std::move(value.value()));
+                                chunk.set_value(column_index, chunk_row, std::move(value.value()));
                             }
                         }
                     } else {
                         auto value = get_value(resource_, pg_ptr_cast<Node>(it_value->data));
                         if (value.has_error()) {
                             error_ = value.error();
-                            return nullptr;
+                            return false;
                         }
                         auto it =
                             std::find_if(chunk.data.begin(), chunk.data.end(), [&](const vector::vector_t& column) {
@@ -381,7 +399,7 @@ namespace components::sql::transform {
                         if (it == chunk.data.end()) {
                             value.value().set_alias(it_field->as_string());
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
-                            chunk.set_value(column_index, row_index, std::move(value.value()));
+                            chunk.set_value(column_index, chunk_row, std::move(value.value()));
                         } else {
                             auto col_type = it->type().type();
                             auto val_type = value.value().type().type();
@@ -389,10 +407,10 @@ namespace components::sql::transform {
                                 auto promoted = types::promote_type(col_type, val_type);
                                 if (promoted != col_type) {
                                     chunk.data[column_index] =
-                                        promote_column(resource_, *it, row_index, promoted, chunk.capacity());
+                                        promote_column(resource_, *it, chunk_row, promoted, chunk.capacity());
                                 }
                                 chunk.set_value(column_index,
-                                                row_index,
+                                                chunk_row,
                                                 numeric_widen(resource_, value.value(), promoted));
                             } else if (array_shapes_differ(it->type(), value.value().type())) {
                                 // VALUES rows carry array literals of different shapes (e.g. ARRAY[1]
@@ -403,19 +421,19 @@ namespace components::sql::transform {
                                 auto elem_type = value.value().type().child_type();
                                 if (col_type == types::logical_type::ARRAY) {
                                     chunk.data[column_index] =
-                                        promote_array_to_list(resource_, *it, row_index, elem_type, chunk.capacity());
+                                        promote_array_to_list(resource_, *it, chunk_row, elem_type, chunk.capacity());
                                 }
                                 chunk.set_value(column_index,
-                                                row_index,
+                                                chunk_row,
                                                 to_list_value(resource_, value.value(), elem_type));
                             } else {
-                                chunk.set_value(column_index, row_index, std::move(value.value()));
+                                chunk.set_value(column_index, chunk_row, std::move(value.value()));
                             }
                         }
                     }
                 }
-                row_index++;
-            }
+                return true;
+            };
 
             auto qn = rangevar_to_qualified_name(node.relation);
             // Identity travels via the catalog-resolve wrap; the insert node
@@ -423,12 +441,38 @@ namespace components::sql::transform {
             // time from the sibling resolve_table).
             logical_plan::node_ptr ins;
             if (has_params) {
+                vector::data_chunk_t chunk(resource_, {}, vals.size() == 0 ? 1 : vals.size());
+                chunk.set_cardinality(vals.size());
+                size_t row_index = 0;
+                for (auto row : vals) {
+                    if (!fill_row(chunk, row_index, row_index, pg_ptr_cast<List>(row.data))) {
+                        return nullptr;
+                    }
+                    row_index++;
+                }
                 parameter_insert_rows_ = std::move(chunk);
                 ins = logical_plan::make_node_insert(resource_,
                                                      vector::data_chunk_t(resource_, {}, 0),
                                                      std::move(key_translation));
             } else {
-                ins = logical_plan::make_node_insert(resource_, std::move(chunk), std::move(key_translation));
+                // Split the literal rows into uniform ≤CAP chunks (only the last is smaller).
+                const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
+                const uint64_t total = vals.size();
+                std::pmr::vector<vector::data_chunk_t> chunks(resource_);
+                auto row_it = vals.begin();
+                uint64_t global_row = 0;
+                while (global_row < total) {
+                    const uint64_t batch = std::min<uint64_t>(cap, total - global_row);
+                    vector::data_chunk_t chunk(resource_, {}, batch);
+                    chunk.set_cardinality(batch);
+                    for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
+                        if (!fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data))) {
+                            return nullptr;
+                        }
+                    }
+                    chunks.emplace_back(std::move(chunk));
+                }
+                ins = logical_plan::make_node_insert(resource_, std::move(chunks), std::move(key_translation));
             }
             static_cast<logical_plan::node_insert_t*>(ins.get())->returning() = returning;
             return maybe_wrap_with_catalog_resolve_table(resource_,

@@ -115,72 +115,76 @@ namespace services::dispatcher { namespace {
             node->children().front() &&
             node->children().front()->type() == components::logical_plan::node_type::data_t) {
             auto* dat = static_cast<components::logical_plan::node_data_t*>(node->children().front().get());
-            auto& chunk = dat->data_chunk();
             const auto& kt = node->key_translation();
-            for (std::size_t ci = 0; ci < chunk.column_count(); ++ci) {
-                auto& col = chunk.data[ci];
-                // Locate this chunk column's matching table column by name
-                // (key_translation[i] when present, else position).
-                std::string col_name;
-                if (ci < kt.size()) {
-                    col_name = kt[ci].as_string();
-                } else {
-                    col_name = std::string(col.type().alias());
-                }
-                const components::types::complex_logical_type* target_type = nullptr;
-                for (const auto& tc : md->columns) {
-                    if (tc.attname == col_name) {
-                        target_type = &tc.type;
-                        break;
+            // Coerce literal columns to the table's declared types. The raw data is a batch
+            // of ≤CAP chunks that all share the same column shape, so apply the same coercion
+            // to each chunk.
+            for (auto& chunk : dat->chunks()) {
+                for (std::size_t ci = 0; ci < chunk.column_count(); ++ci) {
+                    auto& col = chunk.data[ci];
+                    // Locate this chunk column's matching table column by name
+                    // (key_translation[i] when present, else position).
+                    std::string col_name;
+                    if (ci < kt.size()) {
+                        col_name = kt[ci].as_string();
+                    } else {
+                        col_name = std::string(col.type().alias());
                     }
-                }
-                if (!target_type)
-                    continue;
-                // complex_logical_type::operator== only compares the top-
-                // level logical_type enum, so STRUCT-vs-STRUCT compares
-                // equal regardless of children. For composite types (where
-                // SQL literal children may carry the wrong width — BIGINT
-                // for int4, DOUBLE for float4, …), force a full rebuild so
-                // cast_as recurses into children. Scalars get the cheap
-                // identity check.
-                using LT = components::types::logical_type;
-                // A fixed ARRAY target reconciles both element width and length (truncate /
-                // pad from the column DEFAULT) at the storage append chokepoint, which holds
-                // the decoded default value this layer does not. Leave the literal as-is.
-                if (target_type->type() == LT::ARRAY)
-                    continue;
-                const bool is_composite = col.type().type() == LT::STRUCT || col.type().type() == LT::LIST ||
-                                          col.type().type() == LT::ARRAY || col.type().type() == LT::MAP;
-                if (!is_composite && col.type() == *target_type)
-                    continue;
-                // Build a fresh vector with the table's declared type and
-                // copy every row via cast_as. complex_logical_type::cast_as
-                // recurses STRUCT children, so nested ROW(int_literal,...)
-                // → STRUCT(INTEGER,...) is fully retyped.
-                //
-                // TODO(L3): drop the per-row logical_value_t round-trip once a
-                // typed cast accessor on vector_t/data_chunk covers this case.
-                // vector_operations::cast_vector exists but is FLAT numeric-only
-                // (asserts on strings, no STRUCT/LIST/ARRAY/MAP recursion, no
-                // session_tz for timestamps); this loop relies on cast_as's
-                // recursive composite descent + tz-aware temporal casts + null
-                // preservation. No suitable batch accessor today, so left as-is
-                // rather than inventing a new abstraction.
-                components::vector::vector_t replacement(col.resource(), *target_type, chunk.capacity());
-                const auto rows = chunk.size();
-                for (std::uint64_t row = 0; row < rows; ++row) {
-                    auto v = col.value(row);
-                    if (!v.is_null() && v.type() != *target_type) {
-                        v = v.cast_as(*target_type, session_tz);
+                    const components::types::complex_logical_type* target_type = nullptr;
+                    for (const auto& tc : md->columns) {
+                        if (tc.attname == col_name) {
+                            target_type = &tc.type;
+                            break;
+                        }
                     }
-                    replacement.set_value(row, v);
+                    if (!target_type)
+                        continue;
+                    // complex_logical_type::operator== only compares the top-
+                    // level logical_type enum, so STRUCT-vs-STRUCT compares
+                    // equal regardless of children. For composite types (where
+                    // SQL literal children may carry the wrong width — BIGINT
+                    // for int4, DOUBLE for float4, …), force a full rebuild so
+                    // cast_as recurses into children. Scalars get the cheap
+                    // identity check.
+                    using LT = components::types::logical_type;
+                    // A fixed ARRAY target reconciles both element width and length (truncate /
+                    // pad from the column DEFAULT) at the storage append chokepoint, which holds
+                    // the decoded default value this layer does not. Leave the literal as-is.
+                    if (target_type->type() == LT::ARRAY)
+                        continue;
+                    const bool is_composite = col.type().type() == LT::STRUCT || col.type().type() == LT::LIST ||
+                                              col.type().type() == LT::ARRAY || col.type().type() == LT::MAP;
+                    if (!is_composite && col.type() == *target_type)
+                        continue;
+                    // Build a fresh vector with the table's declared type and
+                    // copy every row via cast_as. complex_logical_type::cast_as
+                    // recurses STRUCT children, so nested ROW(int_literal,...)
+                    // → STRUCT(INTEGER,...) is fully retyped.
+                    //
+                    // TODO(L3): drop the per-row logical_value_t round-trip once a
+                    // typed cast accessor on vector_t/data_chunk covers this case.
+                    // vector_operations::cast_vector exists but is FLAT numeric-only
+                    // (asserts on strings, no STRUCT/LIST/ARRAY/MAP recursion, no
+                    // session_tz for timestamps); this loop relies on cast_as's
+                    // recursive composite descent + tz-aware temporal casts + null
+                    // preservation. No suitable batch accessor today, so left as-is
+                    // rather than inventing a new abstraction.
+                    components::vector::vector_t replacement(col.resource(), *target_type, chunk.capacity());
+                    const auto rows = chunk.size();
+                    for (std::uint64_t row = 0; row < rows; ++row) {
+                        auto v = col.value(row);
+                        if (!v.is_null() && v.type() != *target_type) {
+                            v = v.cast_as(*target_type, session_tz);
+                        }
+                        replacement.set_value(row, v);
+                    }
+                    // Preserve the original column alias (used by storage_append
+                    // for name-based key matching).
+                    if (col.type().has_alias()) {
+                        replacement.type().set_alias(col.type().alias());
+                    }
+                    col = std::move(replacement);
                 }
-                // Preserve the original column alias (used by storage_append
-                // for name-based key matching).
-                if (col.type().has_alias()) {
-                    replacement.type().set_alias(col.type().alias());
-                }
-                col = std::move(replacement);
             }
         }
     }
@@ -525,8 +529,7 @@ namespace services::catalog_resolve {
 
     // --- SELECT-time view expansion helpers ---
 
-    components::logical_plan::node_catalog_resolve_t*
-    find_first_view_resolve(components::logical_plan::node_t* root) {
+    components::logical_plan::node_catalog_resolve_t* find_first_view_resolve(components::logical_plan::node_t* root) {
         using namespace components::logical_plan;
         if (!root || root->type() != node_type::sequence_t) {
             return nullptr;

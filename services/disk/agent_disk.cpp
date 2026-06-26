@@ -321,10 +321,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::fix_wal_id, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_scan>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_scan, msg);
-                break;
-            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_append_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_append_inner, msg);
                 break;
@@ -357,8 +353,8 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_fetch_inner, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_scan_batched_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_scan_batched_inner, msg);
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_scan_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_scan_inner, msg);
                 break;
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_fetch_next_batch_inner>: {
@@ -452,35 +448,6 @@ namespace services::disk {
             default:
                 break;
         }
-    }
-
-    agent_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
-    agent_disk_t::storage_scan(session_id_t /*session*/,
-                               components::catalog::oid_t table_oid,
-                               std::unique_ptr<components::table::table_filter_t> filter,
-                               int limit,
-                               components::table::transaction_data txn) {
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::storage_scan: oid {} not owned by this agent — empty result",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::unique_ptr<components::vector::data_chunk_t>{};
-        }
-        auto& entry = it->second;
-        if (entry == nullptr || entry->storage == nullptr) {
-            // Defensive: null entries unreachable in current control flow.
-            trace(log_,
-                  "agent_disk[{}]::storage_scan: oid {} has null entry/storage — empty result",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return std::unique_ptr<components::vector::data_chunk_t>{};
-        }
-        auto types = entry->storage->types();
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types);
-        entry->storage->scan(*result, filter.get(), limit, txn);
-        co_return std::move(result);
     }
 
     // Mutation fanout targets. The manager router pre-validates, but the agent
@@ -796,15 +763,14 @@ namespace services::disk {
                 }
                 auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
                 schema_chunk->set_cardinality(0);
-                [[maybe_unused]] auto _sc =
-                    actor_zeta::send(manager_wal_addr_,
-                                     &wal::manager_wal_replicate_t::write_physical_add_column,
-                                     ctx.session,
-                                     table_oid,
-                                     std::move(schema_chunk),
-                                     static_cast<std::uint64_t>(wal_added_columns.size()),
-                                     txn.transaction_id,
-                                     db_oid);
+                [[maybe_unused]] auto _sc = actor_zeta::send(manager_wal_addr_,
+                                                             &wal::manager_wal_replicate_t::write_physical_add_column,
+                                                             ctx.session,
+                                                             table_oid,
+                                                             std::move(schema_chunk),
+                                                             static_cast<std::uint64_t>(wal_added_columns.size()),
+                                                             txn.transaction_id,
+                                                             db_oid);
             }
 
             // 5a-ii. PHYSICAL_INSERT carrying the FINAL preprocessed chunk + the
@@ -815,14 +781,15 @@ namespace services::disk {
             //        and materialized below in the same atomic handler). This is the
             //        ONE co_await of this handler (see 5a-i): awaiting it also confirms
             //        the FIFO-earlier ADD_COLUMN record was durably written.
-            auto wal_chunk =
-                std::make_unique<components::vector::data_chunk_t>(resource(), data->types(), data->size());
-            data->copy(*wal_chunk, 0);
+            components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
+            data->copy(wal_chunk, 0);
+            std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
+            wal_chunks.emplace_back(std::move(wal_chunk));
             auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
                                              &wal::manager_wal_replicate_t::write_physical_insert,
                                              ctx.session,
                                              table_oid,
-                                             std::move(wal_chunk),
+                                             std::move(wal_chunks),
                                              start_row,
                                              actual_count,
                                              txn.transaction_id,
@@ -1008,17 +975,18 @@ namespace services::disk {
         co_return entry->storage->delete_rows(row_ids, count);
     }
 
-    agent_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     agent_disk_t::storage_fetch_inner(components::catalog::oid_t table_oid,
                                       components::vector::vector_t row_ids,
                                       uint64_t count) {
+        std::pmr::vector<components::vector::data_chunk_t> out{resource()};
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
                   "agent_disk[{}]::storage_fetch_inner: oid {} not owned by this agent — empty result",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return std::unique_ptr<components::vector::data_chunk_t>{};
+            co_return std::move(out);
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
@@ -1026,26 +994,35 @@ namespace services::disk {
                   "agent_disk[{}]::storage_fetch_inner: oid {} has null entry — empty result",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return std::unique_ptr<components::vector::data_chunk_t>{};
+            co_return std::move(out);
         }
         auto types = entry->storage->types();
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types, count);
-        entry->storage->fetch(*result, row_ids, count);
-        std::memcpy(result->row_ids.data(), row_ids.data(), count * sizeof(int64_t));
-        co_return std::move(result);
+        // Fetch in ≤DEFAULT_VECTOR_CAPACITY windows so each produced chunk is born within
+        // the capacity bound — no oversized chunk is ever materialized.
+        const auto* ids = row_ids.data<int64_t>();
+        for (uint64_t offset = 0; offset < count; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
+            const uint64_t n = std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, count - offset);
+            components::vector::vector_t window_ids(resource(), components::types::logical_type::BIGINT, n);
+            std::memcpy(window_ids.data(), ids + offset, n * sizeof(int64_t));
+            components::vector::data_chunk_t chunk(resource(), types, n);
+            entry->storage->fetch(chunk, window_ids, n);
+            std::memcpy(chunk.row_ids.data(), ids + offset, n * sizeof(int64_t));
+            out.emplace_back(std::move(chunk));
+        }
+        co_return std::move(out);
     }
 
     core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
-    agent_disk_t::scan_batched_local(components::catalog::oid_t table_oid,
-                                     components::table::table_filter_t* filter,
-                                     int64_t limit,
-                                     const std::vector<std::size_t>* projected_cols,
-                                     const components::table::transaction_data& txn) {
+    agent_disk_t::scan_local(components::catalog::oid_t table_oid,
+                             components::table::table_filter_t* filter,
+                             int64_t limit,
+                             const std::vector<std::size_t>* projected_cols,
+                             const components::table::transaction_data& txn) {
         std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
-                  "agent_disk[{}]::scan_batched_local: oid {} not owned by this agent",
+                  "agent_disk[{}]::scan_local: oid {} not owned by this agent",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
             return batches;
@@ -1053,7 +1030,7 @@ namespace services::disk {
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
             trace(log_,
-                  "agent_disk[{}]::scan_batched_local: oid {} is a DISK record-only marker",
+                  "agent_disk[{}]::scan_local: oid {} is a DISK record-only marker",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
             return batches;
@@ -1067,17 +1044,17 @@ namespace services::disk {
         return batches;
     }
 
-    // Thin mailbox wrapper over scan_batched_local (D6: same-actor callers use the local
+    // Thin mailbox wrapper over scan_local (D6: same-actor callers use the local
     // helper directly; this exists for the manager→agent mailbox route). The reply carries the
     // scan_error; the manager funnel / operators read has_error() before .value().
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-    agent_disk_t::storage_scan_batched_inner(components::catalog::oid_t table_oid,
-                                             std::unique_ptr<components::table::table_filter_t> filter,
-                                             int64_t limit,
-                                             std::vector<size_t> projected_cols,
-                                             components::table::transaction_data txn) {
+    agent_disk_t::storage_scan_inner(components::catalog::oid_t table_oid,
+                                     std::unique_ptr<components::table::table_filter_t> filter,
+                                     int64_t limit,
+                                     std::vector<size_t> projected_cols,
+                                     components::table::transaction_data txn) {
         const std::vector<size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
-        co_return scan_batched_local(table_oid, filter.get(), limit, projected_ptr, txn);
+        co_return scan_local(table_oid, filter.get(), limit, projected_ptr, txn);
     }
 
     // Streaming fetch-next scan source (STEP 3 / phase B). POSITION-ONLY index-resume: the cursor
@@ -1202,15 +1179,16 @@ namespace services::disk {
         co_return fetch_batch_t{std::move(batch), cursor_id};
     }
 
-    agent_disk_t::unique_future<std::unique_ptr<components::vector::data_chunk_t>>
+    agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     agent_disk_t::storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count) {
+        std::pmr::vector<components::vector::data_chunk_t> out{resource()};
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
                   "agent_disk[{}]::storage_scan_segment_inner: oid {} not owned by this agent — fallback to manager",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return std::unique_ptr<components::vector::data_chunk_t>{};
+            co_return std::move(out);
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
@@ -1219,28 +1197,30 @@ namespace services::disk {
                   "fallback to manager",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
-            co_return std::unique_ptr<components::vector::data_chunk_t>{};
+            co_return std::move(out);
         }
         auto types = entry->storage->types();
-        auto result = std::make_unique<components::vector::data_chunk_t>(resource(), types, count);
-        uint64_t rows_appended = 0;
+        // scan_segment yields ≤DEFAULT_VECTOR_CAPACITY chunks; copy each into its own
+        // owning chunk (the callback chunk is transient) and collect them — no merge into
+        // an oversized chunk.
         entry->storage->scan_segment(start, count, [&](components::vector::data_chunk_t& chunk) {
             const auto chunk_rows = chunk.size();
             if (chunk_rows == 0) {
                 return;
             }
+            components::vector::data_chunk_t one(resource(), types, chunk_rows);
             for (uint64_t col = 0; col < chunk.column_count(); ++col) {
                 auto& src = chunk.data[col];
                 if (src.get_vector_type() != components::vector::vector_type::FLAT) {
                     src.flatten(chunk_rows);
                 }
-                components::vector::vector_ops::copy(src, result->data[col], chunk_rows, 0, rows_appended);
+                components::vector::vector_ops::copy(src, one.data[col], chunk_rows, 0, 0);
             }
-            components::vector::vector_ops::copy(chunk.row_ids, result->row_ids, chunk_rows, 0, rows_appended);
-            rows_appended += chunk_rows;
+            components::vector::vector_ops::copy(chunk.row_ids, one.row_ids, chunk_rows, 0, 0);
+            one.set_cardinality(chunk_rows);
+            out.emplace_back(std::move(one));
         });
-        result->set_cardinality(rows_appended);
-        co_return std::move(result);
+        co_return std::move(out);
     }
 
     agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
@@ -1333,7 +1313,7 @@ namespace services::disk {
                                            components::table::transaction_data txn) {
         // Single key-tuple (keys has exactly one row): resolve the key column NAMES to
         // storage indices, build an eq-AND filter and scan its own slice directly via
-        // scan_batched_local (D6: no self-send). Empty result on any degenerate input.
+        // scan_local (D6: no self-send). Empty result on any degenerate input.
         std::pmr::vector<components::vector::data_chunk_t> empty{resource()};
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr || key_col_names.empty() ||
@@ -1377,7 +1357,7 @@ namespace services::disk {
         // All columns (projected = nullptr), no row limit (-1). Catalog-read path: a scan_error
         // degrades to an empty result, matching the not-owned/record-only fallback (resolve
         // callers handle empty).
-        auto scan_r = scan_batched_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
+        auto scan_r = scan_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
         if (scan_r.has_error()) {
             co_return std::move(empty);
         }
@@ -1391,7 +1371,7 @@ namespace services::disk {
                                             components::table::transaction_data txn) {
         // result[i] = matched chunks for key-tuple i; one (possibly empty) entry per key,
         // preserving input order. Name→index resolution runs once for the whole batch, then
-        // each key gets an eq-AND filtered scan via scan_batched_local (D6: no self-send).
+        // each key gets an eq-AND filtered scan via scan_local (D6: no self-send).
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> result{resource()};
         result.reserve(keys.size());
 
@@ -1452,7 +1432,7 @@ namespace services::disk {
             // All columns (projected = nullptr), no row limit (-1) — same as read_chunks_by_key_inner.
             // Catalog-read path: a scan_error degrades this key's entry to empty, matching the
             // not-owned/record-only fallback (callers handle empty entries).
-            auto scan_r = scan_batched_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
+            auto scan_r = scan_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
             if (scan_r.has_error()) {
                 result.emplace_back();
             } else {
@@ -1933,13 +1913,15 @@ namespace services::disk {
                                               components::catalog::oid_t table_oid,
                                               components::vector::data_chunk_t row) {
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
-            auto wal_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), row.types(), row.size());
-            wal_chunk->set_cardinality(row.size());
+            components::vector::data_chunk_t wal_chunk(resource(), row.types(), row.size());
+            wal_chunk.set_cardinality(row.size());
             for (uint64_t col = 0; col < row.column_count(); col++) {
                 for (uint64_t r = 0; r < row.size(); r++) {
-                    wal_chunk->data[col].set_value(r, row.data[col].value(r));
+                    wal_chunk.data[col].set_value(r, row.data[col].value(r));
                 }
             }
+            std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
+            wal_chunks.emplace_back(std::move(wal_chunk));
             // pg_catalog writes route to main_database (ctx.database_oid is always
             // INVALID_OID for catalog writes).
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
@@ -1947,7 +1929,7 @@ namespace services::disk {
                                              &wal::manager_wal_replicate_t::write_physical_insert,
                                              ctx.session,
                                              table_oid,
-                                             std::move(wal_chunk),
+                                             std::move(wal_chunks),
                                              std::uint64_t{0},
                                              static_cast<std::uint64_t>(row.size()),
                                              ctx.txn.transaction_id,
@@ -2204,22 +2186,24 @@ namespace services::disk {
         // WAL physical_update: the chunk mirrors the patch chunk full-width so replay's
         // direct_update_sync takes the same alias-matching path.
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
-            auto wal_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), chunk_types, 1);
-            wal_chunk->set_cardinality(1);
+            components::vector::data_chunk_t wal_chunk(resource(), chunk_types, 1);
+            wal_chunk.set_cardinality(1);
             for (std::size_t c = 0; c < table_columns.size() && c < row_values.size(); ++c) {
                 if (row_values[c].is_null()) {
-                    wal_chunk->data[c].validity().set_invalid(0);
+                    wal_chunk.data[c].validity().set_invalid(0);
                 } else {
-                    wal_chunk->data[c].set_value(0, row_values[c]);
+                    wal_chunk.data[c].set_value(0, row_values[c]);
                 }
             }
+            std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
+            wal_chunks.emplace_back(std::move(wal_chunk));
             std::pmr::vector<std::int64_t> wal_row_ids(row_ids.begin(), row_ids.end(), resource());
             auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
                                              &wal::manager_wal_replicate_t::write_physical_update,
                                              ctx.session,
                                              pg_attr_oid,
                                              std::move(wal_row_ids),
-                                             std::move(wal_chunk),
+                                             std::move(wal_chunks),
                                              static_cast<std::uint64_t>(row_ids.size()),
                                              ctx.txn.transaction_id,
                                              components::catalog::well_known_oid::main_database);

@@ -146,7 +146,10 @@ namespace components::operators::aggregate {
     operator_func_t::aggregate_impl(pipeline::context_t* pipeline_context) {
         auto result = types::logical_value_t(resource_, types::logical_type::NA);
         if (left_ && left_->output()) {
-            auto& chunk = left_->output()->data_chunk();
+            // Single-chunk callback: aggregate_batch_impl drives the multi-chunk case
+            // and feeds each chunk here one at a time (wrapped via operator_empty), so
+            // the input always carries exactly one chunk.
+            auto& chunk = left_->output()->chunks().front();
 
             std::vector<vector::vector_t> computed_vecs;
             if (!compute_expression_args(left_->output()->resource(),
@@ -188,9 +191,9 @@ namespace components::operators::aggregate {
 
         for (auto& chunk : batch_chunks) {
             // resolve_columns appends computed expression columns to the chunk so
-            // they can be referenced like regular columns. The batch may be shared
-            // across aggregators (gather-once group fallback), so the chunk is
-            // restored to its original column set once the argument chunk is built
+            // they can be referenced like regular columns. A group's batch is shared
+            // across aggregators (gathered once per group), so the chunk is restored
+            // to its original column set once the argument chunk is built
             // (build_arg_chunk shares the column buffers, not the chunk slots).
             const size_t base_column_count = chunk.data.size();
             std::vector<vector::vector_t> computed_vecs;

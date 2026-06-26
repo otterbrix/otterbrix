@@ -79,7 +79,7 @@ namespace components::operators {
         // it per LEFT batch. await_async_and_resume drains it.
         core::error_t consume_join_batch_(pipeline::context_t* ctx,
                                           const vector::data_chunk_t& chunk_left,
-                                          const vector::data_chunk_t& chunk_right);
+                                          const chunks_vector_t& right_chunks);
         // Lazily create modified_ + the staging buffers for the per-operator init.
         void ensure_simple_init_();
 

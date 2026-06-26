@@ -59,6 +59,15 @@ namespace {
     // production code uses pg_class.oid.
     constexpr components::catalog::oid_t kTestTableOid = 16500;
 
+    // encode_insert/encode_update now take a chunk batch; wrap a single chunk (deep copy).
+    std::pmr::vector<components::vector::data_chunk_t> to_chunk_batch(const components::vector::data_chunk_t& chunk) {
+        std::pmr::vector<components::vector::data_chunk_t> batch(chunk.resource());
+        components::vector::data_chunk_t copy(chunk.resource(), chunk.types(), chunk.size() == 0 ? 1 : chunk.size());
+        chunk.copy(copy, 0);
+        batch.emplace_back(std::move(copy));
+        return batch;
+    }
+
     encoded_record_info encode_insert_rec(uint64_t wal_id,
                                           uint64_t txn_id,
                                           crc32_t last_crc,
@@ -77,7 +86,7 @@ namespace {
                                      wal_id,
                                      txn_id,
                                      table_oid,
-                                     chunk,
+                                     to_chunk_batch(chunk),
                                      row_start,
                                      row_count);
         info.data = buffer_to_vec(buf);
@@ -119,7 +128,7 @@ namespace {
                                      txn_id,
                                      table_oid,
                                      row_ids.data(),
-                                     chunk,
+                                     to_chunk_batch(chunk),
                                      count);
         info.data = buffer_to_vec(buf);
         return info;

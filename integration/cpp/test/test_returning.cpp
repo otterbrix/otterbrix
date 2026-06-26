@@ -38,11 +38,11 @@ TEST_CASE("integration::cpp::test_returning::insert") {
                                            "(1, 'Alice') RETURNING *;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 3);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->chunk_data().value(1, 0).value<std::string_view>() == "Alice");
+        REQUIRE(cur->column_count() == 3);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 0).value<std::string_view>() == "Alice");
         // qty was not supplied; RETURNING * must reflect the DEFAULT (7).
-        REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 7);
+        REQUIRE(cur->value(2, 0).value<int64_t>() == 7);
     }
 
     INFO("INSERT ... RETURNING column list, multiple rows") {
@@ -52,11 +52,11 @@ TEST_CASE("integration::cpp::test_returning::insert") {
                                            "(2, 'Bob', 20), (3, 'Carol', 30) RETURNING id, qty;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().column_count() == 2);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 20);
-        REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 3);
-        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 30);
+        REQUIRE(cur->column_count() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 20);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 30);
     }
 
     INFO("INSERT ... RETURNING arithmetic with alias") {
@@ -66,8 +66,8 @@ TEST_CASE("integration::cpp::test_returning::insert") {
                                            "(4, 'Dan', 10) RETURNING qty * 2 AS double_qty;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 20);
+        REQUIRE(cur->column_count() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 20);
     }
 
     INFO("INSERT without RETURNING still reports affected-row count") {
@@ -102,9 +102,9 @@ TEST_CASE("integration::cpp::test_returning::update") {
                                            "WHERE id = 1 RETURNING id, qty;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 2);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 15);
+        REQUIRE(cur->column_count() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 15);
     }
 
     INFO("UPDATE ... RETURNING * over multiple rows") {
@@ -114,9 +114,9 @@ TEST_CASE("integration::cpp::test_returning::update") {
                                            "WHERE id >= 2 RETURNING *;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().column_count() == 3);
-        REQUIRE(cur->chunk_data().value(2, 0).value<int64_t>() == 100);
-        REQUIRE(cur->chunk_data().value(2, 1).value<int64_t>() == 100);
+        REQUIRE(cur->column_count() == 3);
+        REQUIRE(cur->value(2, 0).value<int64_t>() == 100);
+        REQUIRE(cur->value(2, 1).value<int64_t>() == 100);
     }
 
     INFO("UPDATE ... RETURNING with no matching rows yields no rows") {
@@ -150,9 +150,9 @@ TEST_CASE("integration::cpp::test_returning::delete") {
                                            "DELETE FROM TestDatabase.TestCollection WHERE id = 2 RETURNING id, name;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 2);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 2);
-        REQUIRE(cur->chunk_data().value(1, 0).value<std::string_view>() == "Bob");
+        REQUIRE(cur->column_count() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        REQUIRE(cur->value(1, 0).value<std::string_view>() == "Bob");
     }
 
     INFO("DELETE ... RETURNING * over multiple rows") {
@@ -161,7 +161,7 @@ TEST_CASE("integration::cpp::test_returning::delete") {
             dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id >= 1 RETURNING *;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2); // ids 1 and 3 remain
-        REQUIRE(cur->chunk_data().column_count() == 3);
+        REQUIRE(cur->column_count() == 3);
     }
 
     INFO("DELETE ... RETURNING with no matching rows yields no rows") {
@@ -218,14 +218,14 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
                                                "RETURNING Orders.id, Orders.total, Customers.name;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->chunk_data().column_count() == 3);
+            REQUIRE(cur->column_count() == 3);
             // Row 0: order 10 joined to Alice; Row 1: order 11 joined to Bob.
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 10);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 100);
-            REQUIRE(cur->chunk_data().value(2, 0).value<std::string_view>() == "Alice");
-            REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 11);
-            REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 200);
-            REQUIRE(cur->chunk_data().value(2, 1).value<std::string_view>() == "Bob");
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 100);
+            REQUIRE(cur->value(2, 0).value<std::string_view>() == "Alice");
+            REQUIRE(cur->value(0, 1).value<int64_t>() == 11);
+            REQUIRE(cur->value(1, 1).value<int64_t>() == 200);
+            REQUIRE(cur->value(2, 1).value<std::string_view>() == "Bob");
         }
         {
             // Only the unmatched order (12) survives.
@@ -233,7 +233,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Orders;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 12);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 12);
         }
     }
 
@@ -258,7 +258,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
                                                "RETURNING Orders.id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 70);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 70);
         }
     }
 
@@ -276,10 +276,10 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
                                                "RETURNING Orders.id, Customers.*;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().column_count() == 3); // Orders.id + Customers(id, name)
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 13);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 1);
-            REQUIRE(cur->chunk_data().value(2, 0).value<std::string_view>() == "Alice");
+            REQUIRE(cur->column_count() == 3); // Orders.id + Customers(id, name)
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 13);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 1);
+            REQUIRE(cur->value(2, 0).value<std::string_view>() == "Alice");
         }
     }
 }
@@ -376,8 +376,8 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Orders ORDER BY id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 11);
-            REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 12);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
+            REQUIRE(cur->value(0, 1).value<int64_t>() == 12);
         }
         // INDEX CONSISTENCY via the point lookup on the indexed join column: order
         // 13 (customer_id 7) is gone; orders 11/12 (customer_id 99) are still found.
@@ -441,14 +441,14 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
                                            "RETURNING Orders.id, Orders.total, Customers.name;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->chunk_data().column_count() == 3);
+        REQUIRE(cur->column_count() == 3);
         // Order 10 -> Alice (total now 101); order 11 -> Bob (total now 201).
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 10);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 101);
-        REQUIRE(cur->chunk_data().value(2, 0).value<std::string_view>() == "Alice");
-        REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 11);
-        REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 201);
-        REQUIRE(cur->chunk_data().value(2, 1).value<std::string_view>() == "Bob");
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 101);
+        REQUIRE(cur->value(2, 0).value<std::string_view>() == "Alice");
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 11);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 201);
+        REQUIRE(cur->value(2, 1).value<std::string_view>() == "Bob");
     }
 
     INFO("a target row matching multiple FROM rows is updated and returned once") {
@@ -473,8 +473,8 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
                                                "RETURNING Orders.id, Orders.total;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 50);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 501);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 50);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 501);
         }
     }
 
@@ -487,10 +487,10 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
                                            "RETURNING Orders.id, Customers.*;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().column_count() == 3); // Orders.id + Customers(id, name)
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 11);
-        REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 2);
-        REQUIRE(cur->chunk_data().value(2, 0).value<std::string_view>() == "Bob");
+        REQUIRE(cur->column_count() == 3); // Orders.id + Customers(id, name)
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 2);
+        REQUIRE(cur->value(2, 0).value<std::string_view>() == "Bob");
     }
 }
 
@@ -533,9 +533,9 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
             for (std::size_t row = 0; row < cur->size(); ++row) {
-                auto id = cur->chunk_data().value(0, row).value<int64_t>();
-                auto name = std::string(cur->chunk_data().value(1, row).value<std::string_view>());
-                auto qty = cur->chunk_data().value(2, row).value<int64_t>();
+                auto id = cur->value(0, row).value<int64_t>();
+                auto name = std::string(cur->value(1, row).value<std::string_view>());
+                auto qty = cur->value(2, row).value<int64_t>();
                 ins += "(" + std::to_string(id) + ", '" + std::string(name) + "', " + std::to_string(qty) + ")";
                 ins += (row + 1 < cur->size()) ? "," : ";";
             }
@@ -558,7 +558,7 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Source;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
         }
     }
 
@@ -571,8 +571,8 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
                                                "WHERE id = 3 RETURNING id, qty;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 3);
-            returned_qty = cur->chunk_data().value(1, 0).value<int64_t>();
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+            returned_qty = cur->value(1, 0).value<int64_t>();
             REQUIRE(returned_qty == 130);
         }
         {
@@ -581,7 +581,7 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
             auto cur = dispatcher->execute_sql(session, "SELECT qty FROM TestDatabase.Source WHERE id = 3;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == returned_qty);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == returned_qty);
         }
     }
 
@@ -594,7 +594,7 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
                                                "(42, 'Zoe', 5) RETURNING id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            new_id = cur->chunk_data().value(0, 0).value<int64_t>();
+            new_id = cur->value(0, 0).value<int64_t>();
             REQUIRE(new_id == 42);
         }
         {
@@ -604,7 +604,7 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
                                                    std::to_string(new_id) + ") SELECT name FROM recent;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<std::string_view>() == "Zoe");
+            REQUIRE(cur->value(0, 0).value<std::string_view>() == "Zoe");
         }
     }
 }
@@ -721,8 +721,8 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             // Order 13 (the matched absolute row) got +1000; nothing else changed.
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 13);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 1130);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 13);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 1130);
         }
         // Only order 13's total moved; orders 11/12 are untouched.
         {
@@ -731,12 +731,12 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
                 dispatcher->execute_sql(session, "SELECT id, total FROM TestDatabase.Orders ORDER BY id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 11);
-            REQUIRE(cur->chunk_data().value(1, 0).value<int64_t>() == 110);
-            REQUIRE(cur->chunk_data().value(0, 1).value<int64_t>() == 12);
-            REQUIRE(cur->chunk_data().value(1, 1).value<int64_t>() == 120);
-            REQUIRE(cur->chunk_data().value(0, 2).value<int64_t>() == 13);
-            REQUIRE(cur->chunk_data().value(1, 2).value<int64_t>() == 1130);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 110);
+            REQUIRE(cur->value(0, 1).value<int64_t>() == 12);
+            REQUIRE(cur->value(1, 1).value<int64_t>() == 120);
+            REQUIRE(cur->value(0, 2).value<int64_t>() == 13);
+            REQUIRE(cur->value(1, 2).value<int64_t>() == 1130);
         }
         // INDEX CONSISTENCY via the point lookup on the indexed join column: the
         // matched row (customer_id 7) is still found exactly once after the update.
@@ -746,7 +746,7 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
                                                "SELECT total FROM TestDatabase.Orders WHERE customer_id = 7;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1130);
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 1130);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -817,7 +817,7 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
         auto cur = dispatcher->execute_sql(session, "SELECT total FROM TestDatabase.Orders WHERE id = 1000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->chunk_data().value(0, 0).value<int64_t>() == 1001);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1001);
     }
 
     INFO("DELETE ... USING streams the target scan across batches; all rows deleted once") {

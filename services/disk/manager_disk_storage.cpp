@@ -345,6 +345,44 @@ namespace services::disk {
         co_return std::pmr::vector<components::vector::data_chunk_t>{resource()};
     }
 
+    manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
+    manager_disk_t::storage_fetch_next_batch(session_id_t session,
+                                             catalog::oid_t table_oid,
+                                             uint64_t cursor_id,
+                                             std::unique_ptr<components::table::table_filter_t> filter,
+                                             int64_t limit,
+                                             std::vector<size_t> projected_cols,
+                                             components::table::transaction_data txn) {
+        // Transparent router: the agent reply carries the batch + minted/advanced cursor_id
+        // (and any scan_error); forward the wrapper unchanged so the scan source operator
+        // turns it into an error cursor on has_error() and keeps the cursor id otherwise. The
+        // session is forwarded so the agent can mint a (session, counter) cursor id (R16).
+        if (!agents_.empty()) {
+            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+            auto& agent = agents_[pool_idx];
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::storage_fetch_next_batch_inner,
+                                                                  session,
+                                                                  table_oid,
+                                                                  cursor_id,
+                                                                  std::move(filter),
+                                                                  limit,
+                                                                  projected_cols,
+                                                                  txn);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            co_return co_await std::move(fut);
+        }
+        // No agents: a drained cursor with an empty chunk (cardinality 0).
+        co_return fetch_batch_t{
+            std::make_unique<components::vector::data_chunk_t>(
+                resource(),
+                std::pmr::vector<components::types::complex_logical_type>{resource()},
+                0),
+            cursor_id};
+    }
+
     manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   catalog::oid_t table_oid,

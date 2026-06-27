@@ -11,6 +11,7 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/aggregate/operator_aggregate.cpp
         operators/aggregate/operator_func.cpp
+        operators/aggregate/grouped_aggregate.cpp
 
         operators/predicates/predicate.cpp
         operators/predicates/simple_predicate.cpp
@@ -19,7 +20,6 @@ set(${PROJECT_NAME}_SOURCES
 
         operators/scan/full_scan.cpp
         operators/scan/index_scan.cpp
-        operators/scan/primary_key_scan.cpp
         operators/scan/transfer_scan.cpp
 
         operators/sort/sort.cpp
@@ -68,7 +68,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_resolve_type.cpp
         operators/operator_resolve_constraint.cpp
         operators/operator_allocate_oids.cpp
-        operators/resolved_table_metadata.cpp
 
         operators/arithmetic_eval.cpp
 )

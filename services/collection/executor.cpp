@@ -1,6 +1,7 @@
 #include "executor.hpp"
 
 #include <array>
+#include <atomic>
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/context/execution_context.hpp>
@@ -50,6 +51,20 @@
 using namespace components::cursor;
 
 namespace services::collection::executor {
+
+    // Test-observable streaming-path counter (see executor.hpp). Bumped once per
+    // execute_pipeline() entry; relaxed because it is an instrumentation read, not a
+    // happens-before edge. DEV_MODE-only: production binaries carry nothing (the
+    // integration test target compiles with -DDEV_MODE).
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_streaming_pipeline_runs{0};
+        std::atomic<uint64_t> g_dml_appends_reverted{0};
+    } // namespace
+
+    uint64_t streaming_pipeline_runs() noexcept { return g_streaming_pipeline_runs.load(std::memory_order_relaxed); }
+    uint64_t dml_appends_reverted() noexcept { return g_dml_appends_reverted.load(std::memory_order_relaxed); }
+#endif
 
     // ---- behavior/dispatch_traits sync check ----
     // Ensures behavior() handles every method registered in dispatch_traits
@@ -1148,13 +1163,14 @@ namespace services::collection::executor {
                 pctx.disk_address = disk_address_;
                 pctx.txn = components::table::transaction_data{0, 0};
                 op->prepare();
-                op->on_execute(&pctx);
-                while (!op->is_executed()) {
-                    auto waiting = op->find_waiting_operator();
-                    if (!waiting)
-                        break;
-                    co_await waiting->await_async_and_resume(&pctx);
-                    op->on_execute(&pctx);
+                // operator_allocate_oids_t is a sourceless sink (role()==sink,
+                // needs_async_finalize()==true): drive it through the SAME streaming
+                // seam every other sub-plan uses — execute_pipeline drives its
+                // await_async_and_resume (the allocate_oids_batch round-trip + node
+                // stamp) via the executor's bottom-up async-finalize pass.
+                auto drive_err = co_await drive_subplan_(op, &pctx);
+                if (drive_err.contains_error()) {
+                    co_return std::vector<components::catalog::oid_t>{};
                 }
                 if (pctx.has_pending_disk_futures()) {
                     auto futures = pctx.take_pending_disk_futures();
@@ -1378,6 +1394,13 @@ namespace services::collection::executor {
             for (const auto& app : exec_result.dml_appends) {
                 revert_ranges.push_back(
                     components::pg_catalog_append_range_t{app.table_oid, app.row_start, app.row_count});
+#ifdef DEV_MODE
+                // Test-observability: count each base-table DML append range we
+                // physically revert here. A constraint (CHECK/FK) that errors AFTER
+                // the DML appended its rows must reach this point with a non-empty
+                // dml_appends so the leaked physical slot is reverted (see header).
+                g_dml_appends_reverted.fetch_add(1, std::memory_order_relaxed);
+#endif
             }
             for (auto& pgc : exec_result.pg_catalog_appends) {
                 revert_ranges.push_back(std::move(pgc));
@@ -1764,6 +1787,307 @@ namespace services::collection::executor {
         return plan_t{std::move(sub_plans), &parameters, std::move(context_storage)};
     }
 
+    executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
+    executor_t::execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
+        namespace ops = components::operators;
+#ifdef DEV_MODE
+        g_streaming_pipeline_runs.fetch_add(1, std::memory_order_relaxed);
+#endif
+        // Linearize the left-chain into pipeline order: chain[0] = source ... chain.back() = root.
+        std::pmr::vector<ops::operator_t*> chain{resource()};
+        for (ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
+            chain.push_back(op);
+        }
+        std::reverse(chain.begin(), chain.end());
+
+        // Everything below the bottom-most NOT-yet-executed operator is a materialized
+        // sub-plan: traverse_plan_ splits a join's build AND probe sides into their own
+        // sub-plans, which run (and mark_executed) before this one. Re-driving such an
+        // operator's source_next would read an already-drained cursor (0 rows). So drive
+        // source_next only when this pipeline owns its scan source (chain bottom); when
+        // the bottom is already executed, stream from that operator's materialized output_.
+        std::size_t start = 0;
+        while (start < chain.size() && chain[start]->is_executed()) {
+            ++start;
+        }
+        // SOURCELESS SINK BOTTOM: a DDL/txn/catalog-read operator (create_collection,
+        // set_timezone, begin_transaction, resolve_*, ...) OR a producing recursive_cte
+        // lowers to a sink whose chain bottom has no left child — no scan source.
+        // The streaming executor admits the single-leaf shape, a multi-node all-sink
+        // chain (CREATE INDEX = backfill->metadata; a multi-resolve front-pass =
+        // resolve_table->resolve_namespace), AND a PRODUCING bottom with streaming/sink
+        // ancestors (top-level WITH RECURSIVE = [select -> sort -> match ->
+        // recursive_cte]). For ALL of them the bottom sink's entire effect lives in
+        // its await_async_and_resume (a cross-actor commit and/or the fixpoint that
+        // PRODUCES output_), which the dedicated block below drives FIRST — so chain[0]
+        // is handled there, not in the [op_start, end) FLUSH/async-finalize passes.
+        // op_start therefore becomes 1 for this shape (the ANCESTOR range chain[1..]):
+        // the bottom's produced rows are pumped UP through those ancestors, which are
+        // then FLUSHed + async-finalized bottom-up. (chain[0]->role()==source is the
+        // normal pumped case; a NOT-executed non-source bottom is the sourceless sink.)
+        const bool sourceless_sink_root =
+            start == 0 && chain.front()->role() != ops::pipeline_role::source;
+        const std::size_t op_start = sourceless_sink_root ? 1 : ((start == 0) ? 1 : start);
+
+        // A producing sourceless bottom (recursive_cte) whose ancestors are REAL query
+        // operators (sort/select/match) must stream its rows UP through them. The
+        // discriminator is "not all-sink": if EVERY op on the chain is a sink it is an
+        // independent-producer metadata chain (resolve/ddl/create-index) that must NOT
+        // pump (its sink ancestors don't override push()); any streaming op on the chain
+        // means a real pipeline whose ancestors consume the bottom's rows. Only consulted
+        // for the sourceless_sink_root shape.
+        bool pumpable_ancestors = false;
+        if (sourceless_sink_root) {
+            for (ops::operator_t* op : chain) {
+                if (op->role() != ops::pipeline_role::sink) {
+                    pumpable_ancestors = true; // a streaming op on the chain -> real pipeline
+                    break;
+                }
+            }
+        }
+
+        ops::chunks_vector_t output{resource()};
+
+        // Push one batch up through chain[op_start..]: a streaming op transforms its input
+        // into the next stage; a sink op folds it into bounded state and emits nothing.
+        // Chunks that survive the top of a pure-streaming pipeline are collected as output.
+        auto pump_one = [&](components::vector::data_chunk_t&& batch) -> core::error_t {
+            ops::chunks_vector_t stage{resource()};
+            stage.push_back(std::move(batch));
+            for (std::size_t i = op_start; i < chain.size(); ++i) {
+                ops::chunks_vector_t produced{resource()};
+                for (auto& in : stage) {
+                    auto err = chain[i]->push(ctx, std::move(in), produced);
+                    if (err.contains_error()) {
+                        return err;
+                    }
+                }
+                stage = std::move(produced);
+            }
+            for (auto& c : stage) {
+                output.push_back(std::move(c));
+            }
+            return core::error_t::no_error();
+        };
+
+        // PUMP.
+        if (sourceless_sink_root) {
+            // No source at the bottom: the bottom sink (chain[0]) produces / commits
+            // its entire effect in await_async_and_resume, which MUST run BEFORE we
+            // pump its rows up. (A bare DDL/txn leaf, an all-sink CREATE INDEX chain,
+            // and a producing recursive_cte all share this: their work is the await,
+            // not a push-fed finalize.) Drive it here, deepest-first — exactly the
+            // commit the executor's bottom-up async-finalize pass drives — so the
+            // FLUSH/async-finalize passes below operate only on the ANCESTORS.
+            if (chain.front()->needs_async_finalize()) {
+                co_await chain.front()->await_async_and_resume(ctx);
+                if (chain.front()->has_error()) {
+                    co_return core::result_wrapper_t<ops::chunks_vector_t>(chain.front()->get_error());
+                }
+            }
+            // Stream any rows the bottom PRODUCED (recursive_cte's fixpoint output_) UP
+            // through the ancestors chain[1..] (e.g. sort -> select, or match -> sort ->
+            // select). COPY (not move) the chunks: output_ is a shared intrusive_ptr
+            // operator_data the bottom still owns (and run_subplan's caller may re-read).
+            //
+            // Gate on `pumpable_ancestors` (the chain is NOT all-sink): a producing
+            // bottom under REAL query operators (sort/select/match — all override push())
+            // pumps its rows up. An ALL-SINK sourceless chain (CREATE INDEX =
+            // backfill->metadata; a multi-resolve front-pass = resolve_table->
+            // resolve_namespace) is different: each level is an INDEPENDENT producing
+            // metadata sink that sets its OWN output_ in its own await and does NOT
+            // override push() — pumping the bottom's rows into them would hit the default
+            // "not a streaming/sink op" push error. For that shape we pump nothing; the
+            // FLUSH/async-finalize passes below drive each ancestor sink's own await
+            // bottom-up (the original all-sink behavior), and drive_subplan_ reads the
+            // ROOT's output_. (A pure-commit DDL/txn leaf has no ancestors, so
+            // op_start == chain.size() and this is skipped regardless.)
+            if (pumpable_ancestors && chain.front()->output()) {
+                for (const auto& c : chain.front()->output()->chunks()) {
+                    auto err = pump_one(c.partial_copy(resource(), 0, c.size()));
+                    if (err.contains_error()) {
+                        co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+                    }
+                }
+            }
+        } else if (start == 0) {
+            ops::operator_t* source = chain.front();
+            while (true) {
+                auto next = co_await source->source_next(ctx);
+                if (next.has_error()) {
+                    co_return next.convert_error<ops::chunks_vector_t>();
+                }
+                auto batch = std::move(next.value());
+                if (batch.data.empty()) {
+                    break; // 0-column drain sentinel (a schema'd 0-row batch is real input, e.g.
+                           // the empty-guard a scalar aggregate needs to emit COUNT=0)
+                }
+                auto err = pump_one(std::move(batch));
+                if (err.contains_error()) {
+                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+                }
+            }
+        } else if (chain[start - 1]->output()) {
+            // Materialized input: stream the already-executed operator's output_ chunks through the
+            // remaining (un-executed) operators. COPY (not move) the chunks — this operator's
+            // output_ is a shared (intrusive_ptr) operator_data that may be read again elsewhere
+            // (e.g. a recursive CTE working set, or a build side reused across iterations), so
+            // moving its chunks out would empty it for the other reader.
+            for (const auto& c : chain[start - 1]->output()->chunks()) {
+                auto err = pump_one(c.partial_copy(resource(), 0, c.size()));
+                if (err.contains_error()) {
+                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+                }
+            }
+        }
+
+        // FLUSH: drain sink state bottom-up. A sink (group/agg/sort) emits its accumulated
+        // result here; that result must still flow through the operators ABOVE it in the chain
+        // (e.g. a projection on top of GROUP BY), so each finalized chunk is pushed through
+        // chain[i+1..]. A downstream sink absorbs it (and emits later when its own turn comes,
+        // since i < j is processed first). Streaming operators finalize to a no-op.
+        for (std::size_t i = op_start; i < chain.size(); ++i) {
+            ops::chunks_vector_t fin{resource()};
+            auto err = chain[i]->finalize(ctx, fin);
+            if (err.contains_error()) {
+                co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+            }
+            for (auto& c : fin) {
+                ops::chunks_vector_t stage{resource()};
+                stage.push_back(std::move(c));
+                for (std::size_t j = i + 1; j < chain.size(); ++j) {
+                    ops::chunks_vector_t produced{resource()};
+                    for (auto& in : stage) {
+                        auto e = chain[j]->push(ctx, std::move(in), produced);
+                        if (e.contains_error()) {
+                            co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(e));
+                        }
+                    }
+                    stage = std::move(produced);
+                }
+                for (auto& s : stage) {
+                    output.push_back(std::move(s));
+                }
+            }
+        }
+
+        // Async-finalize commit, BOTTOM-UP. The pump fed each sink's input via
+        // push(); now drive every operator whose finalize is an asynchronous
+        // cross-actor commit (DML: WAL->storage->index->swap-info). push()/finalize()
+        // are synchronous, so each commit runs HERE in the executor's coroutine
+        // (which owns the cross-actor await), exactly as the legacy await loop does
+        // for the materialize path. await_async_and_resume sets the operator's
+        // output_ (RETURNING / affected-row count) and marks it executed.
+        //
+        // Iterate over only the operators THIS pipeline drove ([op_start, end)) and
+        // go DEEPEST-FIRST: chain[op_start] is the deepest op in this range, chain.back()
+        // the root, so ascending index == bottom-up. For a sourceless sink bottom the
+        // real chain[0] was already driven (deepest-first) in the PUMP block above, so
+        // this range (op_start==1) covers only its ancestors — still bottom-up overall.
+        // Today at most one op per chain sets needs_async_finalize() (the DML sink at
+        // the root, or the bottom sourceless sink already driven above), so this is
+        // behavior-preserving — but it is the hook future phases (a constraint above a
+        // DML, multi-async chains) need. Stop on the first error.
+        for (std::size_t i = op_start; i < chain.size(); ++i) {
+            ops::operator_t* op = chain[i];
+            if (!op->needs_async_finalize()) {
+                continue;
+            }
+            co_await op->await_async_and_resume(ctx);
+            if (op->has_error()) {
+                co_return core::result_wrapper_t<ops::chunks_vector_t>(op->get_error());
+            }
+        }
+
+        co_return output;
+    }
+
+    executor_t::unique_future<core::error_t>
+    executor_t::materialize_build_sides_(components::operators::operator_ptr root,
+                                         components::pipeline::context_t* ctx) {
+        // Walk the LEFT chain (the streaming spine). For each operator that has a RIGHT
+        // (build) child not yet executed, drive that whole right subtree to completion
+        // FIRST — it is itself a sub-plan (its own build sides materialized recursively
+        // by the drive_subplan_ call below) — so the streaming join can read its
+        // materialized output_ when it builds the hash table. Already-executed right
+        // subtrees (the normal traverse_plan_-split flow) short-circuit, so this is a
+        // no-op outside the run_subplan-without-split case (recursive-CTE term).
+        namespace ops = components::operators;
+        for (ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
+            auto right = op->right();
+            if (right && !right->is_executed()) {
+                right->prepare();
+                auto err = co_await drive_subplan_(right, ctx);
+                if (err.contains_error()) {
+                    co_return err;
+                }
+            }
+        }
+        co_return core::error_t::no_error();
+    }
+
+    executor_t::unique_future<core::error_t>
+    executor_t::drive_subplan_(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
+        // THE single drive seam, shared by execute_sub_plan_ and run_subplan (no
+        // duplication). The caller has already prepared `root`. EVERY reachable plan
+        // streams through execute_pipeline (bounded memory): the producing-sourceless-
+        // sink-bottom shape is supported, so the legacy materialized execution path is
+        // gone. Build sides (join RIGHT children) must be materialized before the pump:
+        // the top-level flow gets them from traverse_plan_'s sub-plan split; a single-
+        // root run_subplan (recursive-CTE term) does not, so materialize them here. No-op
+        // when already executed (the split flow).
+        auto build_err = co_await materialize_build_sides_(root, ctx);
+        if (build_err.contains_error()) {
+            co_return build_err;
+        }
+        auto piped = co_await execute_pipeline(root, ctx);
+        if (piped.has_error()) {
+            co_return piped.error();
+        }
+        if (!root->is_executed()) { // a DML sink already set output_ + executed in execute_pipeline
+            root->set_output(components::operators::make_operator_data(resource(), std::move(piped.value())));
+            root->mark_executed();
+        }
+        // Detect errors set asynchronously in operators (e.g. fk_cascade root with RESTRICT).
+        if (root->has_error()) {
+            co_return root->get_error();
+        }
+        co_return core::error_t::no_error();
+    }
+
+    executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
+    executor_t::run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
+        // subplan_runner_t entry point: run a prepared child sub-plan to completion
+        // through the shared drive seam and hand back its output chunks. Invoked
+        // INTRA-actor by an operator via ctx->runner; runs inside this executor
+        // actor's own coroutine (operators are not actors), so the cross-actor
+        // awaits inside drive_subplan_ are owned by the executor and lost-wakeup-safe.
+        namespace ops = components::operators;
+        if (!root) {
+            co_return core::result_wrapper_t<ops::chunks_vector_t>(
+                core::error_t{core::error_code_t::create_physical_plan_error,
+                              std::pmr::string{"run_subplan: null root", resource()}});
+        }
+        root->prepare();
+        auto err = co_await drive_subplan_(root, ctx);
+        if (err.contains_error()) {
+            co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+        }
+        // Copy (not move) the chunks out of output_: the root operator owns its
+        // output_ (a shared intrusive_ptr operator_data) and may be read again by
+        // the caller, so draining it would corrupt that reader. A drained sub-plan
+        // with no output_ returns an empty vector.
+        ops::chunks_vector_t out{resource()};
+        if (root->output()) {
+            const auto& chunks = root->output()->chunks();
+            out.reserve(chunks.size());
+            for (const auto& c : chunks) {
+                out.push_back(c.partial_copy(resource(), 0, c.size()));
+            }
+        }
+        co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(out));
+    }
+
     executor_t::unique_future<sub_plan_result_t>
     executor_t::execute_sub_plan_(components::session::session_id_t session,
                                   plan_t plan_data,
@@ -1800,53 +2124,67 @@ namespace services::collection::executor {
             // manager_disk_t::vacuum_all + manager_index_t::cleanup_all_versions.
             // The value arrives with the session context fetched at plan start.
             pipeline_context.lowest_active_start_time = lowest_active_start_time;
+            // Publish ourselves as the sub-plan runner: an operator that needs to
+            // run a child sub-plan through this SAME streaming executor reaches us
+            // via ctx->runner->run_subplan (intra-actor; see subplan_runner_t).
+            pipeline_context.runner = this;
 
             // Prepare the operator tree (connects children in aggregation, etc.)
             plan->prepare();
 
-            // Execute the plan tree (scan operators send I/O requests and enter waiting state)
-            plan->on_execute(&pipeline_context);
+            // Lift the BASE-table + FK-cascade DML append/delete ranges the DML
+            // operators recorded in their await_async_and_resume. Factored out of the
+            // success-path lift block below so the CONSTRAINT-ERROR path can lift them
+            // too: a CHECK/fk_check operator sits ABOVE the DML and is driven AFTER it
+            // (bottom-up async-finalize), so by the time it errors the DML has already
+            // done its WAL-first storage_append and stamped these ranges. If we break
+            // out of the loop without lifting them, exec_result.dml_appends is empty and
+            // the failed-statement abort tail (revert_failed_txn / operator_abort_
+            // transaction) has NOTHING to revert — the physically-appended (uncommitted)
+            // row LINGERS (invisible via MVCC, but a real storage leak: row_group.count
+            // stays bumped, the slot is never reclaimed). Lifting here on BOTH paths
+            // hands the recorded range to the abort tail so storage_revert_appends ->
+            // row_group_t::revert_append truncates the slot back. Idempotent: it zeroes
+            // the single-slot dml_* fields and clears the cascade vectors, so the
+            // success-path block below (which lifts the rest) never double-counts.
+            auto lift_dml_ranges = [&pipeline_context, &result_tracking]() {
+                if (pipeline_context.dml_append_row_count > 0) {
+                    result_tracking.dml_appends.push_back({pipeline_context.dml_table_oid,
+                                                           pipeline_context.dml_append_row_start,
+                                                           pipeline_context.dml_append_row_count});
+                }
+                if (pipeline_context.dml_delete_txn_id != 0) {
+                    result_tracking.dml_deletes.push_back(
+                        {pipeline_context.dml_table_oid, pipeline_context.dml_delete_txn_id});
+                }
+                for (const auto& del : pipeline_context.cascade_dml_deletes) {
+                    result_tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
+                }
+                for (const auto& app : pipeline_context.cascade_dml_appends) {
+                    result_tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});
+                }
+                pipeline_context.cascade_dml_deletes.clear();
+                pipeline_context.cascade_dml_appends.clear();
+                pipeline_context.dml_append_row_start = 0;
+                pipeline_context.dml_append_row_count = 0;
+                pipeline_context.dml_delete_txn_id = 0;
+                pipeline_context.dml_table_oid = components::catalog::INVALID_OID;
+            };
 
-            if (plan->has_error()) {
-                cursor = make_cursor(resource(), plan->get_error());
-                break;
-            }
-
-            // Await all waiting operators (multiple scans in a join, etc.)
-            while (!plan->is_executed()) {
-                auto waiting_op = plan->find_waiting_operator();
-                if (!waiting_op) {
-                    error(log_,
-                          "Plan not executed and no waiting operator! session: {}, plan type: {}",
-                          session.data(),
-                          static_cast<int>(plan->type()));
-                    assert(plan->has_error());
-                    cursor = make_cursor(resource(), plan->get_error());
+            // Drive the sub-plan to completion through the shared streaming seam
+            // (drive_subplan_ -> execute_pipeline). On success `plan` is executed with
+            // output_ set; the switch below reads plan->output().
+            {
+                auto drive_err = co_await drive_subplan_(plan, &pipeline_context);
+                if (drive_err.contains_error()) {
+                    // Constraint-error (or any operator-error) path: the DML child may
+                    // have already appended + stamped its range before the operator
+                    // above it failed. Lift the recorded range so the abort tail reverts
+                    // the physical append (see lift_dml_ranges).
+                    lift_dml_ranges();
+                    cursor = make_cursor(resource(), std::move(drive_err));
                     break;
                 }
-                trace(log_, "executor: found waiting operator, type={}", static_cast<int>(waiting_op->type()));
-                // DML operators (insert/remove/update) self-contain
-                // WAL + storage + index I/O inside their await_async_and_resume.
-                // Every operator is dispatched uniformly via the same
-                // coroutine entry point.
-                co_await waiting_op->await_async_and_resume(&pipeline_context);
-                // Propagate errors set during async resume (fk_check, fk_cascade,
-                // DML on disk failure, etc.)
-                if (waiting_op->has_error()) {
-                    cursor = make_cursor(resource(), waiting_op->get_error());
-                    break;
-                }
-                trace(log_, "executor: after await completed");
-                // Re-execute: completed scan allows parent to proceed, may find next waiting scan
-                plan->on_execute(&pipeline_context);
-            }
-            if (cursor && cursor->is_error())
-                break;
-
-            // Detect errors set asynchronously in operators (e.g. fk_cascade root with RESTRICT).
-            if (plan->has_error()) {
-                cursor = make_cursor(resource(), plan->get_error());
-                break;
             }
 
             switch (plan->type()) {
@@ -1917,6 +2255,10 @@ namespace services::collection::executor {
             }
 
             if (cursor->is_error()) {
+                // Same reasoning as the drive-error break above: lift any DML range the
+                // operators recorded before this cursor-level error so the abort tail
+                // reverts the physical append. Idempotent (drains the dml_* slots).
+                lift_dml_ranges();
                 break;
             }
 
@@ -1948,19 +2290,12 @@ namespace services::collection::executor {
             pipeline_context.pg_catalog_delete_tables.clear();
             pipeline_context.pg_attribute_commit_id_backfills.clear();
 
-            // Lift DML swap-info recorded by operator_insert / _delete / _update
-            // inside await_async_and_resume. Push a range per sub-plan rather
-            // than overwriting, so FK cascade across >=2 tables keeps every
-            // child's publish (see dml_append_range_t).
-            if (pipeline_context.dml_append_row_count > 0) {
-                result_tracking.dml_appends.push_back({pipeline_context.dml_table_oid,
-                                                       pipeline_context.dml_append_row_start,
-                                                       pipeline_context.dml_append_row_count});
-            }
-            if (pipeline_context.dml_delete_txn_id != 0) {
-                result_tracking.dml_deletes.push_back(
-                    {pipeline_context.dml_table_oid, pipeline_context.dml_delete_txn_id});
-            }
+            // Lift the BASE-table + FK-cascade DML append/delete ranges recorded by
+            // operator_insert / _delete / _update / _fk_cascade inside their
+            // await_async_and_resume. Shared with the constraint-error path above (see
+            // lift_dml_ranges): push a range per sub-plan rather than overwriting, so FK
+            // cascade across >=2 tables keeps every child's publish (dml_append_range_t).
+            lift_dml_ranges();
             // Lift the DROP storage-scrub oids: cascade-delete operators record
             // every storage whose backing files they tore down. Accumulate (not
             // overwrite) so a multi-table DROP keeps every dropped oid; the
@@ -1990,10 +2325,8 @@ namespace services::collection::executor {
             if (pipeline_context.committed_id != 0) {
                 result_tracking.commit_id = pipeline_context.committed_id;
             }
-            pipeline_context.dml_append_row_start = 0;
-            pipeline_context.dml_append_row_count = 0;
-            pipeline_context.dml_delete_txn_id = 0;
-            pipeline_context.dml_table_oid = components::catalog::INVALID_OID;
+            // (The single-slot dml_* fields + cascade vectors were already drained and
+            // zeroed by lift_dml_ranges() above.)
 
             plan_data.sub_plans.pop();
         }

@@ -16,8 +16,6 @@ namespace components::operators {
     operator_checkpoint_t::operator_checkpoint_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, std::move(log), operator_type::checkpoint) {}
 
-    void operator_checkpoint_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_checkpoint_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Flush dirty index btrees so a post-recovery rebuild starts from a
         // consistent on-disk index state.

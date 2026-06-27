@@ -26,8 +26,6 @@ namespace components::operators {
             , ids_(resource)
             , updated_(resource) {}
 
-        ptr copy() const;
-
         std::size_t size() const;
         ids_t& ids();
         updated_types_map_t& updated_types_map();

@@ -103,10 +103,10 @@ namespace components::storage {
         }
 
         [[nodiscard]] core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
-                                                                const table::table_filter_t* filter,
-                                                                int64_t limit,
-                                                                const std::vector<size_t>* projected_cols,
-                                                                table::transaction_data txn) override {
+                                                  const table::table_filter_t* filter,
+                                                  int64_t limit,
+                                                  const std::vector<size_t>* projected_cols,
+                                                  table::transaction_data txn) override {
             std::vector<table::storage_index_t> column_indices;
             if (projected_cols) {
                 column_indices.reserve(projected_cols->size());
@@ -165,6 +165,40 @@ namespace components::storage {
             return true;
         }
 
+        // Streaming fetch-next (STEP 3 / index-resume). Re-seeks a TRANSIENT table_scan_state to
+        // pos.next_row, reads ONE batch, advances pos, then lets the scan state (and its column
+        // pins) destruct on return — so nothing crosses the mailbox but the position. The source
+        // row consumed is tracked by the scan state's (row_group->start + vector_index*CAP),
+        // independent of how many rows the filter matched, so the cursor never re-reads a row.
+        [[nodiscard]] core::result_wrapper_t<bool> fetch_next_batch(vector::data_chunk_t& output,
+                                                                    scan_position_t& pos,
+                                                                    const table::table_filter_t* filter,
+                                                                    const std::vector<size_t>* projected_cols,
+                                                                    table::transaction_data txn) override {
+            if (pos.drained || pos.next_row >= pos.max_row) {
+                pos.drained = true;
+                return true;
+            }
+            std::vector<table::storage_index_t> column_indices;
+            if (projected_cols) {
+                column_indices.reserve(projected_cols->size());
+                for (size_t idx : *projected_cols) {
+                    if (idx < table_.column_count()) {
+                        column_indices.emplace_back(static_cast<int64_t>(idx));
+                    }
+                }
+            } else {
+                column_indices.reserve(table_.column_count());
+                for (size_t i = 0; i < table_.column_count(); i++) {
+                    column_indices.emplace_back(static_cast<int64_t>(i));
+                }
+            }
+            // data_table_t owns the transient-scan-state seek + single-batch read + position
+            // advance (it has row_group.hpp; the scan state and its pins live and die inside that
+            // call, so nothing pinned survives this round-trip).
+            return table_.fetch_next_batch(output, column_indices, filter, txn, pos.next_row, pos.max_row, pos.drained);
+        }
+
         void fetch(vector::data_chunk_t& output, const vector::vector_t& row_ids, uint64_t count) override {
             table::column_fetch_state state;
             std::vector<table::storage_index_t> column_indices;
@@ -179,27 +213,6 @@ namespace components::storage {
                           uint64_t count,
                           const std::function<void(vector::data_chunk_t& chunk)>& callback) override {
             table_.scan_table_segment(start, count, callback);
-        }
-
-        uint64_t parallel_scan(const std::function<void(vector::data_chunk_t& chunk)>& callback) override {
-            std::vector<table::storage_index_t> column_ids;
-            column_ids.reserve(table_.column_count());
-            for (size_t i = 0; i < table_.column_count(); i++) {
-                column_ids.emplace_back(static_cast<int64_t>(i));
-            }
-            auto parallel_state = table_.create_parallel_scan_state(column_ids);
-            auto types = table_.copy_types();
-            uint64_t total_rows = 0;
-            while (true) {
-                table::table_scan_state local_state(resource_);
-                vector::data_chunk_t result(resource_, types, vector::DEFAULT_VECTOR_CAPACITY);
-                if (!table_.next_parallel_chunk(*parallel_state, local_state, result)) {
-                    break;
-                }
-                total_rows += result.size();
-                callback(result);
-            }
-            return total_rows;
         }
 
         // Replay/legacy path (no txn). The table-layer append chain returns result_wrapper_t
@@ -221,8 +234,7 @@ namespace components::storage {
         // Returns the start_row on success, or write_conflict / out_of_memory surfaced by the
         // table-layer append chain. The agent_disk append handler reads the wrapper and turns
         // any error into a graceful txn abort.
-        [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data,
-                                                              table::transaction_data txn) override {
+        [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data, table::transaction_data txn) override {
             table::table_append_state append_state(resource_);
             auto lock_r = table_.append_lock(append_state);
             if (lock_r.has_error()) {

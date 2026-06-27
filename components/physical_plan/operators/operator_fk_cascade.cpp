@@ -16,32 +16,38 @@ namespace components::operators {
         : read_write_operator_t(resource, log, operator_type::fk_cascade)
         , fk_(std::move(fk)) {}
 
-    void operator_fk_cascade_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        if (!left_)
-            return;
-        // The delete operator's output is schema-typed but has no actual values
-        // (intercept_dml_io_ clears the data while keeping the column types).
-        // Prefer the scan operator's output (left_->left()) which holds the
-        // pre-delete row values needed to look up referencing child rows.
-        output_ = nullptr;
-        if (left_->left() && left_->left()->output() && left_->left()->output()->size() > 0) {
-            output_ = left_->left()->output();
+    namespace {
+        // Resolve the deleted parent rows fk_cascade looks up referencing children
+        // for. The DELETE child snapshots its matched OLD (pre-delete) rows into
+        // constraint_input() at the top of its await_async_and_resume, so prefer
+        // that — it is populated in BOTH paths (fk_cascade always runs after the
+        // delete's await). Fall back to the scan's output_ (the pre-delete row
+        // values, materialized path) then the delete's pass-through output_, so the
+        // materialized entry point keeps working unchanged.
+        const operator_data_ptr& resolve_fk_cascade_source(const operator_ptr& left) {
+            if (left->constraint_input() && left->constraint_input()->size() > 0) {
+                return left->constraint_input();
+            }
+            if (left->left() && left->left()->output() && left->left()->output()->size() > 0) {
+                return left->left()->output();
+            }
+            return left->output();
         }
-        if (!output_) {
-            output_ = left_->output();
-        }
-        if (output_ && output_->size() > 0) {
-            async_wait();
-        }
-    }
+    } // namespace
 
     actor_zeta::unique_future<void> operator_fk_cascade_t::await_async_and_resume(pipeline::context_t* ctx) {
-        if (!output_ || output_->size() == 0) {
+        // Resolve the source here directly in await_async_and_resume. fk_cascade is the
+        // plan ROOT, so output_ becomes the DELETE result cursor — set it to the deleted
+        // (matched) rows (the cursor count equals the number of deleted parent rows
+        // regardless of cascade outcome).
+        const auto& source = resolve_fk_cascade_source(left_);
+        output_ = source;
+        if (!source || source->size() == 0) {
             mark_executed();
             co_return;
         }
         const auto& in_chunks = output_->chunks();
-        execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+        execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz};
 
         const auto& par_indices = fk_.parent_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();
@@ -64,43 +70,48 @@ namespace components::operators {
             key_cols.emplace_back(n);
         }
 
-        // Stage A: build one key per deleted parent row, then a single batched
-        // scan of the child table. per_row_child_ids[row] = referencing child
-        // row_ids for that parent row (empty -> nothing references it). The parent
-        // key columns are copied into an OWNED keys-chunk (it crosses the mailbox and
-        // actors must not share buffers). Every input chunk's rows are concatenated in
-        // order at a running destination offset; the cascade actions below aggregate the
-        // per-row results across all parent rows, so only the combined key set matters.
-        const uint64_t total_rows = output_->size();
+        // Stage A: per input chunk (each <= DEFAULT_VECTOR_CAPACITY rows), build an OWNED keys-chunk
+        // and scan the child table; accumulate per_row_child_ids across all chunks.
+        // per_row_child_ids[row] = referencing child row_ids for that parent row (empty -> nothing
+        // references it). Gathering ALL streamed batches into one combined keys-chunk would overflow
+        // the chunk capacity (the source can stream many batches), so the scan is windowed per chunk;
+        // the cascade actions below aggregate the per-row results across ALL parent rows, so the
+        // per-chunk scan is value-equivalent to the old single combined scan. The keys-chunk is an
+        // OWNED copy (it crosses the mailbox; actors must not share buffers). The per-chunk scans are
+        // sequential co_awaits in this nested operator coroutine (driven by the executor) — no lost-wakeup.
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(par_indices.size());
         for (auto pidx : par_indices) {
             key_types.push_back(in_chunks.front().data[pidx].type());
         }
-        components::vector::data_chunk_t keys(resource_, key_types, total_rows == 0 ? 1 : total_rows);
-        uint64_t dst_offset = 0;
+        std::pmr::vector<std::pmr::vector<std::int64_t>> per_row_child_ids(resource_);
         for (const auto& chunk : in_chunks) {
             if (chunk.size() == 0) {
                 continue;
             }
+            components::vector::data_chunk_t keys(resource_, key_types, chunk.size());
             for (std::size_t j = 0; j < par_indices.size(); ++j) {
-                components::vector::vector_ops::copy(chunk.data[par_indices[j]],
-                                                     keys.data[j],
-                                                     chunk.size(),
-                                                     0,
-                                                     dst_offset);
+                components::vector::vector_ops::copy(chunk.data[par_indices[j]], keys.data[j], chunk.size(), 0, 0);
             }
-            dst_offset += chunk.size();
-        }
-        keys.set_cardinality(total_rows);
+            keys.set_cardinality(chunk.size());
 
-        auto [_s, sfut] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::scan_by_keys,
-                                           exec_ctx,
-                                           fk_.child_table_oid,
-                                           std::move(key_cols),
-                                           std::move(keys));
-        auto per_row_child_ids = co_await std::move(sfut);
+            // Child key column names cross the mailbox per scan, so copy them each time.
+            std::pmr::vector<std::string> col_names(resource_);
+            col_names.reserve(key_cols.size());
+            for (const auto& n : key_cols) {
+                col_names.emplace_back(n);
+            }
+            auto [_s, sfut] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::scan_by_keys,
+                                               exec_ctx,
+                                               fk_.child_table_oid,
+                                               std::move(col_names),
+                                               std::move(keys));
+            auto chunk_child_ids = co_await std::move(sfut);
+            for (auto& ids : chunk_child_ids) {
+                per_row_child_ids.push_back(std::move(ids));
+            }
+        }
 
         switch (fk_.del_action) {
             case 'a': // NO ACTION
@@ -119,9 +130,11 @@ namespace components::operators {
 
             case 'c': { // CASCADE — delete child rows via storage_delete_rows
                 // Aggregate every referencing child row_id across all parent rows
-                // into one delete. txn_id=0 commits the child delete immediately:
-                // execute_plan_'s storage_publish_delete only covers the parent, so
-                // cascade child ops aren't tracked there.
+                // into one delete. The child delete is stamped with the PARENT txn
+                // id (exec_ctx) so it is part of the parent's transaction: the
+                // executor records the child table on the txn's delete channel, so
+                // COMMIT publishes the cascade delete and ROLLBACK reverts it
+                // (revert_all_deletes(parent_txn_id)) — all-or-nothing atomicity.
                 std::pmr::vector<int64_t> all_child_ids(resource_);
                 for (const auto& child_ids : per_row_child_ids) {
                     for (auto id : child_ids) {
@@ -131,18 +144,24 @@ namespace components::operators {
                 if (all_child_ids.empty())
                     break;
 
-                execution_context_t del_ctx{ctx->session, {}, {}};
                 components::vector::vector_t row_ids_vec(resource_, types::logical_type::BIGINT, all_child_ids.size());
                 for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
                     row_ids_vec.data<int64_t>()[i] = all_child_ids[i];
                 }
                 auto [_d, dfut] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_delete_rows,
-                                                   del_ctx,
+                                                   exec_ctx,
                                                    fk_.child_table_oid,
                                                    std::move(row_ids_vec),
                                                    static_cast<uint64_t>(all_child_ids.size()));
                 co_await std::move(dfut);
+                // Track the child delete on the parent txn so COMMIT publishes it
+                // and ABORT reverts it. txn_id 0 (direct-API / no active txn) needs
+                // no tracking: the delete is already visible-to-all and irreversible.
+                if (ctx->txn.transaction_id != 0) {
+                    ctx->cascade_dml_deletes.push_back(
+                        components::table::dml_delete_range_t{fk_.child_table_oid, ctx->txn.transaction_id});
+                }
                 break;
             }
             case 'n':   // SET NULL
@@ -223,10 +242,15 @@ namespace components::operators {
                     upd_ids_batch.emplace_back(std::move(ids));
                     upd_data_batch.emplace_back(std::move(chunk));
                 }
-                execution_context_t upd_ctx{ctx->session, {}, {}};
+                // Stamp the child update with the PARENT txn (exec_ctx) so the
+                // SET NULL / SET DEFAULT version write rides the parent's
+                // transaction: the executor tracks the child table on BOTH the
+                // append channel (the new versions) and the delete channel (the
+                // superseded old versions, marked deleted at parent_txn_id), so
+                // COMMIT publishes the child update and ROLLBACK reverts it.
                 auto [_u, ufut] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_update,
-                                                   upd_ctx,
+                                                   exec_ctx,
                                                    fk_.child_table_oid,
                                                    std::move(upd_ids_batch),
                                                    std::move(upd_data_batch));
@@ -237,6 +261,20 @@ namespace components::operators {
                     set_error(update_result.error());
                     mark_failed();
                     co_return;
+                }
+                // MVCC update = delete-old + append-new. Track BOTH on the parent
+                // txn (same shape as operator_update's dml_* swap-info), so COMMIT
+                // publishes the appended new versions and the delete tombstones, and
+                // ABORT reverts the appends (storage_revert_appends) and un-stamps
+                // the delete marks (revert_all_deletes(parent_txn_id)).
+                if (ctx->txn.transaction_id != 0) {
+                    auto [upd_row_start, upd_row_count] = update_result.value();
+                    if (upd_row_count > 0) {
+                        ctx->cascade_dml_appends.push_back(components::table::dml_append_range_t{
+                            fk_.child_table_oid, upd_row_start, upd_row_count});
+                    }
+                    ctx->cascade_dml_deletes.push_back(
+                        components::table::dml_delete_range_t{fk_.child_table_oid, ctx->txn.transaction_id});
                 }
                 break;
             }

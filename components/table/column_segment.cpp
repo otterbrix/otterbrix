@@ -129,6 +129,49 @@ namespace components::table {
             return fetch_string(dict, base_ptr, location, string_length);
         }
 
+        // Intern the scanned string's BYTES into `aux` (the result vector's owned
+        // string heap) and return a view over the COPY. The raw bytes live in the
+        // buffer-pool-pinned block (base_ptr for inline strings, an overflow block
+        // for big strings); that pin is released per streaming batch and the block
+        // may later be evicted + reloaded at a new address. A borrowed view would
+        // then dangle (use-after-free). Copying into the result-owned heap -- the
+        // same mechanism vector_ops::copy uses -- makes the payload outlive the pin.
+        std::string_view fetch_string_owned(column_segment_t& segment,
+                                            string_dictionary_container_t dict,
+                                            std::byte* base_ptr,
+                                            int32_t dict_offset,
+                                            uint32_t string_length,
+                                            vector::string_vector_buffer_t& aux) {
+            auto block_size = segment.block_manager().block_size();
+            assert(dict_offset <= static_cast<int32_t>(block_size));
+            string_location_t location = fetch_string_location(dict, base_ptr, dict_offset, block_size);
+            if (location.offset == 0) {
+                // NULL / empty string: no payload to own.
+                return std::string_view(nullptr, 0);
+            }
+            std::string_view borrowed;
+            if (location.block_id == INVALID_BLOCK) {
+                // Inline string: bytes live in the dictionary of the pinned block.
+                borrowed = std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset),
+                                            string_length);
+            } else {
+                // Big-string overflow: the marker points at a separate overflow block
+                // holding [uint32 length][bytes]. Pin it, resolve, then intern. The
+                // pin is local to this resolution and released when `pinned` destructs.
+                auto& string_state = segment.segment_state()->cast<uncompressed_string_segment_state>();
+                auto overflow_block = string_state.handle(segment.block_manager(), location.block_id);
+                auto pinned = segment.block->block_manager.buffer_manager.pin(overflow_block);
+                if (pinned.has_error()) {
+                    // Unresolvable overflow block: yield an empty view rather than a
+                    // dangling/garbage one. (No-throw hot path.)
+                    return std::string_view(nullptr, 0);
+                }
+                borrowed = read_string_with_length(pinned.value().ptr(), location.offset);
+            }
+            // Copy the bytes into the result-owned heap and return a view over the copy.
+            return std::string_view(reinterpret_cast<char*>(aux.insert(borrowed)), borrowed.size());
+        }
+
         core::result_wrapper_t<bool> write_string_memory(column_segment_t& segment,
                                                          std::string_view string,
                                                          uint64_t& result_block,
@@ -899,16 +942,28 @@ namespace components::table {
             auto base_data = reinterpret_cast<int32_t*>(baseptr + DICTIONARY_HEADER_SIZE);
             auto result_data = result.data<std::string_view>();
 
+            // Ensure the result vector owns a string heap to intern scanned bytes into.
+            // A freshly-built STRING vector already carries one (see vector_t::initialize),
+            // but guard against a missing/typed-wrong auxiliary so the interned views are
+            // always backed by result-owned memory rather than the transient pinned block.
+            auto aux_buffer = result.auxiliary();
+            if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::STRING) {
+                aux_buffer = std::make_shared<vector::string_vector_buffer_t>(result.resource());
+                result.set_auxiliary(aux_buffer);
+            }
+            auto* aux = static_cast<vector::string_vector_buffer_t*>(aux_buffer.get());
+
             int32_t previous_offset = start > 0 ? base_data[start - 1] : 0;
 
             for (uint64_t i = 0; i < scan_count; i++) {
                 auto string_length = static_cast<uint32_t>(std::abs(base_data[static_cast<uint64_t>(start) + i]) -
                                                            std::abs(previous_offset));
-                result_data[result_offset + i] = fetch_string_from_dict(segment,
-                                                                        dict,
-                                                                        baseptr,
-                                                                        base_data[static_cast<uint64_t>(start) + i],
-                                                                        string_length);
+                result_data[result_offset + i] = fetch_string_owned(segment,
+                                                                    dict,
+                                                                    baseptr,
+                                                                    base_data[static_cast<uint64_t>(start) + i],
+                                                                    string_length,
+                                                                    *aux);
                 previous_offset = base_data[static_cast<uint64_t>(start) + i];
             }
         }

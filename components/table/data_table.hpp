@@ -40,6 +40,24 @@ namespace components::table {
                           table_scan_state& state,
                           std::pmr::memory_resource* resource);
 
+        // DORMANT: dormant foundation for the future buffer-pool bounded scan, not yet wired pending
+        // the actor-zeta await-core fix (scan sources reverted to whole-scan buffering). Kept, not
+        // deleted — the buffer-pool effort revives it.
+        // Streaming fetch-next (STEP 3 / index-resume). Reads ONE ≤DEFAULT_VECTOR_CAPACITY batch
+        // into `result`, RESUMING from absolute source row `next_row` (capped at `max_row`). Builds
+        // a TRANSIENT table_scan_state, seeks to next_row, reads one batch, then advances `next_row`
+        // past the SOURCE rows consumed (independent of how many the filter matched, so no row is
+        // re-read) and sets `drained` once the scan reaches `max_row`. The scan state (and its
+        // buffer pins) is local to this call and destroyed before return — ZERO pins survive.
+        // Returns a buffer-pool OOM / data_corruption surfaced by the table-layer scan, else true.
+        [[nodiscard]] core::result_wrapper_t<bool> fetch_next_batch(vector::data_chunk_t& result,
+                                                                    const std::vector<storage_index_t>& column_ids,
+                                                                    const table_filter_t* filter,
+                                                                    transaction_data txn,
+                                                                    int64_t& next_row,
+                                                                    int64_t max_row,
+                                                                    bool& drained);
+
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_ids,
@@ -55,11 +73,10 @@ namespace components::table {
         initialize_update(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
         // Returns write_conflict / out_of_memory. On success the pair is
         // {0, affected-row count}; the caller's update reply carries it.
-        [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
-        update(table_update_state& state,
-               vector::vector_t& row_ids,
-               // const std::vector<uint64_t>& column_ids,
-               vector::data_chunk_t& data);
+        [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>> update(table_update_state& state,
+                                                                                  vector::vector_t& row_ids,
+                                                                                  // const std::vector<uint64_t>& column_ids,
+                                                                                  vector::data_chunk_t& data);
         [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
                                                                  const std::vector<uint64_t>& column_path,
                                                                  vector::data_chunk_t& updates);
@@ -110,13 +127,6 @@ namespace components::table {
         // in-flight commits still need the history). True = table is fully
         // compacted (or empty) and safe to checkpoint without version metadata.
         bool compact(uint64_t compact_watermark);
-
-        std::shared_ptr<parallel_table_scan_state_t>
-        create_parallel_scan_state(const std::vector<storage_index_t>& column_ids,
-                                   const table_filter_t* filter = nullptr);
-        bool next_parallel_chunk(parallel_table_scan_state_t& parallel_state,
-                                 table_scan_state& local_state,
-                                 vector::data_chunk_t& result);
 
         // The checkpoint chain returns out_of_memory when a column flush pin fails;
         // true on success.

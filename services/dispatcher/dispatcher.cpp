@@ -413,9 +413,7 @@ namespace services::dispatcher {
         // bootstrap; scheduler not yet started.
         if (high_water > 0) {
             txn_manager_.restore_commit_clock(high_water);
-            trace(log_,
-                  "manager_dispatcher_t::seed_commit_clock_sync , restored commit clock to frontier {}",
-                  high_water);
+            trace(log_, "manager_dispatcher_t::seed_commit_clock_sync , restored commit clock to frontier {}", high_water);
         }
     }
 
@@ -541,14 +539,15 @@ namespace services::dispatcher {
         pctx.txn = components::table::transaction_data{0, 0};
 
         op->prepare();
-        op->on_execute(&pctx);
-        while (!op->is_executed()) {
-            auto waiting = op->find_waiting_operator();
-            if (!waiting)
-                break;
-            co_await waiting->await_async_and_resume(&pctx);
-            op->on_execute(&pctx);
-        }
+        // operator_register_udf_t is a sourceless sink (role()==sink,
+        // needs_async_finalize()==true): ALL work — the conflict read, default-registry
+        // mirror, pg_proc/pg_depend writes — runs in await_async_and_resume (the
+        // executor's bottom-up async-finalize pass). The dispatcher is a DIFFERENT
+        // actor than the executor, so it cannot call drive_subplan_; the minimal
+        // correct drive for a sourceless-sink leaf is a single direct
+        // await_async_and_resume (the executor's execute_pipeline does exactly this
+        // in its bottom-up async-finalize pass).
+        co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
             auto futures = pctx.take_pending_disk_futures();
             for (auto& f : futures) {
@@ -597,14 +596,15 @@ namespace services::dispatcher {
         pctx.txn = components::table::transaction_data{0, 0};
 
         op->prepare();
-        op->on_execute(&pctx);
-        while (!op->is_executed()) {
-            auto waiting = op->find_waiting_operator();
-            if (!waiting)
-                break;
-            co_await waiting->await_async_and_resume(&pctx);
-            op->on_execute(&pctx);
-        }
+        // operator_unregister_udf_t is a sourceless sink (role()==sink,
+        // needs_async_finalize()==true): ALL work — the registry existence-check +
+        // overload drop, the pg_proc/pg_depend purge — runs in await_async_and_resume
+        // (the executor's bottom-up async-finalize pass). The dispatcher is a
+        // DIFFERENT actor than the executor, so it cannot call drive_subplan_; the
+        // minimal correct drive for a sourceless-sink leaf is a single direct
+        // await_async_and_resume (mirrors execute_pipeline's bottom-up async-finalize
+        // pass).
+        co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
             auto futures = pctx.take_pending_disk_futures();
             for (auto& f : futures) {

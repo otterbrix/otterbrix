@@ -17,35 +17,39 @@ namespace components::operators {
         , table_oid_(table_oid)
         , returning_(std::move(returning)) {}
 
-    void operator_insert::accept_resolved_metadata(resolved_table_metadata_t metadata) {
-        // Capture metadata so await_async_and_resume can build a
-        // chunk_position -> table_position translation before storage_append.
-        // Adopt table_oid_ from the resolver when this operator was constructed
-        // without one (oid-only DML routing typically passes the oid through
-        // node_insert, but the resolve-sibling form is the alternative).
-        if (table_oid_ == catalog::INVALID_OID && metadata.table_oid != catalog::INVALID_OID) {
-            table_oid_ = metadata.table_oid;
+    core::error_t
+    operator_insert::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
+        // STREAMING DML SINK: fold each scan batch into a bounded accumulator and
+        // emit nothing (out stays empty). await_async_and_resume iterates
+        // output_->chunks() (the accumulated batches) and runs the single
+        // WAL->storage->index commit — filled one batch at a time instead of
+        // adopting left_->output() wholesale. modified_ is initialized here too.
+        if (!output_) {
+            output_ = make_operator_data(resource_, chunks_vector_t{resource_});
+            modified_ = make_operator_write_data(resource());
         }
-        resolved_metadata_ = std::move(metadata);
-    }
-
-    void operator_insert::on_execute_impl(pipeline::context_t* /*pipeline_context*/) {
-        if (left_ && left_->output()) {
-            output_ = left_->output();
-            modified_ = operators::make_operator_write_data(resource());
+        if (input.size() > 0) {
+            output_->append_chunk(std::move(input));
         }
-        if (output_ && output_->size() > 0 && table_oid_ != catalog::INVALID_OID) {
-            async_wait();
-        }
+        return core::error_t::no_error();
     }
 
     actor_zeta::unique_future<void> operator_insert::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 
-        if (!output_) {
+        // The streaming executor drives await unconditionally for an async-finalize
+        // sink, so guard the empty case here (no rows to append — e.g. an
+        // INSERT...SELECT whose scan returned nothing).
+        if (!output_ || output_->size() == 0) {
             mark_executed();
             co_return;
         }
+        // Snapshot the to-be-inserted rows for a parent fk_check / check_constraint
+        // BEFORE output_ is replaced with the RETURNING / affected-count chunk. The
+        // streaming async-finalize drive runs this DML's await first, then the
+        // constraint's — by which point output_ no longer holds the input rows. The
+        // intrusive_ptr alias is cheap; the constraint only reads it.
+        constraint_input_ = output_;
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 
         auto input = output_;
@@ -106,22 +110,6 @@ namespace components::operators {
             if (out_chunk.size() == 0) {
                 continue;
             }
-            // When a resolver sibling supplied catalog metadata, compute a
-            // chunk_position -> table_position translation via alias matching.
-            // The disk-actor's storage_append already aligns by alias (with
-            // positional fallback), so the translation is built only to surface
-            // resolver/data drift at trace level — the wiring hook for a future
-            // storage_append(...,key_translation) signature change.
-            if (resolved_metadata_.has_value() && out_chunk.column_count() > 0) {
-                auto translation = build_column_key_translation(*resolved_metadata_, out_chunk);
-                for (std::size_t i = 0; i < translation.size(); ++i) {
-                    if (translation[i] < 0 && out_chunk.data[i].type().has_alias()) {
-                        trace(log_,
-                              "operator_insert: resolved metadata has no column matching chunk alias '{}'",
-                              std::string(out_chunk.data[i].type().alias()));
-                    }
-                }
-            }
             append_data.emplace_back(copy_of(out_chunk));
             if (mirror_index) {
                 idx_chunks.emplace_back(copy_of(out_chunk));
@@ -143,6 +131,9 @@ namespace components::operators {
                                          exec_ctx,
                                          table_oid_,
                                          std::move(append_data));
+        // The append reply carries any write_conflict / out_of_memory the table-layer append
+        // chain surfaced; surface it as a clean error cursor (the executor turns has_error()
+        // into an error cursor) so the txn aborts gracefully.
         auto append_result = co_await std::move(af);
         if (append_result.has_error()) {
             set_error(append_result.error());

@@ -161,7 +161,14 @@ namespace components::table {
         // group is closed (all its column segments are final). A no-op for in-memory tables and for
         // non-fixed-size / compressed segments. Returns io_error/out_of_memory on failure; true on success.
         // Sub-columns (validity / struct / list / array children) are handled by the subclass override.
-        [[nodiscard]] virtual core::result_wrapper_t<bool> transition_to_disk();
+        //
+        // The re-pointed segments are PACKED into shared 256 KiB blocks via `pbm` (the same segment-packing
+        // allocator the checkpoint path uses) so narrow column segments no longer each consume a dedicated
+        // block. `pbm.write_to_block` only fills an in-memory block buffer; the CALLER owns `pbm` and MUST
+        // call `pbm.flush_partial_blocks()` before any concurrent scan/eviction of a re-pointed segment can
+        // occur (else a re-pointed live segment could load() an unflushed block -> data_corruption).
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        transition_to_disk(storage::partial_block_manager_t& pbm);
 
         // Compact reclaim: append the ids of disk blocks EXCLUSIVELY owned by this column (and its
         // sub-columns) to `out`, so the caller can mark them free once this collection is replaced by a
@@ -181,8 +188,14 @@ namespace components::table {
         // bounded memory. A no-op for in-memory tables (no backing store) and for non-fixed-size / compressed
         // segments (a raw block copy would not round-trip losslessly). Returns io_error/out_of_memory on a
         // write/alloc failure; true on success or no-op. Caller MUST hold the tree lock `l`.
+        //
+        // The re-pointed segment is PACKED into a shared block via `pbm` (segment packing): small segments
+        // share a 256 KiB block at distinct offsets instead of each owning a dedicated block. `pbm.write_to_block`
+        // only fills an in-memory block buffer -- the CALLER (transition_to_disk's owner) MUST flush `pbm`
+        // before the re-pointed segment can be evicted/reloaded (flush-before-evict).
         [[nodiscard]] core::result_wrapper_t<bool> transition_segment_to_disk(std::unique_lock<std::mutex>& l,
-                                                                              uint64_t segment_index);
+                                                                              uint64_t segment_index,
+                                                                              storage::partial_block_manager_t& pbm);
 
         uint64_t
         scan_vector(column_scan_state& state, vector::vector_t& result, uint64_t remaining, scan_vector_type scan_type);

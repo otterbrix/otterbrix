@@ -37,9 +37,9 @@ namespace components::table::storage {
                             file_flags::WRITE | file_flags::READ | file_flags::FILE_CREATE_NEW,
                             file_lock_type::WRITE_LOCK);
         if (!handle_) {
-            return core::error_t(
-                core::error_code_t::io_error,
-                std::pmr::string{"Failed to create database file: " + path_, buffer_manager.resource()});
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"Failed to create database file: " + path_,
+                                                  buffer_manager.resource()});
         }
 
         main_header_t main_header;
@@ -78,9 +78,9 @@ namespace components::table::storage {
                                  std::pmr::string{"Failed to read main header", buffer_manager.resource()});
         }
         if (!main_header.validate()) {
-            return core::error_t(
-                core::error_code_t::data_corruption,
-                std::pmr::string{"Invalid database file: bad magic or version", buffer_manager.resource()});
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"Invalid database file: bad magic or version",
+                                                  buffer_manager.resource()});
         }
 
         database_header_t header1, header2;

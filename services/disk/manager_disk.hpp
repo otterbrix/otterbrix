@@ -640,6 +640,19 @@ namespace services::disk {
                      int64_t limit,
                      std::vector<size_t> projected_cols,
                      components::table::transaction_data txn);
+        // Streaming fetch-next scan source (STEP 3 / phase B). Transparent router:
+        // pool_idx_for_oid -> owning agent's storage_fetch_next_batch_inner, forwarding
+        // the reply (batch + minted/advanced cursor_id) unchanged. The agent holds the
+        // LIVE per-cursor scan state; this manager only routes. cursor_id==0 OPENs,
+        // non-zero ADVANCEs.
+        unique_future<core::result_wrapper_t<fetch_batch_t>>
+        storage_fetch_next_batch(session_id_t session,
+                                 components::catalog::oid_t table_oid,
+                                 uint64_t cursor_id,
+                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                 int64_t limit,
+                                 std::vector<size_t> projected_cols,
+                                 components::table::transaction_data txn);
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
@@ -701,6 +714,7 @@ namespace services::disk {
                                                        &manager_disk_t::storage_total_rows,
                                                        // Storage data operations
                                                        &manager_disk_t::storage_scan,
+                                                       &manager_disk_t::storage_fetch_next_batch,
                                                        &manager_disk_t::storage_fetch,
                                                        &manager_disk_t::storage_scan_segment,
                                                        &manager_disk_t::storage_append,

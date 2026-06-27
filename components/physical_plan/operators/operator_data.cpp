@@ -1,7 +1,5 @@
 #include "operator_data.hpp"
 
-#include <cassert>
-
 namespace components::operators {
 
     operator_data_t::operator_data_t(std::pmr::memory_resource* resource,
@@ -22,17 +20,6 @@ namespace components::operators {
         : resource_(resource)
         , chunks_(std::move(chunks), resource) {}
 
-    operator_data_t::ptr operator_data_t::copy() const {
-        chunks_vector_t new_chunks(resource_);
-        new_chunks.reserve(chunks_.size());
-        for (const auto& chunk : chunks_) {
-            vector::data_chunk_t dst{resource_, chunk.types(), chunk.size()};
-            chunk.copy(dst, 0);
-            new_chunks.emplace_back(std::move(dst));
-        }
-        return {new operator_data_t(resource_, std::move(new_chunks))};
-    }
-
     std::size_t operator_data_t::size() const {
         std::size_t total = 0;
         for (const auto& c : chunks_) {
@@ -44,6 +31,26 @@ namespace components::operators {
     void operator_data_t::append_chunk(vector::data_chunk_t&& chunk) { chunks_.emplace_back(std::move(chunk)); }
 
     std::pmr::memory_resource* operator_data_t::resource() const { return resource_; }
+
+    chunks_vector_t split_chunk_into_batches(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk) {
+        chunks_vector_t out(resource);
+        const auto total = chunk.size();
+        if (total == 0) {
+            out.emplace_back(std::move(chunk));
+            return out;
+        }
+        if (total <= vector::DEFAULT_VECTOR_CAPACITY) {
+            out.emplace_back(std::move(chunk));
+            return out;
+        }
+        const auto batch_size = vector::DEFAULT_VECTOR_CAPACITY;
+        out.reserve((total + batch_size - 1) / batch_size);
+        for (uint64_t offset = 0; offset < total; offset += batch_size) {
+            auto count = std::min<uint64_t>(batch_size, total - offset);
+            out.emplace_back(chunk.partial_copy(resource, offset, count));
+        }
+        return out;
+    }
 
     vector::data_chunk_t make_key_chunk(std::pmr::memory_resource* resource,
                                         std::pmr::vector<types::logical_value_t> values) {

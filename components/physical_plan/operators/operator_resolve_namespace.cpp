@@ -71,17 +71,14 @@ namespace components::operators {
         // pg_namespace schema: [oid (uint32), nspname (string)].
         // Filter on nspname == name_ via the generic read_chunks_by_key actor
         // message — pure storage primitive.
-        types::logical_value_t name_lv(resource_, std::string_view{name_});
         std::pmr::vector<std::string> ns_keys(resource_);
         ns_keys.emplace_back("nspname");
-        std::pmr::vector<types::logical_value_t> ns_vals(resource_);
-        ns_vals.emplace_back(name_lv);
         auto [_ns, nsf] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            kPgNamespace,
                                            std::move(ns_keys),
-                                           components::operators::make_key_chunk(resource_, std::move(ns_vals)));
+                                           components::operators::make_key_chunk(resource_, std::string_view{name_}));
         auto ns_batches = co_await std::move(nsf);
 
         bool resolved = false;
@@ -89,9 +86,8 @@ namespace components::operators {
             // First row's col 0 = namespace_oid. Mirrors
             // manager_disk_t::resolve_namespace (manager_disk_resolve.cpp:9-32)
             // which returns the first match.
-            auto ns_oid_v = ns_batches[0].value(0, 0);
-            if (!ns_oid_v.is_null()) {
-                const auto oid_val = static_cast<catalog::oid_t>(ns_oid_v.value<std::uint32_t>());
+            if (!ns_batches[0].is_null(0, 0)) {
+                const auto oid_val = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
                 out_chunk.set_cardinality(1);
                 set_uint32(out_chunk, 0, 0, static_cast<std::uint32_t>(oid_val));
                 // Stamp the resolved oid onto the logical-plan node so the

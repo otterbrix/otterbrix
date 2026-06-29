@@ -22,8 +22,8 @@
 // ============================================================================
 
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
 #include <algorithm>
+#include <catch2/catch.hpp>
 #include <functional>
 #include <sstream>
 #include <string>
@@ -168,9 +168,7 @@ TEST_CASE("integration::cpp::large_aggregate_dml::delete_using_secondary_table_o
         return "(" + std::to_string(i) + ", " + std::to_string(i * 10) + ")";
     });
     // Also a couple of target rows whose key is NOT in the USING table (must survive).
-    REQUIRE(exec(dispatcher,
-                 "INSERT INTO AggDb.target (k, v) VALUES (1000000, 1), (1000001, 2);")
-                ->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO AggDb.target (k, v) VALUES (1000000, 1), (1000001, 2);")->is_success());
 
     // USING table: every key 0..(kUsing-1) → joins each of the first kUsing target rows.
     insert_in_batches(dispatcher, "AggDb.using_tbl (k)", kUsing, 500, [](unsigned i) {

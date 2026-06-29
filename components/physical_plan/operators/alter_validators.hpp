@@ -42,6 +42,20 @@ namespace components::operators::alter_validators {
                          components::execution_context_t exec_ctx,
                          components::catalog::oid_t table_oid);
 
+    // Async pg_depend scan: (classid, objid) pairs depending on (refclassid,
+    // refobjid, refobjsubid). refobjsubid is the altered column's attnum
+    // (0 = whole-relation). Feeds validate_cascade_dependencies for RESTRICT, or
+    // the cascade loop for CASCADE.
+    // TBD-impl: pg_depend has no refobjsubid yet, so this returns ALL dependents
+    // of the refobj (table); callers must refine once the column-grain id lands.
+    actor_zeta::unique_future<std::pmr::vector<std::pair<int, components::catalog::oid_t>>>
+    scan_cascade_dependents(std::pmr::memory_resource* resource,
+                            actor_zeta::address_t disk_address,
+                            components::execution_context_t exec_ctx,
+                            components::catalog::oid_t ref_classid,
+                            components::catalog::oid_t ref_objid,
+                            std::int32_t ref_objsubid);
+
     // Re-export the pure validators so callsites reach pure + async helpers
     // through one `using namespace alter_validators;`.
     using components::catalog::alter_column_validators::encode_default_spec_ec;

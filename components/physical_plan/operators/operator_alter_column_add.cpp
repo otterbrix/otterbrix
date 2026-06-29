@@ -58,27 +58,23 @@ namespace components::operators {
 
         // scan pg_attribute for max(attnum) for this table.
         constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
-        components::types::logical_value_t toid_lv(resource_, table_oid_);
         std::pmr::vector<std::string> pa_keys(resource_);
         pa_keys.emplace_back("attrelid");
-        std::pmr::vector<components::types::logical_value_t> pa_vals(resource_);
-        pa_vals.emplace_back(toid_lv);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr_oid,
                                            std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, std::move(pa_vals)));
+                                           components::operators::make_key_chunk(resource_, table_oid_));
         std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
         std::int32_t next_attnum = 1;
         for (auto& chunk : attr_batches) {
             if (chunk.column_count() < 5)
                 continue;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto attnum_cell = chunk.value(4, i);
-                if (attnum_cell.is_null())
+                if (chunk.is_null(4, i))
                     continue;
-                auto n = attnum_cell.value<std::int32_t>();
+                auto n = chunk.get_value<std::int32_t>(4, i);
                 if (n >= next_attnum)
                     next_attnum = n + 1;
             }

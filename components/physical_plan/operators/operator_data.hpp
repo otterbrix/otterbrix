@@ -20,8 +20,11 @@ namespace components::operators {
         operator_data_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
         operator_data_t(std::pmr::memory_resource* resource, chunks_vector_t&& chunks);
 
+        ptr copy() const;
+
         // Total rows across all chunks.
         std::size_t size() const;
+        std::size_t chunk_count() const { return chunks_.size(); }
 
         // Multi-chunk API. Each chunk in the vector must contain ≤ DEFAULT_VECTOR_CAPACITY rows.
         chunks_vector_t& chunks() { return chunks_; }
@@ -37,9 +40,6 @@ namespace components::operators {
 
     using operator_data_ptr = operator_data_t::ptr;
 
-    // Splits a data_chunk_t into ≤DEFAULT_VECTOR_CAPACITY-sized chunks. Input is consumed.
-    chunks_vector_t split_chunk_into_batches(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk);
-
     inline operator_data_ptr make_operator_data(std::pmr::memory_resource* resource,
                                                 const std::pmr::vector<types::complex_logical_type>& types,
                                                 uint64_t capacity = vector::DEFAULT_VECTOR_CAPACITY) {
@@ -54,30 +54,48 @@ namespace components::operators {
         return {new operator_data_t(resource, std::move(chunks))};
     }
 
-    // Builds the 1-row columnar key carrier used to call manager_disk_t::read_chunks_by_key
-    // (and mirrors the scan_by_keys columnar contract). Column j of the returned chunk has
-    // type values[j].type() and cell (j, 0) holds values[j] (null cells stay invalid). The
-    // result has exactly one row (cardinality 1) and one column per value.
+    // Builds the 1-row columnar key carrier used to call manager_disk_t::read_chunks_by_key (and
+    // mirrors the scan_by_keys columnar contract): one column per argument, cardinality 1, with each
+    // column's type derived from the argument's C++ type via the same to_logical_type<> mapping
+    // logical_value_t uses, and the cell written through the typed vector_t::set_value.
     //
-    // The chunk carries no column NAMES: callers pass key column names separately
-    // (key_col_names), so values[] must be ordered POSITIONALLY to match key_col_names[] —
-    // values[j] is the key for key_col_names[j]. The agent resolves names to storage column
-    // indices independently and reads keys.value(ki, 0) by the same positional index ki.
-    vector::data_chunk_t make_key_chunk(std::pmr::memory_resource* resource,
-                                        std::pmr::vector<types::logical_value_t> values);
+    // The chunk carries no column NAMES: callers pass key column names separately (key_col_names), so
+    // the arguments must be ordered POSITIONALLY to match key_col_names[] — the j-th argument is the
+    // key for key_col_names[j]. The agent resolves names to storage column indices independently and
+    // reads keys.value(ki, 0) by the same positional index ki.
+    //
+    // Pass string keys as std::string_view: a bare const char* maps to POINTER, not STRING_LITERAL.
+    template<typename Val, typename... Vals>
+    requires(!std::is_same_v<std::remove_cvref_t<Val>, std::pmr::vector<types::logical_value_t>>) vector::data_chunk_t
+        make_key_chunk(std::pmr::memory_resource* resource, Val&& val, Vals&&... vals) {
+        std::pmr::vector<types::complex_logical_type> col_types(resource);
+        col_types.reserve(1 + sizeof...(Vals));
+        col_types.emplace_back(types::to_logical_type<std::remove_cvref_t<Val>>());
+        (col_types.emplace_back(types::to_logical_type<std::remove_cvref_t<Vals>>()), ...);
+        vector::data_chunk_t chunk(resource, col_types, 1);
+        uint64_t col = 0;
+        chunk.set_value(col++, uint64_t{0}, std::forward<Val>(val));
+        (chunk.set_value(col++, uint64_t{0}, std::forward<Vals>(vals)), ...);
+        chunk.set_cardinality(1);
+        return chunk;
+    }
 
-    // Builds the N-row columnar key carrier used to call manager_disk_t::read_chunks_by_keys
-    // (and mirrors the scan_by_keys columnar contract for a multi-key batch). Row i of the
-    // returned chunk is the i-th key-tuple: cell (j, i) holds rows[i][j] (null cells stay
-    // invalid). The result has exactly rows.size() rows and one column per key field.
-    //
-    // Column types come from rows[0]: every key-tuple MUST be positionally aligned to the same
-    // key_col_names[] and use the same column types, so rows[i][j].type() == rows[0][j].type()
-    // for all i. The chunk carries no column NAMES; callers pass key_col_names separately and
-    // the agent resolves names to storage indices once, then reads keys.value(ki, i) by the
-    // same positional index ki. An empty rows[] yields a 0-row, 0-column chunk (the read then
-    // returns an empty per-key result, matching read_chunks_by_keys' invariant).
-    vector::data_chunk_t make_keys_chunk(std::pmr::memory_resource* resource,
-                                         const std::pmr::vector<std::pmr::vector<types::logical_value_t>>& rows);
+    // Builds the N-row columnar key carrier for manager_disk_t::read_chunks_by_keys: a single key
+    // column (type derived from T) with one row per value — the common probe-by-oid batch. Same
+    // positional/no-column-names contract as make_key_chunk; an empty values[] yields a 1-capacity,
+    // 0-row chunk (the read then returns an empty per-key result).
+    template<typename T>
+    requires(!std::is_same_v<std::remove_cvref_t<T>, types::logical_value_t>) vector::data_chunk_t
+        make_keys_chunk(std::pmr::memory_resource* resource, const std::pmr::vector<T>& values) {
+        std::pmr::vector<types::complex_logical_type> col_types(resource);
+        col_types.emplace_back(types::to_logical_type<std::remove_cvref_t<T>>());
+        const std::size_t nrows = values.size();
+        vector::data_chunk_t chunk(resource, col_types, nrows == 0 ? 1 : nrows);
+        for (std::size_t i = 0; i < nrows; ++i) {
+            chunk.set_value(uint64_t{0}, static_cast<uint64_t>(i), values[i]);
+        }
+        chunk.set_cardinality(static_cast<uint64_t>(nrows));
+        return chunk;
+    }
 
 } // namespace components::operators

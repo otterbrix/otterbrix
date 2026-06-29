@@ -77,17 +77,14 @@ namespace components::operators {
         std::vector<std::pair<std::string, std::string>> check_exprs;
 
         // scan pg_constraint by (conrelid|confrelid).
-        types::logical_value_t table_lv(resource_, table_oid);
         std::pmr::vector<std::string> con_keys(resource_);
         con_keys.emplace_back(key_col);
-        std::pmr::vector<types::logical_value_t> con_vals(resource_);
-        con_vals.emplace_back(table_lv);
         auto [_c, fut_con] = actor_zeta::send(ctx->disk_address,
                                               &services::disk::manager_disk_t::read_chunks_by_key,
                                               exec_ctx,
                                               kPgConstraint,
                                               std::move(con_keys),
-                                              components::operators::make_key_chunk(resource_, std::move(con_vals)));
+                                              components::operators::make_key_chunk(resource_, table_oid));
         auto con_batches = co_await std::move(fut_con);
 
         // PASS 1: decode every pg_constraint row. FK rows ('f') build a partially-filled
@@ -106,84 +103,74 @@ namespace components::operators {
             std::vector<catalog::oid_t> parent_attoids;
         };
         std::pmr::vector<pending_fk_t> pending_fks(resource_);
-        std::pmr::vector<std::pmr::vector<types::logical_value_t>> child_key_rows(resource_);
-        std::pmr::vector<std::pmr::vector<types::logical_value_t>> parent_key_rows(resource_);
+        std::pmr::vector<catalog::oid_t> child_oids(resource_);
+        std::pmr::vector<catalog::oid_t> parent_oids(resource_);
 
         for (auto& con_chunk : con_batches) {
             if (con_chunk.column_count() <= catalog::pg_constraint_col::confupdtype)
                 continue;
             for (uint64_t ci = 0; ci < con_chunk.size(); ++ci) {
-                // Bind the cell to a NAMED local before value<std::string_view>():
-                // chunk.value() returns a temporary logical_value_t, and a string_view
-                // taken from a temporary dangles at the end of the full expression.
-                const auto contype_cell = con_chunk.value(catalog::pg_constraint_col::contype, ci);
-                if (contype_cell.is_null())
+                if (con_chunk.is_null(catalog::pg_constraint_col::contype, ci))
                     continue;
-                const auto contype_sv = contype_cell.value<std::string_view>();
-                if (contype_sv.empty())
+                const auto contype_cell =
+                    con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::contype, ci);
+                if (contype_cell.empty())
                     continue;
-                const char contype = contype_sv[0];
+                const char contype = contype_cell[0];
 
                 if (contype == 'f') {
                     pending_fk_t pending;
                     catalog::fk_info_t& fk = pending.fk;
                     fk.constraint_oid = static_cast<catalog::oid_t>(
-                        con_chunk.value(catalog::pg_constraint_col::oid, ci).value<std::uint32_t>());
+                        con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
                     if (direction == direction_t::outgoing) {
                         fk.child_table_oid = table_oid;
                         fk.parent_table_oid = static_cast<catalog::oid_t>(
-                            con_chunk.value(catalog::pg_constraint_col::confrelid, ci).value<std::uint32_t>());
+                            con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::confrelid, ci));
                     } else {
                         fk.child_table_oid = static_cast<catalog::oid_t>(
-                            con_chunk.value(catalog::pg_constraint_col::conrelid, ci).value<std::uint32_t>());
+                            con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::conrelid, ci));
                         fk.parent_table_oid = table_oid;
                     }
                     fk.matchtype =
-                        con_chunk.value(catalog::pg_constraint_col::confmatch, ci).is_null()
+                        con_chunk.is_null(catalog::pg_constraint_col::confmatch, ci)
                             ? 's'
-                            : con_chunk.value(catalog::pg_constraint_col::confmatch, ci).value<std::string_view>()[0];
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confmatch, ci)[0];
                     fk.del_action =
-                        con_chunk.value(catalog::pg_constraint_col::confdeltype, ci).is_null()
+                        con_chunk.is_null(catalog::pg_constraint_col::confdeltype, ci)
                             ? 'a'
-                            : con_chunk.value(catalog::pg_constraint_col::confdeltype, ci).value<std::string_view>()[0];
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confdeltype, ci)[0];
                     fk.upd_action =
-                        con_chunk.value(catalog::pg_constraint_col::confupdtype, ci).is_null()
+                        con_chunk.is_null(catalog::pg_constraint_col::confupdtype, ci)
                             ? 'a'
-                            : con_chunk.value(catalog::pg_constraint_col::confupdtype, ci).value<std::string_view>()[0];
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confupdtype, ci)[0];
 
-                    pending.child_attoids = catalog::parse_oid_csv(
-                        con_chunk.value(catalog::pg_constraint_col::conkey, ci).is_null()
-                            ? std::string{}
-                            : std::string(
-                                  con_chunk.value(catalog::pg_constraint_col::conkey, ci).value<std::string_view>()));
-                    pending.parent_attoids = catalog::parse_oid_csv(
-                        con_chunk.value(catalog::pg_constraint_col::confkey, ci).is_null()
-                            ? std::string{}
-                            : std::string(
-                                  con_chunk.value(catalog::pg_constraint_col::confkey, ci).value<std::string_view>()));
+                    pending.child_attoids = catalog::parse_oid_csv(std::string(
+                        con_chunk.is_null(catalog::pg_constraint_col::conkey, ci)
+                            ? std::string_view{}
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conkey, ci)));
+                    pending.parent_attoids = catalog::parse_oid_csv(std::string(
+                        con_chunk.is_null(catalog::pg_constraint_col::confkey, ci)
+                            ? std::string_view{}
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confkey, ci)));
 
                     // One key row per FK, positionally aligned to pending_fks — child by
                     // child_table_oid, parent by parent_table_oid (both keyed "attrelid").
-                    std::pmr::vector<types::logical_value_t> child_row(resource_);
-                    child_row.emplace_back(types::logical_value_t(resource_, fk.child_table_oid));
-                    child_key_rows.push_back(std::move(child_row));
-                    std::pmr::vector<types::logical_value_t> parent_row(resource_);
-                    parent_row.emplace_back(types::logical_value_t(resource_, fk.parent_table_oid));
-                    parent_key_rows.push_back(std::move(parent_row));
+                    child_oids.push_back(fk.child_table_oid);
+                    parent_oids.push_back(fk.parent_table_oid);
 
                     pending_fks.push_back(std::move(pending));
                 } else if (contype == 'c' && direction == direction_t::outgoing) {
-                    // Named locals required here too (see contype dangle note above).
-                    const auto conexpr_cell = con_chunk.value(catalog::pg_constraint_col::conexpr, ci);
-                    if (conexpr_cell.is_null())
+                    if (con_chunk.is_null(catalog::pg_constraint_col::conexpr, ci))
                         continue;
-                    const auto conexpr_sv = conexpr_cell.value<std::string_view>();
+                    const auto conexpr_sv =
+                        con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conexpr, ci);
                     if (conexpr_sv.empty())
                         continue;
                     std::string name;
-                    const auto conname_cell = con_chunk.value(catalog::pg_constraint_col::conname, ci);
-                    if (!conname_cell.is_null()) {
-                        name = std::string(conname_cell.value<std::string_view>());
+                    if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
+                        name =
+                            std::string(con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
                     }
                     check_exprs.emplace_back(std::move(name), std::string(conexpr_sv));
                 }
@@ -203,17 +190,16 @@ namespace components::operators {
                                                      exec_ctx,
                                                      kPgAttribute,
                                                      std::move(attr_c_keys),
-                                                     components::operators::make_keys_chunk(resource_, child_key_rows));
+                                                     components::operators::make_keys_chunk(resource_, child_oids));
 
             std::pmr::vector<std::string> attr_p_keys(resource_);
             attr_p_keys.emplace_back("attrelid");
-            auto [_b, fut_attr_p] =
-                actor_zeta::send(ctx->disk_address,
-                                 &services::disk::manager_disk_t::read_chunks_by_keys,
-                                 exec_ctx,
-                                 kPgAttribute,
-                                 std::move(attr_p_keys),
-                                 components::operators::make_keys_chunk(resource_, parent_key_rows));
+            auto [_b, fut_attr_p] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::read_chunks_by_keys,
+                                                     exec_ctx,
+                                                     kPgAttribute,
+                                                     std::move(attr_p_keys),
+                                                     components::operators::make_keys_chunk(resource_, parent_oids));
 
             std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> child_results =
                 co_await std::move(fut_attr_c);
@@ -242,11 +228,11 @@ namespace components::operators {
                             bool found = false;
                             for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
                                 auto row_attoid = static_cast<catalog::oid_t>(
-                                    attr_chunk.value(catalog::pg_attribute_col::attoid, ai).value<std::uint32_t>());
+                                    attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
                                 if (row_attoid == wanted_oid) {
-                                    names.emplace_back(
-                                        std::string(attr_chunk.value(catalog::pg_attribute_col::attname, ai)
-                                                        .value<std::string_view>()));
+                                    names.emplace_back(std::string(
+                                        attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname,
+                                                                               ai)));
                                     found = true;
                                     break;
                                 }
@@ -276,20 +262,19 @@ namespace components::operators {
                         if (attr_chunk.column_count() <= kAttisdropped)
                             continue;
                         for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
-                            if (!attr_chunk.value(kAttisdropped, ai).is_null() &&
-                                attr_chunk.value(kAttisdropped, ai).value<bool>())
+                            if (!attr_chunk.is_null(kAttisdropped, ai) && attr_chunk.get_value<bool>(kAttisdropped, ai))
                                 continue;
                             row_meta_t r;
-                            if (!attr_chunk.value(catalog::pg_attribute_col::attname, ai).is_null()) {
+                            if (!attr_chunk.is_null(catalog::pg_attribute_col::attname, ai)) {
                                 r.attname.assign(
-                                    attr_chunk.value(catalog::pg_attribute_col::attname, ai).value<std::string_view>());
+                                    attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname, ai));
                             }
-                            r.attnum = attr_chunk.value(kAttnum, ai).is_null()
-                                           ? 0
-                                           : attr_chunk.value(kAttnum, ai).value<std::int32_t>();
-                            if (attr_chunk.column_count() > kAttdefspec &&
-                                !attr_chunk.value(kAttdefspec, ai).is_null()) {
-                                r.attdefspec.assign(attr_chunk.value(kAttdefspec, ai).value<std::string_view>());
+                            r.attnum =
+                                attr_chunk.is_null(kAttnum, ai) ? 0 : attr_chunk.get_value<std::int32_t>(kAttnum, ai);
+                            if (attr_chunk.column_count() > kAttdefspec) {
+                                if (!attr_chunk.is_null(kAttdefspec, ai)) {
+                                    r.attdefspec.assign(attr_chunk.get_value<std::string_view>(kAttdefspec, ai));
+                                }
                             }
                             ordered.push_back(std::move(r));
                         }
@@ -322,11 +307,11 @@ namespace components::operators {
                             bool found = false;
                             for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
                                 auto row_attoid = static_cast<catalog::oid_t>(
-                                    attr_chunk.value(catalog::pg_attribute_col::attoid, ai).value<std::uint32_t>());
+                                    attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
                                 if (row_attoid == wanted_oid) {
-                                    names.emplace_back(
-                                        std::string(attr_chunk.value(catalog::pg_attribute_col::attname, ai)
-                                                        .value<std::string_view>()));
+                                    names.emplace_back(std::string(
+                                        attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname,
+                                                                               ai)));
                                     found = true;
                                     break;
                                 }
@@ -344,43 +329,36 @@ namespace components::operators {
                     // descendant collection without a back-resolve). The pg_namespace
                     // read keys on an oid DERIVED from the pg_class read result, so
                     // this remains a 2-hop chained read per FK (NOT batchable).
-                    types::logical_value_t child_oid_lv(resource_, fk.child_table_oid);
                     std::pmr::vector<std::string> cls_keys(resource_);
                     cls_keys.emplace_back("oid");
-                    std::pmr::vector<types::logical_value_t> cls_vals(resource_);
-                    cls_vals.emplace_back(child_oid_lv);
                     auto [_cls, fut_cls] =
                         actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::read_chunks_by_key,
                                          exec_ctx,
                                          kPgClass,
                                          std::move(cls_keys),
-                                         components::operators::make_key_chunk(resource_, std::move(cls_vals)));
+                                         components::operators::make_key_chunk(resource_, fk.child_table_oid));
                     auto cls_batches = co_await std::move(fut_cls);
                     if (!cls_batches.empty() && cls_batches[0].size() != 0 &&
                         cls_batches[0].column_count() > catalog::pg_class_col::relname) {
-                        fk.child_collection_name = std::string(
-                            cls_batches[0].value(catalog::pg_class_col::relname, 0).value<std::string_view>());
+                        fk.child_collection_name =
+                            std::string(cls_batches[0].get_value<std::string_view>(catalog::pg_class_col::relname, 0));
                         fk.child_database = "";
                         const auto ns_oid = static_cast<catalog::oid_t>(
-                            cls_batches[0].value(catalog::pg_class_col::relnamespace, 0).value<std::uint32_t>());
-                        types::logical_value_t ns_oid_lv(resource_, ns_oid);
+                            cls_batches[0].get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, 0));
                         std::pmr::vector<std::string> ns_keys(resource_);
                         ns_keys.emplace_back("oid");
-                        std::pmr::vector<types::logical_value_t> ns_vals(resource_);
-                        ns_vals.emplace_back(ns_oid_lv);
-                        auto [_ns, fut_ns] =
-                            actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::read_chunks_by_key,
-                                             exec_ctx,
-                                             kPgNamespace,
-                                             std::move(ns_keys),
-                                             components::operators::make_key_chunk(resource_, std::move(ns_vals)));
+                        auto [_ns, fut_ns] = actor_zeta::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::read_chunks_by_key,
+                                                              exec_ctx,
+                                                              kPgNamespace,
+                                                              std::move(ns_keys),
+                                                              components::operators::make_key_chunk(resource_, ns_oid));
                         auto ns_batches = co_await std::move(fut_ns);
                         if (!ns_batches.empty() && ns_batches[0].size() != 0 &&
                             ns_batches[0].column_count() > catalog::pg_namespace_col::nspname) {
                             fk.child_schema = std::string(
-                                ns_batches[0].value(catalog::pg_namespace_col::nspname, 0).value<std::string_view>());
+                                ns_batches[0].get_value<std::string_view>(catalog::pg_namespace_col::nspname, 0));
                         }
                     }
                 }

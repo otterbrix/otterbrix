@@ -1,5 +1,7 @@
 #include "operator_data.hpp"
 
+#include <cassert>
+
 namespace components::operators {
 
     operator_data_t::operator_data_t(std::pmr::memory_resource* resource,
@@ -20,6 +22,17 @@ namespace components::operators {
         : resource_(resource)
         , chunks_(std::move(chunks), resource) {}
 
+    operator_data_t::ptr operator_data_t::copy() const {
+        chunks_vector_t new_chunks(resource_);
+        new_chunks.reserve(chunks_.size());
+        for (const auto& chunk : chunks_) {
+            vector::data_chunk_t dst{resource_, chunk.types(), chunk.size()};
+            chunk.copy(dst, 0);
+            new_chunks.emplace_back(std::move(dst));
+        }
+        return {new operator_data_t(resource_, std::move(new_chunks))};
+    }
+
     std::size_t operator_data_t::size() const {
         std::size_t total = 0;
         for (const auto& c : chunks_) {
@@ -31,70 +44,5 @@ namespace components::operators {
     void operator_data_t::append_chunk(vector::data_chunk_t&& chunk) { chunks_.emplace_back(std::move(chunk)); }
 
     std::pmr::memory_resource* operator_data_t::resource() const { return resource_; }
-
-    chunks_vector_t split_chunk_into_batches(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk) {
-        chunks_vector_t out(resource);
-        const auto total = chunk.size();
-        if (total == 0) {
-            out.emplace_back(std::move(chunk));
-            return out;
-        }
-        if (total <= vector::DEFAULT_VECTOR_CAPACITY) {
-            out.emplace_back(std::move(chunk));
-            return out;
-        }
-        const auto batch_size = vector::DEFAULT_VECTOR_CAPACITY;
-        out.reserve((total + batch_size - 1) / batch_size);
-        for (uint64_t offset = 0; offset < total; offset += batch_size) {
-            auto count = std::min<uint64_t>(batch_size, total - offset);
-            out.emplace_back(chunk.partial_copy(resource, offset, count));
-        }
-        return out;
-    }
-
-    vector::data_chunk_t make_key_chunk(std::pmr::memory_resource* resource,
-                                        std::pmr::vector<types::logical_value_t> values) {
-        // Column j carries the value's own complex_logical_type, so the cell is written
-        // without a cast. Capacity is at least 1 because set_cardinality(1) below requires
-        // capacity_ >= 1 even when there are no key columns.
-        std::pmr::vector<types::complex_logical_type> types(resource);
-        types.reserve(values.size());
-        for (const auto& v : values) {
-            types.emplace_back(v.type());
-        }
-        vector::data_chunk_t chunk(resource, types, 1);
-        for (std::size_t j = 0; j < values.size(); ++j) {
-            // set_value already leaves the cell invalid for a null logical_value_t.
-            chunk.set_value(static_cast<uint64_t>(j), 0, values[j]);
-        }
-        chunk.set_cardinality(1);
-        return chunk;
-    }
-
-    vector::data_chunk_t make_keys_chunk(std::pmr::memory_resource* resource,
-                                         const std::pmr::vector<std::pmr::vector<types::logical_value_t>>& rows) {
-        // Column types are taken from the first key-tuple; every other tuple must be
-        // positionally aligned to the same key columns (same arity, same per-column type).
-        // Capacity is at least 1 because set_cardinality requires capacity_ >= 1 even when
-        // there are no rows.
-        std::pmr::vector<types::complex_logical_type> types(resource);
-        if (!rows.empty()) {
-            types.reserve(rows.front().size());
-            for (const auto& v : rows.front()) {
-                types.emplace_back(v.type());
-            }
-        }
-        const std::size_t nrows = rows.size();
-        vector::data_chunk_t chunk(resource, types, nrows == 0 ? 1 : nrows);
-        for (std::size_t i = 0; i < nrows; ++i) {
-            const auto& row = rows[i];
-            for (std::size_t j = 0; j < row.size(); ++j) {
-                // set_value already leaves the cell invalid for a null logical_value_t.
-                chunk.set_value(static_cast<uint64_t>(j), static_cast<uint64_t>(i), row[j]);
-            }
-        }
-        chunk.set_cardinality(static_cast<uint64_t>(nrows));
-        return chunk;
-    }
 
 } // namespace components::operators

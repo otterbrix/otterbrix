@@ -295,6 +295,103 @@ namespace components::vector {
         }
     }
 
+    const vector_t* vector_t::resolve_nested_location(const std::pmr::vector<uint64_t>& path,
+                                                      uint64_t* leaf_index,
+                                                      bool* contains_null) const {
+        assert(!path.empty());
+
+        const vector_t* vector = this;
+        uint64_t index = path[0];
+        bool null_seen = false;
+
+        // Resolve dictionary/constant layers so vector/index refer to the underlying flat storage.
+        auto resolve_storage = [&]() {
+            bool finished = false;
+            while (!finished) {
+                switch (vector->get_vector_type()) {
+                    case vector_type::CONSTANT:
+                        index = 0;
+                        finished = true;
+                        break;
+                    case vector_type::FLAT:
+                        finished = true;
+                        break;
+                    case vector_type::DICTIONARY:
+                        index = vector->indexing().get_index(index);
+                        vector = &vector->child();
+                        break;
+                    default:
+                        throw std::runtime_error("unsupported vector type in nested null access");
+                }
+            }
+        };
+
+        for (uint64_t step = 1; step < path.size(); ++step) {
+            resolve_storage();
+            if (!vector->validity_.row_is_valid(index)) {
+                null_seen = true;
+            }
+            const uint64_t sub = path[step];
+            switch (vector->type_.type()) {
+                case types::logical_type::LIST:
+                case types::logical_type::MAP: {
+                    auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
+                    index = offlen.offset + sub;
+                    vector = &vector->entry();
+                    break;
+                }
+                case types::logical_type::ARRAY: {
+                    auto stride =
+                        static_cast<const types::array_logical_type_extension*>(vector->type_.extension())->size();
+                    index = index * stride + sub;
+                    vector = &vector->entry();
+                    break;
+                }
+                default:
+                    if (vector->type_.to_physical_type() == types::physical_type::STRUCT) {
+                        // Struct field: the row index stays the same, only the child changes.
+                        vector = vector->entries()[sub].get();
+                    } else {
+                        throw std::runtime_error("nested null access path is too deep for this type");
+                    }
+                    break;
+            }
+        }
+
+        resolve_storage();
+        if (!vector->validity_.row_is_valid(index)) {
+            null_seen = true;
+        }
+
+        *leaf_index = index;
+        if (contains_null) {
+            *contains_null = null_seen;
+        }
+        return vector;
+    }
+
+    bool vector_t::is_null(const std::pmr::vector<uint64_t>& path) const {
+        assert(!path.empty());
+        if (path.size() == 1) {
+            return is_null(path[0]);
+        }
+        uint64_t leaf_index;
+        bool contains_null = false;
+        resolve_nested_location(path, &leaf_index, &contains_null);
+        return contains_null;
+    }
+
+    void vector_t::set_null(const std::pmr::vector<uint64_t>& path, bool value) {
+        assert(!path.empty());
+        if (path.size() == 1) {
+            set_null(path[0], value);
+            return;
+        }
+        uint64_t leaf_index;
+        const vector_t* leaf = resolve_nested_location(path, &leaf_index, nullptr);
+        const_cast<vector_t*>(leaf)->set_null(leaf_index, value);
+    }
+
     void vector_t::find_resize_infos(std::vector<resize_info_t>& resize_infos, uint64_t multiplier) {
         resize_info_t resize_info(*this, data_, buffer_.get(), multiplier);
         resize_infos.emplace_back(resize_info);
@@ -578,6 +675,41 @@ namespace components::vector {
             result = tag_vector->data<uint8_t>()[index];
             return true;
         }
+    }
+
+    const vector_t* vector_t::resolve_value_location(uint64_t row_index, uint64_t* index) const {
+        if (!validity_.row_is_valid(row_index)) {
+            return nullptr;
+        }
+
+        const vector_t* vector = this;
+        *index = row_index;
+        bool finished = false;
+        while (!finished) {
+            switch (vector->get_vector_type()) {
+                case vector_type::CONSTANT:
+                    *index = 0;
+                    finished = true;
+                    break;
+                case vector_type::FLAT:
+                    finished = true;
+                    break;
+                case vector_type::DICTIONARY: {
+                    *index = vector->indexing().get_index(*index);
+                    vector = &(vector->child());
+                    break;
+                }
+                case vector_type::SEQUENCE:
+                    return vector;
+                default:
+                    throw std::runtime_error("Unimplemented vector type for vector_t::get_value");
+            }
+        }
+
+        if (!vector->validity_.row_is_valid(*index)) {
+            return nullptr;
+        }
+        return vector;
     }
 
     types::logical_value_t vector_t::value_internal(uint64_t index_p) const {
@@ -891,8 +1023,16 @@ namespace components::vector {
     }
 
     bool vector_t::is_null(uint64_t index) const {
-        assert(vector_type_ == vector_type::FLAT || vector_type_ == vector_type::CONSTANT);
-        return !validity_.row_is_valid(index);
+        switch (get_vector_type()) {
+            case vector_type::DICTIONARY:
+                return child().is_null(indexing().get_index(index)); // resolve one layer, recurse
+            case vector_type::SEQUENCE:
+                return false; // generated, never null
+            case vector_type::CONSTANT:
+                return !validity_.row_is_valid(0);
+            default: // FLAT
+                return !validity_.row_is_valid(index);
+        }
     }
 
     types::logical_value_t vector_t::value(uint64_t index) const {

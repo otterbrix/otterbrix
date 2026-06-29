@@ -320,26 +320,25 @@ namespace services::disk {
         if (probe_failed) {
             warn(log_, "load_storage_disk_sync: failed to load {} : {}", otbx_path.string(), probe_error);
             if (!prev_exists) {
-                return core::error_t(core::error_code_t::data_corruption,
-                                     std::pmr::string{"load_storage_disk_sync: " + otbx_path.string() + " : " +
-                                                          probe_error,
-                                                      resource()});
+                return core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string{"load_storage_disk_sync: " + otbx_path.string() + " : " + probe_error,
+                                     resource()});
             }
             auto broken_path = otbx_path;
             broken_path += ".broken";
             std::error_code ec;
             std::filesystem::rename(otbx_path, broken_path, ec);
             if (ec) {
-                return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"W-TORN move corrupt otbx aside failed: " + ec.message(),
-                                                      resource()});
+                return core::error_t(
+                    core::error_code_t::io_error,
+                    std::pmr::string{"W-TORN move corrupt otbx aside failed: " + ec.message(), resource()});
             }
             std::filesystem::rename(prev_path, otbx_path, ec);
             if (ec) {
-                return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"W-TORN promote .prev failed after corrupt otbx: " +
-                                                          ec.message(),
-                                                      resource()});
+                return core::error_t(
+                    core::error_code_t::io_error,
+                    std::pmr::string{"W-TORN promote .prev failed after corrupt otbx: " + ec.message(), resource()});
             }
             warn(log_,
                  "load_storage_disk_sync: recovered {} from .prev (corrupt original kept as .broken)",
@@ -395,10 +394,7 @@ namespace services::disk {
             return; // in-memory table — WAL replay creates it from the first INSERT chunk
         }
         if (auto err = load_storage_disk_sync(table_oid, database_oid, otbx_path); err.contains_error()) {
-            warn(log_,
-                 "load_storage_for_wal_replay_sync: failed to load {}: {}",
-                 otbx_path.string(),
-                 err.what.c_str());
+            warn(log_, "load_storage_for_wal_replay_sync: failed to load {}: {}", otbx_path.string(), err.what.c_str());
         }
     }
 

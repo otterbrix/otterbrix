@@ -43,9 +43,9 @@ namespace components::table::storage {
         // returns {} for them without calling read()). Returns io_error rather than throwing, to keep the virtual
         // signature uniform with the disk manager. The message string uses the buffer manager's own resource.
         [[nodiscard]] core::result_wrapper_t<bool> read(block_t&) override {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"in-memory block manager cannot perform disk read",
-                                                  buffer_manager.resource()});
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"in-memory block manager cannot perform disk read", buffer_manager.resource()});
         }
         void read_blocks(file_buffer_t&, uint64_t, uint64_t) override {
             throw std::logic_error("Cannot perform IO in in-memory database - read_blocks!");

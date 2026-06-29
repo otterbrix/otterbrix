@@ -117,14 +117,10 @@ namespace components::operators {
             data_chunk_t affected(resource_, types, index);
             chunk.copy(affected, matched_indexing, index);
             affected.set_cardinality(index);
-            auto batches = split_chunk_into_batches(resource_, std::move(affected));
-            for (auto& batch : batches) {
-                if (batch.size() == 0) {
-                    continue;
-                }
+            if (affected.size() != 0) {
                 auto proj = evaluate_projection(resource_,
                                                 returning_,
-                                                &batch,
+                                                &affected,
                                                 pipeline_context->parameters,
                                                 pipeline_context->session_tz);
                 if (proj.has_error()) {
@@ -265,28 +261,21 @@ namespace components::operators {
 
         // Stage matched RETURNING rows: gather the matched LEFT subset (valid: index
         // <= chunk_left.size()), pair it with the per-row-built matched RIGHT chunk,
-        // split both identically (same row count, same windows), then project each
-        // window with the joined right batch. Appended to returning_staged_, which
-        // await_async_and_resume drains exactly like the simple path.
+        // then project the matched rows with the joined right chunk. Appended to
+        // returning_staged_, which await_async_and_resume drains exactly like the
+        // simple path.
         if (collect_returning) {
             data_chunk_t affected_left(resource_, types_left, index);
             chunk_left.copy(affected_left, matched_indexing, index);
             affected_left.set_cardinality(index);
 
-            auto batches_left = split_chunk_into_batches(resource_, std::move(affected_left));
-            auto batches_right = split_chunk_into_batches(resource_, std::move(affected_right));
-            for (size_t b = 0; b < batches_left.size(); b++) {
-                auto& batch = batches_left[b];
-                if (batch.size() == 0) {
-                    continue;
-                }
-                vector::data_chunk_t* right_batch = b < batches_right.size() ? &batches_right[b] : nullptr;
+            if (affected_left.size() != 0) {
                 auto proj = evaluate_projection(resource_,
                                                 returning_,
-                                                &batch,
+                                                &affected_left,
                                                 pipeline_context->parameters,
                                                 pipeline_context->session_tz,
-                                                right_batch);
+                                                &affected_right);
                 if (proj.has_error()) {
                     return proj.error();
                 }

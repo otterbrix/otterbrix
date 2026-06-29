@@ -298,3 +298,6 @@ CMakeUserPresets.json
 build-tsan/
 build-*/
 .claude/
+
+# local benchmark build dir (otterbrix_python, ~64MB)
+build_main/

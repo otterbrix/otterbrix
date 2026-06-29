@@ -1365,8 +1365,10 @@ namespace services::collection::executor {
         // key.side()/key.path() and table OIDs are present. const-fold +
         // pushdown_filter + hash-join selection; a no-op on DDL sequences.
         // The execute_plan delegate below lowers this optimized tree.
-        plan.sub_queries.back() =
-            components::planner::optimize(resource(), std::move(plan.sub_queries.back()), plan.parameters.get());
+        plan.sub_queries.back() = components::planner::optimize(resource(),
+                                                                std::move(plan.sub_queries.back()),
+                                                                plan.parameters.get(),
+                                                                plan.enable_pushdown);
 
         trace(log_, "executor::execute_plan_full: delegating to execute_plan, session: {}", session.data());
         // Operator-pipeline run, forwarding resolve_txn so the operator path

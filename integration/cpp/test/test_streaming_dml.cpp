@@ -161,8 +161,8 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
 
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
-        auto cur = exec(dispatcher,
-                        "INSERT INTO StreamDb.t (id, val) VALUES (1, 10), (2, 20) RETURNING id, val * 2 AS d;");
+        auto cur =
+            exec(dispatcher, "INSERT INTO StreamDb.t (id, val) VALUES (1, 10), (2, 20) RETURNING id, val * 2 AS d;");
         INFO("INSERT VALUES RETURNING error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
@@ -226,8 +226,7 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.t;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() ==
-                static_cast<uint64_t>(kRowCount - kThreshold));
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount - kThreshold));
     }
     // INDEX CONSISTENCY: a deleted key (id == 5, val 5 < threshold) is gone via the
     // index point lookup; a surviving key (id == 4000) is still found.
@@ -275,8 +274,8 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
     // full_scan (role()==source); with the UPDATE operator a SINK the whole
     // update->full_scan chain is a sourced streaming pipeline. SET val = val + K
     // shifts the indexed column so the index-consistency check is meaningful.
-    constexpr unsigned kThreshold = 2500;  // updates id in [0, 2500) -> 2500 rows
-    constexpr int64_t kBump = 1000000;     // pushes updated val out of the [0, kRowCount) range
+    constexpr unsigned kThreshold = 2500; // updates id in [0, 2500) -> 2500 rows
+    constexpr int64_t kBump = 1000000;    // pushes updated val out of the [0, kRowCount) range
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur = exec(dispatcher,
@@ -412,9 +411,7 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.items (id bigint, age bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src_ok (id bigint, age bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src_bad (id bigint, age bigint);")->is_success());
-    REQUIRE(exec(dispatcher,
-                 "ALTER TABLE StreamDb.items ADD CONSTRAINT chk_age CHECK (age > 0);")
-                ->is_success());
+    REQUIRE(exec(dispatcher, "ALTER TABLE StreamDb.items ADD CONSTRAINT chk_age CHECK (age > 0);")->is_success());
 
     {
         std::stringstream q;

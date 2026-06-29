@@ -30,9 +30,8 @@ namespace {
     // (now deleted) folded the same accumulate()/materialize_groups()/
     // empty_aggregate_result() cores finalize() reaches, so the error contracts below
     // are unchanged.
-    void drive_group(operators::operator_group_t* group,
-                     std::pmr::memory_resource* resource,
-                     pipeline::context_t* ctx) {
+    void
+    drive_group(operators::operator_group_t* group, std::pmr::memory_resource* resource, pipeline::context_t* ctx) {
         group->prepare();
         operators::chunks_vector_t out(resource);
         if (auto child = group->left(); child && child->output()) {

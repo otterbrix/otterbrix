@@ -144,10 +144,9 @@ namespace components::sql::transform {
                     continue;
                 }
                 auto& chunk = param_insert_rows_[chunk_index];
-                auto column = std::find_if(
-                    chunk.data.begin(),
-                    chunk.data.end(),
-                    [&param](const vector::vector_t& col) { return col.type().alias() == param.second; });
+                auto column = std::find_if(chunk.data.begin(), chunk.data.end(), [&param](const vector::vector_t& col) {
+                    return col.type().alias() == param.second;
+                });
                 size_t column_index = static_cast<size_t>(column - chunk.data.begin());
                 // Column add / retype must touch EVERY chunk so all chunks keep one type layout
                 // (column_index is identical across chunks because they grow in lockstep).

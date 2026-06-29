@@ -100,9 +100,8 @@ namespace {
 
     // STRING-column analogue of append_int64_data. Appends `count` rows whose
     // single STRING column holds expected_string(row) for the absolute row index.
-    void append_string_data(components::table::data_table_t& table,
-                            std::pmr::memory_resource* resource,
-                            uint64_t count) {
+    void
+    append_string_data(components::table::data_table_t& table, std::pmr::memory_resource* resource, uint64_t count) {
         using namespace components::types;
         using namespace components::vector;
         using namespace components::table;
@@ -258,8 +257,8 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch reloads correctly under 
     // batch, advance, repeat until drained.
     while (!drained) {
         data_chunk_t batch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-        auto r = table->fetch_next_batch(batch, column_ids, nullptr, transaction_data{0, 0},
-                                         next_row, max_row, drained);
+        auto r =
+            table->fetch_next_batch(batch, column_ids, nullptr, transaction_data{0, 0}, next_row, max_row, drained);
         REQUIRE_FALSE(r.has_error());
         for (uint64_t i = 0; i < batch.size(); i++) {
             auto val = batch.data[0].value(i);
@@ -323,8 +322,9 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch over reopened checkpoint
         uint64_t scanned = 0;
         while (!drained) {
             data_chunk_t batch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-            auto r = loaded->fetch_next_batch(batch, column_ids, nullptr, transaction_data{0, 0},
-                                              next_row, max_row, drained);
+            auto r =
+                loaded
+                    ->fetch_next_batch(batch, column_ids, nullptr, transaction_data{0, 0}, next_row, max_row, drained);
             REQUIRE_FALSE(r.has_error());
             for (uint64_t i = 0; i < batch.size(); i++) {
                 auto val = batch.data[0].value(i);
@@ -609,8 +609,8 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
     const uint64_t packed_blocks = (value_bytes + block_size - 1) / block_size;
     const uint64_t bound = (ROW_GROUPS * 2) + packed_blocks + 8; // per-row-group block + data + slack
 
-    INFO("total_blocks=" << blocks << " pre_b2_floor=" << pre_b2_floor
-                         << " packed_blocks=" << packed_blocks << " bound=" << bound);
+    INFO("total_blocks=" << blocks << " pre_b2_floor=" << pre_b2_floor << " packed_blocks=" << packed_blocks
+                         << " bound=" << bound);
     // The bound must actually separate the two regimes (sanity on the test itself).
     REQUIRE(bound < pre_b2_floor);
     REQUIRE(blocks <= bound);
@@ -708,8 +708,8 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
     // (2) Fetch the FIRST batch and HOLD it -- the chunk outlives its source pin.
     data_chunk_t held(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
     {
-        auto r = loaded->fetch_next_batch(held, column_ids, nullptr, transaction_data{0, 0},
-                                          next_row, max_row, drained);
+        auto r =
+            loaded->fetch_next_batch(held, column_ids, nullptr, transaction_data{0, 0}, next_row, max_row, drained);
         REQUIRE_FALSE(r.has_error());
     }
     REQUIRE(held.size() > 0);
@@ -719,8 +719,8 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
     // the held batch's block is forced out and later reloaded at a new address.
     while (!drained) {
         data_chunk_t scratch(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-        auto r = loaded->fetch_next_batch(scratch, column_ids, nullptr, transaction_data{0, 0},
-                                          next_row, max_row, drained);
+        auto r =
+            loaded->fetch_next_batch(scratch, column_ids, nullptr, transaction_data{0, 0}, next_row, max_row, drained);
         REQUIRE_FALSE(r.has_error());
     }
 

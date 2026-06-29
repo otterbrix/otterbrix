@@ -318,9 +318,8 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
     // the MATCHED row, not the first-N scan rows.
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(
-            dispatcher->execute_sql(session, "CREATE INDEX idx_cust ON TestDatabase.Orders (customer_id);")
-                ->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE INDEX idx_cust ON TestDatabase.Orders (customer_id);")
+                    ->is_success());
     }
     {
         // Customer 7 matches order 13; customer 1 is used only for the gap-maker.
@@ -727,8 +726,7 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
         // Only order 13's total moved; orders 11/12 are untouched.
         {
             auto session = otterbrix::session_id_t();
-            auto cur =
-                dispatcher->execute_sql(session, "SELECT id, total FROM TestDatabase.Orders ORDER BY id;");
+            auto cur = dispatcher->execute_sql(session, "SELECT id, total FROM TestDatabase.Orders ORDER BY id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
             REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
@@ -742,8 +740,7 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
         // matched row (customer_id 7) is still found exactly once after the update.
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT total FROM TestDatabase.Orders WHERE customer_id = 7;");
+            auto cur = dispatcher->execute_sql(session, "SELECT total FROM TestDatabase.Orders WHERE customer_id = 7;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->value(0, 0).value<int64_t>() == 1130);

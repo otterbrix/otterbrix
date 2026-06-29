@@ -6,7 +6,7 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 
 TEST_CASE("components::expression::compare::equals") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto expr1 = make_compare_expression(&resource,
                                          compare_type::eq,
                                          key(&resource, "name", side_t::left),
@@ -49,7 +49,7 @@ TEST_CASE("components::expression::compare::equals") {
 }
 
 TEST_CASE("components::expression::compare::to_string") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto expr = make_compare_expression(&resource,
                                         compare_type::eq,
                                         key(&resource, "count", side_t::left),

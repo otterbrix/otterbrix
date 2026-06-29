@@ -47,7 +47,7 @@ namespace {
     }
 
     void run_txn_insert_search_contract(hash_index_mode mode) {
-        auto resource = std::pmr::synchronized_pool_resource();
+        auto resource = core::pmr::otterbrix_resource();
         uint64_t txn1 = TRANSACTION_ID_START + 1;
         uint64_t txn2 = TRANSACTION_ID_START + 2;
         components::types::logical_value_t val42(&resource, int64_t(42));
@@ -107,7 +107,7 @@ namespace {
     }
 
     void run_full_lifecycle_contract(hash_index_mode mode) {
-        auto resource = std::pmr::synchronized_pool_resource();
+        auto resource = core::pmr::otterbrix_resource();
         auto index = make_hash_mvcc_index(&resource,
                                           "test_hash_idx",
                                           mode == hash_index_mode::in_memory ? "full_lifecycle_mem.bin"
@@ -144,7 +144,7 @@ namespace {
     }
 
     void run_pending_delete_visibility_contract(hash_index_mode mode) {
-        auto resource = std::pmr::synchronized_pool_resource();
+        auto resource = core::pmr::otterbrix_resource();
         auto index = make_hash_mvcc_index(&resource,
                                           "test_hash_idx_pending_delete",
                                           mode == hash_index_mode::in_memory ? "pending_delete_mem.bin"
@@ -181,7 +181,7 @@ namespace {
     }
 
     void run_revert_insert_contract(hash_index_mode mode) {
-        auto resource = std::pmr::synchronized_pool_resource();
+        auto resource = core::pmr::otterbrix_resource();
         auto index = make_hash_mvcc_index(&resource,
                                           "test_hash_idx_revert",
                                           mode == hash_index_mode::in_memory ? "revert_insert_mem.bin"
@@ -297,7 +297,7 @@ TEST_CASE("index_entry_visible:see_all_committed") {
 }
 
 TEST_CASE("single_field_index:txn_insert_search") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     single_field_index_t index(&resource, "test_idx", {key(&resource, "val")});
 
     uint64_t txn1 = TRANSACTION_ID_START + 1;
@@ -333,7 +333,7 @@ TEST_CASE("single_field_index:txn_insert_search") {
 }
 
 TEST_CASE("single_field_index:full_lifecycle") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     single_field_index_t index(&resource, "test_idx", {key(&resource, "val")});
 
     uint64_t txn1 = TRANSACTION_ID_START + 1;
@@ -385,7 +385,7 @@ TEST_CASE("hash_single_field_index:revert_insert_contract") { run_revert_insert_
 TEST_CASE("disk_single_field_index:revert_insert_contract") { run_revert_insert_contract(hash_index_mode::on_disk); }
 
 TEST_CASE("index_engine:txn_methods") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto engine = make_index_engine(&resource);
     make_index<single_field_index_t>(engine, "idx1", {key(&resource, "val")});
 

@@ -20,7 +20,7 @@ namespace {
 } // namespace
 
 TEST_CASE("components::sql::insert_into") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 

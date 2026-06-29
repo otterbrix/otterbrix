@@ -100,12 +100,11 @@ namespace components::index {
         -> uint32_t {
         return ptr->add_index(
             keys,
-            core::pmr::make_unique<Target>(
+            core::pmr::make_polymorphic_unique<Target>(
                 ptr->resource(),
                 std::move(name),
                 keys,
-                std::forward<Args>(args).../*,
-                core::pmr::deleter_t(ptr->resource())*/));
+                std::forward<Args>(args)...));
     }
 
     void drop_index(const index_engine_ptr& ptr, index_t::pointer index);

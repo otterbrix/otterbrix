@@ -27,7 +27,7 @@ namespace {
 } // namespace
 
 TEST_CASE("components::sql::constraints::not_null_and_default") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -144,7 +144,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
 }
 
 TEST_CASE("components::sql::sequence") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -187,7 +187,7 @@ TEST_CASE("components::sql::sequence") {
 }
 
 TEST_CASE("components::sql::view") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
     SECTION("CREATE VIEW") {
@@ -231,7 +231,7 @@ TEST_CASE("components::sql::view") {
 }
 
 TEST_CASE("components::sql::check_constraint_whitelist") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -289,7 +289,7 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
 }
 
 TEST_CASE("components::sql::macro") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -323,7 +323,7 @@ TEST_CASE("components::sql::macro") {
 // propagate the if_not_exists flag through to the logical plan nodes. Dispatcher
 // short-circuits on existing target without erroring (covered in integration tests).
 TEST_CASE("components::sql::if_not_exists") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 

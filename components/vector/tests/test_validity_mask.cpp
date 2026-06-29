@@ -35,7 +35,7 @@ TEST_CASE("validity_mask_t: pointer-constructed mask reads and writes the extern
     // This is exactly the column_segment.cpp usage pattern: wrap a pinned
     // buffer and operate on bits in place. validity_mask_ is non-null, so the
     // lazy resize/allocation paths are never taken and resource_ is unused.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     uint64_t buffer[entry_count];
     for (auto& entry : buffer) {
         entry = components::vector::validity_data_t::MAX_ENTRY;
@@ -68,7 +68,7 @@ TEST_CASE("validity_mask_t: pointer-constructed mask reads and writes the extern
 TEST_CASE("validity_mask_t: copy and move of all-valid / pointer-constructed masks stay safe", "[validity-mask]") {
     // A pointer-constructed mask over nullptr is all_valid(); copying it takes
     // the non-allocating branch and never touches resource_.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     validity_mask_t null_ptr_mask(&resource, static_cast<uint64_t*>(nullptr));
     REQUIRE(null_ptr_mask.all_valid());
     validity_mask_t copy(null_ptr_mask);
@@ -98,7 +98,7 @@ TEST_CASE("validity_mask_t: copy-constructing from a pointer-constructed mask wi
           "[validity-null-resource]") {
     // copy ctor (validation.cpp): other is not all_valid(), so it allocates a
     // private validity_data_t from the carried resource and copies the bits.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     uint64_t buffer[entry_count];
     for (auto& entry : buffer) {
         entry = components::vector::validity_data_t::MAX_ENTRY;
@@ -125,7 +125,7 @@ TEST_CASE("validity_mask_t: copy-assigning between two pointer-constructed masks
     // copy operator= (validation.cpp) requires matching resources
     // (assert(resource_ == other.resource_)), then allocates a private copy
     // of the source bits — the target's external buffer is left untouched.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     uint64_t src_buffer[entry_count];
     uint64_t dst_buffer[entry_count];
     for (uint64_t i = 0; i < entry_count; i++) {
@@ -150,7 +150,7 @@ TEST_CASE("validity_mask_t: combine() on a pointer-constructed mask", "[validity
     // combine (validation.cpp): this is not all_valid() (pointer set) and the
     // masks differ, so it copies its own bits into a private allocation and
     // ANDs the other mask in. The external buffer stays untouched.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     uint64_t buffer[entry_count];
     for (auto& entry : buffer) {
         entry = components::vector::validity_data_t::MAX_ENTRY;
@@ -173,7 +173,7 @@ TEST_CASE("validity_mask_t: slice() at non-zero offset on a pointer-constructed 
     // slice (validation.cpp): other is not all_valid() and offset != 0, so it
     // builds a fresh validity_mask_t(resource(), count) and shifts the source
     // bits into it: target bit i == source bit (offset + i).
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     uint64_t buffer[entry_count];
     for (auto& entry : buffer) {
         entry = components::vector::validity_data_t::MAX_ENTRY;

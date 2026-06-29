@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 #include <services/index/disk_hash_table.hpp>
+#include <core/pmr.hpp>
 
 #include <cstdlib>
 #include <unordered_map>
@@ -39,7 +40,7 @@ namespace {
 } // namespace
 
 TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_roundtrip.data");
     std::filesystem::remove(path);
 
@@ -63,7 +64,7 @@ TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
 }
 
 TEST_CASE("services::index::disk_hash_table::persist_reopen") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_persist.data");
     std::filesystem::remove(path);
 
@@ -88,7 +89,7 @@ TEST_CASE("services::index::disk_hash_table::persist_reopen") {
 }
 
 TEST_CASE("services::index::disk_hash_table::multiple_values_per_key") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_multi_values.data");
     std::filesystem::remove(path);
 
@@ -102,7 +103,7 @@ TEST_CASE("services::index::disk_hash_table::multiple_values_per_key") {
 }
 
 TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_long_key.data");
     std::filesystem::remove(path);
 
@@ -133,7 +134,7 @@ TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
 TEST_CASE("services::index::disk_hash_table::truncated_collision_requires_loader") {
     // enc_a/enc_b collide only for seed=0 (plain FNV-1a); table uses random seed by default.
     env_var_guard_t seed_guard("OTTERBRIX_DISK_HASH_SEED", "0");
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_truncated_collision.data");
     std::filesystem::remove(path);
 
@@ -178,7 +179,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_collision_requires_loader
 }
 
 TEST_CASE("services::index::disk_hash_table::get_invokes_key_loader_for_truncated_entry") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_loader_invoked_on_get.data");
     std::filesystem::remove(path);
 
@@ -202,7 +203,7 @@ TEST_CASE("services::index::disk_hash_table::get_invokes_key_loader_for_truncate
 }
 
 TEST_CASE("services::index::disk_hash_table::get_skips_key_loader_for_inline_entry") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_loader_skipped_inline.data");
     std::filesystem::remove(path);
 
@@ -223,7 +224,7 @@ TEST_CASE("services::index::disk_hash_table::get_skips_key_loader_for_inline_ent
 }
 
 TEST_CASE("services::index::disk_hash_table::erase_invokes_key_loader_for_truncated_entry") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_loader_invoked_on_erase.data");
     std::filesystem::remove(path);
 
@@ -246,7 +247,7 @@ TEST_CASE("services::index::disk_hash_table::erase_invokes_key_loader_for_trunca
 }
 
 TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_rehash.data");
     std::filesystem::remove(path);
 
@@ -271,7 +272,7 @@ TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
 }
 
 TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_without_loader") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_rehash_truncated.data");
     std::filesystem::remove(path);
 
@@ -305,7 +306,7 @@ TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_without_loade
 }
 
 TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_linear_progression.data");
     std::filesystem::remove(path);
 
@@ -383,7 +384,7 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
 }
 
 TEST_CASE("services::index::disk_hash_table::auto_rehash_by_load_factor") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_auto_rehash.data");
     std::filesystem::remove(path);
 
@@ -401,7 +402,7 @@ TEST_CASE("services::index::disk_hash_table::auto_rehash_by_load_factor") {
 }
 
 TEST_CASE("services::index::disk_hash_table::split_crash_after_copy_sync") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_split_crash_after_copy.data");
     std::filesystem::remove(path);
 
@@ -430,7 +431,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_copy_sync") {
 }
 
 TEST_CASE("services::index::disk_hash_table::split_crash_after_header_sync") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_split_crash_after_header.data");
     std::filesystem::remove(path);
 
@@ -459,7 +460,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_header_sync") {
 }
 
 TEST_CASE("services::index::disk_hash_table::split_crash_recovery_continues_progression") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_split_crash_recovery_progression.data");
     std::filesystem::remove(path);
 

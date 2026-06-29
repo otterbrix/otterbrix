@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
+#include <core/pmr.hpp>
 
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;
@@ -23,7 +24,7 @@ std::string gen_str_logical_value_t(int i, std::size_t size = 5) {
 }
 
 TEST_CASE("services::index::index_disk::string") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/string"};
     std::filesystem::remove_all(path);
@@ -56,7 +57,7 @@ TEST_CASE("services::index::index_disk::string") {
 }
 
 TEST_CASE("services::index::index_disk::int32") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/int32"};
     std::filesystem::remove_all(path);
@@ -89,7 +90,7 @@ TEST_CASE("services::index::index_disk::int32") {
 }
 
 TEST_CASE("services::index::index_disk::uint32") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/uint32"};
     std::filesystem::remove_all(path);
@@ -122,7 +123,7 @@ TEST_CASE("services::index::index_disk::uint32") {
 }
 
 TEST_CASE("services::index::index_disk::double") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/double"};
     std::filesystem::remove_all(path);
@@ -155,7 +156,7 @@ TEST_CASE("services::index::index_disk::double") {
 }
 
 TEST_CASE("services::index::index_disk::multi_values::int32") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/int32_multi"};
     std::filesystem::remove_all(path);
@@ -192,7 +193,7 @@ TEST_CASE("services::index::index_disk::multi_values::int32") {
 }
 
 TEST_CASE("services::index::index_disk::persist_close_reopen") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/persist_reopen"};
     std::filesystem::remove_all(path);
@@ -227,7 +228,7 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
 }
 
 TEST_CASE("services::index::index_disk::remove_flush_reload") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/remove_reload"};
     std::filesystem::remove_all(path);

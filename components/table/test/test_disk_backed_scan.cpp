@@ -50,7 +50,7 @@ namespace {
     constexpr uint64_t SMALL_POOL_LIMIT = uint64_t(4) << 20; // 4 MiB
 
     struct test_env_t {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         components::table::storage::buffer_pool_t buffer_pool;
         components::table::storage::standard_buffer_manager_t buffer_manager;
@@ -550,7 +550,7 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
     // worth of transient segments resident during the append (NCOLS * 256 KiB).
     // Use a generous pool rather than the tiny SMALL_POOL_LIMIT used by the
     // eviction cases.
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     core::filesystem::local_file_system_t fs;
     buffer_pool_t buffer_pool(&resource, uint64_t(256) << 20, false, uint64_t(1) << 24); // 256 MiB
     standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
@@ -663,7 +663,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
     // exactly the e2e disk-backed streaming-scan shape. Mirrors the existing
     // "streaming fetch_next_batch over reopened checkpointed table" case.
     {
-        std::pmr::synchronized_pool_resource big_resource;
+        core::pmr::otterbrix_resource big_resource;
         core::filesystem::local_file_system_t big_fs;
         buffer_pool_t big_pool(&big_resource, uint64_t(256) << 20, false, uint64_t(1) << 24); // 256 MiB
         standard_buffer_manager_t big_bm_mgr(&big_resource, big_fs, big_pool);

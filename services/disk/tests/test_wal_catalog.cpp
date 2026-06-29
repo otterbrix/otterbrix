@@ -40,7 +40,7 @@ namespace {
     void cleanup_dir(const std::string& d) { std::filesystem::remove_all(d); }
 
     struct fixture {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         log_t log;
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_wal wal_config;

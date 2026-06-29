@@ -58,7 +58,7 @@ TEST_CASE("group operator contracts: unresolved column key surfaces operator err
     // Pre-fix this aborted in Debug via assert(!key.full_path.empty()) in
     // extract_key_value (operator_group.cpp); in Release the assert is compiled
     // out and chunk.value(empty_path, row) is UB.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
@@ -93,7 +93,7 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
     // path with size != 1, so writing the later non-NULL keys aborted in Debug
     // via assert("value has to be casted to vector's type before set_value")
     // in vector_t::set_value.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::pmr::vector<types::complex_logical_type> fields(&resource);
     fields.emplace_back(types::logical_type::BIGINT);
@@ -146,7 +146,7 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
     // an error afterwards: AVG over a string argument fails kernel dispatch
     // inside the aggregator, but the operator reported success and emitted a
     // NULL row instead.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     auto* registry = compute::function_registry_t::get_default();
     REQUIRE(registry != nullptr);

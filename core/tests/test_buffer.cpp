@@ -5,6 +5,7 @@
 #include <random>
 
 #include <core/buffer.hpp>
+#include <core/pmr.hpp>
 
 std::size_t gen_size() {
     std::default_random_engine generator;
@@ -39,13 +40,13 @@ bool equal(core::buffer& buffer1, core::buffer& buffer2) {
 }
 
 TEST_CASE("core::tests::empty_buffer") {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::buffer buff(&mr, 0);
     REQUIRE(buff.is_empty());
 }
 
 TEST_CASE("core::tests::memory_resource") {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     const auto size = gen_size();
     core::buffer buff(&mr, size);
     REQUIRE(nullptr != buff.data());
@@ -57,7 +58,7 @@ TEST_CASE("core::tests::memory_resource") {
 }
 
 TEST_CASE("core::tests::copy_from_raw_pointer") {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     auto size = gen_size();
     void* device_memory = malloc(size);
     REQUIRE(device_memory != nullptr);
@@ -70,7 +71,7 @@ TEST_CASE("core::tests::copy_from_raw_pointer") {
 }
 
 TEST_CASE("core::tests::copy_from_nullptr") {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::buffer buff(&mr, nullptr, 0);
     REQUIRE(nullptr == buff.data());
     REQUIRE(0 == buff.size());
@@ -79,7 +80,7 @@ TEST_CASE("core::tests::copy_from_nullptr") {
 }
 
 TEST_CASE("core::tests::copy_constructor") {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     const size_t size = 200;
     core::buffer buff(&mr, size);
 
@@ -103,7 +104,7 @@ TEST_CASE("core::tests::copy_constructor") {
 }
 
 TEST_CASE("core::tests::copy_capacity_larger_than_size") {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     size_t size = 200;
     core::buffer buff(&mr, size);
     auto new_size = size - 1;
@@ -122,7 +123,7 @@ TEST_CASE("core::tests::copy_capacity_larger_than_size") {
 }
 
 TEST_CASE("core::tests::copy_constructor_explicit_memory_resource") {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     size_t size = 200;
     core::buffer buff(&mr, size);
 
@@ -139,7 +140,7 @@ TEST_CASE("core::tests::copy_constructor_explicit_memory_resource") {
 }
 
 TEST_CASE("core::tests::copy_capacity_larger_than_size_explicit_memory_resource") {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     size_t size = 200;
     core::buffer buff(&mr, size);
 
@@ -162,7 +163,7 @@ TEST_CASE("core::tests::copy_capacity_larger_than_size_explicit_memory_resource"
 }
 
 TEST_CASE("core::tests::move_constructor") {
-    auto mr_tmp = std::pmr::synchronized_pool_resource();
+    auto mr_tmp = core::pmr::otterbrix_resource();
     const auto size_tmp = gen_size();
 
     core::buffer buff(&mr_tmp, size_tmp);
@@ -185,7 +186,7 @@ TEST_CASE("core::tests::move_constructor") {
 }
 
 TEST_CASE("core::tests::move_assignment_to_default") {
-    auto mr_tmp = std::pmr::synchronized_pool_resource();
+    auto mr_tmp = core::pmr::otterbrix_resource();
     const auto size_tmp = gen_size();
 
     core::buffer src(&mr_tmp, size_tmp);
@@ -210,7 +211,7 @@ TEST_CASE("core::tests::move_assignment_to_default") {
 }
 
 TEST_CASE("core::tests::move_assignment") {
-    auto mr_tmp = std::pmr::synchronized_pool_resource();
+    auto mr_tmp = core::pmr::otterbrix_resource();
     const auto size_tmp = gen_size();
 
     core::buffer src(&mr_tmp, size_tmp);
@@ -235,7 +236,7 @@ TEST_CASE("core::tests::move_assignment") {
 }
 
 TEST_CASE("core::tests::self_move_assignment") {
-    auto mr_tmp = std::pmr::synchronized_pool_resource();
+    auto mr_tmp = core::pmr::otterbrix_resource();
     const auto size_tmp = gen_size();
 
     core::buffer buff(&mr_tmp, size_tmp);
@@ -268,7 +269,7 @@ TEST_CASE("core::tests::self_move_assignment") {
 }
 
 TEST_CASE("core::tests::resize_smaller") {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     const size_t size = 200;
 
     core::buffer buff(&mr, size);
@@ -294,7 +295,7 @@ TEST_CASE("core::tests::resize_smaller") {
 }
 
 TEST_CASE("core::tests::resize bigger") {
-    auto mr_tmp = std::pmr::synchronized_pool_resource();
+    auto mr_tmp = core::pmr::otterbrix_resource();
     const auto size_tmp = gen_size();
 
     core::buffer buff(&mr_tmp, size_tmp);
@@ -307,7 +308,7 @@ TEST_CASE("core::tests::resize bigger") {
 }
 
 TEST_CASE("core::tests::reserve smaller") {
-    auto mr_tmp = std::pmr::synchronized_pool_resource();
+    auto mr_tmp = core::pmr::otterbrix_resource();
     const auto size_tmp = gen_size();
 
     core::buffer buff(&mr_tmp, size_tmp);
@@ -321,7 +322,7 @@ TEST_CASE("core::tests::reserve smaller") {
 }
 
 TEST_CASE("core::tests::reserve bigger") {
-    auto mr_tmp = std::pmr::synchronized_pool_resource();
+    auto mr_tmp = core::pmr::otterbrix_resource();
     const auto size_tmp = gen_size();
 
     core::buffer buff(&mr_tmp, size_tmp);

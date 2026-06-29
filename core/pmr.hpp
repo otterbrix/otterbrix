@@ -1,10 +1,17 @@
 #pragma once
 
+#include "resource_tracer.hpp"
+
 #include <memory>
-#include <memory_resource>
 #include <string>
 
 namespace core::pmr {
+
+#if defined(__SANITIZE_ADDRESS__) || defined(_ADDRESS_SANITIZER)
+    using otterbrix_resource = resource_tracer_t;
+#else
+    using otterbrix_resource = std::pmr::synchronized_pool_resource;
+#endif
 
     using pmr_string_stream =
         std::basic_stringstream<char, std::char_traits<char>, std::pmr::polymorphic_allocator<char>>;
@@ -52,8 +59,31 @@ namespace core::pmr {
         size_t size_;
         size_t align_;
     };
+    
+    class polymorphic_deleter_t final {
+    public:
+        polymorphic_deleter_t(std::pmr::memory_resource* ptr, size_t size, size_t align)
+            : ptr_(ptr)
+            , size_(size)
+            , align_(align) {}
+
+        template<class T>
+        void operator()(T* target) {
+            target->~T();
+            ptr_->deallocate(target, size_, align_);
+        }
+
+    private:
+        std::pmr::memory_resource* ptr_;
+        size_t size_;
+        size_t align_;
+    };
+
     template<class T>
     using unique_ptr = std::unique_ptr<T, deleter_t>;
+
+    template<class T>
+    using polymorphic_unique_ptr = std::unique_ptr<T, polymorphic_deleter_t>;
 
     template<class Target, class... Args>
     unique_ptr<Target> make_unique(std::pmr::memory_resource* ptr, Args&&... args) {
@@ -62,6 +92,17 @@ namespace core::pmr {
         auto* buffer = ptr->allocate(size, align);
         auto* target_ptr = new (buffer) Target(ptr, std::forward<Args>(args)...);
         return {target_ptr, deleter_t(ptr)};
+    }
+
+    // Builds a unique_ptr that can be safely upcast to a polymorphic base: the
+    // deleter remembers the concrete Target's size/alignment for deallocation.
+    template<class Target, class... Args>
+    polymorphic_unique_ptr<Target> make_polymorphic_unique(std::pmr::memory_resource* ptr, Args&&... args) {
+        auto size = sizeof(Target);
+        auto align = alignof(Target);
+        auto* buffer = ptr->allocate(size, align);
+        auto* target_ptr = new (buffer) Target(ptr, std::forward<Args>(args)...);
+        return {target_ptr, polymorphic_deleter_t(ptr, size, align)};
     }
 
     template<class Target, class... Args>

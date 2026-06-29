@@ -45,7 +45,7 @@ namespace {
     }
 
     void run_base_contract(hash_index_mode mode) {
-        auto resource = std::pmr::synchronized_pool_resource();
+        auto resource = core::pmr::otterbrix_resource();
         auto index =
             make_hash_index(&resource, mode == hash_index_mode::in_memory ? "hash_count_ram" : "hash_count_disk", mode);
         std::vector<std::pair<int64_t, int64_t>> data =
@@ -98,7 +98,7 @@ namespace {
     }
 
     void run_engine_contract(hash_index_mode mode) {
-        auto resource = std::pmr::synchronized_pool_resource();
+        auto resource = core::pmr::otterbrix_resource();
         auto index_engine = make_index_engine(&resource);
         uint32_t id = INDEX_ID_UNDEFINED;
         if (mode == hash_index_mode::in_memory) {
@@ -147,7 +147,7 @@ TEST_CASE("hash_single_field_index:engine") { run_engine_contract(hash_index_mod
 TEST_CASE("disk_single_field_index:engine") { run_engine_contract(hash_index_mode::on_disk); }
 
 TEST_CASE("disk_single_field_index:read_only_facade_direct_ops_do_not_materialize_committed_state") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto index = make_hash_index(&resource, "hash_count_disk_read_only", hash_index_mode::on_disk);
     components::types::logical_value_t value(&resource, int64_t(42));
 
@@ -174,7 +174,7 @@ TEST_CASE("disk_single_field_index:read_only_facade_direct_ops_do_not_materializ
 }
 
 TEST_CASE("disk_single_field_index:pending_insert_delete_and_txn_state") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto index = make_hash_index(&resource, "hash_count_disk_txn_state", hash_index_mode::on_disk);
 
     const uint64_t txn_insert = components::table::TRANSACTION_ID_START + 201;
@@ -230,7 +230,7 @@ TEST_CASE("disk_single_field_index:pending_insert_delete_and_txn_state") {
 }
 
 TEST_CASE("disk_single_field_index:revert_cleanup_and_clear_memory") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto index = make_hash_index(&resource, "hash_count_disk_cleanup", hash_index_mode::on_disk);
 
     const uint64_t txn_insert = components::table::TRANSACTION_ID_START + 301;
@@ -259,7 +259,7 @@ TEST_CASE("disk_single_field_index:revert_cleanup_and_clear_memory") {
 }
 
 TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     const auto base = std::filesystem::path("/tmp/index_disk/components_hash_normalize_tests");
     std::filesystem::create_directories(base);
     const auto file = base / "hash_count_disk_normalize.bin";
@@ -288,7 +288,7 @@ TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys")
 }
 
 TEST_CASE("disk_single_field_index:lower_upper_bound_not_supported") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto index = make_hash_index(&resource, "hash_count_disk_bounds", hash_index_mode::on_disk);
     components::types::logical_value_t key(&resource, int64_t(1));
 

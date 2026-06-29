@@ -45,7 +45,7 @@ namespace {
 TEST_CASE("services::disk::torn::checkpoint_wal_id_overload_tracks_prev") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx = std::filesystem::path(torn_test_dir()) / "track.otbx";
     std::vector<column_definition_t> cols;
@@ -80,7 +80,7 @@ TEST_CASE("services::disk::torn::checkpoint_wal_id_overload_tracks_prev") {
 TEST_CASE("services::disk::torn::checkpoint_no_overload_leaves_ids_zero") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx = std::filesystem::path(torn_test_dir()) / "noid.otbx";
     std::vector<column_definition_t> cols;
@@ -100,7 +100,7 @@ TEST_CASE("services::disk::torn::checkpoint_no_overload_leaves_ids_zero") {
 TEST_CASE("services::disk::torn::data_persists_after_checkpoint_with_wal_id") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx = std::filesystem::path(torn_test_dir()) / "persist.otbx";
     constexpr int64_t N = 50;
@@ -132,7 +132,7 @@ TEST_CASE("services::disk::torn::load_storage_disk_sync_promotes_only_prev") {
     cleanup_torn_dir();
     auto db_dir = std::filesystem::path(torn_test_dir()) / "db1" / "main" / "coll1";
     std::filesystem::create_directories(db_dir);
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx = db_dir / "table.otbx";
     auto prev = db_dir / "table.otbx.prev";
@@ -166,7 +166,7 @@ TEST_CASE("services::disk::torn::load_falls_back_to_prev_on_corrupt_otbx") {
     cleanup_torn_dir();
     auto db_dir = std::filesystem::path(torn_test_dir()) / "db2" / "main" / "coll2";
     std::filesystem::create_directories(db_dir);
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx = db_dir / "table.otbx";
     auto prev = db_dir / "table.otbx.prev";
@@ -211,7 +211,7 @@ TEST_CASE("services::disk::torn::reopen_corrupt_otbx_no_prev_surfaces_error_valu
     cleanup_torn_dir();
     auto db_dir = std::filesystem::path(torn_test_dir()) / "db3" / "main" / "coll3";
     std::filesystem::create_directories(db_dir);
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx = db_dir / "table.otbx";
 

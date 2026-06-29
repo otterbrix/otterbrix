@@ -31,7 +31,7 @@ using vec = std::vector<v>;
 using fields = std::vector<std::pair<std::string, v>>;
 
 TEST_CASE("components::sql::errors") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 

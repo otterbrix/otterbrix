@@ -10,7 +10,7 @@ using namespace components::index;
 using key = components::expressions::key_t;
 
 TEST_CASE("single_field_index:base") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     single_field_index_t index(&resource, "single_count", {key(&resource, "count")});
 
     // Insert row indices with corresponding values
@@ -103,7 +103,7 @@ TEST_CASE("single_field_index:base") {
 }
 
 TEST_CASE("single_field_index:engine") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto index_engine = make_index_engine(&resource);
     auto id = make_index<single_field_index_t>(index_engine, "single_count", {key(&resource, "count")});
 

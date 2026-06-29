@@ -2053,7 +2053,7 @@ namespace services::disk {
         }
         auto& entry = it->second;
 
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
         detail::inline_scan(entry->table_storage.table(),
                             {oid_col_idx},
@@ -2118,7 +2118,7 @@ namespace services::disk {
             all_col_indices.push_back(static_cast<std::int64_t>(i));
         }
 
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
         std::pmr::vector<components::types::logical_value_t> row_values(resource());
         row_values.reserve(col_count);

@@ -2,8 +2,8 @@
 #include <catch2/catch.hpp>
 #include <charconv>
 #include <components/index/logical_value_binary_codec.hpp>
-#include <core/result_wrapper.hpp>
 #include <core/pmr.hpp>
+#include <core/result_wrapper.hpp>
 #include <fstream>
 #include <limits>
 #include <memory_resource>

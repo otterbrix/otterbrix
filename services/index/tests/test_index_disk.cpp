@@ -1,7 +1,7 @@
 #include <catch2/catch.hpp>
+#include <core/pmr.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
-#include <core/pmr.hpp>
 
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;

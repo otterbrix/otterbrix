@@ -171,8 +171,7 @@ namespace components::operators {
         auto* res = left_->output()->resource();
         const auto& left_chunks = left_->output()->chunks();
         chunks_vector_t empty_right(res);
-        const chunks_vector_t& right_chunks =
-            (right_ && right_->output()) ? right_->output()->chunks() : empty_right;
+        const chunks_vector_t& right_chunks = (right_ && right_->output()) ? right_->output()->chunks() : empty_right;
         emit_union_(res, left_chunks, right_chunks, out);
         return core::error_t::no_error();
     }

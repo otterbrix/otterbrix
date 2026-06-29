@@ -814,12 +814,12 @@ namespace components::table {
         // The new segment's segment_size is the TIGHT used size; scan/fetch read seg_count rows from it.
         auto block_handle = block_manager_.register_block(alloc.block_id);
         auto new_segment = std::make_unique<column_segment_t>(block_handle,
-                                                             type_,
-                                                             seg_start,
-                                                             seg_count,
-                                                             static_cast<uint32_t>(alloc.block_id),
-                                                             alloc.offset_in_block,
-                                                             segment_size);
+                                                              type_,
+                                                              seg_start,
+                                                              seg_count,
+                                                              static_cast<uint32_t>(alloc.block_id),
+                                                              alloc.offset_in_block,
+                                                              segment_size);
         new_segment->set_compression(compression::compression_type::UNCOMPRESSED);
         if (has_stats) {
             new_segment->set_segment_statistics(std::move(seg_stats));

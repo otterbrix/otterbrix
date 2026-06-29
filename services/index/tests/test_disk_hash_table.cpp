@@ -1,6 +1,6 @@
 #include <catch2/catch.hpp>
-#include <services/index/disk_hash_table.hpp>
 #include <core/pmr.hpp>
+#include <services/index/disk_hash_table.hpp>
 
 #include <cstdlib>
 #include <unordered_map>

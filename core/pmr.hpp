@@ -59,7 +59,7 @@ namespace core::pmr {
         size_t size_;
         size_t align_;
     };
-    
+
     class polymorphic_deleter_t final {
     public:
         polymorphic_deleter_t(std::pmr::memory_resource* ptr, size_t size, size_t align)

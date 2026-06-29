@@ -1,9 +1,9 @@
 #include "data_table.hpp"
 
+#include <algorithm>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
-#include <algorithm>
 #include <cstdlib>
 #include <unordered_set>
 
@@ -300,8 +300,7 @@ namespace components::table {
             // blind one-vector step that could re-read or skip rows. Clamp to the group end (next seek
             // moves into the following group) and to max_row (drain).
             const int64_t prev_row = next_row;
-            const int64_t scanned_to =
-                static_cast<int64_t>(css.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
+            const int64_t scanned_to = static_cast<int64_t>(css.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
             next_row = std::min({scanned_to, group_end, max_row});
 
             // No segment resolved for this position, or the position did not move forward: the scan
@@ -366,8 +365,9 @@ namespace components::table {
         assert(state.append_lock &&
                "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_lock) {
-            return core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
         }
         return row_groups_->initialize_append(state); // out_of_memory
     }
@@ -418,8 +418,7 @@ namespace components::table {
         // vector_index is stamped in collection-absolute space by initialize_scan_with_offset, so
         // vector_index*CAP is already the vector-aligned absolute start row (do NOT re-add row_group
         // start — that would double-count the group origin).
-        auto row_start_aligned =
-            static_cast<int64_t>(state.table_state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
+        auto row_start_aligned = static_cast<int64_t>(state.table_state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
 
         int64_t current_row = row_start_aligned;
         while (current_row < end) {
@@ -504,10 +503,11 @@ namespace components::table {
         return result;
     }
 
-    core::result_wrapper_t<std::pair<int64_t, uint64_t>> data_table_t::update(table_update_state&,
-                                                                             vector::vector_t& row_ids,
-                                                                             // const std::vector<uint64_t>& column_ids,
-                                                                             vector::data_chunk_t& data) {
+    core::result_wrapper_t<std::pair<int64_t, uint64_t>>
+    data_table_t::update(table_update_state&,
+                         vector::vector_t& row_ids,
+                         // const std::vector<uint64_t>& column_ids,
+                         vector::data_chunk_t& data) {
         assert(row_ids.type().to_physical_type() == types::physical_type::INT64);
 
         uint64_t count = data.size();
@@ -561,9 +561,9 @@ namespace components::table {
         // txn abort instead of aborting: under -fno-exceptions a throw inside an actor-zeta
         // coroutine is silently swallowed (UB).
         if (!is_root_) {
-            return core::error_t(core::error_code_t::write_conflict,
-                                 std::pmr::string("Transaction conflict: cannot update a table that has been altered!",
-                                                  resource_));
+            return core::error_t(
+                core::error_code_t::write_conflict,
+                std::pmr::string("Transaction conflict: cannot update a table that has been altered!", resource_));
         }
 
         updates.flatten();

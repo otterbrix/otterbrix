@@ -119,7 +119,7 @@ namespace {
                 if (needs_sched) {
                     sched_->enqueue(source_raw_);
                 }
-                sum += co_await std::move(f);  // <-- the Nth sequential cross-actor await
+                sum += co_await std::move(f); // <-- the Nth sequential cross-actor await
             }
             co_return sum;
         }
@@ -188,18 +188,15 @@ TEST_CASE("per-batch fetch-next: N sequential cross-actor awaits in nested execu
 
     auto source = spawn<batch_source_actor>(resource);
 
-    constexpr std::int64_t kBatchesPerQuery = 64;   // 64 sequential cross-actor awaits per query
-    constexpr int          kQueries         = 3000; // hammer the park race many times
-    const auto             kPerQueryTimeout = std::chrono::seconds(5);
+    constexpr std::int64_t kBatchesPerQuery = 64; // 64 sequential cross-actor awaits per query
+    constexpr int kQueries = 3000;                // hammer the park race many times
+    const auto kPerQueryTimeout = std::chrono::seconds(5);
 
-    auto executor = spawn<query_executor_actor>(resource,
-                                                source->address(),
-                                                scheduler.get(),
-                                                source.get(),
-                                                kBatchesPerQuery);
+    auto executor =
+        spawn<query_executor_actor>(resource, source->address(), scheduler.get(), source.get(), kBatchesPerQuery);
 
-    int  completed = 0;
-    bool hung      = false;
+    int completed = 0;
+    bool hung = false;
 
     for (int q = 0; q < kQueries; ++q) {
         executor->reset();
@@ -220,10 +217,9 @@ TEST_CASE("per-batch fetch-next: N sequential cross-actor awaits in nested execu
         }
 
         if (hung) {
-            WARN("LOST-WAKEUP: query " << q << " of " << kQueries
-                 << " hung after " << kBatchesPerQuery
-                 << " sequential cross-actor awaits in the nested executor coroutine "
-                    "(executor parked busy && ready, never poked)");
+            WARN("LOST-WAKEUP: query " << q << " of " << kQueries << " hung after " << kBatchesPerQuery
+                                       << " sequential cross-actor awaits in the nested executor coroutine "
+                                          "(executor parked busy && ready, never poked)");
             break;
         }
 
@@ -233,9 +229,8 @@ TEST_CASE("per-batch fetch-next: N sequential cross-actor awaits in nested execu
 
     scheduler->stop();
 
-    INFO("completed " << completed << " / " << kQueries
-         << " queries, each with " << kBatchesPerQuery
-         << " sequential cross-actor awaits");
+    INFO("completed " << completed << " / " << kQueries << " queries, each with " << kBatchesPerQuery
+                      << " sequential cross-actor awaits");
 
     // The load-bearing assertion: NO query hung. If this fails, per-batch
     // fetch-next is NOT safe as-is and a framework/structure fix is required

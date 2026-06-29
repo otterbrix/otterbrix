@@ -364,7 +364,7 @@ namespace components::sql::transform {
             //
             // The synthesized tree mutates `node.fromClause->lst.front()` so the
             // existing T_JoinExpr branch below picks it up unchanged.
-            
+
             // Arena (upstream=resource_) for temporary nodes
             std::pmr::monotonic_buffer_resource transient(resource_);
             if (node.fromClause->lst.size() > 1) {

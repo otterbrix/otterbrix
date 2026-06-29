@@ -7,8 +7,8 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
-#include <core/result_wrapper.hpp>
 #include <core/pmr.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <cstring>
 #include <unistd.h>

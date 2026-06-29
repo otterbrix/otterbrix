@@ -2,6 +2,7 @@ project(context)
 
 set( ${PROJECT_NAME}_HEADERS
         context.hpp
+        subplan_runner.hpp
 )
 
 set(${PROJECT_NAME}_SOURCES

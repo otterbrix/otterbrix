@@ -26,18 +26,6 @@ namespace components::operators {
         , table_oid_(table_oid)
         , columns_(std::move(columns)) {}
 
-    void operator_computed_field_register_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // Propagate left's output up so the executor's cursor-build path
-        // (executor.cpp switch on plan->type()) sees the original DML chunk
-        // even though we wrap it: sequence_t(insert, computed_field_register)
-        // is lowered to a left-chain with register as the OUTER root. Without
-        // this propagation, cur->size() would return 0 for relkind='g' INSERT.
-        if (left_ && left_->output()) {
-            output_ = left_->output();
-        }
-        async_wait();
-    }
-
     actor_zeta::unique_future<void>
     operator_computed_field_register_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Concurrent INSERTs registering the same field can produce
@@ -60,6 +48,15 @@ namespace components::operators {
         // the race causes user-visible problems): introduce per-table_oid
         // lock via a disk-actor message pair held across the
         // read/classify/allocate/append/depend sequence below.
+
+        // Propagate the INSERT's output up. The bottom-up async-finalize drive runs
+        // left_ (insert).await FIRST, so left_->output() (the affected-row count chunk)
+        // is populated by now. Without this the executor's cursor-build path sees
+        // cur->size()==0 for a relkind='g' INSERT.
+        if (left_ && left_->output()) {
+            output_ = left_->output();
+        }
+
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;

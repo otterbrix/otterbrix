@@ -2104,6 +2104,174 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null") {
     }
 }
 
+// FK cascade child mutations must participate in the parent's transaction:
+// BEGIN; DELETE parent (ON DELETE CASCADE); ROLLBACK; must restore BOTH the
+// parent row and the cascade-deleted child rows. The cascade child delete used
+// to self-commit (execution_context txn_id=0 → storage stamps deleted[row]=0 =
+// "committed, visible to all"), so the parent's ROLLBACK reverted only the
+// parent row while the children stayed gone — an all-or-nothing atomicity
+// violation. After the fix the cascade child delete is stamped with the parent
+// txn_id and tracked in the txn's commit/abort channels, so ROLLBACK reverts it.
+// Statements share one session_id_t (active txns are keyed by session.data()).
+TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete_rollback_restores_children") {
+    auto config = test_create_config("/tmp/test_sql_features/fk_cascade_delete_rollback");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.parent (id bigint, val text);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_cascade "
+                                      "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
+                                      "ON DELETE CASCADE;")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1');")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher
+                    ->execute_sql(session, "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1), (11, 1);")
+                    ->is_success());
+        }
+    }
+
+    INFO("BEGIN; DELETE parent (ON DELETE CASCADE); ROLLBACK — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        auto del_cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.parent WHERE id = 1;");
+        INFO("cascade delete error: " << (del_cur->is_error() ? del_cur->get_error().what : "none"));
+        REQUIRE(del_cur->is_success());
+        // Mid-transaction the cascade-deleted children must be gone from the
+        // deleting txn's own snapshot (MVCC self-write: deleted[row]==parent_txn_id).
+        auto mid_cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.child;");
+        INFO("mid-txn child count error: " << (mid_cur->is_error() ? mid_cur->get_error().what : "none"));
+        REQUIRE(mid_cur->is_success());
+        REQUIRE(mid_cur->size() == 0);
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("after ROLLBACK the parent row is restored") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.parent;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("after ROLLBACK the cascade-deleted child rows are RESTORED") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.child;");
+        REQUIRE(cur->is_success());
+        // Buggy behavior: children self-committed at txn_id=0 → stay gone (size 0).
+        // Correct behavior: parent ROLLBACK reverts the cascade child delete → size 2.
+        REQUIRE(cur->size() == 2);
+    }
+}
+
+// SET NULL counterpart of the cascade-rollback test: BEGIN; DELETE parent (ON
+// DELETE SET NULL); ROLLBACK; must revert the child FK column back to its old
+// value, not leave it NULL. The cascade child UPDATE used to write versions
+// stamped at txn_id=0 (self-committed), so the parent ROLLBACK left the children
+// NULLed. After the fix the child update rides the parent txn and is reverted.
+TEST_CASE("integration::cpp::test_sql_features::fk_set_null_rollback_restores_fk") {
+    auto config = test_create_config("/tmp/test_sql_features/fk_set_null_rollback");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup") {
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.parent (id bigint, val text);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.child (id bigint, parent_id bigint);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.child ADD CONSTRAINT fk_setnull "
+                                      "FOREIGN KEY (parent_id) REFERENCES TestDatabase.parent (id) "
+                                      "ON DELETE SET NULL;")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.parent (id, val) VALUES (1, 'p1');")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher
+                    ->execute_sql(session, "INSERT INTO TestDatabase.child (id, parent_id) VALUES (10, 1), (11, 1);")
+                    ->is_success());
+        }
+    }
+
+    INFO("BEGIN; DELETE parent (ON DELETE SET NULL); ROLLBACK — one shared session") {
+        auto session = otterbrix::session_id_t();
+        auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
+        REQUIRE(begin_cur->is_success());
+        auto del_cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.parent WHERE id = 1;");
+        INFO("set null delete error: " << (del_cur->is_error() ? del_cur->get_error().what : "none"));
+        REQUIRE(del_cur->is_success());
+        auto rollback_cur = dispatcher->execute_sql(session, "ROLLBACK;");
+        REQUIRE(rollback_cur->is_success());
+    }
+
+    INFO("after ROLLBACK both child rows still reference the (restored) parent") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.child WHERE parent_id = 1;");
+        REQUIRE(cur->is_success());
+        // Buggy behavior: children NULLed at txn_id=0 → parent_id stays NULL (size 0).
+        // Correct behavior: parent ROLLBACK reverts the child update → both reference 1 (size 2).
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("after ROLLBACK no child row has a NULL FK") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.child WHERE parent_id IS NULL;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Mongo-style dynamic schema for relkind='g' (computed) tables.
 // Empty CREATE TABLE produces a relkind='g' table; columns are registered on

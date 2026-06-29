@@ -49,12 +49,6 @@ namespace components::operators {
         output_schema_.back().set_alias("namespace_oid");
     }
 
-    void operator_resolve_namespace_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // All work is async (single pg_namespace read). Defer to
-        // await_async_and_resume — matches operator_get_schema's pattern.
-        async_wait();
-    }
-
     actor_zeta::unique_future<void> operator_resolve_namespace_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgNamespace = catalog::well_known_oid::pg_namespace_table;
 

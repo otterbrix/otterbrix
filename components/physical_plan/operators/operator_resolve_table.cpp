@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -74,12 +73,6 @@ namespace components::operators {
         , target_node_(target_node)
         , output_schema_(resource) {
         build_output_schema(output_schema_);
-    }
-
-    void operator_resolve_table_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // All catalog reads are async: defer to await_async_and_resume so the
-        // executor can co_await on the disk-actor message chain.
-        async_wait();
     }
 
     actor_zeta::unique_future<void> operator_resolve_table_t::await_async_and_resume(pipeline::context_t* ctx) {

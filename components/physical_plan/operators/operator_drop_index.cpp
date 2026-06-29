@@ -4,7 +4,6 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
-#include <set>
 #include <vector>
 
 namespace components::operators {
@@ -22,8 +21,6 @@ namespace components::operators {
         , table_oid_(table_oid)
         , index_name_(std::move(index_name))
         , catalog_deletes_(std::move(catalog_deletes)) {}
-
-    void operator_drop_index_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_drop_index_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Scrub catalog rows referencing the dropped index. Dependants are

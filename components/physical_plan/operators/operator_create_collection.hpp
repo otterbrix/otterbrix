@@ -10,8 +10,7 @@ namespace components::operators {
 
     // Creates physical storage, registers the collection with the index manager,
     // and writes pre-built pg_catalog rows (pg_class, pg_attribute, pg_depend).
-    // All work is done in a single await_async_and_resume so the executor's
-    // find_waiting_operator loop drives it correctly.
+    // All work is done in a single await_async_and_resume.
     class operator_create_collection_t final : public read_write_operator_t {
     public:
         using catalog_write_t = std::pair<components::catalog::oid_t, vector::data_chunk_t>;
@@ -24,10 +23,15 @@ namespace components::operators {
                                      bool is_disk_storage,
                                      std::vector<catalog_write_t> catalog_writes);
 
-    private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
+        // Sourceless SINK leaf: no data pipeline, no children. The executor admits
+        // it as a streaming sink-root and drives await_async_and_resume via the
+        // bottom-up needs_async_finalize pass (push()/finalize() inherit the no-op
+        // defaults).
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
+    private:
         components::catalog::oid_t table_oid_;
         components::catalog::oid_t database_oid_;
         std::vector<table::column_definition_t> columns_;

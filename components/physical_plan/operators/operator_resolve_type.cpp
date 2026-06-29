@@ -13,7 +13,6 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -61,8 +60,6 @@ namespace components::operators {
         , output_schema_(resource) {
         build_output_schema(output_schema_);
     }
-
-    void operator_resolve_type_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_resolve_type_t::await_async_and_resume(pipeline::context_t* ctx) {
         constexpr catalog::oid_t kPgType = catalog::well_known_oid::pg_type_table;

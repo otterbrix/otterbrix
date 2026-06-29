@@ -34,8 +34,8 @@ namespace components::table::storage {
         [[nodiscard]] core::result_wrapper_t<buffer_handle_t>
         allocate(memory_tag tag, uint64_t block_size, bool can_destroy = true) final;
 
-        [[nodiscard]] core::result_wrapper_t<bool> reallocate(std::shared_ptr<block_handle_t>& handle,
-                                                              uint64_t block_size) final;
+        [[nodiscard]] core::result_wrapper_t<bool>
+        reallocate(std::shared_ptr<block_handle_t>& handle, uint64_t block_size) final;
 
         [[nodiscard]] core::result_wrapper_t<buffer_handle_t> pin(std::shared_ptr<block_handle_t>& handle) final;
         void prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) final;

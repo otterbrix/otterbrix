@@ -37,10 +37,16 @@ namespace components::operators {
                                   std::vector<catalog_write_t> catalog_writes,
                                   operator_ptr body_op);
 
-    private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
+        // Sourceless SINK leaf (no left-chain data source): the executor admits it
+        // as a streaming sink-root and drives await_async_and_resume via the
+        // bottom-up needs_async_finalize pass. The compiled body_op_ is run INSIDE
+        // await_async_and_resume (via ctx->runner), not as a chain child, so the
+        // operator stays a sourceless leaf. push()/finalize() inherit no-op defaults.
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
+    private:
         components::catalog::oid_t mv_oid_;
         components::catalog::oid_t namespace_oid_;
         std::vector<table::column_definition_t> columns_;

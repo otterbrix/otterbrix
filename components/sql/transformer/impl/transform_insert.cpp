@@ -259,6 +259,30 @@ namespace {
         return new_col;
     }
 
+    // Aligns every parameterized-INSERT chunk to one shared column layout (`schema`, the
+    // single source of truth). Each chunk is born from the running schema and fill_row only
+    // appends columns / widens numeric types in place, so a chunk is always a prefix of the
+    // final schema: extend it with null columns for any trailing columns it lacks, and widen
+    // any column that a later chunk promoted. Columns that are params in every row of a chunk
+    // stay null here and are filled in transform_result::bind.
+    void conform_param_chunks(std::pmr::memory_resource* resource,
+                              std::pmr::vector<components::vector::data_chunk_t>& chunks,
+                              const std::pmr::vector<components::types::complex_logical_type>& schema) {
+        for (auto& chunk : chunks) {
+            for (size_t i = 0; i < schema.size(); ++i) {
+                const auto& want = schema[i];
+                if (i >= chunk.data.size()) {
+                    components::vector::vector_t col(resource, want, chunk.capacity());
+                    col.set_null(true);
+                    chunk.data.emplace_back(std::move(col));
+                } else if (chunk.data[i].type() != want) {
+                    chunk.data[i] =
+                        promote_column(resource, chunk.data[i], chunk.size(), want.type(), chunk.capacity());
+                }
+            }
+        }
+    }
+
 } // anonymous namespace
 
 namespace components::sql::transform {
@@ -441,16 +465,24 @@ namespace components::sql::transform {
             // time from the sibling resolve_table).
             logical_plan::node_ptr ins;
             if (has_params) {
-                vector::data_chunk_t chunk(resource_, {}, vals.size() == 0 ? 1 : vals.size());
-                chunk.set_cardinality(vals.size());
-                size_t row_index = 0;
-                for (auto row : vals) {
-                    if (!fill_row(chunk, row_index, row_index, pg_ptr_cast<List>(row.data))) {
-                        return nullptr;
+                const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
+                const uint64_t total = vals.size();
+                std::pmr::vector<types::complex_logical_type> schema(resource_);
+                auto row_it = vals.begin();
+                uint64_t global_row = 0;
+                while (global_row < total) {
+                    const uint64_t batch = std::min<uint64_t>(cap, total - global_row);
+                    vector::data_chunk_t chunk(resource_, schema, batch);
+                    chunk.set_cardinality(batch);
+                    for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
+                        if (!fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data))) {
+                            return nullptr;
+                        }
                     }
-                    row_index++;
+                    schema = chunk.types(); // carry the (possibly grown/widened) layout to the next chunk
+                    parameter_insert_rows_.emplace_back(std::move(chunk));
                 }
-                parameter_insert_rows_ = std::move(chunk);
+                conform_param_chunks(resource_, parameter_insert_rows_, schema);
                 ins = logical_plan::make_node_insert(resource_,
                                                      vector::data_chunk_t(resource_, {}, 0),
                                                      std::move(key_translation));

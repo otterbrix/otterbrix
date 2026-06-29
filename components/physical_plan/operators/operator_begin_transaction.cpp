@@ -8,12 +8,6 @@ namespace components::operators {
     operator_begin_transaction_t::operator_begin_transaction_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, std::move(log), operator_type::begin_transaction) {}
 
-    void operator_begin_transaction_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // The only side effect is an async mailbox round-trip to the dispatcher.
-        // Defer it to await_async_and_resume so it participates in the await chain.
-        async_wait();
-    }
-
     actor_zeta::unique_future<void> operator_begin_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Ask the dispatcher (sole owner of transaction_manager_t) to mark the
         // session's txn explicit. The handler does an idempotent begin_transaction

@@ -30,6 +30,7 @@ namespace services::disk {
         , role_(role)
         , pool_idx_(pool_idx)
         , storages_(resource)
+        , active_scans_(resource)
         , dropped_storages_(resource) {
         trace(log_,
               "agent_disk::create (role={}, pool_idx={})",
@@ -354,6 +355,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_scan_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_scan_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_fetch_next_batch_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_fetch_next_batch_inner, msg);
                 break;
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_scan_segment_inner>: {
@@ -1052,6 +1057,128 @@ namespace services::disk {
         co_return scan_local(table_oid, filter.get(), limit, projected_ptr, txn);
     }
 
+    // Streaming fetch-next scan source (STEP 3 / phase B). POSITION-ONLY index-resume: the cursor
+    // in active_scans_ stores ONLY the absolute resume position + the scan params; every fetch
+    // re-seeks a TRANSIENT scan state from that position (storage_t::fetch_next_batch), reads ONE
+    // batch, advances the stored position, and lets the pins destruct — so peak scan memory is one
+    // batch and ZERO pins survive this round-trip. cursor_id==0 OPENs (minting a (session,counter)
+    // id, capping the matched-row head at offset+limit); non-zero ADVANCEs the same cursor. The
+    // cursor is GC'd (erased) the moment it drains or hits the matched-row limit.
+    agent_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
+    agent_disk_t::storage_fetch_next_batch_inner(session_id_t session,
+                                                 components::catalog::oid_t table_oid,
+                                                 uint64_t cursor_id,
+                                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                                 int64_t limit,
+                                                 std::vector<size_t> projected_cols,
+                                                 components::table::transaction_data txn) {
+        // Drained sentinel: an EMPTY chunk (cardinality 0). The executor breaks on size 0 and never
+        // pushes it, so the schema is irrelevant (the source operator carries its own projected
+        // empty-guard).
+        auto make_drained = [this](uint64_t reply_cursor_id) -> fetch_batch_t {
+            auto empty = std::make_unique<components::vector::data_chunk_t>(
+                resource(),
+                std::pmr::vector<components::types::complex_logical_type>{resource()},
+                components::vector::DEFAULT_VECTOR_CAPACITY);
+            empty->set_cardinality(0);
+            return fetch_batch_t{std::move(empty), reply_cursor_id};
+        };
+
+        if (cursor_id == 0) {
+            // OPEN: resolve the owned slice entry and snapshot the source-row bound. A not-owned /
+            // record-only oid replies a drained sentinel (no cursor minted), mirroring the
+            // whole-vector path's empty reply.
+            auto it = storages_.find(table_oid);
+            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                trace(log_,
+                      "agent_disk[{}]::storage_fetch_next_batch_inner: oid {} not owned / record-only — drained",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid));
+                co_return make_drained(0);
+            }
+            active_scan_t scan{resource()};
+            scan.table_oid = table_oid;
+            scan.pos.next_row = 0;
+            scan.pos.max_row = static_cast<int64_t>(it->second->storage->total_rows());
+            scan.filter = std::move(filter);
+            scan.projected_cols = std::move(projected_cols);
+            scan.txn = txn;
+            // `limit` is the (offset+limit) head cap the source pushed down. With a filter it is a
+            // POST-filter matched-row cap (the legacy scan_batched applied it post-hoc), so it
+            // bounds matched rows handed out, never source rows scanned.
+            scan.matched_limit = limit;
+            // Mint cursor id = (session, agent counter) per R16: the session disambiguates across
+            // queries, the agent-local counter across concurrent cursors of one session. Fall back
+            // to the bare counter on the (vanishingly unlikely) reserved-0 / collision.
+            const uint64_t counter = next_scan_cursor_id_++;
+            const uint64_t minted = (session.data() << 20) ^ counter;
+            cursor_id = (minted == 0 || active_scans_.find(minted) != active_scans_.end()) ? counter : minted;
+            active_scans_.try_emplace(cursor_id, std::move(scan));
+            // fall through to ADVANCE and hand out the first batch
+        }
+
+        auto cit = active_scans_.find(cursor_id);
+        if (cit == active_scans_.end()) {
+            // Unknown / already-drained cursor.
+            co_return make_drained(cursor_id);
+        }
+        auto& scan = cit->second;
+
+        // Position exhausted or matched-row limit already met: GC and reply drained.
+        if (scan.pos.drained ||
+            (scan.matched_limit >= 0 && scan.matched_emitted >= static_cast<uint64_t>(scan.matched_limit))) {
+            active_scans_.erase(cit);
+            co_return make_drained(cursor_id);
+        }
+
+        // Re-resolve the storage (a concurrent DROP between fetches drains the cursor).
+        auto storage_it = storages_.find(table_oid);
+        if (storage_it == storages_.end() || storage_it->second == nullptr ||
+            storage_it->second->storage == nullptr) {
+            active_scans_.erase(cit);
+            co_return make_drained(cursor_id);
+        }
+        auto* storage = storage_it->second->storage.get();
+
+        // Construct the projected output chunk, then re-seek + read ONE batch from the stored
+        // position. fetch_next_batch builds a transient scan state, pins only one batch's segments,
+        // and releases them before returning — nothing pinned survives this handler.
+        auto all_types = storage->types();
+        const std::vector<size_t>* projected_ptr = scan.projected_cols.empty() ? nullptr : &scan.projected_cols;
+        auto batch =
+            projected_ptr
+                ? std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                    all_types,
+                                                                    *projected_ptr,
+                                                                    components::vector::DEFAULT_VECTOR_CAPACITY)
+                : std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                    all_types,
+                                                                    components::vector::DEFAULT_VECTOR_CAPACITY);
+        auto fetch_r = storage->fetch_next_batch(*batch, scan.pos, scan.filter.get(), projected_ptr, scan.txn);
+        if (fetch_r.has_error()) {
+            active_scans_.erase(cit);
+            co_return fetch_r.convert_error<fetch_batch_t>();
+        }
+
+        // Enforce the post-filter matched-row limit across batches: trim the boundary batch to the
+        // remaining budget and stop advancing once it is spent.
+        if (scan.matched_limit >= 0) {
+            const uint64_t budget = static_cast<uint64_t>(scan.matched_limit) - scan.matched_emitted;
+            if (batch->size() >= budget) {
+                batch->set_cardinality(budget);
+                scan.pos.drained = true;
+            }
+        }
+        scan.matched_emitted += batch->size();
+
+        if (batch->size() == 0) {
+            // No rows this round (drained, or a boundary batch trimmed to 0): GC and reply drained.
+            active_scans_.erase(cit);
+            co_return make_drained(cursor_id);
+        }
+        co_return fetch_batch_t{std::move(batch), cursor_id};
+    }
+
     agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     agent_disk_t::storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count) {
         std::pmr::vector<components::vector::data_chunk_t> out{resource()};
@@ -1391,6 +1518,20 @@ namespace services::disk {
                 continue;
             }
 
+            // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid —
+            // its stored absolute position indexes the un-swapped collection, so the atomic
+            // row_groups_ swap would shift rows out from under it (R17). The entry is still
+            // checkpointed below WITHOUT the rebuild; the WAL keeps its replay records, so a later
+            // checkpoint round compacts it once the cursor drains.
+            if (has_active_scan_for_oid(tbl_oid)) {
+                trace(log_,
+                      "agent_disk[{}]::checkpoint_inner oid={} has an active scan cursor — skipping compact this round",
+                      pool_idx_,
+                      static_cast<unsigned>(tbl_oid));
+                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                continue;
+            }
+
             // MVCC gate FIRST: compact() refuses the rebuild when any version
             // stamp is above the watermark (an active snapshot or an in-flight
             // commit still needs the history, or a positional commit_append is
@@ -1503,6 +1644,12 @@ namespace services::disk {
             }
             auto& table = entry->table_storage.table();
             table.cleanup_versions(lowest_active_start_time);
+            // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid (its
+            // stored absolute position indexes the un-swapped collection; the atomic swap would
+            // shift rows out from under it — R17). Reclaim is deferred to a later vacuum round.
+            if (has_active_scan_for_oid(oid)) {
+                continue;
+            }
             // MVCC-gated: a no-op when any version stamp is above the watermark
             // (concurrent snapshot / in-flight commit still needs the history).
             table.compact(compact_watermark);
@@ -1538,6 +1685,17 @@ namespace services::disk {
 
         auto committed = rg->committed_row_count();
         auto deleted = total - committed;
+
+        // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid (its
+        // stored absolute position indexes the un-swapped collection; the atomic swap would shift
+        // rows out from under it — R17). Reclaim is deferred to a later commit.
+        if (has_active_scan_for_oid(table_oid)) {
+            trace(log_,
+                  "agent_disk[{}]::maybe_cleanup_inner: oid={} has an active scan cursor — deferring compact",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            co_return;
+        }
 
         static constexpr double gc_threshold = 0.3;
         if (static_cast<double>(deleted) / static_cast<double>(total) > gc_threshold) {

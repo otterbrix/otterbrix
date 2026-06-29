@@ -115,8 +115,13 @@ namespace services::index {
             // txn-log IO error straight back to commit_inserts.
             co_return bitcask->apply_txn_inserts(txn_id, values);
         }
-        // bulk_guard_t disengages the bulk-write window on scope exit so a
-        // mid-loop bail-out still closes the bulk mode cleanly.
+        // Bulk fast path via the index_disk_t interface: insert_bulk_unchecked skips the
+        // per-insert dedup find() (btree's O(rows^2) source) and the per-insert flush;
+        // force_flush() persists once. bitcask additionally gets its pre-existing
+        // rehash-suppression window (a bitcask-only optimization; btree needs none).
+        // bulk_guard_t closes that window on scope exit so a mid-loop bail-out is clean.
+        // btree / txn_id==0 direct path stays assert+abort terminal: there is no
+        // recoverable failure to surface, so a clean run returns no_error().
         struct bulk_guard_t {
             bitcask_index_disk_t* ptr{nullptr};
             ~bulk_guard_t() {
@@ -128,18 +133,10 @@ namespace services::index {
         if (bitcask) {
             bitcask->set_bulk_mode(true);
         }
-        // btree / txn_id==0 direct path stays assert+abort terminal: there is no
-        // recoverable failure to surface, so a clean run returns no_error().
         for (const auto& [key, row_id] : values) {
-            if (bitcask) {
-                bitcask->insert_bulk_unchecked(key, row_id);
-            } else {
-                index_disk_->insert(key, row_id);
-            }
+            index_disk_->insert_bulk_unchecked(key, row_id);
         }
-        if (bitcask) {
-            bitcask->force_flush();
-        }
+        index_disk_->force_flush();
         co_return core::error_t::no_error();
     }
 
@@ -157,13 +154,13 @@ namespace services::index {
             // M3.5: propagate the bitcask txn-log IO error to commit_deletes.
             co_return bitcask->apply_txn_deletes(txn_id, values);
         }
+        // Bulk fast path: remove_bulk_unchecked skips btree's per-remove find() guard and
+        // the per-remove flush; force_flush() persists once.
         // btree / txn_id==0 direct path stays assert+abort terminal.
         for (const auto& [key, row_id] : values) {
-            index_disk_->remove(key, row_id);
+            index_disk_->remove_bulk_unchecked(key, row_id);
         }
-        if (bitcask) {
-            bitcask->force_flush();
-        }
+        index_disk_->force_flush();
         co_return core::error_t::no_error();
     }
 

@@ -991,6 +991,14 @@ namespace services::index {
         flush_if_needed();
     }
 
+    void bitcask_index_disk_t::remove_bulk_unchecked(const value_t& key, size_t row_id) {
+        // bitcask's remove is an O(1) hash lookup + snapshot rewrite and already skips
+        // the per-op flush while bulk mode is engaged (flush_if_needed checks bulk_mode_),
+        // so the bulk remove IS the normal remove — there is no per-key find()-scan to
+        // avoid here (that is the btree backend's problem).
+        remove(key, row_id);
+    }
+
     void bitcask_index_disk_t::flush_if_needed() {
         if (bulk_mode_) {
             return;

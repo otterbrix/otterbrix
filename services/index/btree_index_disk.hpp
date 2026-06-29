@@ -35,6 +35,13 @@ namespace services::index {
         void clear() override;
         void force_flush() override;
 
+        // Bulk-load fast path (see index_disk_t): append/erase without the per-op
+        // find() dedup, persisting once via force_flush(). Removes the O(rows^2) cost
+        // of insert()/remove() calling find() per row. They never call flush_if_needed,
+        // so no bulk-mode flag is needed — the caller force_flush()es once at the end.
+        void insert_bulk_unchecked(const value_t& key, size_t value) override;
+        void remove_bulk_unchecked(const value_t& key, size_t row_id) override;
+
     private:
         void flush_if_needed();
 

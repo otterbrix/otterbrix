@@ -6,7 +6,6 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,8 +19,6 @@ namespace components::operators {
         : read_only_operator_t(resource, std::move(log), operator_type::unregister_udf)
         , function_name_(std::move(function_name))
         , inputs_(std::move(inputs)) {}
-
-    void operator_unregister_udf_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
 
     actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;

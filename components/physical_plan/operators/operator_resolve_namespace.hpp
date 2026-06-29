@@ -40,8 +40,18 @@ namespace components::operators {
                                      std::string name,
                                      components::logical_plan::node_catalog_resolve_t* target_node);
 
+        // Sourceless SINK leaf (catalog read, no data pipeline, no children).
+        // The executor's run_resolve_subplan lowers the resolve front-pass to an
+        // all-sink chain and drives this operator's await_async_and_resume via the
+        // bottom-up needs_async_finalize pass (the single-resolve case is a sourceless
+        // sink-root, a multi-resolve case a sourceless all-sink chain). The async scan
+        // emits a single-row chunk into output_ and stamps the resolved oid onto
+        // target_node_; push()/finalize() inherit the no-op defaults (no consumer
+        // reads the chunk as pipeline data — the metadata handoff is the node stamp,
+        // read later via plan_resolve_index).
+        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
+
     private:
-        void on_execute_impl(pipeline::context_t* ctx) override;
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         std::string name_;

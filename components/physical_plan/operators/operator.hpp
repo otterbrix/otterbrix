@@ -15,10 +15,6 @@ namespace components::expressions {
 
 namespace components::operators {
 
-    // Forward decl: DML operators receive parsed metadata via
-    // accept_resolved_metadata(). Defined in resolved_table_metadata.hpp.
-    struct resolved_table_metadata_t;
-
     enum class operator_type
     {
         unused = 0x0,
@@ -27,7 +23,6 @@ namespace components::operators {
         full_scan,
         transfer_scan,
         index_scan,
-        primary_key_scan,
         insert,
         remove,
         update,
@@ -70,11 +65,6 @@ namespace components::operators {
         // cleanup index versions, rebuild and re-populate indexes per table.
         // Iterates pg_class to discover user tables (no dispatcher state).
         vacuum,
-        // GET_SCHEMA — self-resolving leaf operator that returns
-        // one complex_logical_type per (database, collection) id by reading
-        // pg_namespace+pg_class+pg_attribute. Used by
-        // manager_dispatcher_t::get_schema.
-        get_schema,
         // REGISTER_UDF / UNREGISTER_UDF — operator-pipeline replacements
         // for inline manager_dispatcher_t::{register,unregister}_udf.
         // operator_register_udf_t fans out to per-executor registries, mirrors
@@ -146,18 +136,25 @@ namespace components::operators {
     };
 
     inline bool is_scan(operator_type t) {
-        return t == operator_type::full_scan || t == operator_type::transfer_scan || t == operator_type::index_scan ||
-               t == operator_type::primary_key_scan;
+        return t == operator_type::full_scan || t == operator_type::transfer_scan || t == operator_type::index_scan;
     }
 
     enum class operator_state
     {
         created,
-        running,
-        waiting,
         executed,
-        cleared,
         failed
+    };
+
+    // Push-based streaming execution (SELECT read-path). execute_pipeline() drives
+    // Source -> streaming operators -> Sink one batch at a time, so peak memory is
+    // a single batch plus active sink state instead of the sum of materialized
+    // intermediates. An operator's role selects how the driver pulls/pushes it.
+    enum class pipeline_role
+    {
+        source,    // produces batches via source_next() (scans)
+        streaming, // 1 batch in -> 0+ out, no accumulation (filter/projection, join probe)
+        sink       // accumulates bounded state in push(), emits in finalize() (hash build, group/agg, sort)
     };
 
     class operator_t : public boost::intrusive_ref_counter<operator_t> {
@@ -177,19 +174,56 @@ namespace components::operators {
         // Prepare the operator tree (connects children) without executing
         void prepare();
 
-        // TODO fwd
-        void on_execute(pipeline::context_t* pipeline_context);
-        void on_resume(pipeline::context_t* pipeline_context);
-        void async_wait();
-
         virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
 
+        // --- Push-based streaming pipeline interface (SELECT read-path) ---
+        // execute_pipeline() inspects role() to drive the operator. The default is
+        // `sink`: a leaf/DDL/txn/DML/group/join/sort/distinct operator accumulates
+        // bounded state in push() and emits in finalize(), so it needs no override.
+        // Only a SOURCE (scans, raw-data carriers) or a STREAMING operator
+        // (filter/projection) overrides this.
+        [[nodiscard]] virtual pipeline_role role() const noexcept { return pipeline_role::sink; }
+
+        // SOURCE: fetch the next batch via an async storage round-trip
+        // (storage_fetch_next_batch). A drained source returns an EMPTY chunk
+        // (cardinality 0). Buffer-pool OOM / data_corruption ride the result_wrapper,
+        // never a throw. Only the executor's nested coroutine drives these awaits
+        // (not an agent handler), so N sequential fetches are lost-wakeup-safe.
+        [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        source_next(pipeline::context_t* ctx);
+
+        // STREAMING / SINK: consume exactly one input batch. A streaming operator
+        // transforms `input` and appends 0+ chunks to `out`; a sink operator folds
+        // `input` into bounded internal state and appends nothing. Synchronous: the
+        // executor owns the cross-actor await drive, operators never self-send.
+        [[nodiscard]] virtual core::error_t
+        push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out);
+
+        // SINK: once the upstream pipeline is drained, emit the accumulated result
+        // into `out`. Streaming operators have nothing to finalize (default no-op).
+        [[nodiscard]] virtual core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out);
+
+        // A SINK whose finalize is an asynchronous cross-actor commit (DML: WAL ->
+        // storage -> index -> swap-info). push()/finalize() stay synchronous; the
+        // executor drives this operator's await_async_and_resume after the pump (it
+        // owns the cross-actor await, so it is lost-wakeup-safe). Default false.
+        [[nodiscard]] virtual bool needs_async_finalize() const noexcept { return false; }
+
+        // Rewind an operator's PRIVATE streaming bookkeeping so it can be re-driven
+        // from scratch. reset_for_reuse() clears the generic state_/output_, but the
+        // streaming path keeps extra per-run state that reset_for_reuse() does not see:
+        //   - a SOURCE's cursor (opened_/drained_/cursor_id_ for a scan; the working-set
+        //     walk index for a cte_scan), and
+        //   - a SINK's lazily-built accumulator (a hash join's index_built_ / right_index_
+        //     / build_matched_).
+        // The recursive-CTE fixpoint driver re-runs its recursive-term sub-plan once per
+        // iteration, so it walks that subtree calling reset_for_reuse() + this hook on
+        // EVERY node before each pass. Default no-op.
+        virtual void reset_pipeline_state() noexcept {}
+
         bool is_executed() const;
-        bool is_wait_sync_disk() const;
         bool is_root() const noexcept;
         void set_as_root() noexcept;
-
-        ptr find_waiting_operator();
 
         virtual std::pmr::memory_resource* resource() const noexcept;
         log_t& log() noexcept;
@@ -199,16 +233,24 @@ namespace components::operators {
         [[nodiscard]] operator_state state() const noexcept;
         [[nodiscard]] operator_type type() const noexcept;
         const operator_data_ptr& output() const;
-        const operator_write_data_ptr& modified() const;
-        const operator_write_data_ptr& no_modified() const;
+
+        // Rows a PARENT constraint operator (fk_check / fk_cascade /
+        // check_constraint) must validate against. A DML operator (insert /
+        // update / delete) snapshots them at the TOP of its
+        // await_async_and_resume — BEFORE it overwrites output_ with the
+        // RETURNING / affected-count chunk — so a constraint driven AFTER the DML
+        // (the streaming bottom-up async-finalize drive) can still read the
+        // written rows even though the scan SOURCE's output_ is empty on the
+        // streaming path. Default: null (non-DML operators expose nothing).
+        const operator_data_ptr& constraint_input() const noexcept { return constraint_input_; }
         void set_children(ptr left, ptr right = nullptr);
         void set_output(operator_data_ptr data);
-        void take_output(ptr& src);
         void mark_executed();
         void mark_failed() noexcept { state_ = operator_state::failed; }
         void reset_for_reuse() noexcept {
             state_ = operator_state::created;
             output_ = nullptr;
+            constraint_input_ = nullptr;
         }
         void clear(); //todo: replace by copy
 
@@ -217,18 +259,12 @@ namespace components::operators {
         bool has_error() const noexcept;
         const core::error_t& get_error() const noexcept;
 
-        // Sibling-resolve plumbing. When an operator_resolve_table_t runs
-        // as an upstream step inside a sequence_t (or as a flattened
-        // left-child), its output chunk is parsed into
-        // resolved_table_metadata_t and handed to the next consumer via this
-        // hook. Default no-op; DML operators override (operator_insert /
-        // operator_update / operator_delete).
-        virtual void accept_resolved_metadata(resolved_table_metadata_t metadata);
-        // True when accept_resolved_metadata() may meaningfully be invoked
-        // on this operator. Used by operator_sequence_t to route the
-        // resolver's output to the appropriate sibling without inspecting
-        // operator_type.
-        virtual bool wants_resolved_metadata() const noexcept { return false; }
+        // Plan-time resolved output column types (one per output column, in output
+        // order), forwarded by the physical-plan generator from the logical node's
+        // output_types(). Default no-op; operators that emit a typed result (group /
+        // select) override it so a column produced over zero input rows stays correctly
+        // typed instead of the 0-byte logical_type::NA sentinel.
+        virtual void set_output_types(const std::pmr::vector<types::complex_logical_type>& types);
 
     protected:
         std::pmr::memory_resource* resource_;
@@ -238,13 +274,11 @@ namespace components::operators {
         ptr right_{nullptr};
         operator_data_ptr output_{nullptr};
         operator_write_data_ptr modified_{nullptr};
-        operator_write_data_ptr no_modified_{nullptr};
+        // Snapshot of the written rows for a parent constraint operator (see
+        // constraint_input()). Populated by DML operators only.
+        operator_data_ptr constraint_input_{nullptr};
 
     private:
-        virtual void on_execute_impl(pipeline::context_t* pipeline_context) = 0;
-        virtual void on_resume_impl(pipeline::context_t* pipeline_context);
-        virtual void on_prepare_impl();
-
         operator_type type_;
         operator_state state_{operator_state::created};
         bool root{false};
@@ -257,24 +291,9 @@ namespace components::operators {
         read_only_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type);
     };
 
-    enum class read_write_operator_state
-    {
-        pending,
-        executed,
-        conflicted,
-        rolledBack,
-        committed
-    };
-
     class read_write_operator_t : public operator_t {
     public:
         read_write_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type);
-        //todo:
-        //void commit();
-        //void rollback();
-
-    protected:
-        read_write_operator_state state_;
     };
 
     using operator_ptr = operator_t::ptr;

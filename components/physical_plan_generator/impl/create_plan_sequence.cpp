@@ -62,9 +62,9 @@ namespace services::planner::impl {
         //   metadata_op  — writes pg_class/pg_index(indisvalid=false)/pg_depend rows
         //   backfill_op  — registers/creates the engine entry, scans + insert_rows,
         //                  flips pg_index.indisvalid → true
-        // metadata_op is wired as backfill_op's left child so the executor's
-        // find_waiting_operator walks it first via the same left_/right_
-        // traversal used by the multi-clause ALTER TABLE chain below.
+        // metadata_op is wired as backfill_op's left child so the executor walks it
+        // first via the same left_/right_ traversal used by the multi-clause
+        // ALTER TABLE chain below.
         if (!node->children().empty() && node->children().back()->type() == node_type::create_index_t) {
             auto* ci = static_cast<node_create_index_t*>(node->children().back().get());
             std::vector<components::operators::operator_create_index_metadata_t::catalog_write_t> writes;
@@ -114,12 +114,12 @@ namespace services::planner::impl {
 
         // ALTER TABLE: rewrite_alter_table emits sequence_t(alter_column_t × N)
         // (op=add | rename, computed=false). Build the operators and chain them
-        // as left children (head = innermost step) so the executor's
-        // find_waiting_operator walks the chain via left_/right_ traversal.
-        // operator_sequence_t doesn't surface its internal steps_ to find_waiting,
-        // which would strand multi-clause ALTER TABLE statements after the first
-        // async-wait. Computed (relkind='g') alter_columns and op=drop are
-        // excluded — they ride other sequence shapes handled by the generic path.
+        // as left children (head = innermost step) so the executor walks the chain
+        // via left_/right_ traversal. A sequence wrapper carries no steps of its
+        // own, which would strand multi-clause ALTER TABLE statements after the
+        // first async step. Computed (relkind='g') alter_columns
+        // and op=drop are excluded — they ride other sequence shapes handled by the
+        // generic path.
         auto is_chainable_alter = [](const node_ptr& child) {
             if (child->type() != node_type::alter_column_t) {
                 return false;
@@ -139,8 +139,8 @@ namespace services::planner::impl {
                 if (all_alter) {
                     // Build the chain so children[0] (the first user-written clause)
                     // ends up at the DEEPEST nesting level — executor runs left children
-                    // first (depth-first via on_execute), so the deepest leaf executes
-                    // first. Walk children in reverse, set each as the left child of the
+                    // first (depth-first via left_/right_ traversal), so the deepest leaf
+                    // executes first. Walk children in reverse, set each as the left child of the
                     // previous; the last-built operator (head) wraps everything and
                     // becomes the root returned to the caller.
                     components::operators::operator_ptr head;
@@ -159,11 +159,12 @@ namespace services::planner::impl {
 
         // Generic case (e.g. CREATE DATABASE/SEQUENCE/VIEW/MACRO/TYPE → sequence_t(catalog-write node_insert_t × N),
         // INSERT-into-relkind='g' → sequence_t(insert, computed_field_register)):
-        // build a left-child chain so executor's find_waiting_operator can walk
-        // each child via left_/right_ traversal. operator_sequence_t.steps_ is
-        // invisible to find_waiting_operator, which would strand async children.
+        // build a left-child chain so the executor can walk each child via
+        // left_/right_ traversal — operator_sequence_t carries no steps of its
+        // own (it is only the childless no-op fallback below), so a sequence
+        // wrapper would strand async children.
         //
-        // Order: depth-first traversal runs LEFT first, then own on_execute_impl,
+        // Order: depth-first traversal runs LEFT first, then the operator's own work,
         // so the DEEPEST-left operator executes first. To preserve children-in-
         // declared-order semantics (child[0] runs before child[1], etc.), iterate
         // FORWARD: first child becomes deepest left, last child becomes outer root.
@@ -197,9 +198,9 @@ namespace services::planner::impl {
                     // chains: CREATE TYPE/SEQUENCE/VIEW/MACRO/DATABASE/CONSTRAINT).
                     // Clobbering left_ with the chain predecessor would drop the row
                     // chunk. Attach the predecessor to the free right_ slot instead:
-                    // on_execute still runs left (data leaf) → right (head) → self,
-                    // preserving child-declared order, and find_waiting_operator walks
-                    // both slots. When left_ is free (childless leaf, e.g. a
+                    // the executor still runs left (data leaf) → right (head) → self,
+                    // preserving child-declared order, and walks both slots via
+                    // left_/right_ traversal. When left_ is free (childless leaf, e.g. a
                     // catalog-delete operator_delete or computed_field_register),
                     // keep the left-chain shape.
                     if (op->left()) {
@@ -213,13 +214,10 @@ namespace services::planner::impl {
             return head;
         }
 
-        std::vector<components::operators::operator_ptr> steps;
-        steps.reserve(node->children().size());
-        for (const auto& child : node->children()) {
-            steps.push_back(create_plan(context, function_registry, child, {}, params));
-        }
+        // Reached only when node has no children (all child-bearing shapes return
+        // above): emit the childless no-op sequence fallback.
         return boost::intrusive_ptr(
-            new components::operators::operator_sequence_t(context.resource, context.log.clone(), std::move(steps)));
+            new components::operators::operator_sequence_t(context.resource, context.log.clone()));
     }
 
 } // namespace services::planner::impl

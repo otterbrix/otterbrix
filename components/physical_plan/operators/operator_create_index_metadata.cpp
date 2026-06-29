@@ -18,8 +18,6 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , catalog_writes_(std::move(catalog_writes)) {}
 
-    void operator_create_index_metadata_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_create_index_metadata_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Two-phase: every append is independent (no iteration consumes the
         // previous result), so send all rows first then await in order.

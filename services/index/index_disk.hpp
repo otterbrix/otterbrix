@@ -38,6 +38,15 @@ namespace services::index {
         virtual void clear() = 0;
         virtual void force_flush() = 0;
 
+        // Bulk-load fast path. insert_bulk_unchecked / remove_bulk_unchecked skip the
+        // per-operation dedup find() and the per-operation flush; force_flush() persists
+        // once at the end. The CALLER guarantees the (key,value) pairs are unique / present
+        // as appropriate (the bulk-load and repopulate paths do), so the per-op find() is
+        // unnecessary — eliminating its O(rows^2) cost for backends (e.g. btree) whose
+        // find() is not O(1). Pure virtual: each backend supplies a real bulk path.
+        virtual void insert_bulk_unchecked(const value_t& key, size_t value) = 0;
+        virtual void remove_bulk_unchecked(const value_t& key, size_t row_id) = 0;
+
     protected:
         static constexpr uint64_t default_flush_threshold_{1000};
 

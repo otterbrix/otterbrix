@@ -22,8 +22,6 @@ namespace components::operators {
         , is_disk_storage_(is_disk_storage)
         , catalog_writes_(std::move(catalog_writes)) {}
 
-    void operator_create_collection_t::on_execute_impl(pipeline::context_t* /*ctx*/) { async_wait(); }
-
     actor_zeta::unique_future<void> operator_create_collection_t::await_async_and_resume(pipeline::context_t* ctx) {
         if (columns_.empty()) {
             auto [_, f] = actor_zeta::send(ctx->disk_address,

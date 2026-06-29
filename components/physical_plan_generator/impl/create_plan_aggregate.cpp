@@ -8,6 +8,8 @@
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator_distinct.hpp>
+#include <components/physical_plan/operators/operator_group.hpp>
+#include <components/physical_plan/operators/operator_select.hpp>
 #include <components/physical_plan/operators/operator_sort.hpp>
 #include <components/physical_plan/operators/scan/transfer_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
@@ -116,6 +118,13 @@ namespace services::planner::impl {
                                                                                std::move(projected_cols))));
         }
         if (group_op) {
+            // Forward the plan-time resolved output types (stamped on the aggregate node
+            // by validate_schema) into the group operator, so it builds correctly-typed
+            // results over zero input rows (PostgreSQL TupleDesc model) instead of NA.
+            // set_output_types is a base virtual (no-op by default) -> no downcast.
+            if (node->has_output_types()) {
+                group_op->set_output_types(node->output_types());
+            }
             group_op->set_children(std::move(executor));
             executor = std::move(group_op);
         }
@@ -124,6 +133,12 @@ namespace services::planner::impl {
             executor = std::move(sort_op);
         }
         if (select_op) {
+            // Forward the plan-resolved output types onto the projection columns so a
+            // CASE/COALESCE/deep-field column over zero rows stays correctly typed instead
+            // of being dropped as an untyped placeholder. Base virtual -> no downcast.
+            if (node->has_output_types()) {
+                select_op->set_output_types(node->output_types());
+            }
             select_op->set_children(std::move(executor));
             executor = std::move(select_op);
         }

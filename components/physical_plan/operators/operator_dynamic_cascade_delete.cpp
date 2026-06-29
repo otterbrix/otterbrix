@@ -12,10 +12,8 @@
 #include <services/index/manager_index.hpp>
 
 #include <cstdint>
-#include <set>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -89,12 +87,6 @@ namespace components::operators {
         , seed_classid_(seed_classid)
         , seed_objid_(seed_objid)
         , behavior_(behavior) {}
-
-    void operator_dynamic_cascade_delete_t::on_execute_impl(pipeline::context_t* /*ctx*/) {
-        // Output stays nullptr; the executor distinguishes "no output" from
-        // "execution skipped" via mark_executed() in await_async_and_resume.
-        async_wait();
-    }
 
     actor_zeta::unique_future<void>
     operator_dynamic_cascade_delete_t::await_async_and_resume(pipeline::context_t* ctx) {

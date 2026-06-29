@@ -95,7 +95,7 @@ namespace components::sql::transform {
         , plan_(resource)
         , param_map_(resource)
         , param_insert_map_(resource)
-        , param_insert_rows_(resource, {}, 0)
+        , param_insert_rows_(resource)
         , bound_flags_(resource_)
         , taken_params_(resource_)
         , last_error_(std::move(error))
@@ -114,11 +114,16 @@ namespace components::sql::transform {
                              : node.get();
         if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
             if (prev_finalized) {
-                const auto& rows =
-                    reinterpret_cast<logical_plan::node_data_ptr&>(consumer->children().front())->data_chunk();
-                vector::data_chunk_t new_rows(rows.resource(), rows.types(), rows.size());
-                rows.copy(new_rows);
-                param_insert_rows_ = std::move(new_rows);
+                const auto& bound =
+                    reinterpret_cast<logical_plan::node_data_ptr&>(consumer->children().front())->chunks();
+                insert_rows_t fresh(resource_);
+                fresh.reserve(bound.size());
+                for (const auto& src : bound) {
+                    vector::data_chunk_t copy(src.resource(), src.types(), src.size() == 0 ? 1 : src.size());
+                    src.copy(copy);
+                    fresh.emplace_back(std::move(copy));
+                }
+                param_insert_rows_ = std::move(fresh);
             }
 
             auto it = param_insert_map_.find(id);
@@ -132,23 +137,34 @@ namespace components::sql::transform {
             // captured structure biding are not possible before C++20
             // TODO: const auto& [i, key] : it->second after C++20
             for (const auto& param : it->second) {
-                auto column = std::find_if(
-                    param_insert_rows_.data.begin(),
-                    param_insert_rows_.data.end(),
-                    [&param](const vector::vector_t& column) { return column.type().alias() == param.second; });
-                size_t column_index = static_cast<size_t>(column - param_insert_rows_.data.begin());
-                if (column == param_insert_rows_.data.end()) {
-                    value.set_alias(param.second);
-                    param_insert_rows_.data.emplace_back(param_insert_rows_.resource(),
-                                                         value.type(),
-                                                         param_insert_rows_.capacity());
-                } else if (column->type() != value.type()) {
-                    // column was inserted before, however type has changed
-                    value.set_alias(param.second);
-                    *column =
-                        vector::vector_t(param_insert_rows_.resource(), value.type(), param_insert_rows_.capacity());
+                // param.first is the GLOBAL row; route it to its ≤CAP chunk + local row.
+                const size_t chunk_index = param.first / vector::DEFAULT_VECTOR_CAPACITY;
+                const size_t local_row = param.first % vector::DEFAULT_VECTOR_CAPACITY;
+                if (chunk_index >= param_insert_rows_.size()) {
+                    continue;
                 }
-                param_insert_rows_.set_value(column_index, param.first, value);
+                auto& chunk = param_insert_rows_[chunk_index];
+                auto column = std::find_if(
+                    chunk.data.begin(),
+                    chunk.data.end(),
+                    [&param](const vector::vector_t& col) { return col.type().alias() == param.second; });
+                size_t column_index = static_cast<size_t>(column - chunk.data.begin());
+                // Column add / retype must touch EVERY chunk so all chunks keep one type layout
+                // (column_index is identical across chunks because they grow in lockstep).
+                if (column == chunk.data.end()) {
+                    // Param-only column (no literal anywhere): append it to every chunk.
+                    value.set_alias(param.second);
+                    for (auto& c : param_insert_rows_) {
+                        c.data.emplace_back(c.resource(), value.type(), c.capacity());
+                    }
+                } else if (column->type() != value.type()) {
+                    // Column type changed after creation: retype it in every chunk.
+                    value.set_alias(param.second);
+                    for (auto& c : param_insert_rows_) {
+                        c.data[column_index] = vector::vector_t(c.resource(), value.type(), c.capacity());
+                    }
+                }
+                chunk.set_value(column_index, local_row, value);
             }
         } else {
             auto it = param_map_.find(id);

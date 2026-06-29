@@ -1023,8 +1023,16 @@ namespace components::vector {
     }
 
     bool vector_t::is_null(uint64_t index) const {
-        assert(vector_type_ == vector_type::FLAT || vector_type_ == vector_type::CONSTANT);
-        return !validity_.row_is_valid(index);
+        switch (get_vector_type()) {
+            case vector_type::DICTIONARY:
+                return child().is_null(indexing().get_index(index)); // resolve one layer, recurse
+            case vector_type::SEQUENCE:
+                return false; // generated, never null
+            case vector_type::CONSTANT:
+                return !validity_.row_is_valid(0);
+            default: // FLAT
+                return !validity_.row_is_valid(index);
+        }
     }
 
     types::logical_value_t vector_t::value(uint64_t index) const {

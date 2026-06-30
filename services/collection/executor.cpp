@@ -109,6 +109,7 @@ namespace services::collection::executor {
                            actor_zeta::address_t wal_address,
                            actor_zeta::address_t disk_address,
                            actor_zeta::address_t index_address,
+                           configuration::config_disk disk_config,
                            log_t&& log)
         : actor_zeta::basic_actor<executor_t>{resource}
         , parent_address_(std::move(parent_address))
@@ -116,7 +117,8 @@ namespace services::collection::executor {
         , disk_address_(std::move(disk_address))
         , index_address_(std::move(index_address))
         , log_(log)
-        , function_registry_(resource) {
+        , function_registry_(resource)
+        , disk_config_(std::move(disk_config)) {
         register_default_functions(function_registry_);
     }
 
@@ -490,6 +492,10 @@ namespace services::collection::executor {
         // Executor-owned plan context. session_tz arrives from the dispatcher
         // (the sole owner of default_tz_cat_) in the session-context bundle.
         services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.session_tz);
+        // Stamp the executor's owned disk-config so the optimizer's spill_strategy
+        // rule can read the spill config when choosing grace vs in-memory plans.
+        // Same-actor non-owning pointer (R10/R14).
+        context_storage.disk_config = &disk_config_;
 
         // Which commit tail runs after the pipeline. DDL needs a real txn so a
         // mid-DDL crash → WAL replay rolls back partially-written pg_catalog
@@ -1146,6 +1152,7 @@ namespace services::collection::executor {
                                                      &local_fn_registry,
                                                      local_params};
                 pctx.disk_address = disk_address_;
+                pctx.disk_config = &disk_config_;
                 pctx.txn = components::table::transaction_data{0, 0};
                 op->prepare();
                 op->on_execute(&pctx);
@@ -1347,10 +1354,20 @@ namespace services::collection::executor {
         // (O1) Single optimizer pass — runs HERE, after every planner rewrite
         // (DML constraint-wrap + DDL lowering), so the schema stamps
         // key.side()/key.path() and table OIDs are present. const-fold +
-        // pushdown_filter + hash-join selection; a no-op on DDL sequences.
-        // The execute_plan delegate below lowers this optimized tree.
+        // pushdown_filter + hash-join selection + spill_strategy annotation;
+        // a no-op on DDL sequences. context_storage carries the runtime
+        // disk_config (spill_enabled) — resolve it here and pass the primitive
+        // to optimize(), since the planner component does not link spdlog and
+        // so cannot see context_storage_t / config_disk directly (R10: the
+        // value still flows through context_storage, not a thread_local). The
+        // execute_plan delegate below lowers this optimized tree.
+        const bool spill_enabled =
+            context_storage.disk_config != nullptr && context_storage.disk_config->spill_enabled;
         plan.sub_queries.back() =
-            components::planner::optimize(resource(), std::move(plan.sub_queries.back()), plan.parameters.get());
+            components::planner::optimize(resource(),
+                                          std::move(plan.sub_queries.back()),
+                                          plan.parameters.get(),
+                                          spill_enabled);
 
         trace(log_, "executor::execute_plan_full: delegating to execute_plan, session: {}", session.data());
         // Operator-pipeline run, forwarding resolve_txn so the operator path
@@ -1794,6 +1811,7 @@ namespace services::collection::executor {
             pipeline_context.disk_address = disk_address_;
             pipeline_context.index_address = index_address_;
             pipeline_context.wal_address = wal_address_;
+            pipeline_context.disk_config = &disk_config_;
             pipeline_context.txn = txn;
             pipeline_context.session_tz = plan_data.context_storage_.session_timezone;
             // VACUUM/MVCC GC threshold. operator_vacuum_t reads this to gate

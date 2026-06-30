@@ -119,7 +119,7 @@ namespace components::vector {
         }
         std::shared_ptr<vector_buffer_t> auxiliary() { return auxiliary_; }
         std::shared_ptr<vector_buffer_t> auxiliary() const { return auxiliary_; }
-        std::shared_ptr<vector_buffer_t> get_buffer() { return buffer_; }
+        std::shared_ptr<vector_buffer_t> get_buffer() const noexcept { return buffer_; }
 
         void reference(const types::logical_value_t& value);
         void reference(const vector_t& other);

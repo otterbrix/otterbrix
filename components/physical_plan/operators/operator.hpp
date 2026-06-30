@@ -32,13 +32,33 @@ namespace components::operators {
         remove,
         update,
         sort,
+        // External (spill) sort — disk-backed grace sort. Substituted for `sort`
+        // by the physical-plan generator when the optimizer stamps an external
+        // sort strategy on the logical node. Same I/O contract as `sort` but
+        // always spills sorted runs to ctx->disk_config and merges via k-way
+        // external merge sort (no runtime memory check — trusts the optimizer).
+        external_sort,
         select,
         join,
         // Equi-join fast path. Substituted for `join` by create_plan_join when the
         // ON condition is a single eq(left.key, right.key). Builds a hash table on
         // the right side once and probes with the left; same output layout as `join`.
+        // In-memory strategy: trusts the optimizer that the build side fits.
         hash_join,
+        // Grace (spill) hash join — disk-backed. Substituted for `hash_join` by the
+        // physical-plan generator when the optimizer stamps a grace strategy on the
+        // logical node. Partitions the build side and spills to ctx->disk_config,
+        // then probes partition-by-partition (no runtime memory check — trusts the
+        // optimizer). Same I/O contract as `hash_join`.
+        grace_hash_join,
         aggregate,
+        // Grace (spill) aggregate — disk-backed. Substituted for `aggregate` by the
+        // physical-plan generator when the optimizer stamps a grace strategy on the
+        // logical node. Partitions groups and spills per-partition (keys + row-refs)
+        // to ctx->disk_config, then re-aggregates partition-by-partition and merges
+        // partials via commutative combine (no runtime memory check — trusts the
+        // optimizer). Same I/O contract as `aggregate`.
+        grace_aggregate,
         raw_data,
         union_op,
         recursive_cte,

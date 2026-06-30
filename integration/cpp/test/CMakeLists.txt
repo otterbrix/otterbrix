@@ -28,11 +28,13 @@ set( ${PROJECT_NAME}_SOURCES
         test_pushdown_filter.cpp
         test_subqueries.cpp
         test_hash_join.cpp
+        test_spill_red.cpp
         test_returning.cpp
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
         test_parameterized_queries.cpp
         test_list_array.cpp
+        test_sort_spill.cpp
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

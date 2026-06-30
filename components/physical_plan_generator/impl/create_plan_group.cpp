@@ -4,9 +4,8 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_group.hpp>
 
-#include <components/physical_plan/operators/operator_group.hpp>
-
 #include <components/physical_plan/operators/aggregate/operator_func.hpp>
+#include <components/physical_plan/operators/operator_external_group.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 
 namespace services::planner::impl {
@@ -24,7 +23,8 @@ namespace services::planner::impl {
 
         // Returns false on a defensive validation failure so the caller can return nullptr ->
         // executor surfaces the error (rule 9: no throw on the operator-build path).
-        bool add_group_scalar(boost::intrusive_ptr<components::operators::operator_group_t>& group,
+        template<class Op>
+        bool add_group_scalar(boost::intrusive_ptr<Op>& group,
                               const components::expressions::scalar_expression_t* expr,
                               std::pmr::memory_resource* resource,
                               const components::logical_plan::storage_parameters* storage_params,
@@ -189,10 +189,11 @@ namespace services::planner::impl {
             return true;
         }
 
+        template<class Op>
         void add_group_aggregate(std::pmr::memory_resource* resource,
                                  log_t log,
                                  const components::compute::function_registry_t& function_registry,
-                                 boost::intrusive_ptr<components::operators::operator_group_t>& group,
+                                 boost::intrusive_ptr<Op>& group,
                                  const components::expressions::aggregate_expression_t* expr) {
             group->add_value(expr->key().as_pmr_string(),
                              boost::intrusive_ptr(new components::operators::aggregate::operator_func_t(
@@ -203,6 +204,50 @@ namespace services::planner::impl {
                                  expr->is_distinct())));
         }
 
+        // Run the expression loop on either standalone group operator (they share
+        // add_key/add_value/add_computed_column/add_post_aggregate but have no
+        // common base). Returns nullptr on a defensive validation failure.
+        template<class Op>
+        components::operators::operator_ptr configure_group_op(
+            boost::intrusive_ptr<Op> group,
+            const components::logical_plan::node_ptr& node,
+            const components::compute::function_registry_t& function_registry,
+            const components::logical_plan::storage_parameters* params,
+            std::pmr::memory_resource* plan_resource,
+            log_t agg_log) {
+            size_t key_idx = 0;
+            for (size_t i = 0; i < node->expressions().size(); i++) {
+                const auto& expr = node->expressions()[i];
+                if (expr->group() == expression_group::scalar) {
+                    auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
+                    if (!add_group_scalar(group, scalar_expr, plan_resource, params, key_idx)) {
+                        return nullptr;
+                    }
+                    switch (scalar_expr->type()) {
+                        case scalar_type::group_field:
+                            key_idx++;
+                            break;
+                        case scalar_type::get_field:
+                        case scalar_type::coalesce:
+                        case scalar_type::case_when:
+                            key_idx++;
+                            break;
+                        default:
+                            if (is_arithmetic_scalar_type(scalar_expr->type())) {
+                                if (scalar_expr->key().path().empty() || scalar_expr->key().path()[0] != SIZE_MAX) {
+                                    key_idx++;
+                                }
+                            }
+                            break;
+                    }
+                } else if (expr->group() == expression_group::aggregate) {
+                    add_group_aggregate(plan_resource, agg_log, function_registry, group,
+                                        static_cast<const components::expressions::aggregate_expression_t*>(expr.get()));
+                }
+            }
+            return group;
+        }
+
     } // namespace
 
     components::operators::operator_ptr
@@ -210,72 +255,41 @@ namespace services::planner::impl {
                       const components::compute::function_registry_t& function_registry,
                       const components::logical_plan::node_ptr& node,
                       const components::logical_plan::storage_parameters* params) {
-        boost::intrusive_ptr<components::operators::operator_group_t> group;
-        auto table_oid = node->table_oid();
-        bool known = context.has_table_oid(table_oid);
+        using exec_strategy = components::logical_plan::node_group_t::exec_strategy;
 
         components::expressions::expression_ptr having;
         size_t internal_aggregate_count = 0;
-        if (auto* group_node = dynamic_cast<const components::logical_plan::node_group_t*>(node.get())) {
+        exec_strategy strategy = exec_strategy::in_memory;
+        // Type-tag guard (rule 14: no dynamic_cast) before the static_cast.
+        if (node->type() == components::logical_plan::node_type::group_t) {
+            const auto* group_node = static_cast<const components::logical_plan::node_group_t*>(node.get());
             having = group_node->having();
             internal_aggregate_count = group_node->internal_aggregate_count;
+            strategy = group_node->strategy();
         }
 
-        if (known) {
-            group = new components::operators::operator_group_t(context.resource,
-                                                                context.log.clone(),
-                                                                std::move(having),
-                                                                internal_aggregate_count);
-        } else {
-            group = new components::operators::operator_group_t(node->resource(),
-                                                                log_t{},
-                                                                std::move(having),
-                                                                internal_aggregate_count);
-        }
-
-        // Build group operator from node expressions
+        auto table_oid = node->table_oid();
+        bool known = context.has_table_oid(table_oid);
         auto plan_resource = known ? context.resource : node->resource();
-        size_t key_idx = 0;
+        log_t agg_log = known ? context.log.clone() : log_t{};
 
-        for (size_t i = 0; i < node->expressions().size(); i++) {
-            const auto& expr = node->expressions()[i];
-
-            if (expr->group() == expression_group::scalar) {
-                auto* scalar_expr = static_cast<const components::expressions::scalar_expression_t*>(expr.get());
-                if (!add_group_scalar(group, scalar_expr, plan_resource, params, key_idx)) {
-                    // Defensive guard tripped: return nullptr -> executor surfaces the error
-                    // (rule 9: no throw on the operator-build path).
-                    return nullptr;
-                }
-                // Track key_idx for arithmetic computed columns
-                switch (scalar_expr->type()) {
-                    case scalar_type::group_field:
-                        key_idx++;
-                        break;
-                    case scalar_type::get_field:
-                    case scalar_type::coalesce:
-                    case scalar_type::case_when:
-                        key_idx++;
-                        break;
-                    default:
-                        if (is_arithmetic_scalar_type(scalar_expr->type())) {
-                            if (scalar_expr->key().path().empty() || scalar_expr->key().path()[0] != SIZE_MAX) {
-                                key_idx++;
-                            }
-                        }
-                        break;
-                }
-
-            } else if (expr->group() == expression_group::aggregate) {
-                add_group_aggregate(plan_resource,
-                                    known ? context.log.clone() : log_t{},
-                                    function_registry,
-                                    group,
-                                    static_cast<const components::expressions::aggregate_expression_t*>(expr.get()));
-            }
+        // R3 / R6: lower purely on the optimizer's spill annotation; the operator
+        // never checks memory at runtime (no fallback). physgen instantiates the concrete
+        // standalone class — there is no base to host a runtime branch.
+        if (strategy == exec_strategy::spill) {
+            auto op = known
+                ? boost::intrusive_ptr(new components::operators::operator_external_group_t(
+                      context.resource, context.log.clone(), having, internal_aggregate_count))
+                : boost::intrusive_ptr(new components::operators::operator_external_group_t(
+                      node->resource(), log_t{}, having, internal_aggregate_count));
+            return configure_group_op(std::move(op), node, function_registry, params, plan_resource, agg_log);
         }
-
-        return group;
+        auto op = known
+            ? boost::intrusive_ptr(new components::operators::operator_group_t(
+                  context.resource, context.log.clone(), having, internal_aggregate_count))
+            : boost::intrusive_ptr(new components::operators::operator_group_t(
+                  node->resource(), log_t{}, having, internal_aggregate_count));
+        return configure_group_op(std::move(op), node, function_registry, params, plan_resource, agg_log);
     }
 
 } // namespace services::planner::impl

@@ -36,6 +36,7 @@ set(SOURCE_${PROJECT_NAME}
         storage/metadata_reader.cpp
         storage/data_pointer.cpp
         storage/partial_block_manager.cpp
+        storage/unified_format.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}
@@ -65,6 +66,7 @@ target_include_directories(
 
 if (DEV_MODE)
     add_subdirectory(test)
+    add_subdirectory(storage/test)
 endif ()
 
 install(TARGETS

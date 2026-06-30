@@ -24,6 +24,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/session_catalog.hpp>
 #include <components/compute/function.hpp>
+#include <components/configuration/configuration.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/execution_plan.hpp>
@@ -70,7 +71,7 @@ namespace services::dispatcher {
             uint32_t stale_ticks{0};
         };
 
-        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log);
+        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log, configuration::config_disk disk_config);
         ~manager_dispatcher_t();
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
@@ -197,6 +198,12 @@ namespace services::dispatcher {
         actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
+
+        // Owned BY VALUE (R10): the dispatcher owns its disk-config copy so the
+        // executor pool can be spawned with a live config even after the
+        // base_otterbrix_t ctor parameter (configuration::config) is destroyed.
+        // Same pattern as manager_disk_t's value-typed config member.
+        configuration::config_disk disk_config_;
 
         // Selective broadcast flags. Set when DROP TABLE / DROP INDEX marks
         // a resource dropped (via on_drop_resource_marked); cleared by the

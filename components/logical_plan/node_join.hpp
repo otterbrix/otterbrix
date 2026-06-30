@@ -26,6 +26,17 @@ namespace components::logical_plan {
             hash
         };
 
+        // Memory budget for this logical join. Stamped by the optimizer rule
+        // spill_strategy from context_storage_t::disk_config (R10) and read by
+        // create_plan_join. Separate from join_algo: join_algo is nested-vs-hash
+        // (algorithm choice), exec_strategy is in-memory-vs-spill (memory budget).
+        // This is an ANNOTATION only — it does NOT change the logical semantics.
+        enum class exec_strategy : uint8_t
+        {
+            in_memory,
+            spill
+        };
+
         explicit node_join_t(std::pmr::memory_resource* resource,
                              core::dbname_t dbname,
                              core::relname_t relname,
@@ -41,6 +52,12 @@ namespace components::logical_plan {
         // and switches algo() to hash. Called by rewrite_hash_joins.
         void set_equi_columns(std::size_t left, std::size_t right) noexcept;
 
+        exec_strategy strategy() const noexcept;
+        // Stamped by the optimizer spill_strategy rule when
+        // disk_config->spill_enabled is set. Read by create_plan_join to lower to
+        // the grace/disk join operator.
+        void set_strategy(exec_strategy s) noexcept;
+
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 
@@ -49,6 +66,7 @@ namespace components::logical_plan {
         std::string relname_;
         join_type type_;
         join_algo algo_{join_algo::nested};
+        exec_strategy strategy_{exec_strategy::in_memory};
         std::size_t left_col_{0};
         std::size_t right_col_{0};
 

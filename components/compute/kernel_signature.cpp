@@ -114,6 +114,12 @@ namespace components::compute {
         return [](const types::complex_logical_type& t) { return types::is_numeric(t.type()); };
     }
 
+    type_matcher_fn numeric_or_decimal_types_matcher() {
+        return [](const types::complex_logical_type& t) {
+            return types::is_numeric(t.type()) || t.type() == types::logical_type::DECIMAL;
+        };
+    }
+
     type_matcher_fn integer_types_matcher() {
         return [](const types::complex_logical_type& t) {
             using lt = types::logical_type;

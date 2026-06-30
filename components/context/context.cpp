@@ -11,7 +11,8 @@ namespace components::pipeline {
         , parameters(std::move(context.parameters))
         , disk_address(std::move(context.disk_address))
         , index_address(std::move(context.index_address))
-        , address_(std::move(context.address_)) {}
+        , address_(std::move(context.address_))
+        , disk_config(context.disk_config) {}
 
     context_t::context_t(session::session_id_t session,
                          actor_zeta::address_t address,

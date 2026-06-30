@@ -11,6 +11,11 @@ namespace components::operators::aggregate {
         types::logical_value_t value() const;
         compute::datum_t take_batch_values();
 
+        // Public accessor for the aggregate kind (e.g. "sum", "count", "min",
+        // "max", "avg"). Used by commutative partition-merge logic in
+        // operator_external_group_t to decide how to combine partials across partitions.
+        std::string aggregate_key() const { return key_impl(); }
+
     protected:
         operator_aggregate_t(std::pmr::memory_resource* resource, log_t log);
 

@@ -18,7 +18,6 @@ namespace configuration {
         std::filesystem::path path{std::filesystem::current_path() / "wal"};
         bool on{true};
         bool sync_to_disk{true};
-        uint32_t page_size{4096};
         std::size_t max_segment_size{4 * 1024 * 1024}; // 4 MB per segment
         // WAL_AUTO_CHECKPOINT_THRESHOLD_BYTES: trigger checkpoint_all when cumulative WAL
         // bytes since the last checkpoint exceed this value. Default 16 MB (4 segments).
@@ -36,19 +35,28 @@ namespace configuration {
         uint64_t bitcask_segment_record_limit{100};
         uint64_t btree_flush_threshold{1000};
 
-        explicit config_disk(const std::filesystem::path& path = std::filesystem::current_path())
-            : path(path / "wal") {}
-    };
+        // Spill configuration for grace operators.
+        // Default OFF: the optimizer's spill_strategy rule stamps every
+        // sort/group/join node with exec_strategy=spill when this is true, which
+        // lowers them to the grace/external operators unconditionally (no
+        // threshold check, R3/R6). Those operators are validated on large inputs
+        // (see test_spill_red "[spill]") but lose rows / abort on small or
+        // mixed-type data, so spilling must be an opt-in plan choice, not the
+        // default plan for every query. Tests that exercise the spill path set
+        // this to true explicitly.
+        bool spill_enabled{false};
+        std::filesystem::path spill_path{std::filesystem::current_path() / "spill"}; // Temp file directory
+        uint32_t partition_count{16};                       // Number of partitions for grace hash join/aggregate
 
-    struct config_pandas final {
-        uint64_t analyze_sample_size{1000};
+        explicit config_disk(const std::filesystem::path& path = std::filesystem::current_path())
+            : path(path / "wal")
+            , spill_path(path / "spill") {}
     };
 
     struct config final {
         config_log log;
         config_wal wal;
         config_disk disk;
-        config_pandas pandas;
         std::filesystem::path main_path; // mainly used for checking, because log, wal and disk could be missing
 
         config(const std::filesystem::path& path = std::filesystem::current_path());
@@ -61,6 +69,5 @@ namespace configuration {
         : log(path)
         , wal(path)
         , disk(path)
-        , pandas()
         , main_path(path) {}
 } // namespace configuration

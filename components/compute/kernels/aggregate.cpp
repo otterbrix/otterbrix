@@ -595,7 +595,67 @@ namespace {
             ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), logical_type::NA);
             return core::error_t::no_error();
         }
-        ctx.batch_results.push_back(operator_switch<divide_operator_t>(acc.value, acc.count));
+        // AVG = sum / count must always be a real (double) result, even when the
+        // summed column is integral, so convert the running sum to double by its
+        // ACTUAL numeric type, then divide the real count. Two pitfalls to avoid:
+        //  (1) operator_switch<divide_operator_t> dispatches on acc.value's type
+        //      (int64 for BIGINT) and performs INTEGER division, so AVG over
+        //      {0..399} would return 199 instead of 199.5.
+        //  (2) acc.value.value<double>() is a raw memcpy of data_ bits — for an
+        //      int64-typed value it reinterprets the integer bit pattern as a
+        //      denormalized double (e.g. 199 -> 9.8e-322).
+        double sum_d = 0.0;
+        switch (acc.value.type().type()) {
+            case logical_type::BOOLEAN: sum_d = static_cast<double>(acc.value.value<bool>()); break;
+            case logical_type::TINYINT: sum_d = static_cast<double>(acc.value.value<int8_t>()); break;
+            case logical_type::SMALLINT: sum_d = static_cast<double>(acc.value.value<int16_t>()); break;
+            case logical_type::INTEGER: sum_d = static_cast<double>(acc.value.value<int32_t>()); break;
+            case logical_type::BIGINT: sum_d = static_cast<double>(acc.value.value<int64_t>()); break;
+            case logical_type::HUGEINT: sum_d = static_cast<double>(acc.value.value<int128_t>()); break;
+            case logical_type::UTINYINT: sum_d = static_cast<double>(acc.value.value<uint8_t>()); break;
+            case logical_type::USMALLINT: sum_d = static_cast<double>(acc.value.value<uint16_t>()); break;
+            case logical_type::UINTEGER: sum_d = static_cast<double>(acc.value.value<uint32_t>()); break;
+            case logical_type::UBIGINT: sum_d = static_cast<double>(acc.value.value<uint64_t>()); break;
+            case logical_type::UHUGEINT: sum_d = static_cast<double>(acc.value.value<uint128_t>()); break;
+            case logical_type::FLOAT: sum_d = static_cast<double>(acc.value.value<float>()); break;
+            case logical_type::DOUBLE: sum_d = acc.value.value<double>(); break;
+            case logical_type::DECIMAL: {
+                // The DECIMAL sum is an integer mantissa (physical INT16/32/64/128)
+                // scaled by 10^-scale. Read the mantissa by its physical width, cast
+                // to double, then undo the scale; the count division below yields
+                // the mean. (HUGEINT/UHUGEINT above are handled for completeness but
+                // are unreachable today — complex_logical_type::size() has no INT128
+                // case, so such a column cannot be allocated as a vector.)
+                const auto* dec =
+                    reinterpret_cast<const decimal_logical_type_extension*>(acc.value.type().extension());
+                double mantissa = 0.0;
+                switch (acc.value.type().to_physical_type()) {
+                    case physical_type::INT16: mantissa = static_cast<double>(acc.value.value<int16_t>()); break;
+                    case physical_type::INT32: mantissa = static_cast<double>(acc.value.value<int32_t>()); break;
+                    case physical_type::INT64: mantissa = static_cast<double>(acc.value.value<int64_t>()); break;
+                    case physical_type::INT128: mantissa = static_cast<double>(acc.value.value<int128_t>()); break;
+                    default:
+                        return core::error_t(core::error_code_t::conversion_failure,
+                                             std::pmr::string("avg: unsupported DECIMAL physical type",
+                                                              ctx.batch_results.get_allocator().resource()));
+                }
+                double divisor = 1.0;
+                for (uint8_t i = 0; i < dec->scale(); ++i) {
+                    divisor *= 10.0;
+                }
+                sum_d = mantissa / divisor;
+                break;
+            }
+            default:
+                // No silent garbage fallback: any type that is not an explicit
+                // numeric/decimal case above cannot be averaged — surface a hard
+                // error instead of reinterpreting its bits as a double.
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string("avg: cannot convert sum of this type to a double mean",
+                                                      ctx.batch_results.get_allocator().resource()));
+        }
+        double mean = sum_d / static_cast<double>(acc.count);
+        ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), mean);
         return core::error_t::no_error();
     }
 
@@ -685,8 +745,10 @@ namespace {
 
         auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
 
+        // AVG also accepts DECIMAL (avg_finalize converts it scale-aware to a
+        // double mean); numeric_types_matcher() alone would reject it.
         kernel_signature_t sig(function_type_t::aggregate,
-                               {numeric_types_matcher()},
+                               {numeric_or_decimal_types_matcher()},
                                {output_type::computed(same_type_resolver(0))});
         aggregate_kernel k{std::move(sig), avg_init, avg_consume, avg_merge, avg_finalize};
 

@@ -209,7 +209,9 @@ TEST_CASE("components::compute::aggregate::batch_accumulates_across_chunks") {
         REQUIRE_FALSE(res.has_error());
         const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
         REQUIRE(vals.size() == 1);
-        REQUIRE(vals[0].value<int32_t>() == 3); // (1+2+3+4+5) / 5
+        // The finalize kernel returns a DOUBLE (AVG is always a real result,
+        // even for an integral column — see avg_finalize). Read it as double.
+        REQUIRE(vals[0].value<double>() == 3.0); // (1+2+3+4+5) / 5
     }
 }
 
@@ -222,4 +224,38 @@ TEST_CASE("components::compute::aggregate::empty_input::empty_batch_is_rejected"
     auto res = fn->execute(batch, nullptr, fx.ctx);
     REQUIRE(res.has_error());
     REQUIRE(res.error().type == core::error_code_t::kernel_error);
+}
+
+// ---------------------------------------------------------------------------
+// AVG over a scaled DECIMAL column.
+//
+// avg_finalize folds the running SUM into a double mean. For DECIMAL the sum is
+// a scale-encoded integer mantissa; reading it via `acc.value.value<double>()`
+// would memcpy the mantissa bits and reinterpret them as IEEE-754 — a garbage
+// value, not the true average. This case locks the scale-aware DECIMAL→double
+// conversion.
+//
+// (HUGEINT / UHUGEINT cannot be exercised here: complex_logical_type::size()
+// has no INT128 case, so a 128-bit column cannot be allocated as a vector and
+// AVG never sees one. avg_finalize still handles them defensively.)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("components::compute::aggregate::avg_decimal_is_scale_aware") {
+    aggregate_registry_fixture fx;
+    // DECIMAL(10,2): mantissas 100/200/300 encode 1.00/2.00/3.00 (stored INT64).
+    auto dtype = complex_logical_type::create_decimal(10, 2);
+    std::pmr::vector<complex_logical_type> types(&fx.resource);
+    types.emplace_back(dtype);
+    data_chunk_t chunk(&fx.resource, types, 3);
+    chunk.set_value(0, 0, logical_value_t::create_decimal(&fx.resource, dtype, int64_t(100)));
+    chunk.set_value(0, 1, logical_value_t::create_decimal(&fx.resource, dtype, int64_t(200)));
+    chunk.set_value(0, 2, logical_value_t::create_decimal(&fx.resource, dtype, int64_t(300)));
+    chunk.set_cardinality(3);
+
+    auto res = fx.get("avg")->execute(chunk, nullptr, fx.ctx);
+    REQUIRE_FALSE(res.has_error());
+    const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+    REQUIRE(vals.size() == 1);
+    REQUIRE(vals[0].type().type() == logical_type::DOUBLE);
+    REQUIRE(vals[0].value<double>() == Approx(2.0)); // (1.00+2.00+3.00)/3
 }

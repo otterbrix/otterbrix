@@ -47,6 +47,10 @@ namespace components::logical_plan {
         algo_ = join_algo::hash;
     }
 
+    node_join_t::exec_strategy node_join_t::strategy() const noexcept { return strategy_; }
+
+    void node_join_t::set_strategy(exec_strategy s) noexcept { strategy_ = s; }
+
     hash_t node_join_t::hash_impl() const {
         // node_t::hash() combines type_ + hash_impl(); a hash-annotated join carries
         // the same node_type::join_t as a nested-loop one, so fold the annotation in
@@ -64,6 +68,9 @@ namespace components::logical_plan {
         stream << "$type: " << logical_plan::to_string(type_);
         if (algo_ == join_algo::hash) {
             stream << ", $algo: hash, $left_col: " << left_col_ << ", $right_col: " << right_col_;
+        }
+        if (strategy_ == exec_strategy::spill) {
+            stream << ", $strategy: spill";
         }
         for (const auto& child : children_) {
             stream << ", " << child->to_string();

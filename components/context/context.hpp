@@ -4,6 +4,7 @@
 #include <actor-zeta/detail/future.hpp>
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/configuration/configuration.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/session/session.hpp>
@@ -30,6 +31,13 @@ namespace components::pipeline {
         actor_zeta::address_t disk_address{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t index_address{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t wal_address{actor_zeta::address_t::empty_address()};
+
+        // Same-actor non-owning pointer to the executor's owned disk-config copy
+        // (R10/R14). Stamped by the executor (which owns the config_disk value)
+        // into every pipeline::context_t it builds, so the optimizer and the
+        // grace/spill operators can read the spill config without a
+        // cross-actor reference. Mirrors the function_registry precedent.
+        const configuration::config_disk* disk_config = nullptr;
 
         table::transaction_data txn{0, 0};
         core::date::timezone_offset_t session_tz{};

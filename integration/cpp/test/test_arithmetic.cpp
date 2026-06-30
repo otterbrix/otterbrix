@@ -376,10 +376,10 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                            R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        // avg(1..100) = 50.5, val = 50.5 * 10 = 505
-        // AVG might return int or double depending on implementation
-        auto val = cur->chunks().front().data[0].data<int64_t>()[0];
-        REQUIRE(val == 505);
+        // avg(1..100) = 50.5, val = 50.5 * 10 = 505.0. AVG now always returns a
+        // DOUBLE (avg_finalize), so read the column as double, not int64.
+        auto val = cur->chunks().front().data[0].data<double>()[0];
+        REQUIRE(val == 505.0);
     }
 
     INFO("C4. MIN/MAX of expression") {

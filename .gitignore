@@ -298,3 +298,4 @@ CMakeUserPresets.json
 build-tsan/
 build-*/
 .claude/
+.cache

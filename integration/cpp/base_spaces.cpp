@@ -115,7 +115,7 @@ namespace otterbrix {
 
         trace(log_, "spaces::manager_dispatcher start");
         manager_dispatcher_ =
-            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource, scheduler_dispatcher_.get(), log_);
+            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource, scheduler_dispatcher_.get(), log_, config.disk);
         trace(log_, "spaces::manager_dispatcher finish");
 
         wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource,

@@ -32,8 +32,11 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_group.cpp
         operators/operator_select.cpp
         operators/operator_sort.cpp
+        operators/operator_external_sort.cpp
+        operators/operator_external_group.cpp
         operators/operator_join.cpp
         operators/operator_hash_join.cpp
+        operators/operator_grace_hash_join.cpp
         operators/operator_union.cpp
         operators/operator_cte_scan.cpp
         operators/operator_recursive_cte.cpp

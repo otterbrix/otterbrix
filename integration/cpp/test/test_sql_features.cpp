@@ -946,7 +946,8 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
                                            "FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 51);
+        // AVG now returns a DOUBLE (avg_finalize): (95+72+0+88+0)/5 = 51.0
+        REQUIRE(cur->value(0, 0).value<double>() == 51.0);
     }
 
     INFO("MIN/MAX/AVG/SUM(CASE) in one query") {
@@ -963,7 +964,8 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
         REQUIRE(cur->column_count() == 4);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 72);
         REQUIRE(cur->value(1, 0).value<int64_t>() == 95);
-        REQUIRE(cur->value(2, 0).value<int64_t>() == 51);
+        // Column 2 is AVG(...) → DOUBLE (avg_finalize): (95+72+0+88+0)/5 = 51.0
+        REQUIRE(cur->value(2, 0).value<double>() == 51.0);
         REQUIRE(cur->value(3, 0).value<int64_t>() == 255);
     }
 }

@@ -35,8 +35,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , disk_path_(disk_path)
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
         , disk_config_(disk_path)
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_, disk_config_))
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , wal_config_([&]() {
             configuration::config_wal c;
@@ -167,8 +167,8 @@ private:
     std::string disk_path_;
     log_t log_;
     core::non_thread_scheduler::scheduler_test_t* scheduler_{nullptr};
-    std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     configuration::config_disk disk_config_;
+    std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
     configuration::config_wal wal_config_;
     std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;

@@ -235,8 +235,9 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         REQUIRE(cur->value(1, 1).value<uint64_t>() == 50);
         REQUIRE(cur->value(2, 0).value<int64_t>() == 2550);
         REQUIRE(cur->value(2, 1).value<int64_t>() == 2500);
-        REQUIRE(cur->value(3, 0).value<int64_t>() == 51);
-        REQUIRE(cur->value(3, 1).value<int64_t>() == 50);
+        // AVG now returns a DOUBLE (avg_finalize), so read it as double.
+        REQUIRE(cur->value(3, 0).value<double>() == 51.0);
+        REQUIRE(cur->value(3, 1).value<double>() == 50.0);
     }
 
     INFO("insert from select") {
@@ -939,7 +940,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             REQUIRE(cur->chunks().front().data[1].type().alias() == "count");
             REQUIRE(cur->chunks().front().data[2].type().type() == types::logical_type::BIGINT);
             REQUIRE(cur->chunks().front().data[2].type().alias() == "sum");
-            REQUIRE(cur->chunks().front().data[3].type().type() == types::logical_type::BIGINT);
+            // AVG now returns a DOUBLE (avg_finalize), not the input BIGINT.
+            REQUIRE(cur->chunks().front().data[3].type().type() == types::logical_type::DOUBLE);
             REQUIRE(cur->chunks().front().data[3].type().alias() == "avg");
             REQUIRE(cur->chunks().front().data[4].type().type() == types::logical_type::BIGINT);
             REQUIRE(cur->chunks().front().data[4].type().alias() == "min");
@@ -949,8 +951,10 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             for (int num = 0, reversed = 12; num < 13; ++num, --reversed) {
                 REQUIRE(cur->value(1, static_cast<size_t>(num)).value<uint64_t>() == 1);
                 REQUIRE(cur->value(2, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
-                REQUIRE(cur->value(3, static_cast<size_t>(num)).value<int64_t>() ==
-                        static_cast<int64_t>((reversed + 25) * 2));
+                // AVG now returns a DOUBLE (avg_finalize): the value is exact,
+                // promote the integer expectation to double.
+                REQUIRE(cur->value(3, static_cast<size_t>(num)).value<double>() ==
+                        static_cast<double>((reversed + 25) * 2));
                 REQUIRE(cur->value(4, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
                 REQUIRE(cur->value(5, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
             }

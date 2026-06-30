@@ -13,6 +13,10 @@ namespace components::logical_plan {
         , relname_(std::move(static_cast<std::string&>(relname)))
         , having_(std::move(having)) {}
 
+    node_group_t::exec_strategy node_group_t::strategy() const noexcept { return strategy_; }
+
+    void node_group_t::set_strategy(exec_strategy s) noexcept { strategy_ = s; }
+
     hash_t node_group_t::hash_impl() const { return 0; }
 
     std::string node_group_t::to_string_impl() const {
@@ -26,6 +30,9 @@ namespace components::logical_plan {
                 stream << ", ";
             }
             stream << expr->to_string();
+        }
+        if (strategy_ == exec_strategy::spill) {
+            stream << ", $strategy: spill";
         }
         stream << "}";
         return stream.str();

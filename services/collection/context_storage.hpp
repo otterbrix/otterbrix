@@ -4,6 +4,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/index/forward.hpp>
+#include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -33,6 +34,13 @@ namespace services {
         // Slot pointers for recursive CTE working sets. Keyed by CTE name.
         // Each entry points into the owning operator_recursive_cte_t's working_set_ field.
         std::pmr::unordered_map<std::pmr::string, components::operators::operator_data_ptr*> cte_working_sets;
+
+        // Same-actor non-owning pointer to the executor's owned disk-config copy
+        // (R10/R14). Stamped by execute_plan_full before it hands context_storage
+        // to the optimizer, so the spill_strategy rule can read the spill config
+        // when choosing grace vs in-memory plans. Mirrors the
+        // function_registry precedent.
+        const configuration::config_disk* disk_config = nullptr;
 
         context_storage_t(std::pmr::memory_resource* resource,
                           log_t log,

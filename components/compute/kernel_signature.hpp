@@ -132,6 +132,11 @@ namespace components::compute {
 
     type_matcher_fn exact_type_matcher(types::logical_type type);
     type_matcher_fn numeric_types_matcher();
+    // Like numeric_types_matcher() but also accepts DECIMAL. AVG uses this: the
+    // average of a scaled-integer DECIMAL column is a well-defined real value
+    // (avg_finalize converts mantissa/10^scale to double). is_numeric() itself
+    // intentionally excludes DECIMAL, so this is a dedicated AVG-input matcher.
+    type_matcher_fn numeric_or_decimal_types_matcher();
     type_matcher_fn integer_types_matcher();
     type_matcher_fn floating_types_matcher();
     type_matcher_fn string_types_matcher();

@@ -9,6 +9,10 @@ namespace components::logical_plan {
         , dbname_(std::move(static_cast<std::string&>(dbname)))
         , relname_(std::move(static_cast<std::string&>(relname))) {}
 
+    node_sort_t::exec_strategy node_sort_t::strategy() const noexcept { return strategy_; }
+
+    void node_sort_t::set_strategy(exec_strategy s) noexcept { strategy_ = s; }
+
     hash_t node_sort_t::hash_impl() const { return 0; }
 
     std::string node_sort_t::to_string_impl() const {
@@ -22,6 +26,9 @@ namespace components::logical_plan {
                 stream << ", ";
             }
             stream << expr->to_string();
+        }
+        if (strategy_ == exec_strategy::spill) {
+            stream << ", $strategy: spill";
         }
         stream << "}";
         return stream.str();

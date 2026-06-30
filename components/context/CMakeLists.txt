@@ -22,6 +22,7 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
         otterbrix::session
         otterbrix::logical_plan
+        otterbrix::log
         actor-zeta::actor-zeta
 
         absl::int128

@@ -86,13 +86,15 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::manager_dispatcher_t(std::pmr::memory_resource* resource_ptr,
                                                actor_zeta::scheduler_raw scheduler,
-                                               log_t& log)
+                                               log_t& log,
+                                               configuration::config_disk disk_config)
         : actor_zeta::actor::actor_mixin<manager_dispatcher_t>()
         , resource_(resource_ptr)
         , scheduler_(scheduler)
         , log_(log.clone())
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
+        , disk_config_(std::move(disk_config))
         , txn_manager_(resource_ptr)
         , pending_void_(resource_ptr) {
         ZoneScoped;
@@ -331,6 +333,7 @@ namespace services::dispatcher {
                                                                             wal_address_,
                                                                             disk_address_,
                                                                             index_address_,
+                                                                            disk_config_,
                                                                             log_.clone());
             executor_addresses_.push_back(exec->address());
             executors_.push_back(std::move(exec));
@@ -538,6 +541,7 @@ namespace services::dispatcher {
                                              &fn_registry,
                                              params};
         pctx.disk_address = disk_address_;
+        pctx.disk_config = &disk_config_;
         pctx.txn = components::table::transaction_data{0, 0};
 
         op->prepare();
@@ -594,6 +598,7 @@ namespace services::dispatcher {
                                              &fn_registry,
                                              params};
         pctx.disk_address = disk_address_;
+        pctx.disk_config = &disk_config_;
         pctx.txn = components::table::transaction_data{0, 0};
 
         op->prepare();

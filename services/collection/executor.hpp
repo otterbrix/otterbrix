@@ -3,6 +3,7 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
+#include <components/configuration/configuration.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_limit.hpp>
@@ -139,6 +140,7 @@ namespace services::collection::executor {
                    actor_zeta::address_t wal_address,
                    actor_zeta::address_t disk_address,
                    actor_zeta::address_t index_address,
+                   configuration::config_disk disk_config,
                    log_t&& log);
         ~executor_t() = default;
 
@@ -204,6 +206,12 @@ namespace services::collection::executor {
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
         log_t log_;
         components::compute::function_registry_t function_registry_;
+        // Owned BY VALUE (R10): the executor's own disk-config copy, stamped into
+        // every pipeline::context_t / context_storage_t it builds so the optimizer
+        // and operators read a live config (the base_otterbrix_t ctor parameter
+        // is already destroyed by the time queries run). Mirrors
+        // manager_disk_t's value-typed config member.
+        configuration::config_disk disk_config_;
     };
 
     using executor_ptr = std::unique_ptr<executor_t, actor_zeta::pmr::deleter_t>;

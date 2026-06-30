@@ -1,6 +1,7 @@
 #include "create_plan_join.hpp"
 
 #include <components/logical_plan/node_join.hpp>
+#include <components/physical_plan/operators/operator_grace_hash_join.hpp>
 #include <components/physical_plan/operators/operator_hash_join.hpp>
 #include <components/physical_plan/operators/operator_join.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
@@ -26,18 +27,34 @@ namespace services::planner::impl {
 
         using join_type = components::logical_plan::join_type;
         using join_algo = components::logical_plan::node_join_t::join_algo;
+        using exec_strategy = components::logical_plan::node_join_t::exec_strategy;
 
         // Equi-join fast path: the optimizer rule rewrite_hash_joins detected a single
         // eq(left.key, right.key) ON condition and stamped algo()==hash plus the matched
-        // equi-key column indices. Lower straight to operator_hash_join_t (O(L+R)). No
+        // equi-key column indices. Lower straight to the hash-join family (O(L+R)). No
         // detection here — the annotation is the single source of truth.
+        //
+        // WITHIN the hash path, the optimizer's spill annotation selects the
+        // in-memory operator_hash_join_t vs the disk-backed operator_grace_hash_join_t
+        // (R3 / R6: lower purely on the annotation; the operator never checks memory at
+        // runtime and never falls back). Default in_memory keeps the pre-spill behaviour.
         if (join_node->algo() == join_algo::hash) {
-            components::operators::operator_ptr hash_join =
-                boost::intrusive_ptr(new components::operators::operator_hash_join_t(resource,
-                                                                                     log.clone(),
-                                                                                     join_node->type(),
-                                                                                     join_node->left_col(),
-                                                                                     join_node->right_col()));
+            components::operators::operator_ptr hash_join;
+            if (join_node->strategy() == exec_strategy::spill) {
+                hash_join = boost::intrusive_ptr(new components::operators::operator_grace_hash_join_t(
+                    resource,
+                    log.clone(),
+                    join_node->type(),
+                    join_node->left_col(),
+                    join_node->right_col()));
+            } else {
+                hash_join = boost::intrusive_ptr(new components::operators::operator_hash_join_t(
+                    resource,
+                    log.clone(),
+                    join_node->type(),
+                    join_node->left_col(),
+                    join_node->right_col()));
+            }
             // Push the LIMIT down to whichever side an outer join preserves. The hash
             // path covers inner/left/right/full only (cross never carries an equi-key).
             auto hash_limit_left = components::logical_plan::limit_t::unlimit();

@@ -33,7 +33,7 @@ using vec = std::vector<v>;
     }
 
 TEST_CASE("components::sql::select_from_where") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -200,7 +200,7 @@ TEST_CASE("components::sql::select_from_where") {
 }
 
 TEST_CASE("components::sql::select_from_order_by") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -247,7 +247,7 @@ TEST_CASE("components::sql::select_from_order_by") {
 }
 
 TEST_CASE("components::sql::group_by") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -262,7 +262,7 @@ TEST_CASE("components::sql::group_by") {
 }
 
 TEST_CASE("components::sql::select_from_fields") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -302,7 +302,7 @@ TEST_CASE("components::sql::select_from_fields") {
 }
 
 TEST_CASE("components::sql::select_with_subquery") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 

@@ -53,7 +53,7 @@ namespace {
 } // namespace
 
 TEST_CASE("services::disk::table_storage::in_memory") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> columns;
     columns.emplace_back("value", logical_type::BIGINT);
@@ -83,7 +83,7 @@ TEST_CASE("services::disk::table_storage::in_memory") {
 TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx_path = std::filesystem::path(test_dir()) / "test_table.otbx";
     constexpr uint64_t NUM_ROWS = 500;
@@ -128,7 +128,7 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
 }
 
 TEST_CASE("services::disk::table_storage::mode_query") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     // In-memory (schema-less)
     {
@@ -160,7 +160,7 @@ TEST_CASE("services::disk::table_storage::mode_query") {
 TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx_path = std::filesystem::path(test_dir()) / "multi_col.otbx";
     constexpr uint64_t NUM_ROWS = 200;
@@ -229,7 +229,7 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
 // constructor (data_table_t(parent, removed_column) backed by
 // collection_t::remove_column per row_group segment). DISK-mode is out of scope.
 TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> columns;
     columns.emplace_back("a", logical_type::BIGINT);
@@ -292,7 +292,7 @@ TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
 TEST_CASE("services::disk::table_storage::drop_column_disk_is_noop") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx_path = std::filesystem::path(test_dir()) / "test_drop_disk.otbx";
     std::vector<column_definition_t> columns;

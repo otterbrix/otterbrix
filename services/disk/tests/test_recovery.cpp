@@ -39,7 +39,7 @@ namespace {
     // Disk + WAL fixture mirrors the one in test_wal_catalog.cpp — minimal enough to drive
     // bootstrap + ddl_* + a fresh restart.
     struct recovery_fixture {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         log_t log;
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_wal wal_config;

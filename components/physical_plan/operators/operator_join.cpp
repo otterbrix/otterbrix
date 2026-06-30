@@ -25,11 +25,7 @@ namespace components::operators {
         assert(!build_chunks.empty());
 
         res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
-        join_detail::compute_join_layout(probe_front,
-                                         build_chunks.front(),
-                                         res_types_,
-                                         indices_left_,
-                                         indices_right_);
+        join_detail::compute_join_layout(probe_front, build_chunks.front(), res_types_, indices_left_, indices_right_);
 
         predicate_ = expression_ ? predicates::create_predicate(resource_,
                                                                 context->function_registry,
@@ -38,7 +34,7 @@ namespace components::operators {
                                                                 build_chunks.front().types(),
                                                                 &context->parameters,
                                                                 context->session_tz)
-                                  : predicates::create_all_true_predicate(resource_);
+                                 : predicates::create_all_true_predicate(resource_);
 
         // RIGHT/FULL: size the flat matched marker over all build rows, with
         // per-chunk start offsets so build row (chunk,row) maps to
@@ -128,8 +124,7 @@ namespace components::operators {
         builder.flush();
     }
 
-    core::error_t
-    operator_join_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
+    core::error_t operator_join_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // The build (right) side is materialized by a separate sub-plan before the
         // first push and always holds at least one (possibly empty) chunk. A truly
         // absent right_ is a degenerate plan: emit nothing (no build rows to

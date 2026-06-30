@@ -426,8 +426,8 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(
-            dispatcher->execute_sql(session, "ALTER TABLE t.acc ADD CONSTRAINT chk_age CHECK (age > 0);")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "ALTER TABLE t.acc ADD CONSTRAINT chk_age CHECK (age > 0);")
+                    ->is_success());
     }
 
     // AUTOCOMMIT INSERT that violates the CHECK (age = -5 fails age > 0). The
@@ -580,8 +580,8 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_revert
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(
-            dispatcher->execute_sql(session, "ALTER TABLE t.acc ADD CONSTRAINT chk_age CHECK (age > 0);")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "ALTER TABLE t.acc ADD CONSTRAINT chk_age CHECK (age > 0);")
+                    ->is_success());
     }
 
     const auto reverts_before = services::collection::executor::dml_appends_reverted();

@@ -1825,8 +1825,7 @@ namespace services::collection::executor {
         // the bottom's produced rows are pumped UP through those ancestors, which are
         // then FLUSHed + async-finalized bottom-up. (chain[0]->role()==source is the
         // normal pumped case; a NOT-executed non-source bottom is the sourceless sink.)
-        const bool sourceless_sink_root =
-            start == 0 && chain.front()->role() != ops::pipeline_role::source;
+        const bool sourceless_sink_root = start == 0 && chain.front()->role() != ops::pipeline_role::source;
         const std::size_t op_start = sourceless_sink_root ? 1 : ((start == 0) ? 1 : start);
 
         // A producing sourceless bottom (recursive_cte) whose ancestors are REAL query
@@ -2026,8 +2025,8 @@ namespace services::collection::executor {
         co_return core::error_t::no_error();
     }
 
-    executor_t::unique_future<core::error_t>
-    executor_t::drive_subplan_(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
+    executor_t::unique_future<core::error_t> executor_t::drive_subplan_(components::operators::operator_ptr root,
+                                                                        components::pipeline::context_t* ctx) {
         // THE single drive seam, shared by execute_sub_plan_ and run_subplan (no
         // duplication). The caller has already prepared `root`. EVERY reachable plan
         // streams through execute_pipeline (bounded memory): the producing-sourceless-

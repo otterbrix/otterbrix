@@ -159,8 +159,9 @@ namespace services::collection::executor {
     // plan. This is NOT cross-actor sharing: operators are owned by and run
     // synchronously inside executor_t (operator_t is a boost::intrusive_ref_counter,
     // not a basic_actor).
-    class executor_t final : public actor_zeta::basic_actor<executor_t>,
-                             public components::pipeline::subplan_runner_t {
+    class executor_t final
+        : public actor_zeta::basic_actor<executor_t>
+        , public components::pipeline::subplan_runner_t {
     public:
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;

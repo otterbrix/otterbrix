@@ -40,8 +40,7 @@ namespace components::operators {
         co_return;
     }
 
-    actor_zeta::unique_future<core::error_t>
-    operator_recursive_cte_t::drive_fixpoint_(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<core::error_t> operator_recursive_cte_t::drive_fixpoint_(pipeline::context_t* ctx) {
         auto* res = resource_;
 
         if (!anchor_) {

@@ -38,7 +38,7 @@ namespace {
     void cleanup() { std::filesystem::remove_all(err_dir()); }
 
     struct fixture {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         log_t log;
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
@@ -122,7 +122,7 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_two_rows") {
 
 // 12. topological_drop_order on an empty seed returns empty vector — caller pushes the seed.
 TEST_CASE("services::disk::error::topological_drop_empty") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     auto edges = [](std::pmr::memory_resource* mr, oid_t /*cls*/, oid_t /*oid*/) {
         return std::pmr::vector<dependency_t>{mr};
     };

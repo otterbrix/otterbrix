@@ -18,7 +18,7 @@ template<typename T>
 using deleted_unique_ptr = std::unique_ptr<T, std::function<void(T*)>>;
 
 TEST_CASE("integration::cpp::test_collection") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     auto config = test_create_config("/tmp/test_collection");
     test_clear_directory(config);

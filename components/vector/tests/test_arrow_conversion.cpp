@@ -17,7 +17,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         constexpr size_t max_list_size = 128;
         auto list_length = [&](size_t i) { return i - (i / max_list_size) * max_list_size; };
 
-        auto resource = std::pmr::synchronized_pool_resource();
+        auto resource = core::pmr::otterbrix_resource();
         std::pmr::vector<complex_logical_type> types(&resource);
 
         types.emplace_back(logical_type::BIGINT, "fixed_size");
@@ -136,7 +136,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         constexpr size_t max_list_size = 128;
         auto list_length = [&](size_t i) { return i - (i / max_list_size) * max_list_size; };
 
-        auto resource = std::pmr::synchronized_pool_resource();
+        auto resource = core::pmr::otterbrix_resource();
         std::pmr::vector<complex_logical_type> types(&resource);
 
         types.emplace_back(logical_type::BIGINT, "fixed_size");
@@ -255,7 +255,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow::datetime") {
     constexpr size_t chunk_size = 64;
     using namespace core::date;
 
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<complex_logical_type> types(&resource);
 
     types.emplace_back(logical_type::DATE, "date_col");

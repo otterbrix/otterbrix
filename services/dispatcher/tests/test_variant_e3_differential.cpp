@@ -183,7 +183,7 @@ namespace {
 // SELECT pass-through differential. Fixture: CREATE DATABASE/TABLE/INSERT,
 // then SELECT. Assert SELECT cursor is successful and column shape matches.
 TEST_CASE("variant-e3 differential: SELECT pass-through") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_select");
 
     fx.execute_sql("CREATE DATABASE ve3_sel;");
@@ -214,7 +214,7 @@ TEST_CASE("variant-e3 differential: SELECT pass-through") {
 // matching relkind / column shape. The columns-by-attname loop mirrors
 // test_dispatcher_catalog.cpp::schemeful_operations.
 TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_create");
 
     fx.execute_sql("CREATE DATABASE ve3_ct;");
@@ -247,7 +247,7 @@ TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
 // allocation, ETL into vector::data_chunk_t, cursor materialization. The
 // relkind='g' (computed-column adoption) variant is covered separately.
 TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_insert");
 
     fx.execute_sql("CREATE DATABASE ve3_ins;");
@@ -286,7 +286,7 @@ TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
 // the pg_index entry, the pg_depend 'a' parent edge, and the index OID stamp were
 // all written.
 TEST_CASE("variant-e3 differential: CREATE INDEX") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_index");
 
     fx.execute_sql("CREATE DATABASE ve3_idx;");
@@ -320,7 +320,7 @@ TEST_CASE("variant-e3 differential: CREATE INDEX") {
 // (namespace_oid, name) must return found=false — the observable contract of
 // "pg_class delete_id set + dropped storage list".
 TEST_CASE("variant-e3 differential: DROP TABLE") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop");
 
     fx.execute_sql("CREATE DATABASE ve3_drop;");
@@ -356,7 +356,7 @@ TEST_CASE("variant-e3 differential: DROP TABLE") {
 // resolve_table is reconstructed from pg_attribute, so observing the new
 // column name there transitively guarantees the row was inserted.
 TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_alter");
 
     fx.execute_sql("CREATE DATABASE ve3_alt;");
@@ -410,7 +410,7 @@ TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
 // (well_known_oid::public_namespace). Composite types in this codebase are
 // registered without a database prefix.
 TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_type");
 
     fx.execute_sql("CREATE TYPE ve3_point_t AS (px int, py int);");
@@ -452,7 +452,7 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
 // resolve_table on the next txn surfaces those columns as if they had been
 // declared statically. Mirrors test_dispatcher_catalog.cpp::computed_operations.
 TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_computed");
 
     fx.execute_sql("CREATE DATABASE ve3_cg;");
@@ -500,7 +500,7 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
 // CASCADE wipe of child pg_class rows is implicitly covered: after the
 // namespace is gone, no resolve_table call can succeed regardless of relkind.
 TEST_CASE("variant-e3 differential: DROP DATABASE") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop_db");
 
     fx.execute_sql("CREATE DATABASE ve3_dropdb;");
@@ -526,7 +526,7 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
 // relkind=='v'. The pg_rewrite row isn't exposed by the probe_table result but
 // is required for SELECT-on-view expansion (covered e2e elsewhere).
 TEST_CASE("variant-e3 differential: CREATE VIEW") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_view");
 
     fx.execute_sql("CREATE DATABASE ve3_view;");
@@ -560,7 +560,7 @@ TEST_CASE("variant-e3 differential: CREATE VIEW") {
 // enforcement on INSERT: a valid reference is accepted and an orphan rejected,
 // which together can only happen if those rows were written.
 TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_fk");
 
     fx.execute_sql("CREATE DATABASE ve3_fk;");
@@ -623,7 +623,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
 // the whole CREATE if any step fails. Proxy: cursor success + resolve_table(mv)
 // relkind=='m' + parent still resolvable.
 TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_matview");
 
     fx.execute_sql("CREATE DATABASE ve3_mv;");
@@ -663,7 +663,7 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
 // accepted and a violating one rejected — neither can happen unless the
 // contype='c' row (with its parsed conexpr) drives operator_check_constraint.
 TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_check");
 
     fx.execute_sql("CREATE DATABASE ve3_chk;");
@@ -707,7 +707,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
 // Proxy: cursor success, a second SET on the same fixture (re-entry must not
 // double-fail), and an unknown-TZ error exercising the validation path.
 TEST_CASE("variant-e3 differential: SET TIME ZONE") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_settz");
 
     // Valid timezone succeeds (pg_settings append + default_tz_cat_ mutation).

@@ -311,8 +311,8 @@ namespace components::operators {
         // RETURNING: the matched FROM (right) rows were gathered in lockstep, one right
         // chunk per updated chunk (returning_from_chunks_), aligned by index.
         size_t right_idx = 0;
-        const bool mirror_index = ctx->index_address != actor_zeta::address_t::empty_address() &&
-                                  (have_staged_old || scan_chunks != nullptr);
+        const bool mirror_index =
+            ctx->index_address != actor_zeta::address_t::empty_address() && (have_staged_old || scan_chunks != nullptr);
 
         auto copy_of = [this](const data_chunk_t& src) {
             data_chunk_t dst(resource_, src.types(), src.size());
@@ -360,11 +360,7 @@ namespace components::operators {
                         }
                         const uint64_t take = std::min<uint64_t>(sc.size() - scan_row_in_chunk, n - filled);
                         for (uint64_t col = 0; col < sc.column_count() && col < old_data.column_count(); ++col) {
-                            vector::vector_ops::copy(sc.data[col],
-                                                     old_data.data[col],
-                                                     take,
-                                                     scan_row_in_chunk,
-                                                     filled);
+                            vector::vector_ops::copy(sc.data[col], old_data.data[col], take, scan_row_in_chunk, filled);
                         }
                         vector::vector_ops::copy(sc.row_ids, old_data.row_ids, take, scan_row_in_chunk, filled);
                         filled += take;

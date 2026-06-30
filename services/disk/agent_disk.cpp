@@ -1133,8 +1133,7 @@ namespace services::disk {
 
         // Re-resolve the storage (a concurrent DROP between fetches drains the cursor).
         auto storage_it = storages_.find(table_oid);
-        if (storage_it == storages_.end() || storage_it->second == nullptr ||
-            storage_it->second->storage == nullptr) {
+        if (storage_it == storages_.end() || storage_it->second == nullptr || storage_it->second->storage == nullptr) {
             active_scans_.erase(cit);
             co_return make_drained(cursor_id);
         }
@@ -1148,12 +1147,12 @@ namespace services::disk {
         auto batch =
             projected_ptr
                 ? std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                    all_types,
-                                                                    *projected_ptr,
-                                                                    components::vector::DEFAULT_VECTOR_CAPACITY)
+                                                                     all_types,
+                                                                     *projected_ptr,
+                                                                     components::vector::DEFAULT_VECTOR_CAPACITY)
                 : std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                    all_types,
-                                                                    components::vector::DEFAULT_VECTOR_CAPACITY);
+                                                                     all_types,
+                                                                     components::vector::DEFAULT_VECTOR_CAPACITY);
         auto fetch_r = storage->fetch_next_batch(*batch, scan.pos, scan.filter.get(), projected_ptr, scan.txn);
         if (fetch_r.has_error()) {
             active_scans_.erase(cit);
@@ -2053,7 +2052,7 @@ namespace services::disk {
         }
         auto& entry = it->second;
 
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
         detail::inline_scan(entry->table_storage.table(),
                             {oid_col_idx},
@@ -2118,7 +2117,7 @@ namespace services::disk {
             all_col_indices.push_back(static_cast<std::int64_t>(i));
         }
 
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
         std::pmr::vector<components::types::logical_value_t> row_values(resource());
         row_values.reserve(col_count);

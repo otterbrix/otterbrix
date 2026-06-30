@@ -20,7 +20,7 @@ namespace {
     void cleanup_test_file() { std::remove(test_db_path().c_str()); }
 
     struct test_env_t {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         components::table::storage::buffer_pool_t buffer_pool;
         components::table::storage::standard_buffer_manager_t buffer_manager;
@@ -914,7 +914,7 @@ namespace {
     // append-into-loaded-segment bug independent of eviction pressure, so the large
     // pool keeps this guard focused on the data corruption, not pool exhaustion.
     struct small_pool_env_t {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         components::table::storage::buffer_pool_t buffer_pool;
         components::table::storage::standard_buffer_manager_t buffer_manager;

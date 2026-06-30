@@ -5,7 +5,7 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 
 TEST_CASE("components::expression::sort::equals") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     auto expr1 = make_sort_expression(key(&resource, "name"), sort_order::asc);
     auto expr2 = make_sort_expression(key(&resource, "name"), sort_order::asc);
@@ -17,7 +17,7 @@ TEST_CASE("components::expression::sort::equals") {
 }
 
 TEST_CASE("components::expression::sort::to_string") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     auto expr1 = make_sort_expression(key(&resource, "count"), sort_order::asc);
     auto expr2 = make_sort_expression(key(&resource, "count"), sort_order::desc);

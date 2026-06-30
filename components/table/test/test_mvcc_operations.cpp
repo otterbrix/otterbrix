@@ -15,7 +15,7 @@ using namespace components::table;
 namespace {
 
     struct test_env {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         storage::buffer_pool_t buffer_pool;
         storage::standard_buffer_manager_t buffer_manager;

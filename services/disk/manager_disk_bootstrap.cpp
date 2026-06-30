@@ -334,7 +334,7 @@ namespace services::disk {
         }
 
         components::catalog::oid_t high_water = components::catalog::FIRST_USER_OID - 1;
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
 
         for (const auto& tbl : catalog::all_system_tables()) {
             const auto tbl_oid = well_known_oid_for_system_table(tbl.name);
@@ -420,7 +420,7 @@ namespace services::disk {
             return 0;
         }
 
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
         // Read via storage->scan with a default ("see all committed") transaction_data
         // (snapshot_horizon = UINT64_MAX). This is the SAME read path resolve_table
         // takes, so it folds the MVCC UPDATE that the schema-growth backfill applies
@@ -536,7 +536,7 @@ namespace services::disk {
             if (cls_table.column_count() < 4 || cls_table.calculate_size() == 0) {
                 return;
             }
-            std::pmr::synchronized_pool_resource scan_resource;
+            core::pmr::otterbrix_resource scan_resource;
             // Sparse scan of the non-adjacent [oid (0), relkind (3)] columns via
             // the projected_cols data_chunk ctor: pass the FULL pg_class type list
             // plus the projected absolute indices, and read by ABSOLUTE index
@@ -609,7 +609,7 @@ namespace services::disk {
                 return;
             }
             std::unordered_set<catalog::oid_t> wanted(need_oids.begin(), need_oids.end());
-            std::pmr::synchronized_pool_resource scan_resource;
+            core::pmr::otterbrix_resource scan_resource;
             const auto& all_cols = attr_table.columns();
             std::vector<components::table::storage_index_t> col_indices;
             for (std::size_t c = 0; c < all_cols.size(); ++c) {
@@ -736,7 +736,7 @@ namespace services::disk {
         if (table.column_count() < 4 || table.calculate_size() == 0) {
             return live;
         }
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
         // pg_class: 0=oid, 3=relkind. templated_scan writes into
         // result.data[column.primary_index()] (by storage column index, not position
         // in col_indices), so the chunk must have a slot at every storage index the
@@ -802,7 +802,7 @@ namespace services::disk {
         // resolved against pg_attribute in pass 3.
         std::pmr::vector<std::pmr::string> raw_indkeys{resource_};
         {
-            std::pmr::synchronized_pool_resource scan_resource;
+            core::pmr::otterbrix_resource scan_resource;
             std::vector<components::table::storage_index_t> col_indices;
             col_indices.emplace_back(static_cast<int64_t>(0)); // indexrelid
             col_indices.emplace_back(static_cast<int64_t>(1)); // indrelid
@@ -853,7 +853,7 @@ namespace services::disk {
         if (const collection_storage_entry_t* cls_entry = agents_[0]->storage_entry_sync(pg_class_oid)) {
             auto& cls_table = const_cast<collection_storage_entry_t*>(cls_entry)->table_storage.table();
             if (cls_table.column_count() >= 2 && cls_table.calculate_size() > 0) {
-                std::pmr::synchronized_pool_resource scan_resource;
+                core::pmr::otterbrix_resource scan_resource;
                 std::vector<components::table::storage_index_t> col_indices;
                 col_indices.emplace_back(static_cast<int64_t>(0)); // oid
                 col_indices.emplace_back(static_cast<int64_t>(1)); // relname
@@ -894,7 +894,7 @@ namespace services::disk {
         if (const collection_storage_entry_t* attr_entry = agents_[0]->storage_entry_sync(pg_attribute_oid)) {
             auto& attr_table = const_cast<collection_storage_entry_t*>(attr_entry)->table_storage.table();
             if (attr_table.column_count() >= 3 && attr_table.calculate_size() > 0) {
-                std::pmr::synchronized_pool_resource scan_resource;
+                core::pmr::otterbrix_resource scan_resource;
                 // Sparse scan [attoid, attname] via the projected_cols ctor — same
                 // chunk-slot convention as scan_live_table_oids_sync above.
                 std::vector<components::table::storage_index_t> col_indices;
@@ -971,7 +971,7 @@ namespace services::disk {
         if (table.column_count() == 0 || table.calculate_size() == 0) {
             return alive;
         }
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
         // pg_class column 0 = oid.
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0));
@@ -1014,7 +1014,7 @@ namespace services::disk {
         if (table.column_count() == 0 || table.calculate_size() == 0) {
             return result;
         }
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0)); // pg_class.oid
 
@@ -1073,7 +1073,7 @@ namespace services::disk {
         if (table.column_count() < 2 || table.calculate_size() == 0) {
             return {};
         }
-        std::pmr::synchronized_pool_resource scan_resource;
+        core::pmr::otterbrix_resource scan_resource;
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0)); // name column
         col_indices.emplace_back(static_cast<int64_t>(1)); // setting column

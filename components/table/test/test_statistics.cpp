@@ -14,7 +14,7 @@ TEST_CASE("statistics: update from vector") {
     using namespace components::vector;
     using namespace components::table;
 
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     SECTION("INT64 min/max/null_count") {
         base_statistics_t stats(&resource, logical_type::BIGINT);
@@ -129,7 +129,7 @@ TEST_CASE("zonemap: check_zonemap filters") {
     using namespace components::table;
     using namespace components::expressions;
 
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     core::filesystem::local_file_system_t fs;
     storage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
@@ -187,7 +187,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     using namespace components::table;
     using namespace components::expressions;
 
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     core::filesystem::local_file_system_t fs;
     storage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
@@ -268,7 +268,7 @@ TEST_CASE("per-segment statistics: populated during append") {
     using namespace components::vector;
     using namespace components::table;
 
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     core::filesystem::local_file_system_t fs;
     storage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     storage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);

@@ -27,7 +27,7 @@ constexpr auto database_name = "database";
 constexpr auto collection_name = "collection";
 
 TEST_CASE("components::planner::create_database") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto plan = make_node_create_database(&resource, core::dbname_t{std::string{database_name}});
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
@@ -35,7 +35,7 @@ TEST_CASE("components::planner::create_database") {
 }
 
 TEST_CASE("components::planner::drop_database") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto plan = make_node_drop(&resource, drop_target_kind::database);
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
@@ -45,7 +45,7 @@ TEST_CASE("components::planner::drop_database") {
 }
 
 TEST_CASE("components::planner::create_collection") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto plan = make_node_create_collection(&resource, core::relname_t{collection_name});
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
@@ -53,7 +53,7 @@ TEST_CASE("components::planner::create_collection") {
 }
 
 TEST_CASE("components::planner::drop_collection") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto plan = make_node_drop(&resource, drop_target_kind::collection);
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
@@ -63,7 +63,7 @@ TEST_CASE("components::planner::drop_collection") {
 }
 
 TEST_CASE("components::planner::match") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto node_match = make_node_match(&resource,
                                       core::dbname_t{database_name},
                                       core::relname_t{collection_name},
@@ -75,7 +75,7 @@ TEST_CASE("components::planner::match") {
 }
 
 TEST_CASE("components::planner::group") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     {
         std::vector<expression_ptr> expressions;
         auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"));
@@ -112,7 +112,7 @@ TEST_CASE("components::planner::group") {
 }
 
 TEST_CASE("components::planner::sort") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     {
         std::vector<expression_ptr> expressions;
         expressions.emplace_back(new sort_expression_t{key(&resource, "key"), sort_order::asc});
@@ -131,7 +131,7 @@ TEST_CASE("components::planner::sort") {
 }
 
 TEST_CASE("components::planner::aggregate") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto aggregate = make_node_aggregate(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
 
     aggregate->append_child(make_node_match(&resource,
@@ -173,7 +173,7 @@ TEST_CASE("components::planner::aggregate") {
 }
 
 TEST_CASE("components::planner::insert") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     {
         auto chunk = gen_data_chunk(0, &resource);
         auto plan = make_node_insert(&resource, std::move(chunk));
@@ -200,7 +200,7 @@ TEST_CASE("components::planner::insert") {
 }
 
 TEST_CASE("components::planner::limit") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     {
         auto limit = limit_t::limit_one();
         auto node_limit =
@@ -222,7 +222,7 @@ TEST_CASE("components::planner::limit") {
 }
 
 TEST_CASE("components::planner::delete") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto match = make_node_match(&resource,
                                  core::dbname_t{database_name},
                                  core::relname_t{collection_name},
@@ -246,7 +246,7 @@ TEST_CASE("components::planner::delete") {
 }
 
 TEST_CASE("components::planner::update") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto match = make_node_match(&resource,
                                  core::dbname_t{database_name},
                                  core::relname_t{collection_name},

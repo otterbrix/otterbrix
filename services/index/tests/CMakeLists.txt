@@ -7,6 +7,9 @@ set(${PROJECT_NAME}_SOURCES
     test_index_disk.cpp
     test_bitcask_index_disk.cpp
     test_disk_hash_table.cpp
+
+    # stress tests with sanitizer are incredibly slow
+    $<$<NOT:$<BOOL:${ENABLE_ASAN}>>:stress_test_index.cpp>
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

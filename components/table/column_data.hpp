@@ -167,8 +167,7 @@ namespace components::table {
         // block. `pbm.write_to_block` only fills an in-memory block buffer; the CALLER owns `pbm` and MUST
         // call `pbm.flush_partial_blocks()` before any concurrent scan/eviction of a re-pointed segment can
         // occur (else a re-pointed live segment could load() an unflushed block -> data_corruption).
-        [[nodiscard]] virtual core::result_wrapper_t<bool>
-        transition_to_disk(storage::partial_block_manager_t& pbm);
+        [[nodiscard]] virtual core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm);
 
         // Compact reclaim: append the ids of disk blocks EXCLUSIVELY owned by this column (and its
         // sub-columns) to `out`, so the caller can mark them free once this collection is replaced by a

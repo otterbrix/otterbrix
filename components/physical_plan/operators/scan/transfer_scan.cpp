@@ -16,8 +16,7 @@ namespace components::operators {
         , limit_(limit)
         , projected_cols_(std::move(projected_cols)) {}
 
-    vector::data_chunk_t
-    transfer_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
+    vector::data_chunk_t transfer_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
         std::pmr::vector<types::complex_logical_type> projected_types(resource_);
         if (projected_cols_.empty()) {
             projected_types = types;

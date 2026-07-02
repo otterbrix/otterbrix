@@ -133,8 +133,7 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::create_index_chain_streams") {
     REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
     exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint, count bigint);");
     // Pre-load rows so the backfill step has existing data to scan + insert_rows.
-    REQUIRE(
-        exec(dispatcher, "INSERT INTO D.t (id, count) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO D.t (id, count) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
 
     // CREATE INDEX lowers to a 2-node all-sink chain [backfill(root) -> metadata(leaf)].
     // metadata is the sourceless chain bottom; the extended gate admits the chain and

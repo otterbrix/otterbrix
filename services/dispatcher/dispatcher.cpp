@@ -413,7 +413,9 @@ namespace services::dispatcher {
         // bootstrap; scheduler not yet started.
         if (high_water > 0) {
             txn_manager_.restore_commit_clock(high_water);
-            trace(log_, "manager_dispatcher_t::seed_commit_clock_sync , restored commit clock to frontier {}", high_water);
+            trace(log_,
+                  "manager_dispatcher_t::seed_commit_clock_sync , restored commit clock to frontier {}",
+                  high_water);
         }
     }
 

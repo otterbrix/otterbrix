@@ -22,12 +22,11 @@ namespace components::operators {
         }
 
         template<typename T>
-        bool cells_equal_typed(const vector::vector_t& a, size_t ra, const vector::vector_t& b, size_t rb) {
-            if constexpr (std::is_floating_point_v<T>) {
-                return core::is_equals(a.data<T>()[ra], b.data<T>()[rb]);
-            } else {
-                return a.data<T>()[ra] == b.data<T>()[rb];
-            }
+        bool cells_equal_typed(const vector::vector_t& lhs,
+                               size_t lhs_index,
+                               const vector::vector_t& rhs,
+                               size_t rhs_index) {
+            return core::is_equals(lhs.get_value<T>(lhs_index), rhs.get_value<T>(rhs_index));
         }
 
         // Typed cell-by-cell equality between two vectors (R1-b VERIFY). No
@@ -65,7 +64,7 @@ namespace components::operators {
                 case types::physical_type::DOUBLE:
                     return cells_equal_typed<double>(a, ra, b, rb);
                 case types::physical_type::STRING:
-                    return a.data<std::string_view>()[ra] == b.data<std::string_view>()[rb];
+                    return cells_equal_typed<std::string_view>(a, ra, b, rb);
                 default:
                     // Nested / unsupported physical types fall back to the typed
                     // logical_value comparison (preserves struct/list/array
@@ -576,9 +575,8 @@ namespace components::operators {
         std::pmr::vector<types::complex_logical_type> out_types(resource_);
         out_types.reserve(key_count_ + values_.size());
         for (size_t k = 0; k < key_count_; k++) {
-            out_types.push_back(group_key_chunk_storage_.empty()
-                                    ? types::complex_logical_type{types::logical_type::NA}
-                                    : group_key_chunk_storage_.front().data[k].type());
+            out_types.push_back(group_key_chunk_storage_.empty() ? types::complex_logical_type{types::logical_type::NA}
+                                                                 : group_key_chunk_storage_.front().data[k].type());
         }
 
         // Finalize aggregates into per-group value columns.
@@ -623,12 +621,11 @@ namespace components::operators {
             if (agg_plan_[a].vectorizable) {
                 auto& plan = agg_plan_[a];
                 for (size_t g = 0; g < num_groups; g++) {
-                    auto val =
-                        aggregate::finalize_state(resource_,
-                                                  plan.kind,
-                                                  g < agg_states_[a].size() ? agg_states_[a][g]
-                                                                            : aggregate::raw_agg_state_t{},
-                                                  plan.col_type);
+                    auto val = aggregate::finalize_state(resource_,
+                                                         plan.kind,
+                                                         g < agg_states_[a].size() ? agg_states_[a][g]
+                                                                                   : aggregate::raw_agg_state_t{},
+                                                         plan.col_type);
                     val.set_alias(std::string(values_[a].name));
                     results.push_back(std::move(val));
                 }
@@ -711,9 +708,7 @@ namespace components::operators {
                     if (g < agg_results[a].size()) {
                         result.set_value(key_count_ + a, r, std::move(agg_results[a][g]));
                     } else {
-                        result.set_value(key_count_ + a,
-                                         r,
-                                         types::logical_value_t(resource_, types::logical_type::NA));
+                        result.set_value(key_count_ + a, r, types::logical_value_t(resource_, types::logical_type::NA));
                     }
                 }
             }
@@ -1042,12 +1037,8 @@ namespace components::operators {
             vector::data_chunk_t chunk(resource_, empty_types, 1);
             chunk.set_cardinality(1);
             for (auto& comp : computed_columns_) {
-                auto result_vec = evaluate_arithmetic(resource_,
-                                                      comp.op,
-                                                      comp.operands,
-                                                      chunk,
-                                                      ctx->parameters,
-                                                      ctx->session_tz);
+                auto result_vec =
+                    evaluate_arithmetic(resource_, comp.op, comp.operands, chunk, ctx->parameters, ctx->session_tz);
                 if (result_vec.has_error()) {
                     return result_vec.error();
                 }

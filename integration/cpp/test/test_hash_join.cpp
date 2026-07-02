@@ -45,8 +45,8 @@ namespace {
         types.emplace_back(types::logical_type::BIGINT, "val");
         vector::data_chunk_t chunk(res, types, 1);
         chunk.set_cardinality(1);
-        chunk.set_value(0, 0, types::logical_value_t{res, int64_t{1}});
-        chunk.set_value(1, 0, types::logical_value_t{res, int64_t{2}});
+        chunk.set_value(0, 0, int64_t{1});
+        chunk.set_value(1, 0, int64_t{2});
         return chunk;
     }
 

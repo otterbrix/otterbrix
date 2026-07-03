@@ -2395,8 +2395,8 @@ namespace services::dispatcher {
                             ("function: \'" + function_node->name() + "(...)\' was not found by the name").c_str(),
                             resource});
                 } else if (fn_lk.match_found) {
-                    const std::string& alias = function_node->result_alias().empty() ? function_node->name()
-                                                                                     : function_node->result_alias();
+                    const std::string& alias =
+                        function_node->result_alias().empty() ? function_node->name() : function_node->result_alias();
                     function_node->add_function_uid(fn_lk.uid);
                     result.reserve(fn_lk.signature.output_types.size());
                     for (const auto& output_type : fn_lk.signature.output_types) {
@@ -2454,23 +2454,22 @@ namespace services::dispatcher {
                         const auto& param_id = correlation.first;
                         const auto& key = correlation.second;
                         const std::string full = key.as_string();
-                        const std::string last =
-                            key.storage().empty()
-                                ? full
-                                : std::string(key.storage().back().data(), key.storage().back().size());
+                        const std::string last = key.storage().empty() ? full
+                                                                       : std::string(key.storage().back().data(),
+                                                                                     key.storage().back().size());
                         for (const auto& outer_col : left_schema.value()) {
                             if (outer_col.type.has_alias() &&
                                 (outer_col.type.alias() == full || outer_col.type.alias() == last)) {
-                                lateral_parameters.parameters.insert_or_assign(param_id,
-                                                                              logical_value_t(resource, outer_col.type));
+                                lateral_parameters.parameters.insert_or_assign(
+                                    param_id,
+                                    logical_value_t(resource, outer_col.type));
                                 break;
                             }
                         }
                     }
                     inner_parameters = &lateral_parameters;
                 }
-                auto right_schema =
-                    validate_schema(resource, idx, node->children().back().get(), *inner_parameters);
+                auto right_schema = validate_schema(resource, idx, node->children().back().get(), *inner_parameters);
                 if (right_schema.has_error()) {
                     return right_schema;
                 }

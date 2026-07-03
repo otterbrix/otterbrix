@@ -121,8 +121,7 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
     INFO("FROM t, generate_series(1, t.n) — correlated expansion") {
         auto session = otterbrix::session_id_t();
         // row id=1,n=2 -> series 1,2 (2 rows); row id=2,n=3 -> series 1,2,3 (3 rows) => 5 rows
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM " + database_name + ".t, generate_series(1, t.n);");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM " + database_name + ".t, generate_series(1, t.n);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         int id_i, n_i, series_i;
@@ -133,9 +132,9 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
 
     INFO("FROM t JOIN LATERAL generate_series(1, t.n) ON true — explicit inner form") {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(
-            session,
-            "SELECT * FROM " + database_name + ".t JOIN LATERAL generate_series(1, t.n) ON true;");
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM " + database_name +
+                                               ".t JOIN LATERAL generate_series(1, t.n) ON true;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         int id_i, n_i, series_i;
@@ -149,9 +148,9 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
         // Add a row whose series is empty (generate_series(1, 0) -> 0 rows). LEFT JOIN
         // must keep that outer row NULL-padded: 5 (from id=1,2) + 1 (id=3 empty) = 6.
         dispatcher->execute_sql(session, "INSERT INTO " + database_name + ".t (id, n) VALUES (3, 0);");
-        auto cur = dispatcher->execute_sql(
-            session,
-            "SELECT * FROM " + database_name + ".t LEFT JOIN LATERAL generate_series(1, t.n) ON true;");
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM " + database_name +
+                                               ".t LEFT JOIN LATERAL generate_series(1, t.n) ON true;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 6);
         int id_i, n_i, series_i;
@@ -170,8 +169,8 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
         auto session = otterbrix::session_id_t();
         // Table now holds (1,2),(2,3),(3,0). id=1,n=2 -> series 1,2; id=2,n=3 -> series 2,3;
         // id=3,n=0 -> empty (implicit cross drops it) => 4 rows.
-        auto cur = dispatcher->execute_sql(
-            session, "SELECT * FROM " + database_name + ".t, generate_series(t.id, t.n);");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM " + database_name + ".t, generate_series(t.id, t.n);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         int id_i, n_i, series_i;

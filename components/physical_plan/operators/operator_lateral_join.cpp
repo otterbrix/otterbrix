@@ -76,9 +76,7 @@ namespace components::operators {
         for (const auto& [param_id, key] : correlations_) {
             const std::string full = key.as_string();
             const std::string last =
-                key.storage().empty()
-                    ? full
-                    : std::string(key.storage().back().data(), key.storage().back().size());
+                key.storage().empty() ? full : std::string(key.storage().back().data(), key.storage().back().size());
             size_t found = outer_count;
             for (size_t col = 0; col < outer_count; ++col) {
                 if (!outer_schema_[col].has_alias()) {
@@ -91,10 +89,9 @@ namespace components::operators {
                 }
             }
             if (found == outer_count) {
-                co_return core::error_t{core::error_code_t::create_physical_plan_error,
-                                        std::pmr::string{"lateral join: correlated column '" + full +
-                                                             "' not found in outer schema",
-                                                         res}};
+                co_return core::error_t{
+                    core::error_code_t::create_physical_plan_error,
+                    std::pmr::string{"lateral join: correlated column '" + full + "' not found in outer schema", res}};
             }
             bindings.emplace_back(param_id, found);
         }
@@ -155,15 +152,14 @@ namespace components::operators {
         // outer (left/probe) and inner (right/build) schemas. all_true for the comma /
         // ON true forms passes every inner row. Correlation parameters are read live
         // per row-check, so rebinding them per outer row re-uses this one predicate.
-        predicates::predicate_ptr predicate =
-            on_expression_ ? predicates::create_predicate(res,
-                                                          ctx->function_registry,
-                                                          on_expression_,
-                                                          outer_schema_,
-                                                          inner_schema_,
-                                                          &ctx->parameters,
-                                                          ctx->session_tz)
-                           : predicates::create_all_true_predicate(res);
+        predicates::predicate_ptr predicate = on_expression_ ? predicates::create_predicate(res,
+                                                                                            ctx->function_registry,
+                                                                                            on_expression_,
+                                                                                            outer_schema_,
+                                                                                            inner_schema_,
+                                                                                            &ctx->parameters,
+                                                                                            ctx->session_tz)
+                                                             : predicates::create_all_true_predicate(res);
 
         auto outer_res = co_await ctx->runner->run_subplan(outer_, ctx);
         if (outer_res.has_error()) {

@@ -354,10 +354,9 @@ namespace components::compute {
              {kernel_signature_t{function_type_t::expand,
                                  {input_type::make_integer(), input_type::make_integer()},
                                  {output_type::fixed(types::logical_type::BIGINT)}},
-              kernel_signature_t{
-                  function_type_t::expand,
-                  {input_type::make_integer(), input_type::make_integer(), input_type::make_integer()},
-                  {output_type::fixed(types::logical_type::BIGINT)}}}}}};
+              kernel_signature_t{function_type_t::expand,
+                                 {input_type::make_integer(), input_type::make_integer(), input_type::make_integer()},
+                                 {output_type::fixed(types::logical_type::BIGINT)}}}}}};
 
     void register_default_functions(function_registry_t& registry);
     void register_string_functions(function_registry_t& registry);

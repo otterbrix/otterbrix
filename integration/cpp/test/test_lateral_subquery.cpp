@@ -45,8 +45,7 @@ namespace {
         dispatcher->execute_sql(session, "CREATE TABLE s.outer_t (id BIGINT, n BIGINT);");
         dispatcher->execute_sql(session, "INSERT INTO s.outer_t (id, n) VALUES (1, 10), (2, 20);");
         dispatcher->execute_sql(session, "CREATE TABLE s.inner_t (k BIGINT, v BIGINT);");
-        dispatcher->execute_sql(session,
-                                "INSERT INTO s.inner_t (k, v) VALUES (1, 100), (1, 101), (2, 200), (3, 300);");
+        dispatcher->execute_sql(session, "INSERT INTO s.inner_t (k, v) VALUES (1, 100), (1, 101), (2, 200), (3, 300);");
     }
 
 } // namespace
@@ -275,7 +274,8 @@ TEST_CASE("integration::cpp::lateral_subquery::projects_correlated_arithmetic") 
     auto session = otterbrix::session_id_t();
     // A correlated column inside a SELECT-list arithmetic expression: ten = id * 10,
     // recomputed per outer row.
-    auto cur = dispatcher->execute_sql(session, "SELECT * FROM s.outer_t, LATERAL (SELECT outer_t.id * 10 AS ten) sub;");
+    auto cur =
+        dispatcher->execute_sql(session, "SELECT * FROM s.outer_t, LATERAL (SELECT outer_t.id * 10 AS ten) sub;");
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);

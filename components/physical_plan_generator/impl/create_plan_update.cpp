@@ -70,16 +70,10 @@ namespace services::planner::impl {
                                                                                     node_update->upsert(),
                                                                                     std::move(returning),
                                                                                     node_match->expressions()[0]));
-        plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
-                                                                                     context.log.clone(),
-                                                                                     table_oid,
-                                                                                     nullptr,
-                                                                                     limit)),
-                           create_plan(context,
-                                       function_registry,
-                                       node_source,
-                                       components::logical_plan::limit_t::unlimit(),
-                                       params));
+        plan->set_children(
+            boost::intrusive_ptr(
+                new components::operators::full_scan(context.resource, context.log.clone(), table_oid, nullptr, limit)),
+            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
         return plan;
     }
 

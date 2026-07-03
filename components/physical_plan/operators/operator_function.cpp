@@ -73,8 +73,7 @@ namespace components::operators {
         types::complex_logical_type out_type = out_type_res.value();
         out_type.set_alias(result_alias_);
 
-        compute::exec_context_t exec_ctx(resource_,
-                                         const_cast<compute::function_registry_t*>(ctx->function_registry));
+        compute::exec_context_t exec_ctx(resource_, const_cast<compute::function_registry_t*>(ctx->function_registry));
         compute::kernel_context kernel_ctx(exec_ctx, kernel);
         std::pmr::vector<vector::data_chunk_t> produced(resource_);
         if (auto err = kernel.execute(kernel_ctx, args, produced); err.contains_error()) {

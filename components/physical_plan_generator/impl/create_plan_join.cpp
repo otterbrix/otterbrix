@@ -50,14 +50,14 @@ namespace services::planner::impl {
                                 node->children().front()->output_types().end());
             inner_schema.assign(node->children().back()->output_types().begin(),
                                 node->children().back()->output_types().end());
-            auto lateral = boost::intrusive_ptr(
-                new components::operators::operator_lateral_join_t(resource,
-                                                                   log.clone(),
-                                                                   join_node->type(),
-                                                                   std::move(correlations),
-                                                                   std::move(on_expression),
-                                                                   std::move(outer_schema),
-                                                                   std::move(inner_schema)));
+            auto lateral =
+                boost::intrusive_ptr(new components::operators::operator_lateral_join_t(resource,
+                                                                                        log.clone(),
+                                                                                        join_node->type(),
+                                                                                        std::move(correlations),
+                                                                                        std::move(on_expression),
+                                                                                        std::move(outer_schema),
+                                                                                        std::move(inner_schema)));
             components::operators::operator_ptr outer;
             components::operators::operator_ptr inner;
             if (node->children().front()) {

@@ -416,8 +416,7 @@ namespace components::sql::transform {
 
             if (sub_select->alias) {
                 agg->children().back()->set_result_alias(sub_select->alias->aliasname);
-                if (sub_select->alias->colnames &&
-                    agg->children().back()->type() == logical_plan::node_type::data_t) {
+                if (sub_select->alias->colnames && agg->children().back()->type() == logical_plan::node_type::data_t) {
                     auto* data_node = reinterpret_cast<logical_plan::node_data_t*>(agg->children().back().get());
                     if (sub_select->alias->colnames->lst.size() != data_node->data_chunk().column_count()) {
                         error_ = core::error_t(

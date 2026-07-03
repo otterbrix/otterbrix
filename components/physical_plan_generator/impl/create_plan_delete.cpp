@@ -80,16 +80,10 @@ namespace services::planner::impl {
                                                                                     table_oid,
                                                                                     std::move(returning),
                                                                                     *expr));
-        plan->set_children(boost::intrusive_ptr(new components::operators::full_scan(context.resource,
-                                                                                     context.log.clone(),
-                                                                                     table_oid,
-                                                                                     nullptr,
-                                                                                     limit)),
-                           create_plan(context,
-                                       function_registry,
-                                       node_source,
-                                       components::logical_plan::limit_t::unlimit(),
-                                       params));
+        plan->set_children(
+            boost::intrusive_ptr(
+                new components::operators::full_scan(context.resource, context.log.clone(), table_oid, nullptr, limit)),
+            create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
         return plan;
     }
 

@@ -134,8 +134,8 @@ namespace components::compute {
     };
 
     using expand_exec_fn = core::error_t (*)(kernel_context& ctx,
-                                              const vector::data_chunk_t& inputs,
-                                              std::pmr::vector<vector::data_chunk_t>& outputs);
+                                             const vector::data_chunk_t& inputs,
+                                             std::pmr::vector<vector::data_chunk_t>& outputs);
 
     class expand_kernel : public compute_kernel {
     public:

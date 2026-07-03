@@ -47,9 +47,8 @@ namespace {
     // BIGINT output row per value, packed into data_chunk_t's each sized
     // < DEFAULT_VECTOR_CAPACITY. A NULL argument or a range that runs the wrong way
     // for the step yields zero rows.
-    core::error_t expand_generate_series(kernel_context& ctx,
-                                         const data_chunk_t& inputs,
-                                         std::pmr::vector<data_chunk_t>& outputs) {
+    core::error_t
+    expand_generate_series(kernel_context& ctx, const data_chunk_t& inputs, std::pmr::vector<data_chunk_t>& outputs) {
         auto* resource = ctx.exec_context().resource();
         assert(inputs.size() == 1 && "expand kernel is invoked per input row");
         const size_t arg_count = inputs.column_count();
@@ -133,10 +132,11 @@ namespace components::compute {
     // WARNING: uid and signatures must mirror the DEFAULT_FUNCTIONS "generate_series"
     // entry (uid 8) in function.hpp.
     void register_expand_functions(function_registry_t& r) {
-        (void) r.add_function(make_generate_series_func(r.resource(),
-                                                        "generate_series",
-                                                        "Generate a series of values",
-                                                        "generate_series(start, stop[, step]) — inclusive integer series"));
+        (void) r.add_function(
+            make_generate_series_func(r.resource(),
+                                      "generate_series",
+                                      "Generate a series of values",
+                                      "generate_series(start, stop[, step]) — inclusive integer series"));
     }
 
 } // namespace components::compute

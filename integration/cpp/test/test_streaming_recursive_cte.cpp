@@ -47,8 +47,8 @@ namespace {
 
     void setup_org(otterbrix::wrapper_dispatcher_t* dispatcher) {
         REQUIRE(exec(dispatcher, "CREATE DATABASE RC;")->is_success());
-        REQUIRE(exec(dispatcher, "CREATE TABLE RC.OrgChart (id bigint, name string, manager_id bigint);")
-                    ->is_success());
+        REQUIRE(
+            exec(dispatcher, "CREATE TABLE RC.OrgChart (id bigint, name string, manager_id bigint);")->is_success());
         auto cur = exec(dispatcher,
                         "INSERT INTO RC.OrgChart (id, name, manager_id) VALUES "
                         "(1, 'CEO',      0), "

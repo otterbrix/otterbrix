@@ -142,17 +142,17 @@ namespace components::operators {
         // resolve by storing the candidate key cells (one row per group in
         // group_key_chunk_) and VERIFYING with a typed cell-by-cell comparison. No
         // logical_value_t in the per-row accumulate hot path.
-        bool plan_built_ = false;           // first-push lazy init of the agg plan + key chunk
-        bool any_input_ = false;            // at least one input batch was pushed
-        size_t group_count_ = 0;            // number of live groups
-        size_t key_count_ = 0;              // number of group-key columns
-        bool need_row_gather_ = false;      // any non-vectorizable aggregate present
+        bool plan_built_ = false;      // first-push lazy init of the agg plan + key chunk
+        bool any_input_ = false;       // at least one input batch was pushed
+        size_t group_count_ = 0;       // number of live groups
+        size_t key_count_ = 0;         // number of group-key columns
+        bool need_row_gather_ = false; // any non-vectorizable aggregate present
 
         // Per-aggregate plan, resolved once on the first non-empty push from the schema.
         struct agg_plan_t {
             bool vectorizable = false;
             aggregate::builtin_agg kind = aggregate::builtin_agg::UNKNOWN;
-            std::pmr::vector<size_t> arg_path;            // argument column path (vectorizable)
+            std::pmr::vector<size_t> arg_path; // argument column path (vectorizable)
             types::logical_type col_type = types::logical_type::NA;
             bool is_count_star = false;
             explicit agg_plan_t(std::pmr::memory_resource* r)

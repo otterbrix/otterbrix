@@ -10,9 +10,9 @@
 
 namespace components::operators {
 
-    using join_detail::join_builder;
     using hash_join_detail::right_index_t;
     using hash_join_detail::row_ref;
+    using join_detail::join_builder;
 
     namespace {
 
@@ -85,9 +85,8 @@ namespace components::operators {
 
         // True iff every key cell of `row` is non-NULL — a row with any NULL key
         // never participates in an equi-join match (build- or probe-side).
-        bool keys_all_valid(const vector::data_chunk_t& chunk,
-                            const std::pmr::vector<uint64_t>& key_cols,
-                            uint64_t row) {
+        bool
+        keys_all_valid(const vector::data_chunk_t& chunk, const std::pmr::vector<uint64_t>& key_cols, uint64_t row) {
             for (uint64_t c : key_cols) {
                 if (c >= chunk.column_count() || !chunk.data[c].validity().row_is_valid(row)) {
                     return false;
@@ -230,8 +229,7 @@ namespace components::operators {
         builder.flush();
     }
 
-    core::error_t
-    operator_hash_join_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t& out) {
+    core::error_t operator_hash_join_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // The build (right) side is materialized by a separate sub-plan before the
         // first push and always holds at least one (possibly empty) chunk. A truly
         // absent right_ is a degenerate plan: emit nothing (no left layout to
@@ -247,11 +245,7 @@ namespace components::operators {
             // operator_data_t always holds at least one (possibly empty) chunk.
             assert(!build_chunks.empty());
             res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
-            join_detail::compute_join_layout(input,
-                                             build_chunks.front(),
-                                             res_types_,
-                                             indices_left_,
-                                             indices_right_);
+            join_detail::compute_join_layout(input, build_chunks.front(), res_types_, indices_left_, indices_right_);
             build_index_();
             index_built_ = true;
         }

@@ -781,9 +781,9 @@ namespace services::dispatcher {
                                     arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(s->type())));
                             }
                         }
-                        resolve_error = core::error_t(
-                            core::error_code_t::invalid_parameter,
-                            std::pmr::string{"non-scalar expression operand is not supported", resource});
+                        resolve_error =
+                            core::error_t(core::error_code_t::invalid_parameter,
+                                          std::pmr::string{"non-scalar expression operand is not supported", resource});
                         return components::types::complex_logical_type(logical_type::INVALID);
                     }
                 }

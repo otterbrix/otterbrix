@@ -85,8 +85,7 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         std::stringstream query;
         query << "INSERT INTO bounded_db.bounded_coll (name, grp, val) VALUES ";
         for (unsigned i = 0; i < kRowCount; ++i) {
-            query << "('R" << i << "', " << (i % kNumGroups) << ", " << i << ")"
-                  << (i + 1 == kRowCount ? ";" : ", ");
+            query << "('R" << i << "', " << (i % kNumGroups) << ", " << i << ")" << (i + 1 == kRowCount ? ";" : ", ");
         }
         auto cur = dispatcher->execute_sql(session, query.str());
         REQUIRE(cur->is_success());

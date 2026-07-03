@@ -23,7 +23,7 @@ namespace components::sql::transform {
         using parameter_map_t = std::pmr::unordered_map<size_t, core::parameter_id_t>;
         using insert_location_t = std::pair<size_t, std::string>;
         using insert_map_t = std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>>;
-        using insert_rows_t = vector::data_chunk_t;
+        using insert_rows_t = std::pmr::vector<vector::data_chunk_t>;
 
         transform_result(std::pmr::memory_resource* resource,
                          logical_plan::execution_plan_t&& plan,

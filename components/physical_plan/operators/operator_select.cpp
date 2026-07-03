@@ -131,18 +131,14 @@ namespace components::operators {
         }
     }
 
-    core::error_t operator_select_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
+    core::error_t
+    operator_select_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // Streaming projection: apply the per-chunk transform to the single
         // batch handed in via `input`. No accumulation, no read of left_->output().
         // A SELECT over a JOIN receives one merged chunk holding both sides'
         // columns, so the chunk doubles as right_input: its full_path indexes the
         // merged chunk regardless of a key's resolved side.
-        auto result = evaluate_projection(resource_,
-                                          columns_,
-                                          &input,
-                                          ctx->parameters,
-                                          ctx->session_tz,
-                                          &input);
+        auto result = evaluate_projection(resource_, columns_, &input, ctx->parameters, ctx->session_tz, &input);
         if (result.has_error()) {
             return result.error();
         }

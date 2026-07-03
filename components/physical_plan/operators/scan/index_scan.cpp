@@ -142,8 +142,7 @@ namespace components::operators {
             // ONE schema'd 0-row guard so a scalar aggregate emits COUNT=0 and an OUTER join
             // NULL-pads, then the 0-column sentinel next call.
             emitted_any_ = true;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(
-                vector::data_chunk_t{resource_, guard_types_, 0});
+            co_return core::result_wrapper_t<vector::data_chunk_t>(vector::data_chunk_t{resource_, guard_types_, 0});
         }
         co_return core::result_wrapper_t<vector::data_chunk_t>(
             vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0});

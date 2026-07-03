@@ -375,12 +375,11 @@ namespace services::disk {
             co_return co_await std::move(fut);
         }
         // No agents: a drained cursor with an empty chunk (cardinality 0).
-        co_return fetch_batch_t{
-            std::make_unique<components::vector::data_chunk_t>(
-                resource(),
-                std::pmr::vector<components::types::complex_logical_type>{resource()},
-                0),
-            cursor_id};
+        co_return fetch_batch_t{std::make_unique<components::vector::data_chunk_t>(
+                                    resource(),
+                                    std::pmr::vector<components::types::complex_logical_type>{resource()},
+                                    0),
+                                cursor_id};
     }
 
     manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>

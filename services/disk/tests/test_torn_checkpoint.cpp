@@ -28,7 +28,7 @@ namespace {
         auto types = table.copy_types();
         data_chunk_t chunk(res, types, 1);
         chunk.set_cardinality(1);
-        chunk.set_value(0, 0, logical_value_t{res, value});
+        chunk.set_value(0, 0, value);
         table_append_state state(res);
         auto lock_result = table.append_lock(state);
         REQUIRE_FALSE(lock_result.has_error());

@@ -44,8 +44,8 @@ namespace components::table::storage {
         allocate(memory_tag tag, uint64_t block_size, bool can_destroy = true) = 0;
         // Returns true on success; result_wrapper_t<bool> rather than <void> because result_wrapper_t forbids
         // void (`!is_same_v<T, void>` constraint).
-        [[nodiscard]] virtual core::result_wrapper_t<bool>
-        reallocate(std::shared_ptr<block_handle_t>& handle, uint64_t block_size) = 0;
+        [[nodiscard]] virtual core::result_wrapper_t<bool> reallocate(std::shared_ptr<block_handle_t>& handle,
+                                                                      uint64_t block_size) = 0;
         [[nodiscard]] virtual core::result_wrapper_t<buffer_handle_t> pin(std::shared_ptr<block_handle_t>& handle) = 0;
         virtual void prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) = 0;
         virtual void unpin(block_handle_t* handle) = 0;

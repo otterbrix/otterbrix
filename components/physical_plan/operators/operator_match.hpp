@@ -67,9 +67,7 @@ namespace components::operators {
         // input's row_ids are zero-filled, so they MUST NOT be propagated forward
         // (see filter_batch_ defect fix (a)). Computed from left_, which is fixed
         // once the plan is built, so it is stable across batches.
-        [[nodiscard]] bool row_ids_meaningful_() const noexcept {
-            return left_ != nullptr && is_scan(left_->type());
-        }
+        [[nodiscard]] bool row_ids_meaningful_() const noexcept { return left_ != nullptr && is_scan(left_->type()); }
 
         const expressions::expression_ptr expression_;
         const logical_plan::limit_t limit_;

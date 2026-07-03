@@ -152,8 +152,8 @@ namespace components::table {
             std::string_view borrowed;
             if (location.block_id == INVALID_BLOCK) {
                 // Inline string: bytes live in the dictionary of the pinned block.
-                borrowed = std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset),
-                                            string_length);
+                borrowed =
+                    std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
             } else {
                 // Big-string overflow: the marker points at a separate overflow block
                 // holding [uint32 length][bytes]. Pin it, resolve, then intern. The

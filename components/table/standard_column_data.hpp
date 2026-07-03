@@ -55,8 +55,7 @@ namespace components::table {
         void initialize_column(const persistent_column_data_t& persistent_data) override;
 
         // Transition the main data segments AND the validity child's segments to disk (both packed via `pbm`).
-        [[nodiscard]] core::result_wrapper_t<bool>
-        transition_to_disk(storage::partial_block_manager_t& pbm) override;
+        [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm) override;
 
         // Compact reclaim: collect the main column's blocks AND the validity child's blocks.
         void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const override;

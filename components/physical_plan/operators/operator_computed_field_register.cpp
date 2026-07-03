@@ -63,25 +63,20 @@ namespace components::operators {
         constexpr catalog::oid_t pg_type = catalog::well_known_oid::pg_type_table;
         constexpr catalog::oid_t pg_depend = catalog::well_known_oid::pg_depend_table;
 
-        const types::logical_value_t toid_lv(resource_, table_oid_);
-
         for (const auto& col : columns_) {
             // read existing pg_computed_column rows for (relid, attname).
             // pg_computed_column layout: 0=relid 1=attoid 2=attname
             // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
-            types::logical_value_t name_lv(resource_, std::string(col.name()));
             std::pmr::vector<std::string> r_keys(resource_);
             r_keys.emplace_back("relid");
             r_keys.emplace_back("attname");
-            std::pmr::vector<types::logical_value_t> r_vals(resource_);
-            r_vals.emplace_back(toid_lv);
-            r_vals.emplace_back(name_lv);
-            auto [_r, rf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::read_chunks_by_key,
-                                             exec_ctx,
-                                             pg_computed_column,
-                                             std::move(r_keys),
-                                             components::operators::make_key_chunk(resource_, std::move(r_vals)));
+            auto [_r, rf] = actor_zeta::send(
+                ctx->disk_address,
+                &services::disk::manager_disk_t::read_chunks_by_key,
+                exec_ctx,
+                pg_computed_column,
+                std::move(r_keys),
+                components::operators::make_key_chunk(resource_, table_oid_, std::string_view{col.name()}));
             auto batches = co_await std::move(rf);
 
             std::int64_t max_version = -1;
@@ -92,22 +87,17 @@ namespace components::operators {
                 if (chunk.column_count() < 7)
                     continue;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto attversion_v = chunk.value(5, i);
-                    if (attversion_v.is_null())
+                    if (chunk.is_null(5, i))
                         continue;
-                    const auto v = attversion_v.value<std::int64_t>();
+                    const auto v = chunk.get_value<std::int64_t>(5, i);
                     if (v > max_version) {
-                        auto atttypid_v = chunk.value(3, i);
-                        auto atttypspec_v = chunk.value(4, i);
-                        auto refcount_v = chunk.value(6, i);
                         max_version = v;
-                        latest_atttypid = atttypid_v.is_null()
+                        latest_atttypid = chunk.is_null(3, i)
                                               ? catalog::INVALID_OID
-                                              : static_cast<catalog::oid_t>(atttypid_v.value<std::uint32_t>());
-                        latest_atttypspec = atttypspec_v.is_null()
-                                                ? std::string{}
-                                                : std::string(atttypspec_v.value<std::string_view>());
-                        latest_refcount = refcount_v.is_null() ? 0 : refcount_v.value<std::int64_t>();
+                                              : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                        latest_atttypspec =
+                            chunk.is_null(4, i) ? std::string{} : std::string(chunk.get_value<std::string_view>(4, i));
+                        latest_refcount = chunk.is_null(6, i) ? 0 : chunk.get_value<std::int64_t>(6, i);
                     }
                 }
             }
@@ -129,23 +119,19 @@ namespace components::operators {
                     lookup = std::string{catalog::logical_type_to_pg_name(lt)};
                 }
                 if (!lookup.empty()) {
-                    types::logical_value_t lookup_lv(resource_, std::move(lookup));
                     std::pmr::vector<std::string> t_keys(resource_);
                     t_keys.emplace_back("typname");
-                    std::pmr::vector<types::logical_value_t> t_vals(resource_);
-                    t_vals.emplace_back(lookup_lv);
                     auto [_t, tf] =
                         actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::read_chunks_by_key,
                                          exec_ctx,
                                          pg_type,
                                          std::move(t_keys),
-                                         components::operators::make_key_chunk(resource_, std::move(t_vals)));
+                                         components::operators::make_key_chunk(resource_, std::string_view{lookup}));
                     auto type_batches = co_await std::move(tf);
                     if (!type_batches.empty() && type_batches[0].size() != 0 && type_batches[0].column_count() > 0) {
-                        auto typoid_v = type_batches[0].value(0, 0);
-                        if (!typoid_v.is_null()) {
-                            atttypid = static_cast<catalog::oid_t>(typoid_v.value<std::uint32_t>());
+                        if (!type_batches[0].is_null(0, 0)) {
+                            atttypid = static_cast<catalog::oid_t>(type_batches[0].get_value<std::uint32_t>(0, 0));
                         }
                     }
                 }

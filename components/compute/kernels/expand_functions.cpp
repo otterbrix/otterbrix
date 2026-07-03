@@ -91,7 +91,9 @@ namespace {
 
         const bool ascending = step > 0;
         for (int64_t value = start; ascending ? (value <= stop) : (value >= stop); value += step) {
-            chunk.set_value(0, filled, logical_value_t(resource, value));
+            // Set the int64 directly via the templated set_value — no transient
+            // logical_value_t (and its per-value resource allocation) needed.
+            chunk.set_value(0, filled, value);
             if (++filled == cap) {
                 flush();
             }

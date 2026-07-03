@@ -39,6 +39,13 @@ namespace components::sql::transform {
                                                         logical_plan::parameter_node_t* params) {
         switch (nodeTag(node)) {
             case T_ColumnRef: {
+                // Predicate-arithmetic operand: a correlated outer column is lowered to a
+                // parameter here. Predicate value getters read parameters live per row
+                // check (see create_value_getter), so the lateral join's per-outer-row
+                // rebind is honoured even for a correlation nested in arithmetic.
+                if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(node), names)) {
+                    return *corr;
+                }
                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
                 key.deduce_side(names);
                 return key.field;
@@ -125,6 +132,12 @@ namespace components::sql::transform {
                                                       logical_plan::node_ptr& group) {
         switch (nodeTag(node)) {
             case T_ColumnRef: {
+                // Correlated outer column in a SELECT-list operand: lower to the
+                // correlation parameter. operator_select / evaluate_arithmetic read
+                // parameters live per row, so the lateral per-outer-row rebind holds.
+                if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(node), names)) {
+                    return *corr;
+                }
                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
                 key.deduce_side(names);
                 return key.field;
@@ -269,6 +282,48 @@ namespace components::sql::transform {
         return {};
     }
 
+    bool transformer::references_lateral_outer(ColumnRef* ref, const name_collection_t& inner_names) const {
+        if (!lateral_join_ || !lateral_outer_names_ || !lateral_plan_) {
+            return false;
+        }
+        auto& lst = ref->fields->lst;
+        // Only a qualified reference (table.column) can name an outer relation; an
+        // unqualified column always resolves against the inner scope.
+        if (lst.size() < 2 || nodeTag(lst.front().data) != T_String) {
+            return false;
+        }
+        const std::string qualifier = strVal(lst.front().data);
+        // A qualifier the inner scope owns is an ordinary in-scope column, not a
+        // correlation (inner names shadow outer ones, matching SQL scoping).
+        if (inner_names.is_left_table(qualifier) || inner_names.is_right_table(qualifier)) {
+            return false;
+        }
+        return lateral_outer_names_->is_left_table(qualifier) || lateral_outer_names_->is_right_table(qualifier);
+    }
+
+    std::optional<core::parameter_id_t> transformer::try_lateral_correlate(ColumnRef* ref,
+                                                                           const name_collection_t& inner_names) {
+        if (!references_lateral_outer(ref, inner_names)) {
+            return std::nullopt;
+        }
+        // Resolve against the OUTER scope so the key's path + side match how the
+        // lateral join operator locates the column in the outer row's chunk.
+        auto outer_col = columnref_to_field(resource_, ref, *lateral_outer_names_);
+        outer_col.deduce_side(*lateral_outer_names_);
+        const std::string dedup_key =
+            std::string(strVal(ref->fields->lst.front().data)) + "." + std::string(outer_col.field.as_string());
+        if (auto it = lateral_correlation_map_.find(dedup_key); it != lateral_correlation_map_.end()) {
+            return it->second;
+        }
+        // Placeholder value: the lateral join operator rebinds the real outer value
+        // (with its true type) into this slot before each inner-sub-plan re-run.
+        auto param_id = lateral_plan_->parameters->add_parameter(
+            types::logical_value_t{resource_, types::complex_logical_type{types::logical_type::NA}});
+        lateral_join_->add_correlation(param_id, outer_col.field);
+        lateral_correlation_map_.emplace(dedup_key, param_id);
+        return param_id;
+    }
+
     core::parameter_id_t transformer::add_param_value(Node* node, logical_plan::parameter_node_t* params) {
         if (nodeTag(node) == T_ParamRef) {
             auto ref = pg_ptr_cast<ParamRef>(node);
@@ -394,6 +449,9 @@ namespace components::sql::transform {
                 auto get_arg = [this, &names, &plan](Node* node) -> param_storage {
                     switch (nodeTag(node)) {
                         case T_ColumnRef: {
+                            if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(node), names)) {
+                                return *corr;
+                            }
                             auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node), names);
                             key.deduce_side(names);
                             return key.field;
@@ -594,6 +652,51 @@ namespace components::sql::transform {
         }
     }
 
+    expression_ptr
+    transformer::transform_predicate(Node* node, const name_collection_t& names, logical_plan::execution_plan_t* plan) {
+        switch (nodeTag(node)) {
+            case T_A_Expr:
+                return transform_a_expr(pg_ptr_cast<A_Expr>(node), names, plan);
+            case T_A_Indirection:
+                return transform_a_indirection(pg_ptr_cast<A_Indirection>(node), names, plan);
+            case T_FuncCall:
+                return transform_a_expr_func(pg_ptr_cast<FuncCall>(node), names, plan->parameters.get());
+            case T_NullTest:
+                return transform_null_test(pg_ptr_cast<NullTest>(node), names, plan->parameters.get());
+            case T_SubLink:
+                return transform_sublink_expr(pg_ptr_cast<SubLink>(node), names, plan);
+            case T_TypeCast: {
+                // Boolean literal: TRUE/FALSE parse as TypeCast(A_Const{"t"|"f"}, bool)
+                // and reduce to the constant all_true / all_false predicate.
+                auto cast = pg_ptr_cast<TypeCast>(node);
+                if (cast->arg && nodeTag(cast->arg) == T_A_Const) {
+                    auto constant = pg_ptr_cast<A_Const>(cast->arg);
+                    auto target_type_res = get_type(resource_, cast->typeName);
+                    if (!target_type_res.has_error() &&
+                        target_type_res.value().type() == types::logical_type::BOOLEAN &&
+                        constant->val.type == T_String) {
+                        std::string_view literal = strVal(&constant->val);
+                        if (literal == "t") {
+                            return make_compare_expression(resource_, compare_type::all_true);
+                        }
+                        if (literal == "f") {
+                            return make_compare_expression(resource_, compare_type::all_false);
+                        }
+                    }
+                }
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"Unsupported predicate expression", resource_});
+                return nullptr;
+            }
+            default:
+                error_ = core::error_t(
+                    core::error_code_t::sql_parse_error,
+                    std::pmr::string{"Unsupported predicate expression: " + node_tag_to_string(nodeTag(node)),
+                                     resource_});
+                return nullptr;
+        }
+    }
+
     expression_ptr transformer::transform_sublink_expr(SubLink* node,
                                                        const name_collection_t& names,
                                                        logical_plan::execution_plan_t* plan) {
@@ -670,6 +773,13 @@ namespace components::sql::transform {
         };
         for (const auto& arg : node->args->lst) {
             if (nodeTag(arg.data) == T_ColumnRef) {
+                // Correlated outer column as a function argument: lower to the
+                // correlation parameter (read live per row by the function predicate /
+                // projection evaluators, so the lateral per-outer-row rebind holds).
+                if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(arg.data), names)) {
+                    args.emplace_back(*corr);
+                    continue;
+                }
                 auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
                 key.deduce_side(names);
                 pin_side_to_left_if_unset(key.field);
@@ -998,6 +1108,43 @@ namespace components::sql::transform {
         return transform_function(*func_call, names, params);
     }
 
+    logical_plan::node_ptr transformer::transform_from_function(RangeFunction& node,
+                                                                const name_collection_t& names,
+                                                                logical_plan::node_join_ptr& node_join,
+                                                                logical_plan::execution_plan_t* plan) {
+        if (!node.functions || node.functions->lst.empty()) {
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"table function: empty function list in FROM clause", resource_});
+            return nullptr;
+        }
+        auto list = pg_ptr_cast<List>(node.functions->lst.front().data);
+        auto func_call = pg_ptr_cast<FuncCall>(list->lst.front().data);
+        std::string funcname = strVal(func_call->funcname->lst.front().data);
+        std::pmr::vector<param_storage> args{resource_};
+        // func_call->args is null for a zero-argument call (e.g. `FROM foo()`); leave
+        // args empty and let validation reject the arity mismatch rather than deref it.
+        if (func_call->args) {
+            args.reserve(func_call->args->lst.size());
+            for (const auto& arg : func_call->args->lst) {
+                if (nodeTag(arg.data) == T_ColumnRef) {
+                    // Correlated outer reference: bind per outer row via a parameter.
+                    auto key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names);
+                    // Placeholder type only used to satisfy validation; the real value (with
+                    // its true type) is bound from the outer row at runtime. BIGINT keeps
+                    // integer-typed table functions like generate_series matchable.
+                    auto param_id =
+                        plan->parameters->add_parameter(types::logical_value_t{resource_, static_cast<int64_t>(0)});
+                    node_join->add_correlation(param_id, key.field);
+                    node_join->set_lateral(true);
+                    args.emplace_back(param_id);
+                } else {
+                    args.emplace_back(add_param_value(pg_ptr_cast<Node>(arg.data), plan->parameters.get()));
+                }
+            }
+        }
+        return logical_plan::make_node_function(resource_, std::move(funcname), std::move(args));
+    }
+
     logical_plan::node_ptr transformer::transform_function(FuncCall& node,
                                                            const name_collection_t& names,
                                                            logical_plan::parameter_node_t* params) {
@@ -1175,6 +1322,10 @@ namespace components::sql::transform {
                                                       const name_collection_t& names,
                                                       logical_plan::execution_plan_t* plan,
                                                       const logical_plan::node_ptr& group) {
+        if (nodeTag(node) == T_TypeCast) {
+            // HAVING TRUE / FALSE — constant predicate, no aggregate involved.
+            return transform_predicate(node, names, plan);
+        }
         if (nodeTag(node) == T_A_Expr) {
             auto a_expr = pg_ptr_cast<A_Expr>(node);
             if (a_expr->kind == AEXPR_OP) {

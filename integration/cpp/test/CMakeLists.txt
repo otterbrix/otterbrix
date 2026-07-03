@@ -19,6 +19,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_connections.cpp
         test_udfs.cpp
         test_batch_execution.cpp
+        test_table_function.cpp
+        test_lateral_subquery.cpp
         test_group_by_node_data.cpp
         test_group_operator_contracts.cpp
         test_arithmetic.cpp

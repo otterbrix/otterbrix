@@ -23,12 +23,6 @@ namespace components::logical_plan {
         std::pmr::vector<expressions::expression_ptr>& returning();
         const std::pmr::vector<expressions::expression_ptr>& returning() const;
 
-        // UPDATE ... FROM source-side table_oid (the USING-clause table).
-        // enrich_logical_plan stamps this from the sibling resolve_table for the
-        // FROM target. Default INVALID_OID — caller must check before using.
-        components::catalog::oid_t table_oid_from() const noexcept { return table_oid_from_; }
-        void set_table_oid_from(components::catalog::oid_t oid) noexcept { table_oid_from_ = oid; }
-
         // Catalog metadata attached by the dispatcher's enrich pass.
         void set_not_null_cols(std::vector<std::string> v) { not_null_cols_ = std::move(v); }
         const std::vector<std::string>& not_null_cols() const { return not_null_cols_; }
@@ -40,7 +34,6 @@ namespace components::logical_plan {
         std::pmr::vector<expressions::update_expr_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;
         bool upsert_;
-        components::catalog::oid_t table_oid_from_{components::catalog::INVALID_OID};
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;

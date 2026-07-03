@@ -471,10 +471,11 @@ namespace services::catalog_resolve {
                             }
                             break;
                         }
-                        // DML consumers carry only OIDs now; stamp
-                        // table_oid (and table_oid_from for update/delete
-                        // with UPDATE FROM / DELETE USING) from the sibling
-                        // resolve_table nodes inside the same sequence_t.
+                        // DML consumers carry only OIDs now; stamp table_oid from the
+                        // sibling resolve_table inside the same sequence_t. The
+                        // UPDATE FROM / DELETE USING source is a child sub-plan whose
+                        // own scans self-resolve by name (this same enrich walk), so
+                        // there is no from-side OID to stamp here.
                         case node_type::insert_t: {
                             auto* d = static_cast<node_insert_t*>(c.get());
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
@@ -487,18 +488,12 @@ namespace services::catalog_resolve {
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
                                 d->set_table_oid(rt->table_oid());
                             }
-                            if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid_from(rt_index->table_oid());
-                            }
                             break;
                         }
                         case node_type::delete_t: {
                             auto* d = static_cast<node_delete_t*>(c.get());
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
                                 d->set_table_oid(rt->table_oid());
-                            }
-                            if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
-                                d->set_table_oid_from(rt_index->table_oid());
                             }
                             break;
                         }

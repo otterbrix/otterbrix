@@ -3,6 +3,7 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator_hash_join.hpp>
 #include <components/physical_plan/operators/operator_join.hpp>
+#include <components/physical_plan/operators/operator_lateral_join.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 
 #include <utility>
@@ -33,6 +34,49 @@ namespace services::planner::impl {
 
         using join_type = components::logical_plan::join_type;
         using join_algo = components::logical_plan::node_join_t::join_algo;
+
+        if (join_node->is_lateral()) {
+            std::pmr::vector<components::logical_plan::node_join_t::correlation_t> correlations(node->resource());
+            for (const auto& correlation : join_node->correlations()) {
+                correlations.emplace_back(correlation);
+            }
+            // Filters each inner row against the outer row inside the operator.
+            components::expressions::expression_ptr on_expression =
+                node->expressions().empty() ? nullptr : node->expressions()[0];
+            // Output types already were determined by the validator
+            std::pmr::vector<components::types::complex_logical_type> outer_schema(node->resource());
+            std::pmr::vector<components::types::complex_logical_type> inner_schema(node->resource());
+            outer_schema.assign(node->children().front()->output_types().begin(),
+                                node->children().front()->output_types().end());
+            inner_schema.assign(node->children().back()->output_types().begin(),
+                                node->children().back()->output_types().end());
+            auto lateral = boost::intrusive_ptr(
+                new components::operators::operator_lateral_join_t(resource,
+                                                                   log.clone(),
+                                                                   join_node->type(),
+                                                                   std::move(correlations),
+                                                                   std::move(on_expression),
+                                                                   std::move(outer_schema),
+                                                                   std::move(inner_schema)));
+            components::operators::operator_ptr outer;
+            components::operators::operator_ptr inner;
+            if (node->children().front()) {
+                outer = create_plan(context,
+                                    function_registry,
+                                    node->children().front(),
+                                    components::logical_plan::limit_t::unlimit(),
+                                    params);
+            }
+            if (node->children().back()) {
+                inner = create_plan(context,
+                                    function_registry,
+                                    node->children().back(),
+                                    components::logical_plan::limit_t::unlimit(),
+                                    params);
+            }
+            lateral->set_lateral_terms(std::move(outer), std::move(inner));
+            return lateral;
+        }
 
         // Equi-join fast path: the optimizer rule rewrite_hash_joins detected a single
         // eq(left.key, right.key) ON condition and stamped algo()==hash plus the matched

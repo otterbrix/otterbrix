@@ -15,6 +15,7 @@ namespace components::compute {
     class row_function;
     class vector_function;
     class aggregate_function;
+    class expand_function;
 
     struct arity {
         size_t num_args;
@@ -59,6 +60,7 @@ namespace components::compute {
         virtual void visit(const vector_function& func) = 0;
         virtual void visit(const aggregate_function& func) = 0;
         virtual void visit(const row_function& func) = 0;
+        virtual void visit(const expand_function& func) = 0;
     };
 
     template<typename T>
@@ -194,6 +196,7 @@ namespace components::compute {
             void visit(const vector_function& func) override;
             void visit(const aggregate_function& func) override;
             void visit(const row_function& func) override;
+            void visit(const expand_function& func) override;
 
         private:
             size_t nth_;
@@ -207,6 +210,7 @@ namespace components::compute {
             void visit(const vector_function& func) override;
             void visit(const aggregate_function& func) override;
             void visit(const row_function& func) override;
+            void visit(const expand_function& func) override;
         };
 
         const compute_kernel* dispatch_exact_impl(const function& func,
@@ -232,6 +236,14 @@ namespace components::compute {
     class row_function : public detail::function_impl<row_kernel> {
     public:
         row_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
+        void accept_visitor(function_visitor& visitor) const override;
+
+        [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
+    };
+
+    class expand_function : public detail::function_impl<expand_kernel> {
+    public:
+        expand_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
         void accept_visitor(function_visitor& visitor) const override;
 
         [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
@@ -283,7 +295,7 @@ namespace components::compute {
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
-    static const std::array<std::pair<std::string, registered_func_id>, 8> DEFAULT_FUNCTIONS{
+    static const std::array<std::pair<std::string, registered_func_id>, 9> DEFAULT_FUNCTIONS{
         std::pair<std::string, registered_func_id>{"sum",
                                                    {0,
                                                     {kernel_signature_t{function_type_t::aggregate,
@@ -335,9 +347,20 @@ namespace components::compute {
              {kernel_signature_t{
                  function_type_t::row,
                  {input_type::make_always_true(), input_type::make_always_true(), input_type::make_always_true()},
-                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}}};
+                 {output_type::fixed(types::logical_type::STRING_LITERAL)}}}}},
+        std::pair<std::string, registered_func_id>{
+            "generate_series",
+            {8,
+             {kernel_signature_t{function_type_t::expand,
+                                 {input_type::make_integer(), input_type::make_integer()},
+                                 {output_type::fixed(types::logical_type::BIGINT)}},
+              kernel_signature_t{
+                  function_type_t::expand,
+                  {input_type::make_integer(), input_type::make_integer(), input_type::make_integer()},
+                  {output_type::fixed(types::logical_type::BIGINT)}}}}}};
 
     void register_default_functions(function_registry_t& registry);
     void register_string_functions(function_registry_t& registry);
+    void register_expand_functions(function_registry_t& registry);
 
 } // namespace components::compute

@@ -31,14 +31,6 @@ namespace components::logical_plan {
             target_oid_ = target_oid;
         }
 
-        // table_oid for the USING-clause table (DELETE FROM tableA USING tableB).
-        // enrich_logical_plan stamps this from the sibling resolve_table for
-        // the USING target. create_plan_delete passes it to the USING-side
-        // full_scan operator. Default INVALID_OID — caller must check before
-        // using.
-        components::catalog::oid_t table_oid_from() const noexcept { return table_oid_from_; }
-        void set_table_oid_from(components::catalog::oid_t oid) noexcept { table_oid_from_ = oid; }
-
         // FK referencing metadata: FKs where this table is the parent.
         // Populated by enrich_plan when the table has referencing FK constraints.
         void set_referencing_fks(std::vector<catalog::fk_info_t> v) { referencing_fks_ = std::move(v); }
@@ -48,7 +40,6 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        components::catalog::oid_t table_oid_from_{components::catalog::INVALID_OID};
         std::vector<catalog::fk_info_t> referencing_fks_;
         std::pmr::vector<expressions::expression_ptr> returning_;
         std::int64_t oid_col_idx_{-1};

@@ -16,7 +16,8 @@ namespace components::compute {
         invalid = 0,
         row = 1,
         vector = 2,
-        aggregate = 4
+        aggregate = 4,
+        expand = 8
     };
 
     using function_types_mask = std::underlying_type_t<function_type_t>;

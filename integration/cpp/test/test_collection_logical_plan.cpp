@@ -22,15 +22,6 @@
 // so enrich stamps table_oid()/table_oid_from() at runtime.
 #define WRAP_DML_TARGET(DB, REL, NODE)                                                                                 \
     components::sql::transform::maybe_wrap_with_catalog_resolve_table(dispatcher->resource(), DB, REL, NODE)
-#define WRAP_DML_TARGETS(DB1, REL1, DB2, REL2, NODE)                                                                   \
-    ([&]() {                                                                                                           \
-        std::vector<std::pair<std::string, std::string>> targets;                                                      \
-        targets.emplace_back(DB1, REL1);                                                                               \
-        targets.emplace_back(DB2, REL2);                                                                               \
-        return components::sql::transform::maybe_wrap_with_catalog_resolve_tables(dispatcher->resource(),              \
-                                                                                  std::move(targets),                  \
-                                                                                  NODE);                               \
-    }())
 
 static const database_name_t table_database_name = "table_testdatabase";
 static const collection_name_t table_collection_name = "table_testcollection";
@@ -322,22 +313,33 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     }
 
     INFO("delete using") {
+        // DELETE FROM table_other_collection_name USING table_collection_name:
+        // the USING table is a source child sub-plan feeding the RIGHT side of the
+        // delete join; the WHERE predicate compares target (left) against source (right).
+        // Materialize table_collection_name (90 rows, count 1..90) as the source child.
+        auto scan_session = otterbrix::session_id_t();
+        auto scan_agg = logical_plan::make_node_aggregate(dispatcher->resource(),
+                                                          core::dbname_t{table_database_name},
+                                                          core::relname_t{table_collection_name});
+        auto scan_cur =
+            dispatcher->execute_plan(scan_session,
+                                     logical_plan::execution_plan_t{dispatcher->resource(), scan_agg, nullptr});
+        REQUIRE(scan_cur->size() == 90);
+        vector::data_chunk_t using_data = std::move(scan_cur->chunks().front());
+
         auto expr =
             components::expressions::make_compare_expression(dispatcher->resource(),
                                                              compare_type::eq,
                                                              key{dispatcher->resource(), "count", side_t::left},
                                                              key{dispatcher->resource(), "count", side_t::right});
-        // USING-side table_oid is stamped from the second resolve_table.
-        auto del = WRAP_DML_TARGETS(table_database_name,
-                                    table_other_collection_name,
-                                    table_database_name,
-                                    table_collection_name,
-                                    logical_plan::make_node_delete_many(
-                                        dispatcher->resource(),
-                                        logical_plan::make_node_match(dispatcher->resource(),
-                                                                      core::dbname_t{table_database_name},
-                                                                      core::relname_t{table_other_collection_name},
-                                                                      std::move(expr))));
+        auto del_inner = logical_plan::make_node_delete_many(
+            dispatcher->resource(),
+            logical_plan::make_node_match(dispatcher->resource(),
+                                          core::dbname_t{table_database_name},
+                                          core::relname_t{table_other_collection_name},
+                                          std::move(expr)));
+        del_inner->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(using_data)));
+        auto del = WRAP_DML_TARGET(table_database_name, table_other_collection_name, del_inner);
         {
             auto session = otterbrix::session_id_t();
             auto cur =

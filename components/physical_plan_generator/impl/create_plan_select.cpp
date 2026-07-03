@@ -57,6 +57,7 @@ namespace services::planner::impl {
                     if (!expr->params().empty() &&
                         std::holds_alternative<core::parameter_id_t>(expr->params().front()) && storage_params) {
                         auto id = std::get<core::parameter_id_t>(expr->params().front());
+                        col.constant_param_id = id;
                         col.constant_value = storage_params->parameters.at(id);
                     }
                     break;

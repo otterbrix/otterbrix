@@ -30,6 +30,10 @@ TEST_CASE("components::compute::registry::basic") {
                 REQUIRE(fn->fn_arity().varargs == true);
             } else if (name == "regexp_replace") {
                 REQUIRE(fn->fn_arity().num_args == 3);
+            } else if (name == "generate_series") {
+                // generate_series(start, stop[, step]) — 2 or 3 args
+                REQUIRE(fn->fn_arity().num_args == 2);
+                REQUIRE(fn->fn_arity().varargs == true);
             } else {
                 // sum, min, max, avg, length
                 REQUIRE(fn->fn_arity().num_args == 1);

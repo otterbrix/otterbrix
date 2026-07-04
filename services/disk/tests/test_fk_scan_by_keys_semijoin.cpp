@@ -57,6 +57,15 @@ namespace {
         std::size_t scan_batched_calls = 0;
 
         // --- forwarded pure virtuals ---
+        // Un-hide the base's txn-taking overloads of the same names (not overridden
+        // here — the tests never reach them through this wrapper); without the
+        // using-declarations the derived overrides HIDE them and gcc's
+        // -Woverloaded-virtual fails the -Werror build.
+        using storage_t::append;
+        using storage_t::delete_rows;
+        using storage_t::scan;
+        using storage_t::update;
+
         std::pmr::vector<complex_logical_type> types() const override { return inner_.types(); }
         const std::vector<column_definition_t>& columns() const override { return inner_.columns(); }
         size_t column_count() const override { return inner_.column_count(); }

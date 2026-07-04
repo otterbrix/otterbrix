@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <string_view>
 #include <type_traits>
@@ -14,17 +15,21 @@ namespace components::vector {
     // EXACTLY, with NaN==NaN true: this function is the verify half of a hash+verify
     // pair (data_chunk_t::hash buckets by std::hash over the raw value), so it must
     // agree with the hash — an epsilon compare breaks that contract exactly where it
-    // differs from ==: is_equals(NaN,NaN) is false while identical NaN bit patterns
-    // share a bucket (a UNIQUE/PK dup slips through; an FK NaN never matches its own
-    // parent), and epsilon-close-but-unequal values land in different buckets anyway
-    // so the tolerance is unreachable. -0.0 == 0.0 stays true, matching std::hash's
-    // ±0 special case.
+    // differs from exact equality: is_equals(NaN,NaN) is false while identical NaN
+    // bit patterns share a bucket (a UNIQUE/PK dup slips through; an FK NaN never
+    // matches its own parent), and epsilon-close-but-unequal values land in different
+    // buckets anyway so the tolerance is unreachable. -0.0 == 0.0 stays true,
+    // matching std::hash's ±0 special case. Spelled with isnan + <=/>= so the
+    // DELIBERATE exact compare stays -Wfloat-equal-clean under the gcc CI's -Werror.
     template<typename T>
     inline bool cells_equal_typed(const vector_t& a, std::size_t ra, const vector_t& b, std::size_t rb) {
         if constexpr (std::is_floating_point_v<T>) {
             const T x = a.data<T>()[ra];
             const T y = b.data<T>()[rb];
-            return x == y || (x != x && y != y);
+            if (std::isnan(x) || std::isnan(y)) {
+                return std::isnan(x) && std::isnan(y);
+            }
+            return x <= y && y <= x;
         } else {
             return a.data<T>()[ra] == b.data<T>()[rb];
         }

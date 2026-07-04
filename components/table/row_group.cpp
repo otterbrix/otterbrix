@@ -590,7 +590,7 @@ namespace components::table {
         // start_ equals this row group's start, so the absolute truncation row is start + local.
         // Without this the column segments and their count_ keep the reverted rows: a later scan
         // sized by the row group's (reduced) count then over-reads the stale column tail and writes
-        // past the result vector (heap-buffer-overflow in fetch_row). Mirrors DuckDB RowGroup::RevertAppend.
+        // past the result vector (heap-buffer-overflow in fetch_row).
         for (uint64_t c = 0; c < get_column_count(); c++) {
             get_column(c).revert_append(this->start + static_cast<int64_t>(row_group_start));
         }

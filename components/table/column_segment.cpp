@@ -1639,8 +1639,7 @@ namespace components::table {
         // A BIT (validity) segment stores appended rows as validity bits, so reverting must reset the
         // bits in [start_row, end) back to valid before the tail is reused on re-append. Every other
         // segment (fixed-size / string) only had raw values written into its buffer by the append; a
-        // re-append overwrites them, so reverting just needs to drop the count. Mirrors DuckDB
-        // ColumnSegment::RevertAppend, where non-validity segments carry no revert_append hook.
+        // re-append overwrites them, so reverting just needs to drop the count.
         if (type.to_physical_type() == types::physical_type::BIT) {
             uint64_t start_bit = start_row - static_cast<uint64_t>(start);
 

@@ -31,7 +31,7 @@ namespace services::planner::impl {
         namespace ops = components::operators;
     } // namespace
 
-    // Build the POD reduce spec (SEAM B) from the group node + aggregate node. Returns
+    // Build the POD reduce spec from the group node + aggregate node. Returns
     // false — fall back to the coordinator aggregate (R6 capability select, NOT a
     // redundant fallback) — whenever any shape is NOT faithfully representable as a POD:
     // a coalesce / case_when / arithmetic group key, a HAVING, a distinct / multi-arg /
@@ -119,8 +119,8 @@ namespace services::planner::impl {
         // Storage-chunk column indices for the base scan of `node`, honoring relkind: a computed
         // (relkind='g') relation reads its LIVE columns by chunk_position; any other relation uses
         // the column_pruning output passed as `base_projected_cols`. Empty ⇒ read all columns.
-        // Factored so the pushed full_scan (build_pushdown_scan) and the coordinator transfer_scan
-        // (create_plan_aggregate) derive the SAME projection from one rule.
+        // Factored so the pushed reduce scan (build_pushdown_scan) and the coordinator
+        // transfer_scan (create_plan_aggregate) derive the SAME projection from one rule.
         std::vector<size_t> relkind_projected_cols(const context_storage_t& context,
                                                    const lp::node_ptr& node,
                                                    const std::vector<size_t>& base_projected_cols) {
@@ -250,15 +250,16 @@ namespace services::planner::impl {
         }
         auto scan_limit = has_sort ? components::logical_plan::limit_t::unlimit() : limit;
 
-        // --- Aggregate-pushdown lowering (SEAM B) ---
+        // --- Aggregate-pushdown lowering ---
         // When the optimizer stamped the group child pushdown() AND the whole aggregate is
-        // faithfully representable as a POD spec + a full_scan-carryable WHERE, lower to a
-        // full_scan that CARRIES the reduce spec: the owning agent reduces its OWN slice (the
-        // EXISTING operator_group rebuilt from the POD) and streams back the FINAL aggregated
-        // rows, which pass through unchanged. The coordinator group/aggregate are DROPPED
-        // (identity passthrough); only the coordinator sort/select/distinct layer on top,
-        // exactly as the normal chain below would. A non-representable shape returns nullptr and
-        // falls through to the normal coordinator aggregate (R6: capability select).
+        // faithfully representable as a POD spec + a WHERE that lowers to a plain full_scan,
+        // lower to a group_merge over a pushed_reduce_scan carrying the reduce spec: the owning
+        // agent reduces its OWN slice (the EXISTING operator_group rebuilt from the POD) and
+        // streams back the FINAL aggregated rows, which pass through unchanged. The coordinator
+        // group/aggregate are DROPPED (identity passthrough); only the coordinator
+        // sort/select/distinct layer on top, exactly as the normal chain below would. A
+        // non-representable shape returns nullptr and falls through to the normal coordinator
+        // aggregate (R6: capability select).
         const components::logical_plan::node_group_t* pushdown_group = nullptr;
         for (const components::logical_plan::node_ptr& child : node->children()) {
             if (child->type() == node_type::group_t) {

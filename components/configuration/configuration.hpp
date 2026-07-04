@@ -45,8 +45,8 @@ namespace configuration {
     };
 
     struct config_execution final {
-        // Mid-pump flush threshold (rows) for streaming DML sinks (Step 3b-B). 0 =
-        // DISABLED: single post-pump flush, unbounded accumulator (pre-3b-B behavior).
+        // Mid-pump flush threshold (rows) for streaming DML sinks. 0 = DISABLED:
+        // single post-pump flush, unbounded accumulator.
         // A rollout gate — the executor guards `threshold != 0`.
         uint64_t dml_flush_row_threshold{0};
     };

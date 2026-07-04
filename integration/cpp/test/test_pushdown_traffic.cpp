@@ -1,5 +1,5 @@
 // ============================================================================
-// Aggregate-pushdown TRAFFIC-REDUCTION verification (Step 3b).
+// Aggregate-pushdown TRAFFIC-REDUCTION verification.
 //
 // The whole POINT of pushing a mergeable aggregate down to the owning agent is
 // that only the FINALIZED partial result crosses the agent->coordinator mailbox

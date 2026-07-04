@@ -30,8 +30,7 @@ namespace services::planner::impl {
         // operator_unique_constraint_t BETWEEN the check sink and the DML so both
         // constraint operators validate the SAME written-row snapshot (the unique op
         // reads its child DML's constraint_input(), exactly like an fk_check chain).
-        // Additive: with no unique groups the check sink adopts the child directly,
-        // so the existing check-only path is byte-for-byte unchanged.
+        // With no unique groups the check sink adopts the child directly.
         if (!n->unique_groups().empty()) {
             auto unique = boost::intrusive_ptr(
                 new components::operators::operator_unique_constraint_t(context.resource,

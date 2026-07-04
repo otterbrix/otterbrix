@@ -204,8 +204,8 @@ namespace components::planner::optimizer {
                 return;
             }
             // Skip (c): HAVING is a hard correctness gate — a coordinator kernel-
-            // merge reduce would never evaluate it. Be conservative in 5a-A and
-            // skip on ANY having(), scalar or grouped.
+            // merge reduce would never evaluate it. Be conservative and skip on
+            // ANY having(), scalar or grouped.
             if (group->having() != nullptr) {
                 return;
             }
@@ -222,10 +222,9 @@ namespace components::planner::optimizer {
             if (subtree_references_udf(node)) {
                 return;
             }
-            // Classification (informational only — both are pushable in 5a-A): the
-            // count of scalar group-key exprs distinguishes scalar (5a, 0 keys ->
-            // empty-keys single group) from grouped (5b, >0 keys). It does NOT gate
-            // the stamp; the 5a-B consumer branches on key count at physgen.
+            // Scalar (0 group keys -> empty-keys single group) and grouped (>0 keys)
+            // shapes are BOTH pushable; the key count does not gate the stamp —
+            // physgen branches on it when lowering.
             group->set_pushdown(true);
         }
 

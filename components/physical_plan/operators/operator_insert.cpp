@@ -39,12 +39,12 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_insert::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 
-        // 3b-B INCREMENTAL drive: the executor calls this once per "buffer full"
+        // INCREMENTAL drive: the executor calls this once per "buffer full"
         // during the pump (dml_flush_is_final==false) and once at finalize
         // (==true). Each call flushes the currently-buffered slice (if any) and
         // ONLY the final call materializes the accumulated result into output_.
         // With threshold==0 the executor makes a single is_final==true call, so
-        // this collapses to one flush + finalize (behavior-preserving).
+        // this collapses to one flush + finalize.
         const bool is_final = ctx->dml_flush_is_final;
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
 

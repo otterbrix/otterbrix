@@ -1,14 +1,13 @@
-// Phase 3b-C RED test — disk single-pass hash semi-join for FK.
+// Disk single-pass hash semi-join for FK.
 //
-// scan_by_keys (used by operator_fk_cascade + operator_fk_check) used to run ONE eq-AND
-// filtered full-table scan PER KEY — O(nkeys * table_rows). The rewrite (fk_hash_semijoin)
-// builds ONE typed hash of the input key set and STREAMS the table exactly once per call.
+// scan_by_keys (used by operator_fk_cascade + operator_fk_check) answers a whole key batch
+// via fk_hash_semijoin: ONE typed hash of the input key set + ONE streamed pass over the
+// table per call — O(table_rows + nkeys), NOT one eq-AND filtered full-table scan per key.
 //
-// These cases pin the behaviour the rewrite must satisfy and would FAIL against the retired
-// per-key strategy:
+// These cases pin that behaviour:
 //   * SCAN COUNT: exactly ONE streaming pass per scan_by_keys call (one fetch_next_batch
-//     session, ZERO scan_batched calls) regardless of key count — the old path made one
-//     scan per key. A counting storage decorator observes it.
+//     session, ZERO scan_batched calls) regardless of key count. A counting storage
+//     decorator observes it.
 //   * MULTI-KEY correctness: each key's bucket collects EVERY matching row_id (incl.
 //     duplicate table rows); a missing key yields an empty bucket.
 //   * HETEROGENEOUS-TYPE FK: an INT32 input key against an INT64 stored key still matches
@@ -46,8 +45,8 @@ using components::storage::table_storage_adapter_t;
 namespace {
 
     // storage_t decorator that forwards everything to an inner storage but COUNTS the two scan
-    // entry points, so a test can prove scan_by_keys streams the table once per call (new)
-    // instead of scanning once per key (old).
+    // entry points, so a test can prove scan_by_keys streams the table once per call
+    // instead of scanning once per key.
     class counting_storage_t final : public storage_t {
     public:
         explicit counting_storage_t(storage_t& inner)

@@ -20,8 +20,8 @@ namespace components::operators {
         // Confirm a probe row against a candidate build row by a TYPED cell-by-cell
         // comparison over every key column (uniform for single- and multi-column
         // keys). A non-matching column short-circuits to false. Callers have already
-        // excluded NULLs on both sides (NULL keys never equi-join); the shared
-        // vector::cells_equal treats two non-NULLs exactly as the old typed verify.
+        // excluded NULLs on both sides (NULL keys never equi-join), so
+        // vector::cells_equal's NULL==NULL semantics are never exercised here.
         bool keys_verify(const vector::data_chunk_t& probe,
                          const std::pmr::vector<uint64_t>& probe_cols,
                          uint64_t probe_row,

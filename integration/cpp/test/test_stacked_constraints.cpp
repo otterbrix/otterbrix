@@ -12,13 +12,12 @@
 // Only the DML op snapshots the just-written rows into constraint_input() (via
 // record_flush). Constraint ops do NOT propagate constraint_input() upward, so a
 // NON-adjacent constraint op's immediate left_ is ANOTHER constraint op whose
-// constraint_input() is empty. Before the fix each constraint op read only its
-// IMMEDIATE left_->constraint_input(), so every non-adjacent op silently validated
-// NOTHING. The fix (constraint_util.hpp resolve_constraint_source) walks DOWN the
-// left_ spine to the FIRST populated constraint_input() — the DML's write-set.
+// constraint_input() is empty. Each constraint op must therefore walk DOWN the
+// left_ spine to the FIRST populated constraint_input() — the DML's write-set
+// (constraint_util.hpp resolve_constraint_source); an op that reads only its
+// IMMEDIATE left_->constraint_input() silently validates NOTHING.
 //
-// Each case below is a scenario that produces a stack with a non-adjacent
-// constraint op; every one was silently WRONG before the fix and is correct after.
+// Each case below produces a stack with a non-adjacent constraint op.
 //
 // DDL note: all forms used here appear in existing passing tests
 // (test_sql_features.cpp, test_large_aggregate_dml.cpp): inline NOT NULL, per-FK
@@ -34,8 +33,7 @@ using namespace test_helpers;
 //
 // A table with an outgoing FK AND a CHECK on a DIFFERENT column. The CHECK op is
 // OUTERMOST; its immediate left_ is the fk_check op (empty constraint_input).
-// Pre-fix the CHECK was silently skipped, so a row with a VALID FK reference but
-// a VIOLATING CHECK was wrongly accepted. Post-fix it is rejected.
+// A row with a VALID FK reference but a VIOLATING CHECK must be rejected.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_check") {
     auto config = make_test_config("/tmp/test_stacked_constraints/fk_plus_check", /*disk_on=*/true);
@@ -72,8 +70,8 @@ TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_check") {
 // (A') check_constraint( fk_check( insert ) ), NOT NULL variant.
 //
 // Same stack shape but the outermost constraint is a NOT NULL / IS NOT NULL
-// CHECK on a non-FK column. A valid FK reference with a NULL required column was
-// silently accepted pre-fix.
+// CHECK on a non-FK column. A valid FK reference with a NULL required column
+// must be rejected.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_notnull") {
     auto config = make_test_config("/tmp/test_stacked_constraints/fk_plus_notnull", /*disk_on=*/true);
@@ -111,9 +109,9 @@ TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_notnull") {
 // (B) fk_check( fk_check( insert ) )
 //
 // A table with TWO outgoing FKs → two stacked fk_check ops. Whichever fk_check
-// is NON-adjacent to the insert read an empty constraint_input pre-fix and thus
-// silently accepted a row violating THAT FK. We violate each FK in turn so the
-// test fails pre-fix regardless of the planner's stacking order.
+// is NON-adjacent to the insert sees an empty immediate constraint_input and
+// must still validate THAT FK. Each FK is violated in turn so both stack
+// positions are covered regardless of the planner's stacking order.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::two_outgoing_fks") {
     auto config = make_test_config("/tmp/test_stacked_constraints/two_outgoing_fks", /*disk_on=*/true);
@@ -163,8 +161,8 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_outgoing_fks") {
 //
 // A parent referenced by TWO child tables, each with ON DELETE CASCADE → two
 // stacked fk_cascade ops above the parent DELETE. The non-adjacent fk_cascade
-// read an empty constraint_input pre-fix, so ONE child's cascade was silently
-// skipped: that child kept dangling rows. Post-fix BOTH children cascade.
+// sees an empty immediate constraint_input; BOTH children must still cascade —
+// a skipped cascade leaves dangling child rows.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::two_cascade_children") {
     auto config = make_test_config("/tmp/test_stacked_constraints/two_cascade_children", /*disk_on=*/true);

@@ -1,14 +1,14 @@
 #include "agent_disk.hpp"
 #include "inline_scan.hpp" // services::disk::detail::inline_scan (catalog DDL on the agent)
 #include "manager_disk.hpp"
-#include <components/logical_plan/node_group.hpp>              // node_group_t::set_pushdown (5a-C re-lowering guard)
+#include <components/logical_plan/node_group.hpp>              // node_group_t::set_pushdown (re-lowering guard)
 #include <components/physical_plan/operators/aggregate/operator_func.hpp> // aggregate::operator_func_t (reduce rebuild)
-#include <components/physical_plan/operators/operator_group.hpp>          // operator_group_t + group_key_t (SEAM B reduce)
+#include <components/physical_plan/operators/operator_group.hpp>          // operator_group_t + group_key_t (aggregate-pushdown reduce)
 #include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
 #include <components/physical_plan_generator/create_plan.hpp>  // create_plan + function_registry + context_storage_t
 #include <components/vector/cell_equal.hpp> // components::vector::cells_equal (typed FK hash-verify)
 #include <components/vector/vector_operations.hpp>
-#include <algorithm> // std::reverse (5a-C pump linearization)
+#include <algorithm> // std::min
 #include <fstream>
 #include <services/dispatcher/dispatcher.hpp>
 #include <unordered_set>
@@ -1127,7 +1127,7 @@ namespace services::disk {
         return core::error_t::no_error();
     }
 
-    // Agent-side aggregate-pushdown REDUCE (SEAM B). Builds the EXISTING operator_group DIRECTLY
+    // Agent-side aggregate-pushdown REDUCE. Builds the operator_group DIRECTLY
     // from the POD (no create_plan / node tree) and drives it over one owned `storage` slice
     // ENTIRELY LOCALLY (send-free) — a bounded storage_t::fetch_next_batch loop applies the shipped
     // WHERE `filter` + `projected_cols`, folding each batch into the group; finalize() then
@@ -1135,7 +1135,7 @@ namespace services::disk {
     // bounded group table — the same streaming discipline as fk_hash_semijoin. Empty slice: a
     // scalar aggregate still emits its single (NULL/COUNT-0) row via operator_group's empty-
     // input finalize; a GROUP BY emits nothing. `txn` is the caller's real snapshot so the
-    // reduce sees read-your-own-writes (the D4 zero-txn guard). A fetch / push / finalize failure
+    // reduce sees read-your-own-writes (never a zero txn{0,0}). A fetch / push / finalize failure
     // surfaces as an error_t on the result wrapper — DISTINCT from a legitimately-empty result —
     // never thrown across the mailbox (R2), so a scalar-aggregate error is not mistaken for a
     // drained (no-row) reply.
@@ -1160,7 +1160,7 @@ namespace services::disk {
         components::compute::function_registry_t reg{resource};
         components::compute::register_default_functions(reg);
 
-        // (2) Rebuild the EXISTING operator_group from the POD: plain-column keys + builtin
+        // (2) Rebuild the operator_group from the POD: plain-column keys + builtin
         //     SUM/COUNT/MIN/MAX/AVG (COUNT(*) == empty arg path). No HAVING / DISTINCT / computed
         //     columns (the optimizer never stamps those), so having==nullptr and
         //     internal_aggregate_count==0.
@@ -1240,7 +1240,6 @@ namespace services::disk {
     // batch and ZERO pins survive this round-trip. cursor_id==0 OPENs (minting a (session,counter)
     // id, capping the matched-row head at offset+limit); non-zero ADVANCEs the same cursor. The
     // cursor is GC'd (erased) the moment it drains or hits the matched-row limit.
-    //
     agent_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
     agent_disk_t::storage_fetch_next_batch_inner(session_id_t session,
                                                  components::catalog::oid_t table_oid,
@@ -1358,9 +1357,9 @@ namespace services::disk {
         co_return fetch_batch_t{std::move(batch), cursor_id};
     }
 
-    // AGGREGATE-PUSHDOWN REDUCE (SEAM B) — the DEDICATED protocol leg. Runs the whole
+    // AGGREGATE-PUSHDOWN REDUCE — the DEDICATED protocol leg. Runs the whole
     // GROUP BY over this agent's OWN slice (send-free, synchronous: reduce_pushed_aggregate
-    // rebuilds the EXISTING operator_group from the POD and applies the shipped WHERE
+    // rebuilds the operator_group from the POD and applies the shipped WHERE
     // `filter` + `projected_cols`), and replies ALL final aggregated rows in ONE reply —
     // the result is bounded by #groups, so no cursor is minted and the raw-scan protocol
     // stays a pure scan. A not-owned / record-only oid reduces over the EMPTY input: the
@@ -1454,17 +1453,17 @@ namespace services::disk {
         co_return std::move(out);
     }
 
-    // STREAMING SINGLE-PASS HASH SEMI-JOIN (phase 3b-C). Given the input key-tuple set
+    // STREAMING SINGLE-PASS HASH SEMI-JOIN. Given the input key-tuple set
     // (`keys`, column j == key_col_indices[j]-th stored column, row i == key-tuple i) and one
     // owned `storage`, return result[i] = the row_ids of every table row whose key columns
     // equal key-tuple i (one bucket per input key, input order; empty when nothing matches).
-    // Replaces the retired O(nkeys * table_rows) per-key filtered-scan loop: build ONE typed
-    // hash of the key set, then STREAM the table exactly once (storage.fetch_next_batch,
-    // projected to the key columns), probing each streamed row against the hash and bucketing
-    // its row_id into every matching key. No logical_value_t round-trip (R1): typed
-    // data_chunk_t::hash + the NULL-aware typed verify components::vector::cells_equal,
-    // shared with GROUP BY / HASH JOIN / UNIQUE. Exactly ONE scan pass per call (i.e. per <=1024-key input chunk the
-    // FK operators send), NOT one per key.
+    // Builds ONE typed hash of the key set, then STREAMS the table exactly once
+    // (storage.fetch_next_batch, projected to the key columns), probing each streamed row
+    // against the hash and bucketing its row_id into every matching key — one scan pass per
+    // call (i.e. per <=1024-key input chunk the FK operators send), NOT one per key, so
+    // O(table_rows + nkeys) instead of O(nkeys * table_rows). No logical_value_t round-trip
+    // (R1): typed data_chunk_t::hash + the NULL-aware typed verify
+    // components::vector::cells_equal, shared with GROUP BY / HASH JOIN / UNIQUE.
     std::pmr::vector<std::pmr::vector<std::int64_t>>
     fk_hash_semijoin(std::pmr::memory_resource* resource,
                      components::storage::storage_t& storage,
@@ -1485,9 +1484,9 @@ namespace services::disk {
 
         const auto& cols = storage.columns();
 
-        // PHYSICAL-TYPE NORMALIZATION. The retired per-key constant_filter_t::compare<T>
-        // COERCED cross-type FKs (INT-width, INT<->FLOAT — column_state.hpp). A raw typed hash
-        // does NOT coerce, so cast each input key column to its STORED key column's physical
+        // PHYSICAL-TYPE NORMALIZATION. FK equality must coerce cross-type keys (INT-width,
+        // INT<->FLOAT — constant_filter_t::compare<T>, column_state.hpp), but a raw typed hash
+        // does NOT coerce — so cast each input key column to its STORED key column's physical
         // type before hashing; both sides then hash identically. (Temporal cross-UNIT FKs —
         // DATE(days) <-> TIMESTAMP(µs) — are out of scope for this raw cast; an FK column
         // normally shares the referenced column's exact type.)
@@ -1537,16 +1536,15 @@ namespace services::disk {
         }
 
         // STREAM the table ONCE, projecting to the key columns in KEY ORDER so both sides' hash
-        // col-ids align. A scan_error leaves the remaining buckets empty (mirrors the retired
-        // per-key error behavior); callers tolerate empty per-key entries. fetch_next_batch
-        // re-seeks a TRANSIENT scan from pos each call, so peak memory is one batch and nothing
-        // pinned survives — the same streaming source the agent drives for the fetch-next scan.
+        // col-ids align. fetch_next_batch re-seeks a TRANSIENT scan from pos each call, so peak
+        // memory is one batch and nothing pinned survives — the same streaming source the agent
+        // drives for the fetch-next scan.
         std::vector<std::size_t> projected_cols(key_col_indices.begin(), key_col_indices.end());
         std::vector<std::uint64_t> scan_col_ids(key_col_indices.begin(), key_col_indices.end());
         components::storage::scan_position_t pos{};
         // The scan error is intentionally NOT propagated (return discarded): a fetch failure
-        // stops the scan and leaves the remaining buckets empty — the partial-result behavior
-        // the comment above describes and callers already tolerate.
+        // stops the scan and leaves the remaining buckets empty — a PARTIAL result callers
+        // already tolerate.
         for_each_storage_batch(
             storage, pos, /*filter=*/nullptr, &projected_cols, txn, resource,
             [&](components::vector::data_chunk_t& batch) -> core::error_t {
@@ -1602,9 +1600,8 @@ namespace services::disk {
     // Resolve the key-column NAMES to storage column indices against an owned slice entry.
     // Returns true (and fills out_indices in name order) on success; false when the entry is not
     // owned / a record-only marker / has no key columns / names a column the table lacks — the
-    // caller then degrades the whole keyed batch to one empty entry per key. Shared verbatim by
-    // scan_by_keys_inner and read_chunks_by_keys_inner (the storages_ null-guard + the columns()
-    // linear name search were byte-identical in both).
+    // caller then degrades the whole keyed batch to one empty entry per key. Shared by
+    // scan_by_keys_inner and read_chunks_by_keys_inner.
     static bool resolve_key_col_indices(const collection_storage_entry_t* entry,
                                         const std::pmr::vector<std::string>& key_col_names,
                                         std::pmr::vector<std::uint64_t>& out_indices) {
@@ -1654,12 +1651,12 @@ namespace services::disk {
             co_return std::move(result);
         }
 
-        // Delegate the actual match to the streaming SINGLE-PASS hash semi-join (phase 3b-C),
-        // which REPLACES the retired O(nkeys * table_rows) per-key filtered-scan loop with ONE
-        // streamed pass over the table per call. The helper is a free function so it can be
-        // driven directly by a counting storage in unit tests; scan_by_keys_inner is the sole
-        // production caller (single path, R6). The `result` reserved above is only consumed by
-        // the early-return (not-owned / unknown-column) branches; here the helper owns the reply.
+        // Delegate the actual match to the streaming SINGLE-PASS hash semi-join: ONE streamed
+        // pass over the table per call, regardless of key count. The helper is a free function
+        // so it can be driven directly by a counting storage in unit tests; scan_by_keys_inner
+        // is the sole production caller (single path, R6). The `result` reserved above is only
+        // consumed by the early-return (not-owned / unknown-column) branches; here the helper
+        // owns the reply.
         co_return fk_hash_semijoin(resource(), *entry->storage, key_col_indices, keys, txn);
     }
 
@@ -1671,7 +1668,7 @@ namespace services::disk {
         // Single key-tuple: `keys` already carries exactly one row, so it IS the 1-row
         // batch view the plural read_chunks_by_keys_inner expects. Delegate to it inline
         // on this same agent thread (its resolve/filter/scan_local body never crosses the
-        // mailbox) and unwrap the single entry — no duplicated resolve/filter/scan here.
+        // mailbox) and unwrap the single entry.
         std::pmr::vector<components::vector::data_chunk_t> empty{resource()};
         auto r = co_await read_chunks_by_keys_inner(table_oid, std::move(key_col_names), std::move(keys), txn);
         co_return r.empty() ? std::move(empty) : std::move(r[0]);

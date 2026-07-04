@@ -34,7 +34,7 @@ namespace components::vector {
     // round-trip on the hot path — dispatch on physical_type and compare raw cells; only
     // nested/unsupported physical types fall back to value()). Two NULLs compare EQUAL, one
     // NULL UNEQUAL. Single source of the dedup/verify semantics shared by GROUP BY / HASH JOIN,
-    // the UNIQUE/PK within-batch dedup (3b-D) and the FK single-pass hash semi-join (3b-C).
+    // the UNIQUE/PK within-batch dedup and the FK single-pass hash semi-join.
     inline bool cells_equal(const vector_t& a, std::size_t ra, const vector_t& b, std::size_t rb) {
         const bool a_null = a.is_null(ra);
         const bool b_null = b.is_null(rb);

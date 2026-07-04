@@ -50,7 +50,7 @@ namespace components::logical_plan {
         // UPDATE write-set). Only then does a column ABSENT-BY-NAME mean "omitted
         // from the statement" — a positional / hand-built plan insert (empty
         // key_translation) may carry arbitrary aliases, so absence proves nothing
-        // and the operators keep the legacy pass-through for absent columns.
+        // and the operators keep the pass-through for absent columns.
         bool write_set_named() const noexcept { return write_set_named_; }
         void set_write_set_named(bool v) noexcept { write_set_named_ = v; }
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }

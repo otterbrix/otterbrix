@@ -18,9 +18,9 @@ namespace components::operators {
 
     // Test-observable counter of BATCHES the streaming backfill scan consumed
     // (one bump per non-empty storage_fetch_next_batch reply). Makes the batched
-    // rewrite deterministically observable: over a table > DEFAULT_VECTOR_CAPACITY
+    // scan deterministically observable: over a table > DEFAULT_VECTOR_CAPACITY
     // the count must exceed 1, proving the loop iterated instead of materializing
-    // the whole table in a single storage_scan_segment. Process-global + relaxed:
+    // the whole table in one scan. Process-global + relaxed:
     // coarse instrumentation, not a synchronization primitive; off every hot path.
     // DEV_MODE-only, mirroring services::collection::executor::streaming_pipeline_runs().
 #ifdef DEV_MODE
@@ -113,11 +113,10 @@ namespace components::operators {
 
         // backfill — STREAM the table in bounded batches and feed each into the
         // index. Reuses the streaming storage_fetch_next_batch cursor primitive
-        // (the SAME fetch-next source 3b-C uses; no new disk method): cursor_id==0
-        // OPENs, the agent-minted id ADVANCEs, and a drained cursor replies an empty
-        // batch. Peak scan memory is one batch + index state, versus the whole-table
-        // materialization of the old storage_scan_segment(0,total_rows). Index entries
-        // are stamped with each batch's TRUE physical row ids (batch->row_ids, fed to
+        // (the same fetch-next source the streaming scans use; no new disk method):
+        // cursor_id==0 OPENs, the agent-minted id ADVANCEs, and a drained cursor
+        // replies an empty batch. Peak scan memory is one batch + index state. Index
+        // entries are stamped with each batch's TRUE physical row ids (batch->row_ids, fed to
         // insert_rows one contiguous run at a time — see below), because the
         // MVCC-filtered scan skips deleted rows and its ids are gapped. Each iteration
         // does at most one fetch await followed by the insert awaits, sequential
@@ -161,10 +160,8 @@ namespace components::operators {
                 // physical row ids. insert_rows stamps contiguous ids from its
                 // start_row_id, so feed it one maximal contiguous row-id RUN at a
                 // time, based at that run's first physical id: every index entry then
-                // points at its real storage row. (The retired storage_scan_segment
-                // path scanned positionally with no MVCC filter, so a 0-based running
-                // offset happened to align; a streamed scan must not assume gap-free
-                // ids.) The extra awaits stay sequential in this operator coroutine —
+                // points at its real storage row (never assume gap-free ids).
+                // The extra awaits stay sequential in this operator coroutine —
                 // same lost-wakeup discipline as the fetch/insert pair above.
                 const auto& batch_chunk = *reply.batch;
                 const auto* row_ids = batch_chunk.row_ids.data<int64_t>();
@@ -209,10 +206,11 @@ namespace components::operators {
             if (any_row) {
                 // insert_rows leaves entries PENDING (tagged with this txn_id). For a
                 // CREATE INDEX (DDL) txn the executor does NOT route these appends
-                // through the commit operator — it CLEARS exec_result.dml_appends
-                // (executor.cpp:1601; routing them would re-commit pre-existing base
-                // rows). The index is published instead via the commit_id back-channel
-                // (executor.cpp:1679-1695: commit_inserts keyed by oid+commit_id, no
+                // through the commit operator — its DDL-commit path CLEARS
+                // exec_result.dml_appends (routing them would re-commit pre-existing
+                // base rows). The index is published instead via the commit_id
+                // back-channel (the executor's inline CREATE INDEX index-commit:
+                // commit_inserts keyed by oid+commit_id, no
                 // row-count). This single coalesced range is recorded for
                 // symmetry/observability only; its count does not gate the commit. Rows
                 // committed during the scan are caught by the catchup loop below.

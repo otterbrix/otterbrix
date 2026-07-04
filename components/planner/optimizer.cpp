@@ -29,13 +29,12 @@ namespace components::planner {
 
         // Annotate pushable single-owned-table aggregates. Runs LAST — it only
         // reads node types + table_oid() + the group child, so ordering vs. the
-        // other rules is immaterial. Pushdown is UNCONDITIONAL for pushable shapes
-        // (the rule itself decides purely by shape: single owned table, mergeable
-        // kinds, no HAVING/DISTINCT — exactly like hash-join selection). The sole
-        // gate here is a hard CAPABILITY precondition: `can_push_to_agent` is false
-        // in disk-less (in-memory) mode, where there is NO owning agent to push to,
-        // so pushable aggregates architecturally must stay coordinator-side. This is
-        // NOT a fallback/rollout flag — it is "is the target reachable".
+        // other rules is immaterial. The rule decides purely by shape (single
+        // owned table, mergeable kinds, no HAVING/DISTINCT — exactly like
+        // hash-join selection). The sole gate here is a hard CAPABILITY
+        // precondition, NOT a fallback/rollout flag: `can_push_to_agent` is false
+        // in disk-less (in-memory) mode, where there is NO owning agent to push
+        // to, so pushable aggregates must stay coordinator-side.
         if (can_push_to_agent) {
             node = optimizer::pushdown_aggregate(resource, std::move(node));
         }

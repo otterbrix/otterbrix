@@ -42,7 +42,7 @@ namespace {
 
     operators::operator_ptr make_child(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk) {
         // In production record_flush populates constraint_input_ (the just-written
-        // rows); output() is no longer a fallback after the 3b-G single-path change.
+        // rows); output() is not a fallback source.
         auto data = operators::make_operator_data(resource, std::move(chunk));
         return operators::operator_ptr(new constraint_source_operator_t(resource, std::move(data)));
     }

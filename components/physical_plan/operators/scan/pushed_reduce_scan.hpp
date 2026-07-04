@@ -8,7 +8,7 @@
 
 namespace components::operators {
 
-    // Aggregate-pushdown source (SEAM B). Lowered by create_plan_aggregate for a
+    // Aggregate-pushdown source. Lowered by create_plan_aggregate for a
     // pushdown-stamped aggregate: ships the POD reduce spec (plus the lowered WHERE
     // filter and the projection) on the DEDICATED manager_disk_t::storage_reduce
     // protocol leg, and emits the owning agent's FINAL aggregated rows — bounded by

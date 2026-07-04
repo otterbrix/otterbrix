@@ -38,7 +38,7 @@ namespace components::operators {
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
         // Rows folded into output_ but not yet flushed to storage. The executor's
-        // 3b-B mid-pump flush gate compares this to the flush threshold. Catalog
+        // mid-pump flush gate compares this to the flush threshold. Catalog
         // inserts stay single-shot (return 0) so the gate never mid-flushes them.
         [[nodiscard]] uint64_t buffered_rows() const noexcept override {
             return (output_ && !components::catalog::is_catalog_table(table_oid_)) ? output_->size() : 0;
@@ -47,7 +47,7 @@ namespace components::operators {
     private:
         catalog::oid_t table_oid_;
         std::pmr::vector<select_column_t> returning_;
-        // Cross-flush accumulators (3b-B incremental drive). RETURNING rows are
+        // Cross-flush accumulators for the incremental drive. RETURNING rows are
         // projected into returning_accum_ as each slice is read back; when the
         // statement has no RETURNING, affected_rows_ tallies the appended count.
         // Both are materialized into output_ only on the final (is_final) drive.

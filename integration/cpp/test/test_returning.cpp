@@ -371,8 +371,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
                                                "WHERE Orders.customer_id = Customers.id;");
             REQUIRE(cur->is_success());
         }
-        // Survivors must be exactly {11, 12}; the buggy code deletes absolute row 2
-        // (order 12) and leaves order 13.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Orders ORDER BY id;");
@@ -383,7 +381,6 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
         }
         // INDEX CONSISTENCY via the point lookup on the indexed join column: order
         // 13 (customer_id 7) is gone; orders 11/12 (customer_id 99) are still found.
-        // The buggy index mirror deletes the first-N scan rows, leaving 13 reachable.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Orders WHERE customer_id = 7;");

@@ -18,7 +18,7 @@ namespace services::planner::impl {
                           components::logical_plan::limit_t limit,
                           const components::logical_plan::storage_parameters* params = nullptr);
 
-    // Aggregate-pushdown (SEAM B) POD spec-build (exposed for unit tests). Populates `out`
+    // Aggregate-pushdown POD spec-build (exposed for unit tests). Populates `out`
     // from the group node's keys/aggregates + the aggregate node's output_types, or returns
     // false when the shape is NOT faithfully POD-representable (HAVING, a coalesce/case_when/
     // arithmetic group key, a distinct/multi-arg/expression/unresolved/UDF aggregate argument)

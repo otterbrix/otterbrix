@@ -54,7 +54,7 @@ namespace components::operators {
         // swap-info, then mark_executed.
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        // Bounded-sink hook (3b-B): the pending row count buffered in modified_.
+        // Bounded-sink hook: the pending row count buffered in modified_.
         // The executor mid-flushes await_async_and_resume once this crosses the
         // configured dml_flush_row_threshold. The catalog form buffers nothing
         // (buffered_rows()==0), so it is never mid-flushed.
@@ -94,7 +94,7 @@ namespace components::operators {
         chunks_vector_t index_old_chunks_{resource_};
         std::pmr::vector<int64_t> index_old_row_ids_{resource_};
         bool simple_init_done_{false};
-        // Bounded-sink accumulators (3b-B). affected_rows_ sums the rows deleted
+        // Bounded-sink accumulators. affected_rows_ sums the rows deleted
         // across every flush (the final affected-count result is built from it, not
         // from the just-flushed slice). delete_marker_recorded_ guards the ONE
         // ctx->dml_deletes marker so repeated mid-flushes push it only once (the

@@ -43,7 +43,7 @@ namespace services::disk {
     class base_manager_disk_t;
 
     // Test-observable counter of ROWS the agent ships back for an aggregate-pushdown
-    // reduce (SEAM B) — the sum of data_chunk_t::size() over the FINAL aggregated chunks
+    // reduce — the sum of data_chunk_t::size() over the FINAL aggregated chunks
     // produced by the reduce in storage_reduce_inner, i.e. exactly the
     // rows that cross the agent->coordinator mailbox. This is the direct measurement of
     // aggregate-pushdown traffic reduction: a scalar aggregate must reply exactly 1 row and
@@ -53,8 +53,7 @@ namespace services::disk {
     // ONLY on the spec/reduce path (a raw scan never touches it). Process-global + relaxed:
     // coarse instrumentation, not a synchronization primitive; off every hot path. DEV_MODE-
     // only, mirroring services::collection::executor::dml_flush_count() — production binaries
-    // carry neither the counter nor these accessors. Named for the current mechanism (the
-    // aggregate-pushdown reduce reply), matching storage_reduce_inner.
+    // carry neither the counter nor these accessors.
 #ifdef DEV_MODE
     uint64_t pushdown_reply_rows() noexcept;
     void reset_pushdown_reply_rows() noexcept;
@@ -66,7 +65,7 @@ namespace services::disk {
     struct collection_storage_entry_t;
     struct dropped_storage_entry_t;
 
-    // Streaming single-pass hash semi-join used by scan_by_keys_inner (phase 3b-C). Returns
+    // Streaming single-pass hash semi-join used by scan_by_keys_inner. Returns
     // result[i] = row_ids of every row of `storage` whose key columns equal input key-tuple i
     // (one bucket per input key, input order; empty when nothing matches). Column j of `keys`
     // holds the value for stored column key_col_indices[j]. STREAMS `storage` exactly ONCE
@@ -311,9 +310,9 @@ namespace services::disk {
                                        std::vector<size_t> projected_cols,
                                        components::table::transaction_data txn);
 
-        // storage_reduce_inner — the aggregate-pushdown REDUCE (SEAM B), a dedicated protocol
-        //   leg (NOT a scan mode): runs the whole GROUP BY over this agent's OWN slice via the
-        //   EXISTING operator_group rebuilt from the POD spec (WHERE rides `filter`, projection
+        // storage_reduce_inner — the aggregate-pushdown REDUCE, a dedicated protocol
+        //   leg (NOT a scan mode): runs the whole GROUP BY over this agent's OWN slice via
+        //   operator_group rebuilt from the POD spec (WHERE rides `filter`, projection
         //   rides `projected_cols`), and replies ALL final aggregated rows in ONE reply — the
         //   result is bounded by #groups, so no cursor exists. A not-owned / record-only oid
         //   reduces over the EMPTY input (a scalar aggregate still emits its single row).
@@ -376,9 +375,6 @@ namespace services::disk {
                                   std::pmr::vector<std::string> key_col_names,
                                   components::vector::data_chunk_t keys,
                                   components::table::transaction_data txn);
-
-        // Aggregate-pushdown (SEAM B): the agent-side reduce is the DEDICATED
-        // storage_reduce_inner handler above (one reply, no cursor).
 
         // storage_types_inner — schema metadata accessor.
         unique_future<std::pmr::vector<components::types::complex_logical_type>>

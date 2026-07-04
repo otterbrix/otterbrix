@@ -273,13 +273,13 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
-        // BOUNDED DML SINK (Step 3b-B). The executor drives this INCREMENTALLY: once
+        // BOUNDED DML SINK. The executor drives this INCREMENTALLY: once
         // per mid-pump "buffer full" (dml_flush_is_final==false) and once at the
         // post-pump finalize (==true). Each drive flushes whatever push() folded into
         // output_ since the last flush; only the FINAL drive emits the RETURNING /
         // affected-count result + mark_executed. With dml_flush_row_threshold==0 the
-        // executor drives await exactly once with is_final==true, so this is
-        // behavior-identical to the pre-3b-B single flush.
+        // executor drives await exactly once with is_final==true, collapsing to a
+        // single flush.
         const bool is_final = ctx->dml_flush_is_final;
 
         if (output_ && output_->size() > 0) {
@@ -291,9 +291,8 @@ namespace components::operators {
             // STREAMING invariant: consume_batch_/consume_join_batch_ stage exactly one
             // OLD-row chunk per accumulated updated chunk, so index_old_chunks_ is in
             // lockstep with output_->chunks() (index_old_chunks_[k] is the old version
-            // of output_->chunks()[k]). The old-row scan-cursor fallback is dead on the
-            // streaming path — assert the staging held rather than silently walking
-            // left_->output() (which is empty when streaming) mid-flush.
+            // of output_->chunks()[k]). Assert the staging held rather than silently
+            // walking left_->output() (which is empty when streaming) mid-flush.
             assert(index_old_chunks_.size() == output_->chunks().size());
 
             // ONE flush of the currently-buffered rows via a NAMED coroutine lambda.
@@ -444,7 +443,7 @@ namespace components::operators {
 
             auto outcome = co_await op(resource_);
             // COMMON post-storage bookkeeping (dml_util): record the append range into
-            // the unified 3b-A channel and — only under a parent constraint — accumulate
+            // the unified append channel and — only under a parent constraint — accumulate
             // a persistent copy of the just-written NEW rows into constraint_input_ (so
             // the constraint validates the full set at finalize). constraint_rows =
             // output_->chunks(): op only COPIED from output_, so the NEW rows are intact.
@@ -484,7 +483,7 @@ namespace components::operators {
             co_return;
         }
 
-        // FINAL. output_ was cleared per flush, so it can no longer double as the
+        // FINAL. output_ was cleared per flush, so it cannot double as the
         // affected-count carrier: emit an explicit result — affected-count chunks
         // without RETURNING, the accumulated projection with it.
         if (returning_.empty()) {

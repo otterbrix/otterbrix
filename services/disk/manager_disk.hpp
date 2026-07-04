@@ -482,10 +482,6 @@ namespace services::disk {
                             std::pmr::vector<std::string> key_col_names,
                             components::vector::data_chunk_t keys);
 
-        // Aggregate-pushdown (SEAM B): the reduce rides the DEDICATED storage_reduce
-        // router above (one reply, no cursor). The old ship-the-logical-fragment
-        // router is gone.
-
         // Physical column compaction. For an IN_MEMORY relkind='g' storage,
         // drop every physical column whose name is NOT in `live_attnames`. Called by
         // operator_vacuum_t after pg_computed_column GC: columns whose
@@ -657,7 +653,7 @@ namespace services::disk {
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);
-        // Aggregate-pushdown REDUCE (SEAM B): transparent router to the owning agent's
+        // Aggregate-pushdown REDUCE: transparent router to the owning agent's
         // storage_reduce_inner — one reply carrying ALL final aggregated rows (see
         // disk_contract for the protocol + the single-owner invariant).
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>

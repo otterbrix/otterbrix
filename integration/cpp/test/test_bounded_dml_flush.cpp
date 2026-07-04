@@ -1,10 +1,10 @@
 // ============================================================================
-// Bounded / spillable DML sink — MID-PUMP FLUSH verification (Step 3b-B).
+// Bounded / spillable DML sink — MID-PUMP FLUSH verification.
 //
 // The bounded DML sinks (insert / update / delete) flush INCREMENTALLY mid-pump
 // whenever a per-op buffered_rows() >= config.execution.dml_flush_row_threshold.
 // The default threshold is 0 == DISABLED (a single post-pump flush), so NO other
-// test exercises the incremental path — it has never run at runtime. These tests
+// test exercises the incremental path. These tests
 // set a SMALL threshold on a dedicated spaces instance and drive multi-batch DML
 // so the sink flushes MORE THAN ONCE, then assert (via the DEV_MODE
 // executor::dml_flush_count() counter) that the mid-flush path actually ran AND

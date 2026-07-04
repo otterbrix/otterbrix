@@ -1369,12 +1369,11 @@ namespace services::collection::executor {
         // key.side()/key.path() and table OIDs are present. const-fold +
         // pushdown_filter + hash-join selection; a no-op on DDL sequences.
         // The execute_plan delegate below lowers this optimized tree.
-        // Aggregate-pushdown-to-owning-agent is UNCONDITIONAL for pushable shapes
-        // (the optimizer's pushdown_aggregate rule decides purely by shape, exactly
-        // like hash-join selection) — the only gate is a hard CAPABILITY precondition:
-        // an owning agent must exist. In-memory (disk-less) mode has NO agent to push
-        // to, so pushable aggregates stay coordinator-side there; this is not a
-        // fallback but an architectural precondition (there is nowhere to push).
+        // The pushdown_aggregate rule decides aggregate pushdown purely by plan
+        // shape (like hash-join selection); the only gate is a CAPABILITY
+        // precondition: an owning agent must exist. In-memory (disk-less) mode has
+        // no agent to push to, so pushable aggregates stay coordinator-side there —
+        // a precondition, not a fallback.
         const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
         plan.sub_queries.back() = components::planner::optimize(resource(),
                                                                std::move(plan.sub_queries.back()),
@@ -1890,7 +1889,7 @@ namespace services::collection::executor {
         // (a parent constraint) must accumulate its input across those partial
         // flushes — signalled to the operators via ctx->dml_has_parent_constraint.
         // dml_idx is a pure LOCAL (never parked on ctx). threshold==0 ⇒ the gate
-        // never fires and this is behavior-preserving.
+        // never fires (mid-flush disabled).
         std::size_t dml_idx = chain.size();
         for (std::size_t i = op_start; i < chain.size(); ++i) {
             if (chain[i]->needs_async_finalize()) {
@@ -2035,9 +2034,9 @@ namespace services::collection::executor {
         // real chain[0] was already driven (deepest-first) in the PUMP block above, so
         // this range (op_start==1) covers only its ancestors — still bottom-up overall.
         // Every op in this range that sets needs_async_finalize() is driven here,
-        // bottom-up: multi-async chains (3b-B) are the norm now (e.g. a spillable
-        // sink under a DML sink, or a constraint above a DML), so each async op is
-        // awaited in ascending (deepest-first) index order. Stop on the first error.
+        // bottom-up: a chain may hold several async ops (e.g. a spillable sink
+        // under a DML sink, or a constraint above a DML), each awaited in
+        // ascending (deepest-first) index order. Stop on the first error.
         //
         // This is the FINAL flush: any mid-pump partial flushes above ran with
         // dml_flush_is_final=false; restore the default so the DML sink's await
@@ -2221,9 +2220,9 @@ namespace services::collection::executor {
             // row LINGERS (invisible via MVCC, but a real storage leak: row_group.count
             // stays bumped, the slot is never reclaimed). Lifting here on BOTH paths
             // hands the recorded range to the abort tail so storage_revert_appends ->
-            // row_group_t::revert_append truncates the slot back. Idempotent: it zeroes
-            // the single-slot dml_* fields and clears the cascade vectors, so the
-            // success-path block below (which lifts the rest) never double-counts.
+            // row_group_t::revert_append truncates the slot back. Idempotent: it
+            // drains and clears both range lists, so the success-path block below
+            // (which lifts the rest) never double-counts.
             auto lift_dml_ranges = [&pipeline_context, &result_tracking]() {
                 for (const auto& app : pipeline_context.dml_appends) {
                     result_tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});

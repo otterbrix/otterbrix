@@ -25,9 +25,6 @@ using namespace components::logical_plan;
 using namespace components::expressions;
 using key = components::expressions::key_t;
 
-// The aggregate-pushdown plan builders live in the shared pushdown_plan_builders.hpp
-// header; make_agg_group is used verbatim, make_agg is bound to this suite's pushable oid
-// by the thin wrapper in the anonymous namespace below.
 using planner_test::make_agg_group;
 
 constexpr auto database_name = "database";
@@ -1037,8 +1034,8 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
 namespace {
     constexpr auto pushable_oid = components::catalog::oid_t{4242};
 
-    // aggregate(pushable_oid) -> group: bind the shared make_agg to this suite's pushable
-    // table oid so the TEST_CASE call sites (make_agg(r, group)) stay unchanged.
+    // aggregate(pushable_oid) -> group: the shared make_agg bound to this suite's
+    // pushable table oid.
     static node_aggregate_ptr make_agg(std::pmr::memory_resource* r, const node_group_ptr& group) {
         return planner_test::make_agg(r, group, pushable_oid);
     }

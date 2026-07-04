@@ -314,11 +314,11 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
-        // 3b-B: the executor drives this INCREMENTALLY — once per "buffer full" during
+        // The executor drives this INCREMENTALLY — once per "buffer full" during
         // the pump (dml_flush_is_final==false) and once at finalize (==true). Each call
         // flushes the currently-buffered matched-id slice; only the final call emits the
         // RETURNING / affected-count output and mark_executed. threshold==0 collapses to
-        // exactly one final call, so this is behavior-preserving.
+        // exactly one final call.
         const bool is_final = ctx->dml_flush_is_final;
 
         // Catalog-delete mode: delete pg_catalog rows by (oid_col_idx, target_oid)
@@ -348,7 +348,7 @@ namespace components::operators {
         // lives in the NAMED coroutine lambda `op`, which yields a flush_outcome_t;
         // record_flush() then does the COMMON post-storage bookkeeping (constraint
         // accumulation when a parent constraint sits above the DML). DELETE writes its
-        // OWN WAL (unlike insert/update, where the disk agent owns it) and appends
+        // OWN WAL (unlike INSERT, where the disk agent owns it) and appends
         // nothing, so the outcome carries no append range.
         if (modified_ && modified_->size() > 0) {
             const bool mirror_index =
@@ -485,8 +485,7 @@ namespace components::operators {
         // FINAL: with RETURNING, drain the staged RETURNING accumulator. Without
         // RETURNING, emit a typed chunk batch whose cardinalities sum to the total
         // affected-row count accumulated across every flush. Nothing deleted and no
-        // RETURNING => leave output_ null (pre-3b behavior: a 0-affected DELETE emits
-        // no result rows).
+        // RETURNING => leave output_ null (a 0-affected DELETE emits no result rows).
         if (!returning_.empty()) {
             if (!returning_staged_.empty()) {
                 set_output(make_operator_data(resource_, std::move(returning_staged_)));

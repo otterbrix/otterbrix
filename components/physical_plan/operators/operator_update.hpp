@@ -51,11 +51,11 @@ namespace components::operators {
 
         // Self-contained DML side-effects. Performs storage_update +
         // WAL physical_update + index::update_rows, populates ctx->dml_*
-        // swap-info, then mark_executed. Driven INCREMENTALLY under 3b-B: once per
+        // swap-info, then mark_executed. Driven INCREMENTALLY: once per
         // mid-pump flush (dml_flush_is_final==false) and once at finalize (==true).
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        // 3b-B bounded-sink hook: rows folded into output_ but not yet flushed. The
+        // Bounded-sink hook: rows folded into output_ but not yet flushed. The
         // executor's mid-pump gate compares this to dml_flush_row_threshold; each
         // flush clears output_->chunks(), so it drops back to 0 until push() refills.
         uint64_t buffered_rows() const noexcept override { return output_ ? output_->size() : 0; }
@@ -95,12 +95,12 @@ namespace components::operators {
         // left_->output() (empty when streaming).
         chunks_vector_t index_old_chunks_{resource_};
         bool simple_init_done_{false};
-        // 3b-B bounded-sink accumulators — persist ACROSS incremental flushes (each
+        // Bounded-sink accumulators — persist ACROSS incremental flushes (each
         // flush clears output_/index_old_chunks_/returning_from_chunks_, but these
         // must span the whole statement). returning_accum_ gathers the projected
         // RETURNING chunks from every flush; affected_rows_ totals the storage_update
-        // counts when there is NO RETURNING (output_ is cleared per flush, so it can
-        // no longer double as the affected-count carrier); delete_marker_recorded_
+        // counts when there is NO RETURNING (output_ is cleared per flush, so it
+        // cannot double as the affected-count carrier); delete_marker_recorded_
         // guards the single MVCC delete tombstone (one per txn/table, not per flush).
         chunks_vector_t returning_accum_{resource_};
         uint64_t affected_rows_{0};

@@ -30,7 +30,7 @@ namespace components::operators {
         // emit its single row. The agent's empty-slice finalize normally supplies it
         // (so saw_rows_ is true and this is a no-op); synthesize only when no row
         // arrived at all. Without output_types the row cannot be typed — bail (the
-        // agent-side row is then the only source, as before).
+        // agent-side row is then the only source).
         if (saw_rows_ || !scalar_ || output_types_.empty()) {
             return core::error_t::no_error();
         }

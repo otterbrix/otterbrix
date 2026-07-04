@@ -1,9 +1,7 @@
-// SEAM B: aggregate-pushdown POD spec-build (services::planner::impl::build_pushed_spec).
+// Aggregate-pushdown POD spec-build (services::planner::impl::build_pushed_spec).
 //
-// REPLACES the old fragment_clone (deep_clone_fragment / clone_referenced_params) tests: the
-// ship-the-logical-fragment transport is gone. A pushed aggregate now rides a POD
-// pushed_aggregate_spec_t built by build_pushed_spec, so this file asserts the SAME properties
-// on the new path:
+// A pushed aggregate rides a POD pushed_aggregate_spec_t built by build_pushed_spec; this
+// file asserts:
 //   (a) DISJOINTNESS — the POD carries NO node_ptr / expression_ptr; each string/path is an
 //       independent std::pmr copy (mailbox-safe by construction), NOT an alias of the source.
 //   (b) FIELD FIDELITY — group keys (name + path), aggregates (function / uid / arg-path /

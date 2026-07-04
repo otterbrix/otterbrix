@@ -46,15 +46,14 @@ namespace services::collection::executor {
     // path. DEV_MODE-only, like streaming_pipeline_runs().
     uint64_t dml_appends_reverted() noexcept;
 
-    // Test-observable counter of MID-PUMP DML flushes: the executor bumps it every
-    // time the mid-pump flush gate fires (buffered_rows() >= dml_flush_row_threshold_,
-    // dml_flush_row_threshold_ != 0), i.e. once per NON-final incremental flush of a
-    // bounded DML sink. With the default threshold==0 the gate never fires and this
-    // stays 0 (the mid-flush path is disabled). A test that sets a small threshold and
-    // runs a multi-batch DML asserts this bumps >1, proving the incremental spill path
-    // actually executed rather than collapsing to a single post-pump flush. Process-
-    // global + relaxed: coarse instrumentation, not a synchronization primitive; off
-    // every hot path. DEV_MODE-only, like streaming_pipeline_runs().
+    // Test-observable counter of MID-PUMP DML flushes: bumped each time the
+    // mid-pump flush gate fires (threshold set and buffered_rows() >= threshold),
+    // i.e. once per NON-final incremental flush of a bounded DML sink. With the
+    // default threshold==0 the gate never fires and this stays 0. Lets tests prove
+    // the incremental spill path actually executed rather than collapsing to a
+    // single post-pump flush. Process-global + relaxed: coarse instrumentation,
+    // not a synchronization primitive; off every hot path. DEV_MODE-only, like
+    // streaming_pipeline_runs().
     uint64_t dml_flush_count() noexcept;
 #endif
 
@@ -271,8 +270,8 @@ namespace services::collection::executor {
         unique_future<core::error_t> materialize_build_sides_(components::operators::operator_ptr root,
                                                               components::pipeline::context_t* ctx);
 
-        // Mid-pump DML flush gate, shared by execute_pipeline's two pump branches
-        // (scan-source + materialized-input). When the streaming DML sink at
+        // Mid-pump DML flush gate, shared by execute_pipeline's pump branches
+        // (producing-bottom, scan-source, materialized-input). When the streaming DML sink at
         // chain[dml_idx] has buffered >= dml_flush_row_threshold_ rows, drive a
         // NON-final incremental async flush so the sink stays open for the remaining
         // batches. A MEMBER coroutine (so `this` supplies the frame memory_resource)
@@ -304,7 +303,7 @@ namespace services::collection::executor {
         components::compute::function_registry_t function_registry_;
         // Config-gated bound on rows buffered by a streaming DML sink before the
         // execute_pipeline pump forces an incremental async flush. 0 = disabled
-        // (behavior-preserving: the mid-pump gate never fires).
+        // (the mid-pump gate never fires).
         uint64_t dml_flush_row_threshold_{0};
     };
 

@@ -16,7 +16,7 @@
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
-#include <components/physical_plan/pushed_aggregate_spec.hpp> // aggregate-pushdown reduce spec (SEAM B)
+#include <components/physical_plan/pushed_aggregate_spec.hpp> // aggregate-pushdown reduce spec
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/table/column_state.hpp>
@@ -148,9 +148,9 @@ namespace services::disk {
                             std::pmr::vector<std::string> key_col_names,
                             components::vector::data_chunk_t keys);
 
-        // Aggregate-pushdown REDUCE (SEAM B) — a DEDICATED protocol leg, not a scan mode:
-        // the owning agent runs the whole GROUP BY over its slice (the EXISTING
-        // operator_group rebuilt from the POD spec; WHERE rides `filter`, projection rides
+        // Aggregate-pushdown REDUCE — a DEDICATED protocol leg, not a scan mode:
+        // the owning agent runs the whole GROUP BY over its slice (operator_group
+        // rebuilt from the POD spec; WHERE rides `filter`, projection rides
         // `projected_cols`) and replies ALL final aggregated rows in ONE reply — bounded by
         // #groups, so no cursor exists. A not-owned / record-only oid reduces over the
         // EMPTY input (a scalar aggregate still emits its single COUNT=0/NULL row).

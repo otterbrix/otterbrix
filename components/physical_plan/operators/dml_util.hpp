@@ -10,13 +10,13 @@
 #include <components/vector/data_chunk.hpp>
 #include <core/result_wrapper.hpp>
 
-// Shared per-flush bookkeeping for the bounded DML sinks (insert / update / delete),
-// Step 3b-B. The three operators fold each source batch into a bounded buffer in push()
+// Shared per-flush bookkeeping for the bounded DML sinks (insert / update / delete).
+// The three operators fold each source batch into a bounded buffer in push()
 // and the executor drives await_async_and_resume INCREMENTALLY: once per "buffer full"
 // during the pump (dml_flush_is_final==false) and once at finalize (==true). Each flush
 // runs the operator's DIVERGENT storage op (append vs delete-old+append-new vs delete —
 // co_awaited IN the operator, where its shapes live), then calls record_flush() to do the
-// COMMON post-storage bookkeeping: record the append range into the unified 3b-A channel
+// COMMON post-storage bookkeeping: record the append range into the unified append channel
 // and, only when a parent constraint sits above the DML, accumulate a persistent copy of
 // the just-written rows into constraint_input_ (so the constraint validates the full set
 // at finalize). When there is NO parent constraint, constraint_input_ stays null and the
@@ -82,8 +82,7 @@ namespace components::operators::dml_detail {
     // Build the "affected-row count" carrier for a no-RETURNING DML result: a run of chunks whose
     // cardinalities SUM to affected_rows (the cursor totals chunk sizes), each capped at
     // DEFAULT_VECTOR_CAPACITY rows so no oversized data_chunk_t is built. insert/update pass an
-    // EMPTY col_types (column-less carrier); delete passes the table's storage types. One place
-    // instead of three byte-identical copies (3b-B bookkeeping).
+    // EMPTY col_types (column-less carrier); delete passes the table's storage types.
     [[nodiscard]] inline chunks_vector_t
     make_affected_count_chunks(std::pmr::memory_resource* resource,
                                uint64_t affected_rows,

@@ -1,4 +1,4 @@
-// SEAM B: create_plan aggregate-pushdown lowering.
+// create_plan aggregate-pushdown lowering.
 //
 // An aggregate_t node whose group_t child carries pushdown()==true lowers to an
 // operator_group_merge (the coordinator-side aggregate terminal) over a pushed_reduce_scan
@@ -6,7 +6,7 @@
 // reduces its own slice, the merge passes the final rows through and owns the empty-input
 // scalar row. The SAME node with the flag cleared lowers to the normal aggregate chain (the
 // group operator, which tags itself operator_type::aggregate) — routing is gated purely on
-// the flag, byte-for-byte identical to pre-pushdown behavior when it is false.
+// the flag.
 
 #include <catch2/catch.hpp>
 

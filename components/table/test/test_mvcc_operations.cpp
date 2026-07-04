@@ -715,14 +715,14 @@ namespace {
 
 } // anonymous namespace
 
-// GAP C — DIRECT storage-level regression for row_group_t::revert_append column truncation.
-// Pre-fix, revert_append reduced only the row-group / version count and left each COLUMN's
-// segments at the old (larger) count (get_column(c).revert_append was never called). On a small
-// table the stale column tail then desynced from the row-group count: a subsequent scan over-read
-// the stale rows (heap-buffer-overflow in fetch_row) and a re-append landed past the reverted
-// boundary, corrupting both columns. This drives the exact revert-then-reappend path directly at
-// the storage layer (no DML), asserting the reverted count, the surviving column values after the
-// revert, and correct values after re-append. RED on the pre-fix (missing column revert) code.
+// DIRECT storage-level regression for row_group_t::revert_append column truncation.
+// revert_append must truncate every COLUMN's segments (get_column(c).revert_append) along with
+// the row-group / version count. A revert that moves only the row-group count leaves a stale
+// column tail desynced from it: a subsequent scan over-reads the stale rows (heap-buffer-overflow
+// in fetch_row) and a re-append lands past the reverted boundary, corrupting both columns. This
+// drives the exact revert-then-reappend path directly at the storage layer (no DML), asserting
+// the reverted count, the surviving column values after the revert, and correct values after
+// re-append.
 TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
     test_env env;
     auto table = make_int2_table(env);
@@ -732,7 +732,7 @@ TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
     REQUIRE(table->row_group()->total_rows() == 100);
 
     // Revert the tail: keep rows [0,40), drop the last 60. Both the row-group count AND every
-    // column segment must truncate to 40 — pre-fix only the row-group count moved.
+    // column segment must truncate to 40.
     table->revert_append(40, 60);
     REQUIRE(table->row_group()->total_rows() == 40);
 
@@ -746,11 +746,9 @@ TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
         }
     }
 
-    // Re-append onto the reverted table with DISTINCT values (a=1000..1029) so a pre-fix miss is
-    // OBSERVABLE (genuinely RED-first): without the column truncation the re-appended rows land AFTER
-    // the un-truncated stale column tail, so logical rows [40,70) would read the STALE originals
-    // (a=40..69) instead of the re-appended 1000.. — the value check below then FAILS on the buggy code.
-    // On the fixed code the column was truncated to 40, so the re-append fills [40,70) with 1000..1029.
+    // Re-append onto the reverted table with DISTINCT values (a=1000..1029) so a missed column
+    // truncation is OBSERVABLE: without it the re-appended rows land AFTER the stale column tail,
+    // and logical rows [40,70) read the STALE originals (a=40..69) instead of 1000..1029.
     append_rows2(*table, env, 1000, 30);
     REQUIRE(table->row_group()->total_rows() == 70);
 

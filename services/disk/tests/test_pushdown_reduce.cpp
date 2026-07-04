@@ -1,19 +1,19 @@
-// SEAM B: agent-side aggregate-pushdown REDUCE — execution + routing contract.
+// Agent-side aggregate-pushdown REDUCE — execution + routing contract.
 //
 // A pushed aggregate rides a POD pushed_aggregate_spec_t on the DEDICATED storage_reduce
-// leg: the owning agent rebuilds the EXISTING operator_group from the POD, REDUCES its OWN
+// leg: the owning agent rebuilds the operator_group from the POD, REDUCES its OWN
 // slice (send-free) and replies ALL final aggregated rows in ONE reply (no cursor). The
 // manager is a transparent router (pool_idx_for_oid -> owning agent's storage_reduce_inner),
 // forwarding the reduced reply unchanged. This file drives that path directly against the
 // manager (fixture in pushdown_reduce_fixture.hpp) and asserts:
 //   (a) READ-YOUR-OWN-WRITES — rows appended UNDER an uncommitted txn are summed only when the
-//       fetch carries that SAME txn (the D4 zero-txn guard: the reduce builds its pipeline
+//       fetch carries that SAME txn (the zero-txn guard: the reduce builds its pipeline
 //       context with the caller's txn, not txn{0,0}).
 //   (b) EMPTY-SLICE — SUM over a table with no visible rows still emits ONE scalar row
 //       (typed via the spec's output_types), value NULL.
 //   (c) GROUPED — GROUP BY key + SUM returns the full grouped result.
-//   (d) ROUTING CONTRACT — a spec-carrying OPEN round-trips to a well-formed (error-free,
-//       non-null) reply (folded in from the former routing test).
+//   (d) ROUTING CONTRACT — a spec-carrying storage_reduce round-trips to a well-formed
+//       (error-free, non-null) reply.
 
 #include "pushdown_reduce_fixture.hpp"
 #include <components/compute/tests/pushdown_sum_uid.hpp>
@@ -202,11 +202,10 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     REQUIRE(grouped[2] == 35);
 }
 
-// (d) ROUTING CONTRACT (folded in from the former routing test): a storage_reduce for a
-// known owned table round-trips through the manager (pool_idx_for_oid -> owning agent) to a
-// well-formed reply. A scalar SUM over an EMPTY table still yields ONE row (SUM = NULL); the
-// routing + message contract are what is under test here, not the aggregate values (those
-// are the cases above).
+// (d) ROUTING CONTRACT: a storage_reduce for a known owned table round-trips through the
+// manager (pool_idx_for_oid -> owning agent) to a well-formed reply. A scalar SUM over an
+// EMPTY table still yields ONE row (SUM = NULL); the routing + message contract are what is
+// under test here, not the aggregate values (those are the cases above).
 TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-formed result") {
     fixture fx;
 

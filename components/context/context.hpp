@@ -76,21 +76,22 @@ namespace components::pipeline {
         // MVCC swap-info here from inside await_async_and_resume; the executor's
         // lift_dml_ranges drains them into the per-statement accumulators that feed
         // txn_accumulate_msg. WAL physical writes happen in the operators; only the
-        // commit-side swap needs this back-channel. These are LISTS (not single
-        // slots) so a bounded DML sink can flush per-batch and record ONE range per
-        // flush; a single-flush op records exactly one. operator_fk_cascade_t (a
-        // DIFFERENT child table) pushes here too under the PARENT txn id, so COMMIT
-        // publishes and ABORT (revert_all_deletes(parent_txn_id) / storage_revert_
-        // appends) reverts parent + cascade child mutations as one atomic batch.
+        // commit-side swap needs this back-channel. LISTS so a bounded DML sink
+        // can flush per-batch and record ONE range per flush; a single-flush op
+        // records exactly one. operator_fk_cascade_t (a DIFFERENT child table)
+        // pushes here too under the PARENT txn id, so COMMIT publishes and ABORT
+        // (revert_all_deletes(parent_txn_id) / storage_revert_appends) reverts
+        // parent + cascade child mutations as one atomic batch.
         std::vector<table::dml_append_range_t> dml_appends;
         std::vector<table::dml_delete_range_t> dml_deletes;
-        // Executor-set flush control for bounded DML sinks (3b-B). dml_flush_is_final:
+        // Executor-set flush control for bounded DML sinks. dml_flush_is_final:
         // false before a MID-pump flush of a buffering DML sink, true before the final
         // post-pump async-finalize drive (the DML emits its RETURNING / affected-count
         // output_ + mark_executed ONLY on the true call). dml_has_parent_constraint:
         // true when a constraint sink (fk_check / fk_cascade / check_constraint) sits
         // ABOVE the DML in the chain -> the DML accumulates constraint_input_ across
-        // flushes; false -> it drops it (bounded memory). Defaults = pre-3b-B behavior.
+        // flushes; false -> it drops it (bounded memory). Defaults match the
+        // single-final-flush, no-parent-constraint case.
         bool dml_flush_is_final{true};
         bool dml_has_parent_constraint{false};
         // DROP back-channel: operator_dynamic_cascade_delete_t records each

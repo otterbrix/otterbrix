@@ -1,12 +1,10 @@
 #pragma once
 
-// Shared fixture for the agent-side aggregate-pushdown REDUCE tests (SEAM B).
+// Shared fixture for the agent-side aggregate-pushdown REDUCE tests.
 //
 // Spins up a manager_disk_t on a non-threaded test scheduler over a private temp
-// dir, with a synchronous `invoke<>` send helper and the `drive_reduce` OPEN/ADVANCE
-// loop that drains a pushed_aggregate_spec_t reduce into its finalized chunks. Was
-// duplicated byte-for-byte across the pushdown-reduce execution and routing tests
-// before they were consolidated.
+// dir, with a synchronous `invoke<>` send helper and the `drive_reduce` helper
+// that runs a pushed_aggregate_spec_t reduce and returns its finalized chunks.
 
 #include <catch2/catch.hpp>
 

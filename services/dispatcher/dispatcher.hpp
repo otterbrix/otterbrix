@@ -58,7 +58,7 @@ namespace services::dispatcher {
             actor_zeta::address_t wal = actor_zeta::address_t::empty_address();
             actor_zeta::address_t disk = actor_zeta::address_t::empty_address();
             actor_zeta::address_t index = actor_zeta::address_t::empty_address();
-            // Config-gated DML flush bound (0 = disabled, behavior-preserving).
+            // Config-gated DML flush bound (0 = disabled).
             // Trailing so existing 3-field aggregate inits (tests) stay valid.
             uint64_t dml_flush_row_threshold = 0;
         };

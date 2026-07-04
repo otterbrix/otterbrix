@@ -8,24 +8,23 @@
 #include <string>
 #include <vector>
 
-// Aggregate-pushdown SPEC (SEAM B). A POD, mailbox-safe description of the reduce the
+// Aggregate-pushdown SPEC. A POD, mailbox-safe description of the reduce the
 // owning agent runs over its OWN slice: plain-column GROUP BY keys + builtin
-// SUM/COUNT/MIN/MAX/AVG. It REPLACES the old ship-the-logical-fragment transport:
-// instead of deep-cloning a node_ptr sub-tree, the coordinator lowers the stamped
-// aggregate into a full_scan that CARRIES this spec, and the agent rebuilds the
-// EXISTING operator_group from it.
+// SUM/COUNT/MIN/MAX/AVG. The coordinator lowers the stamped aggregate into a
+// pushed_reduce_scan that CARRIES this spec, and the agent rebuilds the EXISTING
+// operator_group from it.
 //
 // R10/R14: NO node_ptr / expression_ptr / variant / any / tuple / shared_ptr anywhere —
 // only POD scalars + std::pmr containers of them + a resolved column-index path. So it may
-// cross the mailbox by value without the non-atomic-intrusive-refcount hazard the logical
-// tree had. Every pmr member is constructed on an explicit resource (NO get_default_
-// resource): the struct is NOT default-constructible on purpose (storage_parameters ships
-// the same way — actor_zeta value-args need no default ctor).
+// cross the mailbox by value without a non-atomic intrusive-refcount hazard. Every pmr
+// member is constructed on an explicit resource (NO get_default_resource): the struct is
+// NOT default-constructible on purpose (storage_parameters ships the same way —
+// actor_zeta value-args need no default ctor).
 //
-// The WHERE predicate is NOT carried here: it rides the EXISTING mailbox-safe
-// table_filter_t on storage_fetch_next_batch's `filter` param (full_scan builds it once via
-// transform_predicate). The scan projection likewise rides that call's EXISTING
-// projected_cols param (single source of truth — NOT duplicated in the POD).
+// The WHERE predicate is NOT carried here: it rides the mailbox-safe table_filter_t on
+// storage_reduce's `filter` param (built once via transform_predicate). The scan
+// projection likewise rides that call's projected_cols param (single source of truth —
+// NOT duplicated in the POD).
 
 namespace components::operators {
 
@@ -73,8 +72,8 @@ namespace components::operators {
             , aggregates(resource)
             , output_types(resource) {}
 
-        // "A reduce is armed": distinguishes a real pushed aggregate from the empty spec
-        // full_scan ships on every ADVANCE (cursor already open — no reduce re-run needed).
+        // "A reduce is armed": an all-empty spec (no keys, no aggregates) describes no
+        // reduce at all — build_pushed_spec rejects it.
         [[nodiscard]] bool active() const noexcept { return !aggregates.empty() || !group_keys.empty(); }
     };
 

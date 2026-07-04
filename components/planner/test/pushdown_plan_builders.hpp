@@ -4,8 +4,7 @@
 // (test_optimizer, test_pushed_spec_build, test_create_plan_pushdown) construct the
 // same aggregate_t -> group_t pushdown shape over the ("database", "collection")
 // table, so the aggregate-node wrapper (make_agg) and the canonical scalar+count
-// group builder (make_agg_group) live here in ONE copy instead of being re-typed per
-// suite. Test-only header (no [[nodiscard]] churn).
+// group builder (make_agg_group) live here in ONE copy. Test-only header.
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -23,9 +22,7 @@ namespace planner_test {
     inline core::dbname_t dbn() { return core::dbname_t{std::string{"database"}}; }
     inline core::relname_t reln() { return core::relname_t{std::string{"collection"}}; }
 
-    // Wrap `group` in an aggregate_t at `table_oid`. The default (no output types, not
-    // distinct) is byte-identical to the extended overload below with distinct==false and
-    // empty out_types (aggregate distinct defaults false, output types default empty).
+    // Wrap `group` in an aggregate_t at `table_oid` (no output types, not distinct).
     inline components::logical_plan::node_aggregate_ptr
     make_agg(std::pmr::memory_resource* r,
              const components::logical_plan::node_group_ptr& group,
@@ -55,7 +52,7 @@ namespace planner_test {
     }
 
     // The canonical scalar+count aggregate group used by the optimizer pushdown tests.
-    // `with_group_key` adds a scalar group_field (grouped/5b shape) vs none (scalar/5a shape).
+    // `with_group_key` adds a scalar group_field (grouped shape) vs none (scalar shape).
     inline components::logical_plan::node_group_ptr
     make_agg_group(std::pmr::memory_resource* r,
                    bool with_group_key,

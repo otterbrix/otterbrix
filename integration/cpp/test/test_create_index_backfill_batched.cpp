@@ -1,19 +1,16 @@
 // ============================================================================
-// Phase 3b-E — BATCHED CREATE INDEX backfill.
+// BATCHED CREATE INDEX backfill.
 //
-// operator_create_index_backfill_t used to materialize the WHOLE table with a
-// single storage_scan_segment(0, total_rows) and hand it to insert_rows in one
-// shot — peak memory = the entire table. The rewrite STREAMS the table through
-// the storage_fetch_next_batch cursor primitive (the same fetch-next source the
-// streaming scans use): peak = one batch + index state.
+// operator_create_index_backfill_t STREAMS the table through the
+// storage_fetch_next_batch cursor primitive (the same fetch-next source the
+// streaming scans use), so peak memory = one batch + index state — never the
+// whole table materialized in a single storage_scan_segment(0, total_rows).
 //
 // WHAT THESE TESTS ASSERT:
 //   (a) BATCHING — a CREATE INDEX over a table LARGER than one scan batch
 //       (kRowCount >> DEFAULT_VECTOR_CAPACITY) must consume MORE THAN ONE batch,
 //       observed via components::operators::create_index_backfill_batches()
-//       (DEV_MODE instrumentation bumped once per non-empty fetched batch). The
-//       old single-shot path never touched storage_fetch_next_batch, so this
-//       counter stayed 0 — the assertion is RED pre-rewrite, GREEN post-rewrite.
+//       (DEV_MODE instrumentation bumped once per non-empty fetched batch).
 //   (b) VISIBILITY — the backfilled index is usable after commit: an equality
 //       predicate on the indexed column returns exactly the pre-existing rows
 //       (the PENDING -> commit_inserts contract must still publish the entries).
@@ -60,8 +57,7 @@ TEST_CASE("integration::cpp::create_index_backfill::large_table_streams_multiple
     REQUIRE(exec(dispatcher, "CREATE DATABASE IdxDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE IdxDb.t (id bigint, grp int, val bigint);")->is_success());
 
-    // Populate BEFORE the index exists, so CREATE INDEX must backfill the existing
-    // rows (the whole-table scan the rewrite converts to a batched loop).
+    // Populate BEFORE the index exists, so CREATE INDEX must backfill the existing rows.
     seed(dispatcher);
 
     // BATCHING: the streaming backfill must consume more than one fetch batch.

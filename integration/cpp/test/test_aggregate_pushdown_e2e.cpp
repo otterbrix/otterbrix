@@ -26,7 +26,7 @@
 // bumped inside the agent-side reduce OPEN, proving the aggregate WAS pushed to the
 // owning agent rather than computed coordinator-side. Without this guard the value
 // REQUIREs would still pass even if pushdown silently stopped firing, hiding a
-// coverage loss. (Folds in the former test_pushdown_computed.cpp.)
+// coverage loss.
 
 using namespace test_helpers;
 

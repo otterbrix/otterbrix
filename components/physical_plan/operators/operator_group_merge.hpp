@@ -8,10 +8,10 @@
 
 namespace components::operators {
 
-    // Coordinator-side terminal of the aggregate pushdown (SEAM B). Sits where the
-    // coordinator operator_group used to sit, so the physical plan keeps a truthful
-    // aggregate-shaped node above the pushed_reduce_scan (EXPLAIN / costing / the
-    // recursive-CTE reset walk see an aggregate, not a scan impersonating one).
+    // Coordinator-side terminal of the aggregate pushdown. Keeps a truthful
+    // aggregate-shaped node in the physical plan above the pushed_reduce_scan
+    // (EXPLAIN / costing / the recursive-CTE reset walk see an aggregate, not a
+    // scan impersonating one).
     //
     // TODAY it is an IDENTITY PASSTHROUGH — under the single-owner invariant (see
     // disk_contract.hpp: one agent owns the whole table) the agent already returns

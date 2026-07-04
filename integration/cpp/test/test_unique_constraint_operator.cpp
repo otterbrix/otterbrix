@@ -5,6 +5,7 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan/operators/operator_unique_constraint.hpp>
+#include <components/vector/cell_equal.hpp>
 
 #include <limits>
 #include <memory_resource>
@@ -169,4 +170,37 @@ TEST_CASE("unique constraint operator: 0.0 and -0.0 collide as one double key", 
     chunk.set_cardinality(2);
 
     REQUIRE(run_unique(&resource, std::move(chunk), {{"score"}}));
+}
+
+// ---------------------------------------------------------------------------
+// cells_equal must resolve DICTIONARY indirection, exactly like the hash half
+// of the hash+verify pair does (to_unified_format): a filter-sliced scan batch
+// reaches GROUP BY / hash join / the unique dedup as a DICTIONARY vector, and
+// a raw data<T>()[row] read would index the underlying flat buffer with the
+// UNRESOLVED row — comparing the wrong cell.
+// ---------------------------------------------------------------------------
+TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[unique_constraint]") {
+    auto resource = std::pmr::synchronized_pool_resource();
+
+    // Flat base [10, 20, 30]; dictionary view picks rows {2, 0} -> [30, 10].
+    vector::vector_t base(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 3);
+    base.set_value(0, types::logical_value_t(&resource, int64_t(10)));
+    base.set_value(1, types::logical_value_t(&resource, int64_t(20)));
+    base.set_value(2, types::logical_value_t(&resource, int64_t(30)));
+    vector::indexing_vector_t sel(&resource, 2);
+    sel.set_index(0, 2);
+    sel.set_index(1, 0);
+    vector::vector_t dict(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 3);
+    dict.slice(base, sel, 2);
+
+    // Flat reference vector [30, 10].
+    vector::vector_t flat(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 2);
+    flat.set_value(0, types::logical_value_t(&resource, int64_t(30)));
+    flat.set_value(1, types::logical_value_t(&resource, int64_t(10)));
+
+    // dict[0]==30==flat[0] and dict[1]==10==flat[1]; a raw flat read of the
+    // dictionary buffer would see 10 at position 0 and 20 at position 1.
+    REQUIRE(vector::cells_equal(dict, 0, flat, 0));
+    REQUIRE(vector::cells_equal(dict, 1, flat, 1));
+    REQUIRE_FALSE(vector::cells_equal(dict, 0, flat, 1));
 }

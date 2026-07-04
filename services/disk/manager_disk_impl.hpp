@@ -32,18 +32,6 @@ namespace services::disk {
         namespace deptype = components::catalog::deptype;
 
         // ---------------------------------------------------------------------------
-        // Logical value constructors (shortcuts for single-row pg_catalog writes)
-        // ---------------------------------------------------------------------------
-
-        inline components::types::logical_value_t lv_oid(std::pmr::memory_resource* r, components::catalog::oid_t v) {
-            return components::types::logical_value_t(r, v);
-        }
-
-        inline components::types::logical_value_t lv_str(std::pmr::memory_resource* r, std::string v) {
-            return components::types::logical_value_t(r, std::move(v));
-        }
-
-        // ---------------------------------------------------------------------------
         // make_row: allocate a single-row data_chunk_t and fill it via a lambda.
         // Usage: make_row(resource, def->columns, [&](data_chunk_t& chunk, auto* res) { ... })
         // ---------------------------------------------------------------------------

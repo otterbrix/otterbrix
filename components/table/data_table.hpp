@@ -73,10 +73,11 @@ namespace components::table {
         initialize_update(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
         // Returns write_conflict / out_of_memory. On success the pair is
         // {0, affected-row count}; the caller's update reply carries it.
-        [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>> update(table_update_state& state,
-                                                                                  vector::vector_t& row_ids,
-                                                                                  // const std::vector<uint64_t>& column_ids,
-                                                                                  vector::data_chunk_t& data);
+        [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
+        update(table_update_state& state,
+               vector::vector_t& row_ids,
+               // const std::vector<uint64_t>& column_ids,
+               vector::data_chunk_t& data);
         [[nodiscard]] core::result_wrapper_t<bool> update_column(vector::vector_t& row_ids,
                                                                  const std::vector<uint64_t>& column_path,
                                                                  vector::data_chunk_t& updates);

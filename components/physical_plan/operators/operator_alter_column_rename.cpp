@@ -50,17 +50,14 @@ namespace components::operators {
         }
 
         // keyed single-row read of the live pg_attribute row by attoid.
-        components::types::logical_value_t attoid_lv(resource_, attoid_);
         std::pmr::vector<std::string> pa_keys(resource_);
         pa_keys.emplace_back("attoid");
-        std::pmr::vector<components::types::logical_value_t> pa_vals(resource_);
-        pa_vals.emplace_back(attoid_lv);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr,
                                            std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, std::move(pa_vals)));
+                                           components::operators::make_key_chunk(resource_, attoid_));
         std::pmr::vector<components::vector::data_chunk_t> attr_batches = co_await std::move(paf);
 
         catalog::oid_t attoid = catalog::INVALID_OID;
@@ -76,34 +73,26 @@ namespace components::operators {
                 continue;
             bool found = false;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                auto c0 = chunk.value(0, i);
-                if (c0.is_null())
+                if (chunk.is_null(0, i))
                     continue;
-                auto c7 = chunk.value(7, i);
-                if (!c7.is_null() && c7.value<bool>())
+                if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                     continue; // dropped
-                attoid = static_cast<catalog::oid_t>(c0.value<std::uint32_t>());
-                auto c3 = chunk.value(3, i);
-                atttypid = c3.is_null() ? catalog::INVALID_OID : static_cast<catalog::oid_t>(c3.value<std::uint32_t>());
-                auto c4 = chunk.value(4, i);
-                attnum = c4.is_null() ? 0 : c4.value<std::int32_t>();
-                auto c5 = chunk.value(5, i);
-                att_not_null = !c5.is_null() && c5.value<bool>();
-                auto c6 = chunk.value(6, i);
-                att_has_default = !c6.is_null() && c6.value<bool>();
-                auto c8 = chunk.value(8, i);
-                if (!c8.is_null())
-                    att_typspec = std::string(c8.value<std::string_view>());
-                auto c9 = chunk.value(9, i);
-                if (!c9.is_null())
-                    att_defspec = std::string(c9.value<std::string_view>());
+                attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
+                                               : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
+                att_not_null = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
+                att_has_default = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
+                if (!chunk.is_null(8, i))
+                    att_typspec = std::string(chunk.get_value<std::string_view>(8, i));
+                if (!chunk.is_null(9, i))
+                    att_defspec = std::string(chunk.get_value<std::string_view>(9, i));
                 // Column 10 = added_at_commit_id. Rows written before the MVCC
                 // commit_id columns landed have only 10 columns; tolerate a missing
                 // slot as 0.
                 if (chunk.column_count() > 10) {
-                    auto c10 = chunk.value(10, i);
-                    if (!c10.is_null())
-                        att_added_at_commit_id = c10.value<std::int64_t>();
+                    if (!chunk.is_null(10, i))
+                        att_added_at_commit_id = chunk.get_value<std::int64_t>(10, i);
                 }
                 found = true;
                 break;

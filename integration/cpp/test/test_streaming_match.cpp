@@ -168,8 +168,7 @@ namespace {
                      "(4,2,'carol'), (5,2,'amanda'), "
                      "(6,3,'dave');")
                     ->is_success());
-        REQUIRE(exec(dispatcher,
-                     "INSERT INTO SinkDb.dept (id, name) VALUES (1,'eng'), (2,'sales'), (3,'hr');")
+        REQUIRE(exec(dispatcher, "INSERT INTO SinkDb.dept (id, name) VALUES (1,'eng'), (2,'sales'), (3,'hr');")
                     ->is_success());
     }
 } // namespace
@@ -188,8 +187,7 @@ TEST_CASE("integration::cpp::streaming_match::having_count_filter_returns_correc
     auto* dispatcher = space.dispatcher();
     setup_match_over_sink_db(dispatcher);
 
-    auto cur = exec(dispatcher,
-                    "SELECT dept_id, COUNT(*) AS c FROM SinkDb.emp GROUP BY dept_id HAVING COUNT(*) > 1;");
+    auto cur = exec(dispatcher, "SELECT dept_id, COUNT(*) AS c FROM SinkDb.emp GROUP BY dept_id HAVING COUNT(*) > 1;");
     INFO("HAVING error: " << (cur->is_error() ? cur->get_error().what : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2); // dept_id 1 and 2
@@ -272,9 +270,7 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does
     REQUIRE(exec(dispatcher, "CREATE TABLE BigDb.using_tbl (k bigint);")->is_success());
     // Target: 3 rows keyed 0,1,2. USING: 2000 rows (> 1024) all keyed 1, so the
     // build side spans multiple chunks and joins only the single target row k=1.
-    REQUIRE(exec(dispatcher,
-                 "INSERT INTO BigDb.target (id, k) VALUES (0,0), (1,1), (2,2);")
-                ->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO BigDb.target (id, k) VALUES (0,0), (1,1), (2,2);")->is_success());
     constexpr unsigned kBuildRows = 2000;
     for (unsigned i = 0; i < kBuildRows; ++i) {
         REQUIRE(exec(dispatcher, "INSERT INTO BigDb.using_tbl (k) VALUES (1);")->is_success());

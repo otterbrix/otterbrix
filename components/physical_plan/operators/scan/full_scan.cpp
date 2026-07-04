@@ -196,8 +196,7 @@ namespace components::operators {
         , limit_(limit)
         , projected_cols_(std::move(projected_cols)) {}
 
-    vector::data_chunk_t
-    full_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
+    vector::data_chunk_t full_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
         std::pmr::vector<types::complex_logical_type> projected_types(resource_);
         if (projected_cols_.empty()) {
             projected_types = types;
@@ -254,8 +253,7 @@ namespace components::operators {
             // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
             // col OP NULL → always false → empty. col OP ALL(empty) is vacuously true → scan all.
             bool null_param_skip_filter = false;
-            if (expression_ && !expression_->is_union() &&
-                expression_->type() != expressions::compare_type::is_null &&
+            if (expression_ && !expression_->is_union() && expression_->type() != expressions::compare_type::is_null &&
                 expression_->type() != expressions::compare_type::is_not_null &&
                 std::holds_alternative<core::parameter_id_t>(expression_->right())) {
                 auto pid = std::get<core::parameter_id_t>(expression_->right());

@@ -46,8 +46,7 @@ namespace {
         std::stringstream q;
         q << "INSERT INTO IdxDb.t (id, grp, val) VALUES ";
         for (unsigned i = 0; i < kRowCount; ++i) {
-            q << "(" << i << ", " << (i % kGroups) << ", " << (i * 10) << ")"
-              << (i + 1 == kRowCount ? ";" : ", ");
+            q << "(" << i << ", " << (i % kGroups) << ", " << (i * 10) << ")" << (i + 1 == kRowCount ? ";" : ", ");
         }
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());
@@ -149,8 +148,8 @@ TEST_CASE("integration::cpp::streaming_index_scan::offset_limit_on_indexed_scan"
     // windowing core), spanning a window boundary (LIMIT 1500 > DEFAULT_VECTOR_CAPACITY).
     constexpr unsigned kLimit = 1500;
     {
-        auto cur = exec(dispatcher,
-                        "SELECT id FROM IdxDb.t WHERE grp = 0 LIMIT " + std::to_string(kLimit) + " OFFSET 100;");
+        auto cur =
+            exec(dispatcher, "SELECT id FROM IdxDb.t WHERE grp = 0 LIMIT " + std::to_string(kLimit) + " OFFSET 100;");
         INFO("OFFSET/LIMIT error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kLimit);
@@ -199,8 +198,8 @@ TEST_CASE("integration::cpp::streaming_index_scan::indexed_delete_and_update") {
     // Index-rooted UPDATE over the surviving group: index_scan(source) -> UPDATE(sink).
     constexpr int kBump = 7;
     {
-        auto cur = exec(dispatcher, "UPDATE IdxDb.t SET val = val + " + std::to_string(kBump) +
-                                        " WHERE grp = 0 RETURNING id;");
+        auto cur = exec(dispatcher,
+                        "UPDATE IdxDb.t SET val = val + " + std::to_string(kBump) + " WHERE grp = 0 RETURNING id;");
         INFO("indexed UPDATE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == (kRowCount + 1) / kGroups);

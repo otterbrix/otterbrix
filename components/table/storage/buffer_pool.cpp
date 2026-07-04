@@ -230,8 +230,7 @@ namespace components::table::storage {
         // Unreachable: the loop above always returns on the last queue (`queue.get() == queues.back().get()`),
         // and `queues` is non-empty (the ctor pushes one queue per file_buffer_type). Programming invariant,
         // not a runtime error -- assert instead of throwing.
-        assert(false &&
-               "Exited buffer_pool_t::evict_blocks_internal without obtaining buffer_pool_t::eviction_result");
+        assert(false && "Exited buffer_pool_t::evict_blocks_internal without obtaining buffer_pool_t::eviction_result");
         return evict_blocks_internal(*queues.back(), tag, extra_memory, memory_limit, buffer);
     }
 

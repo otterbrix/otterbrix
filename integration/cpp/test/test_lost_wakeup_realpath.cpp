@@ -427,25 +427,19 @@ TEST_CASE("real-path fetch-next: N per-batch awaits, each a 2-hop cross-schedule
     exec_scheduler->start();
     disk_scheduler->start();
 
-    auto leaf  = spawn<leaf_disk_actor>(resource);
-    auto relay = spawn<relay_disk_actor>(resource,
-                                         leaf->address(),
-                                         disk_scheduler.get(),
-                                         leaf.get());
+    auto leaf = spawn<leaf_disk_actor>(resource);
+    auto relay = spawn<relay_disk_actor>(resource, leaf->address(), disk_scheduler.get(), leaf.get());
 
-    constexpr std::int64_t kBatchesPerQuery = 64;   // 64 sequential 2-hop awaits per query
-    constexpr int          kQueries         = 3000; // hammer the chained-park race
-    const auto             kPerQueryTimeout = std::chrono::seconds(5);
+    constexpr std::int64_t kBatchesPerQuery = 64; // 64 sequential 2-hop awaits per query
+    constexpr int kQueries = 3000;                // hammer the chained-park race
+    const auto kPerQueryTimeout = std::chrono::seconds(5);
 
-    auto executor = spawn<query_executor_actor>(resource,
-                                                relay->address(),
-                                                exec_scheduler.get(),
-                                                relay.get(),
-                                                kBatchesPerQuery);
+    auto executor =
+        spawn<query_executor_actor>(resource, relay->address(), exec_scheduler.get(), relay.get(), kBatchesPerQuery);
 
-    int  completed = 0;
-    bool hung      = false;
-    int  hung_query = -1;
+    int completed = 0;
+    bool hung = false;
+    int hung_query = -1;
 
     for (int q = 0; q < kQueries; ++q) {
         executor->reset();
@@ -467,7 +461,8 @@ TEST_CASE("real-path fetch-next: N per-batch awaits, each a 2-hop cross-schedule
         }
 
         if (hung) {
-            WARN("LOST-WAKEUP (real path): query " << q << " of " << kQueries
+            WARN("LOST-WAKEUP (real path): query "
+                 << q << " of " << kQueries
                  << " stalled after a 2-hop cross-scheduler reply through a suspended "
                     "intermediate (relay/manager_disk) — a chained flag-only completion "
                     "was lost; no watchdog poke here to mask it");
@@ -481,10 +476,9 @@ TEST_CASE("real-path fetch-next: N per-batch awaits, each a 2-hop cross-schedule
     exec_scheduler->stop();
     disk_scheduler->stop();
 
-    INFO("completed " << completed << " / " << kQueries
-         << " queries, each with " << kBatchesPerQuery
-         << " sequential 2-hop cross-scheduler awaits"
-         << (hung ? (std::string(" — HUNG at query ") + std::to_string(hung_query)) : std::string{}));
+    INFO("completed " << completed << " / " << kQueries << " queries, each with " << kBatchesPerQuery
+                      << " sequential 2-hop cross-scheduler awaits"
+                      << (hung ? (std::string(" — HUNG at query ") + std::to_string(hung_query)) : std::string{}));
 
     // Load-bearing assertion: NO query stalled across N sequential per-batch awaits, each a
     // separate source_next operator coroutine doing TWO sequential 2-hop cross-scheduler

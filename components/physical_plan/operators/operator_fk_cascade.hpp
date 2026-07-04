@@ -27,8 +27,7 @@ namespace components::operators {
 
         // No streaming input of its own: the child DELETE sink drains the pumped
         // stream, so push() is never reached with rows. Explicit no-ops.
-        [[nodiscard]] core::error_t
-        push(pipeline::context_t*, vector::data_chunk_t&&, chunks_vector_t&) override {
+        [[nodiscard]] core::error_t push(pipeline::context_t*, vector::data_chunk_t&&, chunks_vector_t&) override {
             return core::error_t::no_error();
         }
         [[nodiscard]] core::error_t finalize(pipeline::context_t*, chunks_vector_t&) override {

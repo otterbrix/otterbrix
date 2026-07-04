@@ -1,5 +1,7 @@
 #include "operator_fk_cascade.hpp"
 
+#include "constraint_util.hpp"
+
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
@@ -16,31 +18,14 @@ namespace components::operators {
         : read_write_operator_t(resource, log, operator_type::fk_cascade)
         , fk_(std::move(fk)) {}
 
-    namespace {
-        // Resolve the deleted parent rows fk_cascade looks up referencing children
-        // for. The DELETE child snapshots its matched OLD (pre-delete) rows into
-        // constraint_input() at the top of its await_async_and_resume, so prefer
-        // that — it is populated in BOTH paths (fk_cascade always runs after the
-        // delete's await). Fall back to the scan's output_ (the pre-delete row
-        // values, materialized path) then the delete's pass-through output_, so the
-        // materialized entry point keeps working unchanged.
-        const operator_data_ptr& resolve_fk_cascade_source(const operator_ptr& left) {
-            if (left->constraint_input() && left->constraint_input()->size() > 0) {
-                return left->constraint_input();
-            }
-            if (left->left() && left->left()->output() && left->left()->output()->size() > 0) {
-                return left->left()->output();
-            }
-            return left->output();
-        }
-    } // namespace
-
     actor_zeta::unique_future<void> operator_fk_cascade_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Resolve the source here directly in await_async_and_resume. fk_cascade is the
         // plan ROOT, so output_ becomes the DELETE result cursor — set it to the deleted
         // (matched) rows (the cursor count equals the number of deleted parent rows
-        // regardless of cascade outcome).
-        const auto& source = resolve_fk_cascade_source(left_);
+        // regardless of cascade outcome). Multiple cascade ops STACK above one DELETE, so
+        // walk DOWN the left_ spine to the DELETE's constraint_input() snapshot of its
+        // matched OLD rows (single canonical source, R6). Empty => nothing to cascade.
+        const auto& source = constraint_detail::resolve_constraint_source(left_);
         output_ = source;
         if (!source || source->size() == 0) {
             mark_executed();
@@ -159,7 +144,7 @@ namespace components::operators {
                 // and ABORT reverts it. txn_id 0 (direct-API / no active txn) needs
                 // no tracking: the delete is already visible-to-all and irreversible.
                 if (ctx->txn.transaction_id != 0) {
-                    ctx->cascade_dml_deletes.push_back(
+                    ctx->dml_deletes.push_back(
                         components::table::dml_delete_range_t{fk_.child_table_oid, ctx->txn.transaction_id});
                 }
                 break;
@@ -270,10 +255,10 @@ namespace components::operators {
                 if (ctx->txn.transaction_id != 0) {
                     auto [upd_row_start, upd_row_count] = update_result.value();
                     if (upd_row_count > 0) {
-                        ctx->cascade_dml_appends.push_back(components::table::dml_append_range_t{
+                        ctx->dml_appends.push_back(components::table::dml_append_range_t{
                             fk_.child_table_oid, upd_row_start, upd_row_count});
                     }
-                    ctx->cascade_dml_deletes.push_back(
+                    ctx->dml_deletes.push_back(
                         components::table::dml_delete_range_t{fk_.child_table_oid, ctx->txn.transaction_id});
                 }
                 break;

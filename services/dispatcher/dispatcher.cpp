@@ -331,7 +331,8 @@ namespace services::dispatcher {
                                                                             wal_address_,
                                                                             disk_address_,
                                                                             index_address_,
-                                                                            log_.clone());
+                                                                            log_.clone(),
+                                                                            pack.dml_flush_row_threshold);
             executor_addresses_.push_back(exec->address());
             executors_.push_back(std::move(exec));
         }

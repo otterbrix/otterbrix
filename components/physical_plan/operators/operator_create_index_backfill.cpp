@@ -3,16 +3,34 @@
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/context/context.hpp>
 #include <components/index/index_engine.hpp>
+#include <components/table/column_state.hpp> // complete table_filter_t for the null-filter batched scan
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/record.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <vector>
 
 namespace components::operators {
+
+    // Test-observable counter of BATCHES the streaming backfill scan consumed
+    // (one bump per non-empty storage_fetch_next_batch reply). Makes the batched
+    // rewrite deterministically observable: over a table > DEFAULT_VECTOR_CAPACITY
+    // the count must exceed 1, proving the loop iterated instead of materializing
+    // the whole table in a single storage_scan_segment. Process-global + relaxed:
+    // coarse instrumentation, not a synchronization primitive; off every hot path.
+    // DEV_MODE-only, mirroring services::collection::executor::streaming_pipeline_runs().
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_create_index_backfill_batches{0};
+    } // namespace
+    uint64_t create_index_backfill_batches() noexcept {
+        return g_create_index_backfill_batches.load(std::memory_order_relaxed);
+    }
+#endif
 
     operator_create_index_backfill_t::operator_create_index_backfill_t(
         std::pmr::memory_resource* resource,
@@ -93,47 +111,113 @@ namespace components::operators {
             build_start_registered = true;
         }
 
-        // backfill — scan table contents and feed them into the index.
+        // backfill — STREAM the table in bounded batches and feed each into the
+        // index. Reuses the streaming storage_fetch_next_batch cursor primitive
+        // (the SAME fetch-next source 3b-C uses; no new disk method): cursor_id==0
+        // OPENs, the agent-minted id ADVANCEs, and a drained cursor replies an empty
+        // batch. Peak scan memory is one batch + index state, versus the whole-table
+        // materialization of the old storage_scan_segment(0,total_rows). Index entries
+        // are stamped with each batch's TRUE physical row ids (batch->row_ids, fed to
+        // insert_rows one contiguous run at a time — see below), because the
+        // MVCC-filtered scan skips deleted rows and its ids are gapped. Each iteration
+        // does at most one fetch await followed by the insert awaits, sequential
+        // across the loop; the executor coroutine's single-slot continuation is
+        // republished+cleared between the awaits, so there is no lost wakeup.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            auto [_tr, trf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::storage_total_rows,
-                                               ctx->session,
-                                               table_oid_);
-            const auto total_rows = co_await std::move(trf);
-            if (total_rows > 0) {
-                auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_scan_segment,
-                                                   ctx->session,
-                                                   table_oid_,
-                                                   int64_t{0},
-                                                   total_rows);
-                auto idx_chunks = co_await std::move(ssf); // vector of ≤CAP chunks
-                if (!idx_chunks.empty()) {
-                    uint64_t count = 0;
-                    for (const auto& chunk : idx_chunks) {
-                        count += chunk.size();
+            uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
+            uint64_t backfilled_count = 0;
+            bool any_row = false;
+            bool scan_ok = true;
+            while (true) {
+                auto [_fb, fbf] =
+                    actor_zeta::send(ctx->disk_address,
+                                     &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                     ctx->session,
+                                     table_oid_,
+                                     cursor_id,
+                                     std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                     int64_t{-1}, // unbounded — index every row
+                                     std::vector<size_t>{}, // empty == read all columns
+                                     ctx->txn);
+                auto fetch_result = co_await std::move(fbf);
+                if (fetch_result.has_error()) {
+                    set_error(fetch_result.error());
+                    scan_ok = false;
+                    break;
+                }
+                auto reply = std::move(fetch_result.value());
+                cursor_id = reply.cursor_id;
+                const uint64_t sz = reply.batch ? reply.batch->size() : 0;
+                if (sz == 0) {
+                    break; // drained: the agent replied an empty batch and erased the cursor
+                }
+                any_row = true;
+#ifdef DEV_MODE
+                g_create_index_backfill_batches.fetch_add(1, std::memory_order_relaxed);
+#endif
+
+                // The fetched batch is an MVCC-filtered scan: deleted / invisible rows
+                // are SKIPPED, so batch->row_ids carries the TRUE — possibly GAPPED —
+                // physical row ids. insert_rows stamps contiguous ids from its
+                // start_row_id, so feed it one maximal contiguous row-id RUN at a
+                // time, based at that run's first physical id: every index entry then
+                // points at its real storage row. (The retired storage_scan_segment
+                // path scanned positionally with no MVCC filter, so a 0-based running
+                // offset happened to align; a streamed scan must not assume gap-free
+                // ids.) The extra awaits stay sequential in this operator coroutine —
+                // same lost-wakeup discipline as the fetch/insert pair above.
+                const auto& batch_chunk = *reply.batch;
+                const auto* row_ids = batch_chunk.row_ids.data<int64_t>();
+                uint64_t run_start = 0;
+                while (run_start < sz) {
+                    uint64_t run_len = 1;
+                    while (run_start + run_len < sz &&
+                           row_ids[run_start + run_len] == row_ids[run_start] + static_cast<int64_t>(run_len)) {
+                        ++run_len;
                     }
+                    std::pmr::vector<components::vector::data_chunk_t> idx_chunks(resource_);
+                    idx_chunks.push_back(batch_chunk.partial_copy(resource_, run_start, run_len));
                     auto [_ir, irf] = actor_zeta::send(
                         ctx->index_address,
                         &services::index::manager_index_t::insert_rows,
                         services::index::execution_context_t{ctx->session, ctx->txn, ctx->session_tz, table_oid_},
                         table_oid_,
                         std::move(idx_chunks),
-                        uint64_t{0},
-                        count);
+                        static_cast<uint64_t>(row_ids[run_start]), // run's TRUE physical base id
+                        run_len);
                     co_await std::move(irf);
-                    // insert_rows leaves entries PENDING (tagged with this txn_id);
-                    // they become visible only when the executor's post-pipeline
-                    // commit_inserts runs, which it does when dml_append_row_count > 0
-                    // && dml_table_oid is set — so record those here to commit the
-                    // backfilled entries alongside the CREATE INDEX txn. The reuse
-                    // also re-commits the data rows to this commit_id, harmless
-                    // absent a concurrent reader between the two commits. Rows
-                    // committed during the scan are caught by the catchup loop below.
-                    ctx->dml_append_row_start = 0;
-                    ctx->dml_append_row_count = count;
-                    ctx->dml_table_oid = table_oid_;
+                    run_start += run_len;
                 }
+                backfilled_count += sz;
+            }
+
+            if (!scan_ok) {
+                // Streaming scan failed: the index was never published and no snapshot
+                // saw it. Release the WAL retention guard before exiting so the next
+                // checkpoint can truncate freely (mirror of the non-convergence exit).
+                if (build_start_registered) {
+                    auto [_u, uf] = actor_zeta::send(ctx->wal_address,
+                                                     &services::wal::manager_wal_replicate_t::unregister_active_build,
+                                                     ctx->session,
+                                                     build_start_wal_position);
+                    co_await std::move(uf);
+                    build_start_registered = false;
+                }
+                co_return;
+            }
+
+            if (any_row) {
+                // insert_rows leaves entries PENDING (tagged with this txn_id). For a
+                // CREATE INDEX (DDL) txn the executor does NOT route these appends
+                // through the commit operator — it CLEARS exec_result.dml_appends
+                // (executor.cpp:1601; routing them would re-commit pre-existing base
+                // rows). The index is published instead via the commit_id back-channel
+                // (executor.cpp:1679-1695: commit_inserts keyed by oid+commit_id, no
+                // row-count). This single coalesced range is recorded for
+                // symmetry/observability only; its count does not gate the commit. Rows
+                // committed during the scan are caught by the catchup loop below.
+                ctx->dml_appends.push_back(
+                    components::table::dml_append_range_t{table_oid_, 0, backfilled_count});
             }
         }
 

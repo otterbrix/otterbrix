@@ -5,10 +5,21 @@
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace components::operators {
+
+    // Test-observable counter of BATCHES the streaming CREATE INDEX backfill scan
+    // consumed (one bump per non-empty storage_fetch_next_batch reply). A backfill
+    // over a table larger than one scan batch must bump this past 1, proving the
+    // scan streams in bounded batches instead of materializing the whole table.
+    // DEV_MODE-only: the integration test target compiles with -DDEV_MODE; production
+    // binaries carry neither the counter nor this accessor.
+#ifdef DEV_MODE
+    uint64_t create_index_backfill_batches() noexcept;
+#endif
 
     // Performs the runtime side of CREATE INDEX:
     //   1. ensure the collection is registered with the index manager

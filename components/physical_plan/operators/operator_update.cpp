@@ -1,5 +1,8 @@
 #include "operator_update.hpp"
+#include "dml_util.hpp"
 #include "predicates/predicate.hpp"
+#include <atomic>
+#include <cassert>
 #include <components/vector/vector_operations.hpp>
 
 #include <components/context/context.hpp>
@@ -9,6 +12,15 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 namespace components::operators {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_update_storage_update_sends{0};
+    } // namespace
+    uint64_t update_storage_update_sends() noexcept {
+        return g_update_storage_update_sends.load(std::memory_order_relaxed);
+    }
+#endif
 
     operator_update::operator_update(std::pmr::memory_resource* resource,
                                      log_t log,
@@ -261,224 +273,231 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
-        if (!output_) {
-            mark_executed();
-            co_return;
-        }
-        // Snapshot the NEW (post-SET) updated rows for a parent fk_check /
-        // check_constraint BEFORE a RETURNING projection replaces output_. The
-        // streaming async-finalize drive runs this DML's await first, then the
-        // constraint's; the constraint validates these new values against the
-        // parent table / NOT-NULL rules.
-        constraint_input_ = output_;
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
-        // See operator_insert comment on db_oid temporary hardcode.
-        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+        // BOUNDED DML SINK (Step 3b-B). The executor drives this INCREMENTALLY: once
+        // per mid-pump "buffer full" (dml_flush_is_final==false) and once at the
+        // post-pump finalize (==true). Each drive flushes whatever push() folded into
+        // output_ since the last flush; only the FINAL drive emits the RETURNING /
+        // affected-count result + mark_executed. With dml_flush_row_threshold==0 the
+        // executor drives await exactly once with is_final==true, so this is
+        // behavior-identical to the pre-3b-B single flush.
+        const bool is_final = ctx->dml_flush_is_final;
 
-        // Hold the updated chunks alive while we ship them; set_output rebinds output_.
-        auto input = output_;
+        if (output_ && output_->size() > 0) {
+            components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
+            // See operator_insert comment on db_oid temporary hardcode.
+            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+            const bool mirror_index = ctx->index_address != actor_zeta::address_t::empty_address();
 
-        // Old-row cursor over the scan (left) output. update_rows pairs old_data[i]
-        // with new_data[i]/row_ids[i] positionally.
-        //
-        // Old-row source: the streaming SIMPLE path (consume_batch_ via push())
-        // staged the matched OLD rows into index_old_chunks_, one staged chunk per
-        // accumulated updated chunk, in lockstep — so index_old_chunks_[k] is the
-        // old version of input->chunks()[k]. That is the only source available when
-        // streaming leaves left_->output() empty. For any non-streaming caller that
-        // did not stage (index_old_chunks_ empty), fall back to walking the scan
-        // (left_->output()) cursor in matched order, exactly as before.
-        const bool have_staged_old = !index_old_chunks_.empty();
-        const chunks_vector_t* scan_chunks = nullptr;
-        if (auto scan_out = left_ ? left_->output() : nullptr) {
-            scan_chunks = &scan_out->chunks();
-        }
-        size_t scan_chunk_idx = 0;
-        uint64_t scan_row_in_chunk = 0;
-        size_t out_chunk_idx = 0;
+            // STREAMING invariant: consume_batch_/consume_join_batch_ stage exactly one
+            // OLD-row chunk per accumulated updated chunk, so index_old_chunks_ is in
+            // lockstep with output_->chunks() (index_old_chunks_[k] is the old version
+            // of output_->chunks()[k]). The old-row scan-cursor fallback is dead on the
+            // streaming path — assert the staging held rather than silently walking
+            // left_->output() (which is empty when streaming) mid-flush.
+            assert(index_old_chunks_.size() == output_->chunks().size());
 
-        // UPDATE = delete-old + append-new. The new-row segments append sequentially
-        // within the txn, so they are contiguous and coalesce into one range. Gather the
-        // whole batch up front, then issue a single send per service.
-        chunks_vector_t update_data(resource_);               // storage_update payload (mutated)
-        std::pmr::vector<vector_t> update_row_ids(resource_); // storage_update row_ids, one per chunk
-        chunks_vector_t wal_chunks(resource_);                // WAL payload (submitted new rows)
-        std::pmr::vector<int64_t> wal_row_ids(resource_);     // WAL row_ids, flat
-        chunks_vector_t idx_old(resource_);                   // index: old row versions, one per chunk
-        chunks_vector_t idx_new(resource_);                   // index: new rows, one per chunk
-        std::pmr::vector<int64_t> idx_row_ids(resource_);     // index row_ids, flat
-        chunks_vector_t projected(resource_);
-        // RETURNING: the matched FROM (right) rows were gathered in lockstep, one right
-        // chunk per updated chunk (returning_from_chunks_), aligned by index.
-        size_t right_idx = 0;
-        const bool mirror_index = ctx->index_address != actor_zeta::address_t::empty_address() &&
-                                  (have_staged_old || scan_chunks != nullptr);
+            // ONE flush of the currently-buffered rows via a NAMED coroutine lambda.
+            // UPDATE = MVCC delete-old + append-new: the operator OWNS its WAL
+            // (write_physical_update) and records BOTH an append range (via
+            // record_flush, below) and a delete marker. The new-row segments append
+            // sequentially within the txn, so they coalesce into one range; gather the
+            // whole batch up front, then one send per service.
+            auto op = [&]([[maybe_unused]] std::pmr::memory_resource* res)
+                -> actor_zeta::unique_future<dml_detail::flush_outcome_t> {
+                auto copy_of = [this](const data_chunk_t& src) {
+                    data_chunk_t dst(resource_, src.types(), src.size());
+                    src.copy(dst, 0);
+                    return dst;
+                };
 
-        auto copy_of = [this](const data_chunk_t& src) {
-            data_chunk_t dst(resource_, src.types(), src.size());
-            src.copy(dst, 0);
-            return dst;
-        };
+                chunks_vector_t update_data(resource_);               // storage_update payload (mutated)
+                std::pmr::vector<vector_t> update_row_ids(resource_); // storage_update row_ids, one per chunk
+                chunks_vector_t wal_chunks(resource_);                // WAL payload (submitted new rows)
+                std::pmr::vector<int64_t> wal_row_ids(resource_);     // WAL row_ids, flat
+                chunks_vector_t idx_old(resource_);                   // index: old row versions, one per chunk
+                chunks_vector_t idx_new(resource_);                   // index: new rows, one per chunk
+                std::pmr::vector<int64_t> idx_row_ids(resource_);     // index row_ids, flat
 
-        for (auto& out_chunk : input->chunks()) {
-            if (out_chunk.size() == 0) {
-                continue;
-            }
-            const uint64_t n = out_chunk.size();
+                size_t out_chunk_idx = 0;
+                for (auto& out_chunk : output_->chunks()) {
+                    if (out_chunk.size() == 0) {
+                        continue;
+                    }
+                    const uint64_t n = out_chunk.size();
 
-            // storage_update needs a row_ids vector_t + payload copy per chunk.
-            vector_t row_ids(resource_, types::logical_type::BIGINT, n);
-            for (uint64_t i = 0; i < n; i++) {
-                row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
-            }
-            update_row_ids.emplace_back(std::move(row_ids));
-            update_data.emplace_back(copy_of(out_chunk));
+                    // storage_update needs a row_ids vector_t + payload copy per chunk.
+                    vector_t row_ids(resource_, types::logical_type::BIGINT, n);
+                    for (uint64_t i = 0; i < n; i++) {
+                        row_ids.data<int64_t>()[i] = out_chunk.row_ids.data<int64_t>()[i];
+                    }
+                    update_row_ids.emplace_back(std::move(row_ids));
+                    update_data.emplace_back(copy_of(out_chunk));
 
-            // WAL needs the submitted new rows + their flat row_ids.
-            wal_chunks.emplace_back(copy_of(out_chunk));
-            for (uint64_t i = 0; i < n; i++) {
-                wal_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
-            }
+                    // WAL needs the submitted new rows + their flat row_ids.
+                    wal_chunks.emplace_back(copy_of(out_chunk));
+                    for (uint64_t i = 0; i < n; i++) {
+                        wal_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
+                    }
 
-            // Index needs the n old row versions plus the new rows and their row_ids.
-            // STREAMING: the staged index_old_chunks_[out_chunk_idx] is the old
-            // version of this updated chunk (one staged chunk per push() in lockstep).
-            // FALLBACK (no staging): walk the scan cursor in matched order to
-            // assemble this chunk's old data.
-            if (mirror_index) {
-                if (have_staged_old && out_chunk_idx < index_old_chunks_.size()) {
-                    idx_old.emplace_back(std::move(index_old_chunks_[out_chunk_idx]));
-                } else {
-                    data_chunk_t old_data(resource_, out_chunk.types(), n);
-                    uint64_t filled = 0;
-                    while (scan_chunks != nullptr && filled < n && scan_chunk_idx < scan_chunks->size()) {
-                        const auto& sc = (*scan_chunks)[scan_chunk_idx];
-                        if (scan_row_in_chunk >= sc.size()) {
-                            ++scan_chunk_idx;
-                            scan_row_in_chunk = 0;
+                    // Index needs the n old row versions + the new rows and their ids.
+                    // index_old_chunks_[out_chunk_idx] is this updated chunk's OLD
+                    // version, staged in lockstep by push() (asserted above).
+                    if (mirror_index) {
+                        idx_old.emplace_back(std::move(index_old_chunks_[out_chunk_idx]));
+                        idx_new.emplace_back(copy_of(out_chunk));
+                        for (uint64_t i = 0; i < n; i++) {
+                            idx_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
+                        }
+                    }
+                    ++out_chunk_idx;
+                }
+
+                // 1. RETURNING is a pure LOCAL projection over the already-built updated
+                //    chunks (paired with their lockstep FROM chunks) — run it BEFORE any
+                //    storage mutation, so a projection error fails the statement CLEANLY:
+                //    zero storage writes, no WAL update record, nothing to revert. The
+                //    projected chunks accumulate across flushes; the FINAL drive emits them.
+                if (!returning_.empty()) {
+                    for (size_t i = 0; i < output_->chunks().size(); ++i) {
+                        auto& out_chunk = output_->chunks()[i];
+                        if (out_chunk.size() == 0) {
                             continue;
                         }
-                        const uint64_t take = std::min<uint64_t>(sc.size() - scan_row_in_chunk, n - filled);
-                        for (uint64_t col = 0; col < sc.column_count() && col < old_data.column_count(); ++col) {
-                            vector::vector_ops::copy(sc.data[col],
-                                                     old_data.data[col],
-                                                     take,
-                                                     scan_row_in_chunk,
-                                                     filled);
+                        data_chunk_t* right_batch =
+                            i < returning_from_chunks_.size() ? &returning_from_chunks_[i] : nullptr;
+                        auto proj = evaluate_projection(resource_,
+                                                        returning_,
+                                                        &out_chunk,
+                                                        ctx->parameters,
+                                                        ctx->session_tz,
+                                                        right_batch);
+                        if (proj.has_error()) {
+                            co_return dml_detail::flush_outcome_t{proj.error()};
                         }
-                        vector::vector_ops::copy(sc.row_ids, old_data.row_ids, take, scan_row_in_chunk, filled);
-                        filled += take;
-                        scan_row_in_chunk += take;
+                        returning_accum_.emplace_back(std::move(proj.value()));
                     }
-                    old_data.set_cardinality(filled);
-                    idx_old.emplace_back(std::move(old_data));
                 }
-                idx_new.emplace_back(copy_of(out_chunk));
-                for (uint64_t i = 0; i < n; i++) {
-                    idx_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
-                }
-            }
-            ++out_chunk_idx;
 
-            // RETURNING projection is local (no storage read-back): project the updated
-            // chunk now, paired with its lockstep FROM (right) chunk.
-            if (!returning_.empty()) {
-                data_chunk_t* right_batch =
-                    right_idx < returning_from_chunks_.size() ? &returning_from_chunks_[right_idx] : nullptr;
-                auto proj = evaluate_projection(resource_,
-                                                returning_,
-                                                &out_chunk,
-                                                ctx->parameters,
-                                                ctx->session_tz,
-                                                right_batch);
-                if (proj.has_error()) {
-                    set_error(proj.error());
-                    mark_executed();
-                    co_return;
+                // 2. storage_update (MVCC: delete old + insert new) — one batched send.
+                //    The reply carries any write_conflict / out_of_memory from the
+                //    table-layer MVCC update as a value; surface it as a clean error so
+                //    the txn aborts gracefully.
+#ifdef DEV_MODE
+                g_update_storage_update_sends.fetch_add(1, std::memory_order_relaxed);
+#endif
+                auto [_u, uf] = actor_zeta::send(ctx->disk_address,
+                                                 &services::disk::manager_disk_t::storage_update,
+                                                 exec_ctx,
+                                                 table_oid_,
+                                                 std::move(update_row_ids),
+                                                 std::move(update_data));
+                auto update_result = co_await std::move(uf);
+                if (update_result.has_error()) {
+                    co_return dml_detail::flush_outcome_t{update_result.error()};
                 }
-                projected.emplace_back(std::move(proj.value()));
-                ++right_idx;
+                auto [range_start, total_count] = update_result.value();
+
+                // 3. WAL physical_update: one record for THIS flushed range. UPDATE
+                //    owns its WAL write (unlike INSERT's WAL-first storage_append).
+                if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
+                    const uint64_t wal_count = wal_row_ids.size();
+                    auto [_w, wf] = actor_zeta::send(ctx->wal_address,
+                                                     &services::wal::manager_wal_replicate_t::write_physical_update,
+                                                     ctx->session,
+                                                     table_oid_,
+                                                     std::move(wal_row_ids),
+                                                     std::move(wal_chunks),
+                                                     wal_count,
+                                                     ctx->txn.transaction_id,
+                                                     db_oid);
+                    auto wal_id = co_await std::move(wf);
+                    auto [_df, dff] = actor_zeta::send(ctx->disk_address,
+                                                       &services::disk::manager_disk_t::flush,
+                                                       ctx->session,
+                                                       wal_id);
+                    ctx->add_pending_disk_future(std::move(dff));
+                }
+
+                // 4. Mirror to index (old + new data) — one batched send. idx_old came
+                //    from the streaming staging (index_old_chunks_), aligned row-for-row
+                //    + by row_id with the new rows.
+                if (mirror_index) {
+                    auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
+                                                       &services::index::manager_index_t::update_rows,
+                                                       exec_ctx,
+                                                       table_oid_,
+                                                       std::move(idx_old),
+                                                       std::move(idx_new),
+                                                       std::move(idx_row_ids),
+                                                       range_start);
+                    co_await std::move(ixf);
+                }
+
+                // 5. Without RETURNING the affected count accumulates across flushes
+                //    (the RETURNING projection already ran in step 1, pre-mutation).
+                if (returning_.empty()) {
+                    affected_rows_ += total_count;
+                }
+
+                co_return dml_detail::flush_outcome_t{core::error_t::no_error(), true, range_start, total_count};
+            };
+
+            auto outcome = co_await op(resource_);
+            // COMMON post-storage bookkeeping (dml_util): record the append range into
+            // the unified 3b-A channel and — only under a parent constraint — accumulate
+            // a persistent copy of the just-written NEW rows into constraint_input_ (so
+            // the constraint validates the full set at finalize). constraint_rows =
+            // output_->chunks(): op only COPIED from output_, so the NEW rows are intact.
+            auto err = dml_detail::record_flush(ctx,
+                                                resource_,
+                                                table_oid_,
+                                                outcome,
+                                                ctx->dml_has_parent_constraint,
+                                                constraint_input_,
+                                                output_->chunks());
+            if (err.contains_error()) {
+                set_error(err);
+                mark_failed();
+                co_return;
             }
+
+            // UPDATE = delete-old + append-new: record the MVCC delete tombstone ONCE
+            // across all flushes (append ranges are per-flush via record_flush; the
+            // delete marker is a single per-txn/table tombstone).
+            if (!delete_marker_recorded_) {
+                ctx->dml_deletes.push_back(
+                    components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
+                delete_marker_recorded_ = true;
+            }
+
+            // Release the flushed batch: the accumulated updated rows and the lockstep
+            // staging that fed THIS flush. output_/index_old_chunks_/returning_from_
+            // chunks_ stay in lockstep so the next flush starts clean and bounded.
+            output_->chunks().clear();
+            index_old_chunks_.clear();
+            returning_from_chunks_.clear();
         }
 
-        // No matched rows (e.g. a streaming UPDATE whose predicate selected
-        // nothing): the executor drives await unconditionally for an async-finalize
-        // sink, so guard the empty case here — nothing to write. output_ already
-        // carries the 0-row affected count, but a RETURNING projection still emits
-        // the (empty) projected vector.
-        if (update_data.empty()) {
-            if (!returning_.empty()) {
-                set_output(make_operator_data(resource_, std::move(projected)));
-            }
-            mark_executed();
+        // MID-PUMP flush: more batches may still arrive — do NOT emit the result or
+        // mark executed. Only the final drive finalizes.
+        if (!is_final) {
             co_return;
         }
 
-        // 1. storage_update (MVCC: delete old + insert new) — one batched send.
-        auto [_u, uf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_update,
-                                         exec_ctx,
-                                         table_oid_,
-                                         std::move(update_row_ids),
-                                         std::move(update_data));
-        // The update reply carries any write_conflict / out_of_memory the table-layer MVCC
-        // update surfaced; surface it as a clean error cursor (the executor turns has_error()
-        // into an error cursor) so the txn aborts gracefully.
-        auto update_result = co_await std::move(uf);
-        if (update_result.has_error()) {
-            set_error(update_result.error());
-            mark_failed();
-            co_return;
-        }
-        auto [range_start, total_count] = update_result.value();
-
-        // 2. WAL physical_update: one record for the whole range.
-        if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            const uint64_t wal_count = wal_row_ids.size();
-            auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                             &services::wal::manager_wal_replicate_t::write_physical_update,
-                                             ctx->session,
-                                             table_oid_,
-                                             std::move(wal_row_ids),
-                                             std::move(wal_chunks),
-                                             wal_count,
-                                             ctx->txn.transaction_id,
-                                             db_oid);
-            auto wal_id = co_await std::move(wf);
-            auto [_df, dff] =
-                actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::flush, ctx->session, wal_id);
-            ctx->add_pending_disk_future(std::move(dff));
-        }
-
-        // 3. Mirror to index (old + new data) — one batched send. idx_old/idx_new/
-        //    idx_row_ids were assembled per chunk above: the old versions come from
-        //    the streaming staging (index_old_chunks_) or the scan cursor fallback,
-        //    aligned row-for-row + by row_id with the new rows.
-        if (mirror_index) {
-            auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::update_rows,
-                                               exec_ctx,
-                                               table_oid_,
-                                               std::move(idx_old),
-                                               std::move(idx_new),
-                                               std::move(idx_row_ids),
-                                               range_start);
-            co_await std::move(ixf);
-        }
-
-        // 4. Record swap-info on context. UPDATE = delete-old + append-new, so both
-        // append_row_* and delete_txn_id must be populated.
-        ctx->dml_append_row_start = range_start;
-        ctx->dml_append_row_count = total_count;
-        ctx->dml_delete_txn_id = ctx->txn.transaction_id;
-        ctx->dml_table_oid = table_oid_;
-
-        // RETURNING: each updated chunk was projected into `projected` in the gather
-        // loop above (paired with its lockstep FROM chunk), already batched into
-        // ≤DEFAULT_VECTOR_CAPACITY chunks. Without RETURNING, output_ keeps the
-        // updated rows.
-        if (!returning_.empty()) {
-            set_output(make_operator_data(resource_, std::move(projected)));
+        // FINAL. output_ was cleared per flush, so it can no longer double as the
+        // affected-count carrier: emit an explicit result — affected-count chunks
+        // without RETURNING, the accumulated projection with it.
+        if (returning_.empty()) {
+            if (affected_rows_ > 0) {
+                // Column-less chunks whose cardinalities sum to the affected-row count
+                // (the cursor totals chunk sizes).
+                set_output(make_operator_data(
+                    resource_, dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
+            } else {
+                set_output(nullptr);
+            }
+        } else {
+            set_output(make_operator_data(resource_, std::move(returning_accum_)));
         }
         mark_executed();
     }

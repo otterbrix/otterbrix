@@ -2,13 +2,15 @@
 
 #include "optimizer/rules/constant_folding.hpp"
 #include "optimizer/rules/hash_join.hpp"
+#include "optimizer/rules/pushdown_aggregate.hpp"
 #include "optimizer/rules/pushdown_filter.hpp"
 
 namespace components::planner {
 
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
-                                    logical_plan::parameter_node_t* parameters) {
+                                    logical_plan::parameter_node_t* parameters,
+                                    bool can_push_to_agent) {
         if (!node) {
             return nullptr;
         }
@@ -24,6 +26,19 @@ namespace components::planner {
         }
         node = optimizer::pushdown_filter(resource, node);
         node = optimizer::rewrite_hash_joins(resource, std::move(node));
+
+        // Annotate pushable single-owned-table aggregates. Runs LAST — it only
+        // reads node types + table_oid() + the group child, so ordering vs. the
+        // other rules is immaterial. Pushdown is UNCONDITIONAL for pushable shapes
+        // (the rule itself decides purely by shape: single owned table, mergeable
+        // kinds, no HAVING/DISTINCT — exactly like hash-join selection). The sole
+        // gate here is a hard CAPABILITY precondition: `can_push_to_agent` is false
+        // in disk-less (in-memory) mode, where there is NO owning agent to push to,
+        // so pushable aggregates architecturally must stay coordinator-side. This is
+        // NOT a fallback/rollout flag — it is "is the target reachable".
+        if (can_push_to_agent) {
+            node = optimizer::pushdown_aggregate(resource, std::move(node));
+        }
 
         return node;
     }

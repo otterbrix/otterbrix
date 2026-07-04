@@ -658,3 +658,115 @@ TEST_CASE("components::table::mvcc::compact_in_flight_commit_window") {
     REQUIRE(scan_values_txn(*table, env, txn6.data()) == expected_new);
     mgr.abort(s6);
 }
+
+namespace {
+
+    // Two-column (BIGINT, BIGINT) table for the direct revert_append storage regression.
+    std::unique_ptr<data_table_t> make_int2_table(test_env& env) {
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("a", complex_logical_type(logical_type::BIGINT));
+        columns.emplace_back("b", complex_logical_type(logical_type::BIGINT));
+        return std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "test2");
+    }
+
+    // Append `count` rows onto the two-column table: column a = start+i, column b = (start+i)*10.
+    void append_rows2(data_table_t& table, test_env& env, int64_t start, uint64_t count) {
+        auto types = table.copy_types();
+        auto chunk = data_chunk_t(&env.resource, types, count);
+        for (uint64_t i = 0; i < count; i++) {
+            auto v = start + static_cast<int64_t>(i);
+            chunk.data[0].set_value(i, logical_value_t(&env.resource, v));
+            chunk.data[1].set_value(i, logical_value_t(&env.resource, v * 10));
+        }
+        chunk.set_cardinality(count);
+
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table.append_lock(state).has_error());
+        REQUIRE_FALSE(table.initialize_append(state).has_error());
+        REQUIRE_FALSE(table.append(chunk, state).has_error());
+        table.finalize_append(state, transaction_data{0, 0});
+    }
+
+    // Ordered sequential scan of BOTH columns across every chunk. Order is the physical
+    // append order, so a desynced/stale column tail surfaces as a wrong pair (or a size mismatch).
+    std::vector<std::pair<int64_t, int64_t>> scan_pairs(data_table_t& table, test_env& env) {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+        column_ids.emplace_back(1);
+
+        table_scan_state scan_state(&env.resource);
+        table.initialize_scan(scan_state, column_ids);
+
+        auto types = table.copy_types();
+        std::vector<std::pair<int64_t, int64_t>> rows;
+        while (true) {
+            auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+            table.scan(result, scan_state);
+            if (result.size() == 0) {
+                break;
+            }
+            for (uint64_t i = 0; i < result.size(); i++) {
+                rows.emplace_back(result.data[0].value(i).value<int64_t>(),
+                                  result.data[1].value(i).value<int64_t>());
+            }
+        }
+        return rows;
+    }
+
+} // anonymous namespace
+
+// GAP C — DIRECT storage-level regression for row_group_t::revert_append column truncation.
+// Pre-fix, revert_append reduced only the row-group / version count and left each COLUMN's
+// segments at the old (larger) count (get_column(c).revert_append was never called). On a small
+// table the stale column tail then desynced from the row-group count: a subsequent scan over-read
+// the stale rows (heap-buffer-overflow in fetch_row) and a re-append landed past the reverted
+// boundary, corrupting both columns. This drives the exact revert-then-reappend path directly at
+// the storage layer (no DML), asserting the reverted count, the surviving column values after the
+// revert, and correct values after re-append. RED on the pre-fix (missing column revert) code.
+TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
+    test_env env;
+    auto table = make_int2_table(env);
+
+    // Append 100 rows across two BIGINT columns: a=i, b=i*10.
+    append_rows2(*table, env, 0, 100);
+    REQUIRE(table->row_group()->total_rows() == 100);
+
+    // Revert the tail: keep rows [0,40), drop the last 60. Both the row-group count AND every
+    // column segment must truncate to 40 — pre-fix only the row-group count moved.
+    table->revert_append(40, 60);
+    REQUIRE(table->row_group()->total_rows() == 40);
+
+    {
+        // No stale column rows may leak past the revert, and the survivors must be intact.
+        auto rows = scan_pairs(*table, env);
+        REQUIRE(rows.size() == 40);
+        for (uint64_t i = 0; i < 40; i++) {
+            REQUIRE(rows[i].first == static_cast<int64_t>(i));
+            REQUIRE(rows[i].second == static_cast<int64_t>(i) * 10);
+        }
+    }
+
+    // Re-append onto the reverted table with DISTINCT values (a=1000..1029) so a pre-fix miss is
+    // OBSERVABLE (genuinely RED-first): without the column truncation the re-appended rows land AFTER
+    // the un-truncated stale column tail, so logical rows [40,70) would read the STALE originals
+    // (a=40..69) instead of the re-appended 1000.. — the value check below then FAILS on the buggy code.
+    // On the fixed code the column was truncated to 40, so the re-append fills [40,70) with 1000..1029.
+    append_rows2(*table, env, 1000, 30);
+    REQUIRE(table->row_group()->total_rows() == 70);
+
+    {
+        auto rows = scan_pairs(*table, env);
+        REQUIRE(rows.size() == 70);
+        // Survivors [0,40) unchanged.
+        for (uint64_t i = 0; i < 40; i++) {
+            REQUIRE(rows[i].first == static_cast<int64_t>(i));
+            REQUIRE(rows[i].second == static_cast<int64_t>(i) * 10);
+        }
+        // Re-appended [40,70) must read the NEW 1000.. values, not a stale reverted tail.
+        for (uint64_t j = 0; j < 30; j++) {
+            const int64_t v = 1000 + static_cast<int64_t>(j);
+            REQUIRE(rows[40 + j].first == v);
+            REQUIRE(rows[40 + j].second == v * 10);
+        }
+    }
+}

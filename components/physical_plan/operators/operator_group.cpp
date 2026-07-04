@@ -8,6 +8,7 @@
 #include <components/physical_plan/operators/aggregate/grouped_aggregate.hpp>
 #include <components/physical_plan/operators/aggregate/operator_func.hpp>
 #include <components/physical_plan/operators/operator_batch.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <core/operations_helper.hpp>
 #include <type_traits>
@@ -19,59 +20,6 @@ namespace components::operators {
         // They must be skipped when reading values — vector_t::value() / data() would crash otherwise.
         bool is_placeholder(const vector::vector_t& v) noexcept {
             return v.data() == nullptr && v.auxiliary() == nullptr;
-        }
-
-        template<typename T>
-        bool cells_equal_typed(const vector::vector_t& a, size_t ra, const vector::vector_t& b, size_t rb) {
-            if constexpr (std::is_floating_point_v<T>) {
-                return core::is_equals(a.data<T>()[ra], b.data<T>()[rb]);
-            } else {
-                return a.data<T>()[ra] == b.data<T>()[rb];
-            }
-        }
-
-        // Typed cell-by-cell equality between two vectors (R1-b VERIFY). No
-        // logical_value_t round-trip: dispatches on physical_type like
-        // value_equals_raw but compares two raw cells directly.
-        bool cells_equal_raw(const vector::vector_t& a, size_t ra, const vector::vector_t& b, size_t rb) {
-            bool a_null = a.is_null(ra);
-            bool b_null = b.is_null(rb);
-            if (a_null || b_null)
-                return a_null == b_null;
-            switch (a.type().to_physical_type()) {
-                case types::physical_type::BOOL:
-                case types::physical_type::INT8:
-                    return cells_equal_typed<int8_t>(a, ra, b, rb);
-                case types::physical_type::INT16:
-                    return cells_equal_typed<int16_t>(a, ra, b, rb);
-                case types::physical_type::INT32:
-                    return cells_equal_typed<int32_t>(a, ra, b, rb);
-                case types::physical_type::INT64:
-                    return cells_equal_typed<int64_t>(a, ra, b, rb);
-                case types::physical_type::UINT8:
-                    return cells_equal_typed<uint8_t>(a, ra, b, rb);
-                case types::physical_type::UINT16:
-                    return cells_equal_typed<uint16_t>(a, ra, b, rb);
-                case types::physical_type::UINT32:
-                    return cells_equal_typed<uint32_t>(a, ra, b, rb);
-                case types::physical_type::UINT64:
-                    return cells_equal_typed<uint64_t>(a, ra, b, rb);
-                case types::physical_type::INT128:
-                    return cells_equal_typed<types::int128_t>(a, ra, b, rb);
-                case types::physical_type::UINT128:
-                    return cells_equal_typed<types::uint128_t>(a, ra, b, rb);
-                case types::physical_type::FLOAT:
-                    return cells_equal_typed<float>(a, ra, b, rb);
-                case types::physical_type::DOUBLE:
-                    return cells_equal_typed<double>(a, ra, b, rb);
-                case types::physical_type::STRING:
-                    return a.data<std::string_view>()[ra] == b.data<std::string_view>()[rb];
-                default:
-                    // Nested / unsupported physical types fall back to the typed
-                    // logical_value comparison (preserves struct/list/array
-                    // semantics; only reached for non-trivial group keys).
-                    return a.value(ra) == b.value(rb);
-            }
         }
 
         // Extract a key value from chunk for a given group_key_t definition
@@ -458,7 +406,7 @@ namespace components::operators {
                     for (uint32_t cand : it->second) {
                         bool match = true;
                         for (size_t k = 0; k < keys_.size(); k++) {
-                            if (!cells_equal_raw(probe.data[k], row, key_chunk.data[k], cand)) {
+                            if (!vector::cells_equal(probe.data[k], row, key_chunk.data[k], cand)) {
                                 match = false;
                                 break;
                             }

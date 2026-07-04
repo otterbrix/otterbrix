@@ -25,6 +25,9 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const logical_plan::limit_t& limit() const { return limit_; }
+        // Storage-chunk column indices the scan projects (empty ⇒ all columns), so a downstream
+        // group/select sees the SAME projected column layout it expects.
+        const std::vector<size_t>& projected_cols() const noexcept { return projected_cols_; }
 
         // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
         // role()==source drives the streaming push/finalize pipeline. The FIRST source_next OPENs a

@@ -15,8 +15,8 @@
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/expressions/compare_expression.hpp>
-#include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
+#include <components/physical_plan/pushed_aggregate_spec.hpp> // aggregate-pushdown reduce spec (SEAM B)
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/table/column_state.hpp>
@@ -147,6 +147,23 @@ namespace services::disk {
                             components::catalog::oid_t table_oid,
                             std::pmr::vector<std::string> key_col_names,
                             components::vector::data_chunk_t keys);
+
+        // Aggregate-pushdown REDUCE (SEAM B) — a DEDICATED protocol leg, not a scan mode:
+        // the owning agent runs the whole GROUP BY over its slice (the EXISTING
+        // operator_group rebuilt from the POD spec; WHERE rides `filter`, projection rides
+        // `projected_cols`) and replies ALL final aggregated rows in ONE reply — bounded by
+        // #groups, so no cursor exists. A not-owned / record-only oid reduces over the
+        // EMPTY input (a scalar aggregate still emits its single COUNT=0/NULL row).
+        // SINGLE-OWNER INVARIANT: the reply carries FINAL rows, valid only while one agent
+        // owns the whole table; sharded slices need partial states + a real coordinator
+        // merge (operator_group_merge is the socket).
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
+        storage_reduce(session_id_t session,
+                       components::catalog::oid_t table_oid,
+                       std::unique_ptr<components::table::table_filter_t> filter,
+                       std::vector<size_t> projected_cols,
+                       components::table::transaction_data txn,
+                       components::operators::pushed_aggregate_spec_t spec);
 
         // Physical column compaction for an IN_MEMORY relkind='g'
         // table_storage_t.
@@ -306,6 +323,7 @@ namespace services::disk {
                                                             // Storage data operations
                                                             &disk_contract::storage_scan,
                                                             &disk_contract::storage_fetch_next_batch,
+                                                            &disk_contract::storage_reduce,
                                                             &disk_contract::storage_fetch,
                                                             &disk_contract::storage_scan_segment,
                                                             &disk_contract::storage_append,

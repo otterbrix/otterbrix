@@ -60,10 +60,12 @@ namespace services::collection::executor {
     namespace {
         std::atomic<uint64_t> g_streaming_pipeline_runs{0};
         std::atomic<uint64_t> g_dml_appends_reverted{0};
+        std::atomic<uint64_t> g_dml_flush_count{0};
     } // namespace
 
     uint64_t streaming_pipeline_runs() noexcept { return g_streaming_pipeline_runs.load(std::memory_order_relaxed); }
     uint64_t dml_appends_reverted() noexcept { return g_dml_appends_reverted.load(std::memory_order_relaxed); }
+    uint64_t dml_flush_count() noexcept { return g_dml_flush_count.load(std::memory_order_relaxed); }
 #endif
 
     // ---- behavior/dispatch_traits sync check ----
@@ -124,14 +126,16 @@ namespace services::collection::executor {
                            actor_zeta::address_t wal_address,
                            actor_zeta::address_t disk_address,
                            actor_zeta::address_t index_address,
-                           log_t&& log)
+                           log_t&& log,
+                           uint64_t dml_flush_row_threshold)
         : actor_zeta::basic_actor<executor_t>{resource}
         , parent_address_(std::move(parent_address))
         , wal_address_(std::move(wal_address))
         , disk_address_(std::move(disk_address))
         , index_address_(std::move(index_address))
         , log_(log)
-        , function_registry_(resource) {
+        , function_registry_(resource)
+        , dml_flush_row_threshold_(dml_flush_row_threshold) {
         register_default_functions(function_registry_);
     }
 
@@ -1365,8 +1369,17 @@ namespace services::collection::executor {
         // key.side()/key.path() and table OIDs are present. const-fold +
         // pushdown_filter + hash-join selection; a no-op on DDL sequences.
         // The execute_plan delegate below lowers this optimized tree.
-        plan.sub_queries.back() =
-            components::planner::optimize(resource(), std::move(plan.sub_queries.back()), plan.parameters.get());
+        // Aggregate-pushdown-to-owning-agent is UNCONDITIONAL for pushable shapes
+        // (the optimizer's pushdown_aggregate rule decides purely by shape, exactly
+        // like hash-join selection) — the only gate is a hard CAPABILITY precondition:
+        // an owning agent must exist. In-memory (disk-less) mode has NO agent to push
+        // to, so pushable aggregates stay coordinator-side there; this is not a
+        // fallback but an architectural precondition (there is nowhere to push).
+        const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
+        plan.sub_queries.back() = components::planner::optimize(resource(),
+                                                               std::move(plan.sub_queries.back()),
+                                                               plan.parameters.get(),
+                                                               can_push_to_agent);
 
         trace(log_, "executor::execute_plan_full: delegating to execute_plan, session: {}", session.data());
         // Operator-pipeline run, forwarding resolve_txn so the operator path
@@ -1870,6 +1883,30 @@ namespace services::collection::executor {
             return core::error_t::no_error();
         };
 
+        // DML flush bounding. Locate the first async-finalize (DML) sink in the
+        // driven range [op_start, end); when the config threshold is set, the
+        // mid-pump gate below flushes it INCREMENTALLY once it buffers >= threshold
+        // rows, keeping peak memory bounded. A SECOND async-finalize sink above it
+        // (a parent constraint) must accumulate its input across those partial
+        // flushes — signalled to the operators via ctx->dml_has_parent_constraint.
+        // dml_idx is a pure LOCAL (never parked on ctx). threshold==0 ⇒ the gate
+        // never fires and this is behavior-preserving.
+        std::size_t dml_idx = chain.size();
+        for (std::size_t i = op_start; i < chain.size(); ++i) {
+            if (chain[i]->needs_async_finalize()) {
+                dml_idx = i;
+                break;
+            }
+        }
+        bool parent_constraint = false;
+        for (std::size_t i = dml_idx + 1; i < chain.size(); ++i) {
+            if (chain[i]->needs_async_finalize()) {
+                parent_constraint = true;
+                break;
+            }
+        }
+        ctx->dml_has_parent_constraint = parent_constraint;
+
         // PUMP.
         if (sourceless_sink_root) {
             // No source at the bottom: the bottom sink (chain[0]) produces / commits
@@ -1908,6 +1945,13 @@ namespace services::collection::executor {
                     if (err.contains_error()) {
                         co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
                     }
+                    // Same mid-pump flush gate as the scan-source and materialized-input
+                    // branches: a DML sink fed by a PRODUCING bottom (recursive_cte
+                    // fixpoint output) must honor dml_flush_row_threshold too, or it
+                    // buffers the entire produced row set.
+                    if (auto flush_err = co_await maybe_mid_flush(chain, dml_idx, ctx); flush_err.contains_error()) {
+                        co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(flush_err));
+                    }
                 }
             }
         } else if (start == 0) {
@@ -1926,6 +1970,9 @@ namespace services::collection::executor {
                 if (err.contains_error()) {
                     co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
                 }
+                if (auto flush_err = co_await maybe_mid_flush(chain, dml_idx, ctx); flush_err.contains_error()) {
+                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(flush_err));
+                }
             }
         } else if (chain[start - 1]->output()) {
             // Materialized input: stream the already-executed operator's output_ chunks through the
@@ -1937,6 +1984,9 @@ namespace services::collection::executor {
                 auto err = pump_one(c.partial_copy(resource(), 0, c.size()));
                 if (err.contains_error()) {
                     co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+                }
+                if (auto flush_err = co_await maybe_mid_flush(chain, dml_idx, ctx); flush_err.contains_error()) {
+                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(flush_err));
                 }
             }
         }
@@ -1984,10 +2034,15 @@ namespace services::collection::executor {
         // the root, so ascending index == bottom-up. For a sourceless sink bottom the
         // real chain[0] was already driven (deepest-first) in the PUMP block above, so
         // this range (op_start==1) covers only its ancestors — still bottom-up overall.
-        // Today at most one op per chain sets needs_async_finalize() (the DML sink at
-        // the root, or the bottom sourceless sink already driven above), so this is
-        // behavior-preserving — but it is the hook future phases (a constraint above a
-        // DML, multi-async chains) need. Stop on the first error.
+        // Every op in this range that sets needs_async_finalize() is driven here,
+        // bottom-up: multi-async chains (3b-B) are the norm now (e.g. a spillable
+        // sink under a DML sink, or a constraint above a DML), so each async op is
+        // awaited in ascending (deepest-first) index order. Stop on the first error.
+        //
+        // This is the FINAL flush: any mid-pump partial flushes above ran with
+        // dml_flush_is_final=false; restore the default so the DML sink's await
+        // knows to close out (final index/swap-info, RETURNING count, executed).
+        ctx->dml_flush_is_final = true;
         for (std::size_t i = op_start; i < chain.size(); ++i) {
             ops::operator_t* op = chain[i];
             if (!op->needs_async_finalize()) {
@@ -2000,6 +2055,28 @@ namespace services::collection::executor {
         }
 
         co_return output;
+    }
+
+    executor_t::unique_future<core::error_t>
+    executor_t::maybe_mid_flush(std::pmr::vector<components::operators::operator_t*>& chain,
+                                std::size_t dml_idx,
+                                components::pipeline::context_t* ctx) {
+        // Mid-pump flush gate: co_await OUTSIDE the synchronous pump_one lambda (a
+        // lambda cannot co_await). NON-final flush — the sink stays open for the
+        // remaining batches. MEMBER coroutine so `this` supplies the frame
+        // memory_resource; holds EXACTLY ONE co_await => lost-wakeup-safe.
+        if (dml_flush_row_threshold_ != 0 && dml_idx < chain.size() &&
+            chain[dml_idx]->buffered_rows() >= dml_flush_row_threshold_) {
+            ctx->dml_flush_is_final = false;
+#ifdef DEV_MODE
+            g_dml_flush_count.fetch_add(1, std::memory_order_relaxed);
+#endif
+            co_await chain[dml_idx]->await_async_and_resume(ctx);
+            if (chain[dml_idx]->has_error()) {
+                co_return chain[dml_idx]->get_error();
+            }
+        }
+        co_return core::error_t::no_error();
     }
 
     executor_t::unique_future<core::error_t>
@@ -2148,27 +2225,14 @@ namespace services::collection::executor {
             // the single-slot dml_* fields and clears the cascade vectors, so the
             // success-path block below (which lifts the rest) never double-counts.
             auto lift_dml_ranges = [&pipeline_context, &result_tracking]() {
-                if (pipeline_context.dml_append_row_count > 0) {
-                    result_tracking.dml_appends.push_back({pipeline_context.dml_table_oid,
-                                                           pipeline_context.dml_append_row_start,
-                                                           pipeline_context.dml_append_row_count});
-                }
-                if (pipeline_context.dml_delete_txn_id != 0) {
-                    result_tracking.dml_deletes.push_back(
-                        {pipeline_context.dml_table_oid, pipeline_context.dml_delete_txn_id});
-                }
-                for (const auto& del : pipeline_context.cascade_dml_deletes) {
-                    result_tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
-                }
-                for (const auto& app : pipeline_context.cascade_dml_appends) {
+                for (const auto& app : pipeline_context.dml_appends) {
                     result_tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});
                 }
-                pipeline_context.cascade_dml_deletes.clear();
-                pipeline_context.cascade_dml_appends.clear();
-                pipeline_context.dml_append_row_start = 0;
-                pipeline_context.dml_append_row_count = 0;
-                pipeline_context.dml_delete_txn_id = 0;
-                pipeline_context.dml_table_oid = components::catalog::INVALID_OID;
+                for (const auto& del : pipeline_context.dml_deletes) {
+                    result_tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
+                }
+                pipeline_context.dml_appends.clear();
+                pipeline_context.dml_deletes.clear();
             };
 
             // Drive the sub-plan to completion through the shared streaming seam

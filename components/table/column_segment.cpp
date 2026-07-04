@@ -1636,31 +1636,36 @@ namespace components::table {
     }
 
     void column_segment_t::revert_append(uint64_t start_row) {
-        assert(type.to_physical_type() == types::physical_type::BIT);
+        // A BIT (validity) segment stores appended rows as validity bits, so reverting must reset the
+        // bits in [start_row, end) back to valid before the tail is reused on re-append. Every other
+        // segment (fixed-size / string) only had raw values written into its buffer by the append; a
+        // re-append overwrites them, so reverting just needs to drop the count. Mirrors DuckDB
+        // ColumnSegment::RevertAppend, where non-validity segments carry no revert_append hook.
+        if (type.to_physical_type() == types::physical_type::BIT) {
+            uint64_t start_bit = start_row - static_cast<uint64_t>(start);
 
-        uint64_t start_bit = start_row - static_cast<uint64_t>(start);
-
-        auto& buffer_manager = block->block_manager.buffer_manager;
-        // Resident managed block (already pinned on the append path); pin cannot OOM here.
-        auto pinned = buffer_manager.pin(block);
-        assert(!pinned.has_error() && "revert_append: pin of resident managed block must not OOM");
-        if (pinned.has_error()) {
-            return;
-        }
-        auto& handle = pinned.value();
-        uint64_t revert_start;
-        if (start_bit % 8 != 0) {
-            uint64_t byte_pos = start_bit / 8;
-            uint64_t bit_end = (byte_pos + 1) * 8;
-            vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(handle.ptr()));
-            for (uint64_t i = start_bit; i < bit_end; i++) {
-                mask.set_valid(i);
+            auto& buffer_manager = block->block_manager.buffer_manager;
+            // Resident managed block (already pinned on the append path); pin cannot OOM here.
+            auto pinned = buffer_manager.pin(block);
+            assert(!pinned.has_error() && "revert_append: pin of resident managed block must not OOM");
+            if (!pinned.has_error()) {
+                auto& handle = pinned.value();
+                uint64_t revert_start;
+                if (start_bit % 8 != 0) {
+                    uint64_t byte_pos = start_bit / 8;
+                    uint64_t bit_end = (byte_pos + 1) * 8;
+                    vector::validity_mask_t mask(buffer_manager.resource(),
+                                                 reinterpret_cast<uint64_t*>(handle.ptr()));
+                    for (uint64_t i = start_bit; i < bit_end; i++) {
+                        mask.set_valid(i);
+                    }
+                    revert_start = bit_end / 8;
+                } else {
+                    revert_start = start_bit / 8;
+                }
+                memset(handle.ptr() + revert_start, 0xFF, segment_size_ - revert_start);
             }
-            revert_start = bit_end / 8;
-        } else {
-            revert_start = start_bit / 8;
         }
-        memset(handle.ptr() + revert_start, 0xFF, segment_size_ - revert_start);
         count = start_row - static_cast<uint64_t>(start);
     }
 

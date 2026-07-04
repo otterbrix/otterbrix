@@ -56,7 +56,8 @@ namespace components::planner {
                 cur = fk_node;
             }
 
-            if (!ins->not_null_cols().empty() || !ins->check_exprs().empty() || !ins->array_size_reqs().empty()) {
+            if (!ins->not_null_cols().empty() || !ins->check_exprs().empty() || !ins->array_size_reqs().empty() ||
+                !ins->unique_groups().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::dbname_t{},
@@ -64,6 +65,18 @@ namespace components::planner {
                     std::vector<std::string>(ins->not_null_cols()),
                     std::vector<std::pair<std::string, std::string>>(ins->check_exprs()),
                     std::vector<std::pair<std::string, uint64_t>>(ins->array_size_reqs())));
+                // UNIQUE / PK groups: create_plan_check_constraint splices an
+                // operator_unique_constraint_t below the check sink. table_oid feeds
+                // the operator's existing-row scan_by_keys. A pure-UNIQUE table (no
+                // NOT NULL / CHECK) still gets the wrapper via the guard above.
+                cc->set_unique_groups(ins->unique_groups());
+                cc->set_table_oid(ins->table_oid());
+                // Decoded DEFAULTs: the constraint ops evaluate a column ABSENT from
+                // the write-set as its default (the stored row carries it). Absent-by-
+                // name is only meaningful when the INSERT carried an explicit column
+                // list (key_translation) — positional inserts may alias arbitrarily.
+                cc->set_column_defaults(ins->column_defaults());
+                cc->set_write_set_named(!ins->key_translation().empty());
                 cc->append_child(cur);
                 cur = cc;
             }
@@ -82,12 +95,18 @@ namespace components::planner {
                 cur = fk_node;
             }
 
-            if (!upd->not_null_cols().empty()) {
+            if (!upd->not_null_cols().empty() || !upd->unique_groups().empty()) {
                 auto cc = boost::intrusive_ptr(
                     new logical_plan::node_check_constraint_t(r,
                                                               core::dbname_t{},
                                                               core::relname_t{},
                                                               std::vector<std::string>(upd->not_null_cols())));
+                // UNIQUE / PK enforcement on the UPDATE write-set (see rewrite_insert).
+                cc->set_unique_groups(upd->unique_groups());
+                cc->set_table_oid(upd->table_oid());
+                cc->set_column_defaults(upd->column_defaults());
+                // An UPDATE write-set is the gathered storage row — always named.
+                cc->set_write_set_named(true);
                 cc->append_child(cur);
                 cur = cc;
             }

@@ -1,11 +1,17 @@
 #include <catch2/catch.hpp>
 
+#include <components/compute/function.hpp>
+#include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <components/logical_plan/node_union.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/scan/index_scan.hpp>
 #include <components/physical_plan_generator/impl/create_plan_match.hpp>
@@ -13,9 +19,16 @@
 #include <components/planner/optimizer.hpp>
 #include <services/collection/context_storage.hpp>
 
+#include "pushdown_plan_builders.hpp"
+
 using namespace components::logical_plan;
 using namespace components::expressions;
 using key = components::expressions::key_t;
+
+// The aggregate-pushdown plan builders live in the shared pushdown_plan_builders.hpp
+// header; make_agg_group is used verbatim, make_agg is bound to this suite's pushable oid
+// by the thin wrapper in the anonymous namespace below.
+using planner_test::make_agg_group;
 
 constexpr auto database_name = "database";
 constexpr auto collection_name = "collection";
@@ -1012,4 +1025,149 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
 
     auto op = services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
     REQUIRE(op->type() == components::operators::operator_type::full_scan);
+}
+
+// ================================================================
+// pushdown_aggregate rule — stamps node_group_t::pushdown() on
+// single-owned-table, fragment-mergeable aggregate sub-plans.
+// Driven through optimize() with can_push_to_agent=true (the hard
+// capability precondition — an owning agent must be reachable); the
+// rule itself is total (no-op on non-match).
+// ================================================================
+namespace {
+    constexpr auto pushable_oid = components::catalog::oid_t{4242};
+
+    // aggregate(pushable_oid) -> group: bind the shared make_agg to this suite's pushable
+    // table oid so the TEST_CASE call sites (make_agg(r, group)) stay unchanged.
+    static node_aggregate_ptr make_agg(std::pmr::memory_resource* r, const node_group_ptr& group) {
+        return planner_test::make_agg(r, group, pushable_oid);
+    }
+
+    static bool run_and_get_pushdown(std::pmr::memory_resource* r, const node_ptr& plan, bool enable) {
+        auto params = make_parameter_node(r);
+        auto root = components::planner::optimize(r, plan, params.get(), enable);
+        // find the group child of the aggregate root to read its flag
+        for (const auto& child : root->children()) {
+            if (child && child->type() == node_type::group_t) {
+                return static_cast<node_group_t*>(child.get())->pushdown();
+            }
+        }
+        return false;
+    }
+} // namespace
+
+TEST_CASE("optimizer::pushdown_aggregate::scalar_mergeable_is_stamped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
+    auto agg = make_agg(&resource, group);
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::grouped_mergeable_is_stamped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto group = make_agg_group(&resource, /*with_group_key=*/true, /*distinct=*/false);
+    auto agg = make_agg(&resource, group);
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::no_agent_capability_does_not_stamp") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
+    auto agg = make_agg(&resource, group);
+    // Capability precondition (NOT a rollout flag): can_push_to_agent==false means
+    // there is no reachable owning agent (disk-less/in-memory mode), so optimize()
+    // never calls the rule and nothing is stamped.
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*can_push=*/false) == false);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::count_distinct_is_skipped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/true);
+    auto agg = make_agg(&resource, group);
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto having = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "h"));
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false, expression_ptr(having));
+    auto agg = make_agg(&resource, group);
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::join_child_is_skipped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
+    auto agg = make_agg(&resource, group);
+    // A join sibling means this is not one owned base table => skip (a).
+    agg->append_child(make_node_join(&resource,
+                                     core::dbname_t{database_name},
+                                     core::relname_t{collection_name},
+                                     join_type::inner));
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::nested_aggregate_child_is_skipped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
+    auto agg = make_agg(&resource, group);
+    // A nested aggregate child => not a single owned base table => skip (a).
+    auto nested = make_node_aggregate(&resource,
+                                      core::dbname_t{database_name},
+                                      core::relname_t{collection_name});
+    agg->append_child(std::move(nested));
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::union_child_is_skipped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
+    auto agg = make_agg(&resource, group);
+    // A union sibling => multi-source, not one owned base table => skip (a).
+    agg->append_child(make_node_union(&resource,
+                                      make_node_cte_scan(&resource, std::pmr::string("l")),
+                                      make_node_cte_scan(&resource, std::pmr::string("r")),
+                                      /*all=*/false));
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
+    auto agg = make_agg(&resource, group);
+    // A cte_scan sibling => multi-source, not one owned base table => skip (a).
+    agg->append_child(make_node_cte_scan(&resource, std::pmr::string("cte")));
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::non_mergeable_kind_is_skipped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    // A non-whitelisted aggregate kind (no fragment-merge kernel) must stay
+    // coordinator-side => skip (b), has_unmergeable_aggregate.
+    std::vector<expression_ptr> exprs;
+    auto agg_expr = make_aggregate_expression(&resource, "stddev", key(&resource, "s"));
+    agg_expr->append_param(key(&resource, "v"));
+    exprs.push_back(expression_ptr(agg_expr));
+    auto group =
+        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs, nullptr);
+    auto agg = make_agg(&resource, group);
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+}
+
+TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    // A shape-/kind-pushable fragment, but an aggregate arg references a UDF
+    // (function_uid >= DEFAULT_FUNCTIONS.size()). The owning agent rebuilds its
+    // registry with builtins only, so the pushed fragment could not resolve it
+    // => skip (e), subtree_references_udf.
+    std::vector<expression_ptr> exprs;
+    auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
+    auto udf = make_function_expression(&resource, std::string("my_udf"));
+    udf->add_function_uid(components::compute::DEFAULT_FUNCTIONS.size());
+    sum->append_param(expression_ptr(udf));
+    exprs.push_back(expression_ptr(sum));
+    auto group =
+        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs, nullptr);
+    auto agg = make_agg(&resource, group);
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }

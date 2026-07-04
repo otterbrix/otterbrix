@@ -45,6 +45,17 @@ namespace services::collection::executor {
     // + relaxed: coarse instrumentation, not a synchronization primitive; off every hot
     // path. DEV_MODE-only, like streaming_pipeline_runs().
     uint64_t dml_appends_reverted() noexcept;
+
+    // Test-observable counter of MID-PUMP DML flushes: the executor bumps it every
+    // time the mid-pump flush gate fires (buffered_rows() >= dml_flush_row_threshold_,
+    // dml_flush_row_threshold_ != 0), i.e. once per NON-final incremental flush of a
+    // bounded DML sink. With the default threshold==0 the gate never fires and this
+    // stays 0 (the mid-flush path is disabled). A test that sets a small threshold and
+    // runs a multi-batch DML asserts this bumps >1, proving the incremental spill path
+    // actually executed rather than collapsing to a single post-pump flush. Process-
+    // global + relaxed: coarse instrumentation, not a synchronization primitive; off
+    // every hot path. DEV_MODE-only, like streaming_pipeline_runs().
+    uint64_t dml_flush_count() noexcept;
 #endif
 
     // One range per (table, DML fragment), accumulated across sub-plans.
@@ -170,7 +181,8 @@ namespace services::collection::executor {
                    actor_zeta::address_t wal_address,
                    actor_zeta::address_t disk_address,
                    actor_zeta::address_t index_address,
-                   log_t&& log);
+                   log_t&& log,
+                   uint64_t dml_flush_row_threshold = 0);
         ~executor_t() = default;
 
         // Operator-pipeline run over an already-rewritten plan. INTERNAL:
@@ -259,6 +271,18 @@ namespace services::collection::executor {
         unique_future<core::error_t> materialize_build_sides_(components::operators::operator_ptr root,
                                                               components::pipeline::context_t* ctx);
 
+        // Mid-pump DML flush gate, shared by execute_pipeline's two pump branches
+        // (scan-source + materialized-input). When the streaming DML sink at
+        // chain[dml_idx] has buffered >= dml_flush_row_threshold_ rows, drive a
+        // NON-final incremental async flush so the sink stays open for the remaining
+        // batches. A MEMBER coroutine (so `this` supplies the frame memory_resource)
+        // holding EXACTLY ONE co_await (the await_async_and_resume) => lost-wakeup-safe.
+        // Returns the sink's error when the flush failed, else core::error_t::no_error()
+        // (also the no-op result when the gate is disabled or not yet reached).
+        unique_future<core::error_t> maybe_mid_flush(std::pmr::vector<components::operators::operator_t*>& chain,
+                                                     std::size_t dml_idx,
+                                                     components::pipeline::context_t* ctx);
+
         // THE unified commit publisher: builds node_transaction_t(commit)
         // (ddl_mode adds the flush/WAL prefix) and runs it through the same
         // execute_plan pipeline every statement uses. The operator drains
@@ -278,6 +302,10 @@ namespace services::collection::executor {
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
         log_t log_;
         components::compute::function_registry_t function_registry_;
+        // Config-gated bound on rows buffered by a streaming DML sink before the
+        // execute_pipeline pump forces an incremental async flush. 0 = disabled
+        // (behavior-preserving: the mid-pump gate never fires).
+        uint64_t dml_flush_row_threshold_{0};
     };
 
     using executor_ptr = std::unique_ptr<executor_t, actor_zeta::pmr::deleter_t>;

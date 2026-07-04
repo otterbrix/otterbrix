@@ -148,6 +148,32 @@ namespace components::sql::transform {
                                              "column references, and constants",
                                              resource_});
                     }
+                    if (constr->contype == CONSTR_UNIQUE || constr->contype == CONSTR_PRIMARY) {
+                        // UNIQUE / PRIMARY KEY. The enforced columns live in constr->keys
+                        // (identical to CREATE TABLE table-level constraints). The kind is
+                        // lowered to pg_constraint.contype 'u'/'p' by rewrite_create_constraint;
+                        // operator_resolve_constraint reads it back on INSERT/UPDATE and stamps
+                        // the DML node's unique_groups (enrich → planner → unique operator).
+                        std::string con_name = constr->conname ? constr->conname : "";
+                        const auto kind = (constr->contype == CONSTR_PRIMARY)
+                                              ? logical_plan::constraint_kind::primary_key
+                                              : logical_plan::constraint_kind::unique;
+                        auto uq_node =
+                            logical_plan::make_node_create_constraint(resource_,
+                                                                      db,
+                                                                      rel,
+                                                                      core::constraint_name_t{std::move(con_name)},
+                                                                      kind);
+                        if (constr->keys) {
+                            std::vector<std::string> cols;
+                            cols.reserve(constr->keys->lst.size());
+                            for (auto& col : constr->keys->lst) {
+                                cols.emplace_back(strVal(col.data));
+                            }
+                            uq_node->set_local_col_names(std::move(cols));
+                        }
+                        return wrap_primary(logical_plan::node_ptr{std::move(uq_node)});
+                    }
                     break;
                 }
                 default:

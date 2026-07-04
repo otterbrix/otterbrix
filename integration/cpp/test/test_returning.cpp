@@ -1,6 +1,8 @@
 #include "test_config.hpp"
 
 #include <catch2/catch.hpp>
+#include <components/physical_plan/operators/operator_update.hpp>
+#include <services/collection/executor.hpp>
 #include <string>
 
 // Tests for the RETURNING clause on INSERT / UPDATE / DELETE.
@@ -836,5 +838,107 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RETURNING projection errors — failed-statement atomicity.
+//
+// The projection can fail AT RUNTIME (e.g. division by zero) after the DML's
+// storage work is staged or done. The statement must then fail CLEANLY:
+//   - INSERT: the rows were already WAL-first appended when the read-back
+//     projection runs, so the append range MUST be recorded for the abort tail
+//     to revert (observed via executor::dml_appends_reverted()).
+//   - UPDATE: the projection is a pure local compute over the updated chunks,
+//     so it must run BEFORE the storage mutation — a failing RETURNING leaves
+//     ZERO storage writes (observed via update_storage_update_sends()).
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_returning::insert_returning_error_reverts_append") {
+    auto config = test_create_config("/tmp/test_returning/insert_error_revert");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    setup(dispatcher);
+
+    const auto reverts_before = services::collection::executor::dml_appends_reverted();
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "INSERT INTO TestDatabase.TestCollection (id, name) VALUES "
+                                           "(1, 'Alice') RETURNING id / 0;");
+        REQUIRE(cur->is_error());
+    }
+    const auto reverts_after = services::collection::executor::dml_appends_reverted();
+    // The already-appended range was lifted and reverted — no permanent
+    // uncommitted rows linger in storage.
+    REQUIRE(reverts_after == reverts_before + 1);
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM TestDatabase.TestCollection;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
+    }
+
+    INFO("the table stays fully usable after the failed statement") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "INSERT INTO TestDatabase.TestCollection (id, name) VALUES "
+                                           "(2, 'Bob') RETURNING id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+}
+
+TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_writes") {
+    auto config = test_create_config("/tmp/test_returning/update_error_clean");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    setup(dispatcher);
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session,
+                                  "INSERT INTO TestDatabase.TestCollection (id, name, qty) VALUES (1, 'Alice', 7);")
+                    ->is_success());
+    }
+
+    const auto sends_before = components::operators::update_storage_update_sends();
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "UPDATE TestDatabase.TestCollection SET qty = 8 WHERE id = 1 "
+                                           "RETURNING qty / 0;");
+        REQUIRE(cur->is_error());
+    }
+    const auto sends_after = components::operators::update_storage_update_sends();
+    // The failing projection ran BEFORE any mutation: no storage_update was ever
+    // sent, so there is no MVCC delete-old/append-new, no WAL update record and
+    // nothing for the abort tail to revert.
+    REQUIRE(sends_after == sends_before);
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT qty FROM TestDatabase.TestCollection WHERE id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 7);
+    }
+
+    INFO("a subsequent valid UPDATE ... RETURNING still works") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "UPDATE TestDatabase.TestCollection SET qty = 9 WHERE id = 1 "
+                                           "RETURNING qty;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 9);
     }
 }

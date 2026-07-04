@@ -23,6 +23,9 @@ namespace components::operators {
         full_scan,
         transfer_scan,
         index_scan,
+        // Aggregate-pushdown source (SEAM B): ships the POD reduce spec on the dedicated
+        // storage_reduce protocol leg and emits the agent's FINAL aggregated rows.
+        pushed_reduce_scan,
         insert,
         remove,
         update,
@@ -34,6 +37,10 @@ namespace components::operators {
         // the right side once and probes with the left; same output layout as `join`.
         hash_join,
         aggregate,
+        // Coordinator-side terminal of the aggregate pushdown (SEAM B): identity passthrough
+        // above a pushed_reduce_scan that OWNS the empty-input scalar row, and the socket a
+        // sharded-slice future turns into a real kernel merge (see operator_group_merge.hpp).
+        group_merge,
         raw_data,
         union_op,
         recursive_cte,
@@ -42,6 +49,11 @@ namespace components::operators {
         check_constraint,
         fk_check,
         fk_cascade,
+        // UNIQUE / PRIMARY KEY enforcement. Sourceless streaming sink shaped like
+        // fk_check: reads the child DML's constraint_input() and errors on a
+        // duplicate key (within-batch typed hash+verify, or an existing table row
+        // via scan_by_keys). See operator_unique_constraint.hpp.
+        unique_constraint,
         // DDL sequencing operator
         sequence,
         // DDL create collection (storage + index registration + catalog writes)
@@ -208,6 +220,13 @@ namespace components::operators {
         // executor drives this operator's await_async_and_resume after the pump (it
         // owns the cross-actor await, so it is lost-wakeup-safe). Default false.
         [[nodiscard]] virtual bool needs_async_finalize() const noexcept { return false; }
+
+        // Rows a buffering DML sink (insert/update/delete) has folded into its
+        // accumulator but not yet flushed. The executor's 3b-B mid-pump flush gate
+        // compares this to the flush threshold; every non-DML op (scan / streaming /
+        // constraint / DDL sink) keeps it 0 so the gate skips them, and catalog-mode
+        // DML returns 0 too (its single-shot path must not be mid-flushed).
+        [[nodiscard]] virtual uint64_t buffered_rows() const noexcept { return 0; }
 
         // Rewind an operator's PRIVATE streaming bookkeeping so it can be re-driven
         // from scratch. reset_for_reuse() clears the generic state_/output_, but the

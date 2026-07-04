@@ -1,7 +1,14 @@
 #include "agent_disk.hpp"
 #include "inline_scan.hpp" // services::disk::detail::inline_scan (catalog DDL on the agent)
 #include "manager_disk.hpp"
+#include <components/logical_plan/node_group.hpp>              // node_group_t::set_pushdown (5a-C re-lowering guard)
+#include <components/physical_plan/operators/aggregate/operator_func.hpp> // aggregate::operator_func_t (reduce rebuild)
+#include <components/physical_plan/operators/operator_group.hpp>          // operator_group_t + group_key_t (SEAM B reduce)
+#include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
+#include <components/physical_plan_generator/create_plan.hpp>  // create_plan + function_registry + context_storage_t
+#include <components/vector/cell_equal.hpp> // components::vector::cells_equal (typed FK hash-verify)
 #include <components/vector/vector_operations.hpp>
+#include <algorithm> // std::reverse (5a-C pump linearization)
 #include <fstream>
 #include <services/dispatcher/dispatcher.hpp>
 #include <unordered_set>
@@ -9,6 +16,22 @@
 namespace services::disk {
 
     using namespace core::filesystem;
+
+    // Test-observable counter of ROWS shipped in the last aggregate-pushdown reduce reply
+    // (see agent_disk.hpp). Bumped by the sum of data_chunk_t::size() over the reduced
+    // chunks right before they cross the mailbox; tests reset it, run one aggregate,
+    // then assert the count is TINY vs. the scanned input. DEV_MODE-only.
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_pushdown_reply_rows{0};
+    } // namespace
+    uint64_t pushdown_reply_rows() noexcept {
+        return g_pushdown_reply_rows.load(std::memory_order_relaxed);
+    }
+    void reset_pushdown_reply_rows() noexcept {
+        g_pushdown_reply_rows.store(0, std::memory_order_relaxed);
+    }
+#endif
 
     agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource,
                                manager_disk_t* manager,
@@ -359,6 +382,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_fetch_next_batch_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_fetch_next_batch_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_reduce_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_reduce_inner, msg);
                 break;
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_scan_segment_inner>: {
@@ -1057,6 +1084,155 @@ namespace services::disk {
         co_return scan_local(table_oid, filter.get(), limit, projected_ptr, txn);
     }
 
+    // Shared bounded streaming-scan skeleton for the send-free agent-local reducers
+    // (aggregate-pushdown REDUCE + fk_hash_semijoin). Owns the position + fetch loop:
+    // re-seek from row 0, read ONE batch at a time (applying `filter` + `projected`), and
+    // invoke `fn(batch)` per NON-empty batch until the slice drains. `fn` is a TEMPLATE
+    // callable (R14 — NOT std::function) returning core::error_t, so a per-batch failure
+    // (e.g. group.push) stops the loop and propagates. A fetch_next_batch error stops the
+    // loop and returns that error; a clean drain (empty batch) returns no_error(). Peak
+    // memory is one batch — nothing pinned survives the round-trip. NOT [[nodiscard]]:
+    // fk_hash_semijoin intentionally discards the error to return a PARTIAL result.
+    template <typename PerBatch>
+    static core::error_t for_each_storage_batch(components::storage::storage_t& storage,
+                                                components::storage::scan_position_t& scan_position,
+                                                const components::table::table_filter_t* filter,
+                                                const std::vector<std::size_t>* projected,
+                                                const components::table::transaction_data& txn,
+                                                std::pmr::memory_resource* resource,
+                                                PerBatch&& fn) {
+        auto all_types = storage.types();
+        scan_position.next_row = 0;
+        scan_position.max_row = static_cast<int64_t>(storage.total_rows());
+        while (!scan_position.drained && scan_position.next_row < scan_position.max_row) {
+            components::vector::data_chunk_t batch =
+                projected ? components::vector::data_chunk_t{resource,
+                                                             all_types,
+                                                             *projected,
+                                                             components::vector::DEFAULT_VECTOR_CAPACITY}
+                          : components::vector::data_chunk_t{resource,
+                                                             all_types,
+                                                             components::vector::DEFAULT_VECTOR_CAPACITY};
+            auto fetch_r = storage.fetch_next_batch(batch, scan_position, filter, projected, txn);
+            if (fetch_r.has_error()) {
+                return fetch_r.error();
+            }
+            if (batch.size() == 0) {
+                break;
+            }
+            if (auto err = fn(batch); err.contains_error()) {
+                return err;
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    // Agent-side aggregate-pushdown REDUCE (SEAM B). Builds the EXISTING operator_group DIRECTLY
+    // from the POD (no create_plan / node tree) and drives it over one owned `storage` slice
+    // ENTIRELY LOCALLY (send-free) — a bounded storage_t::fetch_next_batch loop applies the shipped
+    // WHERE `filter` + `projected_cols`, folding each batch into the group; finalize() then
+    // materializes the FINAL aggregated rows (one per group). Peak memory is one batch + the
+    // bounded group table — the same streaming discipline as fk_hash_semijoin. Empty slice: a
+    // scalar aggregate still emits its single (NULL/COUNT-0) row via operator_group's empty-
+    // input finalize; a GROUP BY emits nothing. `txn` is the caller's real snapshot so the
+    // reduce sees read-your-own-writes (the D4 zero-txn guard). A fetch / push / finalize failure
+    // surfaces as an error_t on the result wrapper — DISTINCT from a legitimately-empty result —
+    // never thrown across the mailbox (R2), so a scalar-aggregate error is not mistaken for a
+    // drained (no-row) reply.
+    // `storage` may be NULL: a not-owned / record-only slice reduces over an EMPTY
+    // input — the batch loop is skipped and operator_group's empty-input finalize
+    // still emits a scalar aggregate's mandatory single row (typed via output_types).
+    static core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
+    reduce_pushed_aggregate(std::pmr::memory_resource* resource,
+                            log_t log,
+                            components::storage::storage_t* storage,
+                            session_id_t session,
+                            actor_zeta::address_t self_address,
+                            const components::table::table_filter_t* filter,
+                            const std::vector<std::size_t>& projected_cols,
+                            const components::table::transaction_data& txn,
+                            const components::operators::pushed_aggregate_spec_t& spec) {
+        namespace ops = components::operators;
+        std::pmr::vector<components::vector::data_chunk_t> out{resource};
+
+        // (1) Agent-local function registry (the agent has none of the executor's state). The
+        //     optimizer refused any UDF (is_udf_uid), so every builtin func_uid resolves here.
+        components::compute::function_registry_t reg{resource};
+        components::compute::register_default_functions(reg);
+
+        // (2) Rebuild the EXISTING operator_group from the POD: plain-column keys + builtin
+        //     SUM/COUNT/MIN/MAX/AVG (COUNT(*) == empty arg path). No HAVING / DISTINCT / computed
+        //     columns (the optimizer never stamps those), so having==nullptr and
+        //     internal_aggregate_count==0.
+        ops::operator_group_t group{resource, log.clone(), nullptr, 0};
+        for (const auto& gk : spec.group_keys) {
+            ops::group_key_t key{resource};
+            key.name.assign(gk.name.begin(), gk.name.end());
+            key.type = ops::group_key_t::kind::column;
+            key.full_path.assign(gk.path.begin(), gk.path.end());
+            group.add_key(std::move(key));
+        }
+        for (const auto& agg : spec.aggregates) {
+            std::pmr::vector<components::expressions::param_storage> args{resource};
+            if (!agg.arg_col_path.empty()) {
+                components::expressions::key_t k{resource};
+                std::pmr::vector<size_t> p{resource};
+                p.assign(agg.arg_col_path.begin(), agg.arg_col_path.end());
+                k.set_path(std::move(p));
+                args.emplace_back(std::move(k));
+            } // else COUNT(*): empty args (operator_group treats it as count-star)
+            group.add_value(agg.alias,
+                            boost::intrusive_ptr(new ops::aggregate::operator_func_t(resource,
+                                                                                     log.clone(),
+                                                                                     reg.get_function(agg.func_uid),
+                                                                                     std::move(args),
+                                                                                     agg.distinct)));
+        }
+        // MANDATORY: forward the plan-resolved FINAL output types so an empty-slice scalar
+        // result stays typed (SUM(int)->INTEGER NULL) instead of the 0-byte NA sentinel (gcc -O3).
+        group.set_output_types(spec.output_types);
+
+        // (3) Pipeline context for group.push/finalize. Build IN PLACE (its move-ctor DROPS
+        //     txn/function_registry — NEVER move it). No parameters/session_tz are needed: the
+        //     WHERE is already baked into `filter`, and builtin SUM/COUNT/... read neither.
+        components::logical_plan::storage_parameters params{resource};
+        components::pipeline::context_t ctx{session,
+                                            self_address,
+                                            actor_zeta::address_t::empty_address(),
+                                            &reg,
+                                            params};
+        ctx.txn = txn;
+
+        // (4) Send-free streaming drive: re-seek + read ONE batch from `storage` (applying the
+        //     WHERE filter + projection), fold it into the group, repeat. fetch_next_batch walks
+        //     past fully-filtered vectors internally, so an empty batch means end-of-scan. A
+        //     NULL storage (not-owned / record-only slice) is an empty input: skip straight to
+        //     the finalize, which still emits the scalar empty-slice row.
+        if (storage != nullptr) {
+            const std::vector<std::size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
+            components::storage::scan_position_t pos{};
+            ops::chunks_vector_t sink{resource}; // group.push is a sink — appends nothing here
+            if (auto err = for_each_storage_batch(*storage,
+                                                  pos,
+                                                  filter,
+                                                  projected_ptr,
+                                                  txn,
+                                                  resource,
+                                                  [&](components::vector::data_chunk_t& batch) {
+                                                      return group.push(&ctx, std::move(batch), sink);
+                                                  });
+                err.contains_error()) {
+                return err;
+            }
+        }
+
+        // (5) Finalize into the reply chunks (single owner finalizes — identity passthrough).
+        if (auto err = group.finalize(&ctx, out); err.contains_error()) {
+            return err;
+        }
+        return out;
+    }
+
     // Streaming fetch-next scan source (STEP 3 / phase B). POSITION-ONLY index-resume: the cursor
     // in active_scans_ stores ONLY the absolute resume position + the scan params; every fetch
     // re-seeks a TRANSIENT scan state from that position (storage_t::fetch_next_batch), reads ONE
@@ -1064,6 +1240,7 @@ namespace services::disk {
     // batch and ZERO pins survive this round-trip. cursor_id==0 OPENs (minting a (session,counter)
     // id, capping the matched-row head at offset+limit); non-zero ADVANCEs the same cursor. The
     // cursor is GC'd (erased) the moment it drains or hits the matched-row limit.
+    //
     agent_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
     agent_disk_t::storage_fetch_next_batch_inner(session_id_t session,
                                                  components::catalog::oid_t table_oid,
@@ -1087,7 +1264,8 @@ namespace services::disk {
         if (cursor_id == 0) {
             // OPEN: resolve the owned slice entry and snapshot the source-row bound. A not-owned /
             // record-only oid replies a drained sentinel (no cursor minted), mirroring the
-            // whole-vector path's empty reply.
+            // whole-vector path's empty reply. (A pushed-aggregate REDUCE rides the dedicated
+            // storage_reduce path — this handler is a raw scan only.)
             auto it = storages_.find(table_oid);
             if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
                 trace(log_,
@@ -1096,16 +1274,17 @@ namespace services::disk {
                       static_cast<unsigned>(table_oid));
                 co_return make_drained(0);
             }
-            active_scan_t scan{resource()};
+            active_scan_t scan{};
             scan.table_oid = table_oid;
+            // Raw scan cursor: position-only, re-seeks per fetch. `limit` is the (offset+limit)
+            // head cap the source pushed down; with a filter it is a POST-filter matched-row
+            // cap (the legacy scan_batched applied it post-hoc), so it bounds matched rows
+            // handed out, never source rows scanned.
             scan.pos.next_row = 0;
             scan.pos.max_row = static_cast<int64_t>(it->second->storage->total_rows());
             scan.filter = std::move(filter);
             scan.projected_cols = std::move(projected_cols);
             scan.txn = txn;
-            // `limit` is the (offset+limit) head cap the source pushed down. With a filter it is a
-            // POST-filter matched-row cap (the legacy scan_batched applied it post-hoc), so it
-            // bounds matched rows handed out, never source rows scanned.
             scan.matched_limit = limit;
             // Mint cursor id = (session, agent counter) per R16: the session disambiguates across
             // queries, the agent-local counter across concurrent cursors of one session. Fall back
@@ -1179,6 +1358,58 @@ namespace services::disk {
         co_return fetch_batch_t{std::move(batch), cursor_id};
     }
 
+    // AGGREGATE-PUSHDOWN REDUCE (SEAM B) — the DEDICATED protocol leg. Runs the whole
+    // GROUP BY over this agent's OWN slice (send-free, synchronous: reduce_pushed_aggregate
+    // rebuilds the EXISTING operator_group from the POD and applies the shipped WHERE
+    // `filter` + `projected_cols`), and replies ALL final aggregated rows in ONE reply —
+    // the result is bounded by #groups, so no cursor is minted and the raw-scan protocol
+    // stays a pure scan. A not-owned / record-only oid reduces over the EMPTY input: the
+    // group's empty-input finalize still emits a scalar aggregate's single (COUNT=0 /
+    // NULL) row, typed via spec.output_types. SINGLE-OWNER INVARIANT: these are FINAL
+    // rows (not partials) — valid only while ONE agent owns the whole table; sharded
+    // slices would need partial states + a real coordinator merge (operator_group_merge
+    // is the socket for that).
+    agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
+    agent_disk_t::storage_reduce_inner(session_id_t session,
+                                       components::catalog::oid_t table_oid,
+                                       std::unique_ptr<components::table::table_filter_t> filter,
+                                       std::vector<size_t> projected_cols,
+                                       components::table::transaction_data txn,
+                                       components::operators::pushed_aggregate_spec_t spec) {
+        auto it = storages_.find(table_oid);
+        const bool no_storage =
+            (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr);
+        auto reduced_r = reduce_pushed_aggregate(resource(),
+                                                 log_.clone(),
+                                                 no_storage ? nullptr : it->second->storage.get(),
+                                                 session,
+                                                 address(),
+                                                 filter.get(),
+                                                 projected_cols,
+                                                 txn,
+                                                 spec);
+        // A real reduce error (fetch / push / finalize) rides the wrapper as an error_t —
+        // DISTINCT from a legitimately-empty GROUP BY result — so a scalar-aggregate
+        // failure surfaces instead of masquerading as an empty reply. No throw across the
+        // mailbox (R2).
+        if (reduced_r.has_error()) {
+            co_return reduced_r;
+        }
+#ifdef DEV_MODE
+        // Record EXACTLY the rows that will cross the agent->coordinator mailbox: the sum
+        // over the reduced chunks (1 for a scalar aggregate, one per group for a GROUP BY)
+        // — never the raw scanned rows. See pushdown_reply_rows().
+        {
+            uint64_t reply_rows = 0;
+            for (const auto& c : reduced_r.value()) {
+                reply_rows += c.size();
+            }
+            g_pushdown_reply_rows.fetch_add(reply_rows, std::memory_order_relaxed);
+        }
+#endif
+        co_return reduced_r;
+    }
+
     agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
     agent_disk_t::storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count) {
         std::pmr::vector<components::vector::data_chunk_t> out{resource()};
@@ -1223,32 +1454,165 @@ namespace services::disk {
         co_return std::move(out);
     }
 
-    agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
-    agent_disk_t::scan_by_keys_inner(components::catalog::oid_t table_oid,
-                                     std::pmr::vector<std::string> key_col_names,
-                                     components::vector::data_chunk_t keys,
-                                     components::table::transaction_data txn) {
-        // result[i] = row_ids matching keys[i]; one (possibly empty) entry per key,
-        // preserving input order. Name→index resolution runs once for the whole
-        // batch, then each key gets an eq-AND filtered scan.
-        std::pmr::vector<std::pmr::vector<std::int64_t>> result{resource()};
-        result.reserve(keys.size());
-
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr || key_col_names.empty()) {
-            // Not owned / record-only marker / no key columns: one empty row per key.
-            for (std::size_t i = 0; i < keys.size(); ++i) {
-                result.emplace_back();
-            }
-            co_return std::move(result);
+    // STREAMING SINGLE-PASS HASH SEMI-JOIN (phase 3b-C). Given the input key-tuple set
+    // (`keys`, column j == key_col_indices[j]-th stored column, row i == key-tuple i) and one
+    // owned `storage`, return result[i] = the row_ids of every table row whose key columns
+    // equal key-tuple i (one bucket per input key, input order; empty when nothing matches).
+    // Replaces the retired O(nkeys * table_rows) per-key filtered-scan loop: build ONE typed
+    // hash of the key set, then STREAM the table exactly once (storage.fetch_next_batch,
+    // projected to the key columns), probing each streamed row against the hash and bucketing
+    // its row_id into every matching key. No logical_value_t round-trip (R1): typed
+    // data_chunk_t::hash + the NULL-aware typed verify components::vector::cells_equal,
+    // shared with GROUP BY / HASH JOIN / UNIQUE. Exactly ONE scan pass per call (i.e. per <=1024-key input chunk the
+    // FK operators send), NOT one per key.
+    std::pmr::vector<std::pmr::vector<std::int64_t>>
+    fk_hash_semijoin(std::pmr::memory_resource* resource,
+                     components::storage::storage_t& storage,
+                     const std::pmr::vector<std::uint64_t>& key_col_indices,
+                     components::vector::data_chunk_t& keys,
+                     components::table::transaction_data txn) {
+        const std::uint64_t nkeys = keys.size();
+        std::pmr::vector<std::pmr::vector<std::int64_t>> result{resource};
+        result.reserve(nkeys);
+        for (std::uint64_t i = 0; i < nkeys; ++i) {
+            result.emplace_back();
         }
-        auto& entry = it->second;
+        // Arity guard: a mismatch (chunk column count != resolved key columns) or an empty key
+        // column set voids the whole batch with one empty bucket per key.
+        if (nkeys == 0 || key_col_indices.empty() || keys.column_count() != key_col_indices.size()) {
+            return result;
+        }
 
-        // Resolve key column NAMES to storage indices once (same column set for
-        // every key). Any unknown column degrades the whole batch to empty rows.
+        const auto& cols = storage.columns();
+
+        // PHYSICAL-TYPE NORMALIZATION. The retired per-key constant_filter_t::compare<T>
+        // COERCED cross-type FKs (INT-width, INT<->FLOAT — column_state.hpp). A raw typed hash
+        // does NOT coerce, so cast each input key column to its STORED key column's physical
+        // type before hashing; both sides then hash identically. (Temporal cross-UNIT FKs —
+        // DATE(days) <-> TIMESTAMP(µs) — are out of scope for this raw cast; an FK column
+        // normally shares the referenced column's exact type.)
+        std::pmr::vector<components::types::complex_logical_type> stored_key_types{resource};
+        stored_key_types.reserve(key_col_indices.size());
+        for (auto ci : key_col_indices) {
+            stored_key_types.push_back(cols[ci].type());
+        }
+        components::vector::data_chunk_t norm_keys(resource, stored_key_types, nkeys);
+        norm_keys.set_cardinality(nkeys);
+        for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
+            auto& src = keys.data[j];
+            if (src.get_vector_type() != components::vector::vector_type::FLAT) {
+                src.flatten(nkeys);
+            }
+            if (src.type().to_physical_type() == stored_key_types[j].to_physical_type()) {
+                components::vector::vector_ops::copy(src, norm_keys.data[j], nkeys, 0, 0);
+            } else {
+                norm_keys.data[j] = components::vector::vector_ops::cast_vector(resource, src, stored_key_types[j], nkeys);
+            }
+        }
+
+        // Typed hash index: tuple-hash -> input key indices. Skip any input tuple with a NULL
+        // key cell (a NULL foreign key references nothing — matches the callers' MATCH null-
+        // skip), so it never matches a scanned row. Nullness is read from the ORIGINAL keys
+        // chunk (cast_vector does not carry validity).
+        components::vector::vector_t key_hash_vec(resource, components::types::logical_type::UBIGINT, nkeys);
+        std::vector<std::uint64_t> norm_col_ids(key_col_indices.size());
+        for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
+            norm_col_ids[j] = j;
+        }
+        norm_keys.hash(norm_col_ids, key_hash_vec);
+        const auto* key_hashes = key_hash_vec.data<std::uint64_t>();
+        std::pmr::unordered_map<std::uint64_t, std::pmr::vector<std::uint64_t>> key_index{resource};
+        for (std::uint64_t i = 0; i < nkeys; ++i) {
+            bool any_null = false;
+            for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
+                if (keys.data[j].is_null(i)) {
+                    any_null = true;
+                    break;
+                }
+            }
+            if (any_null) {
+                continue;
+            }
+            key_index[key_hashes[i]].push_back(i);
+        }
+
+        // STREAM the table ONCE, projecting to the key columns in KEY ORDER so both sides' hash
+        // col-ids align. A scan_error leaves the remaining buckets empty (mirrors the retired
+        // per-key error behavior); callers tolerate empty per-key entries. fetch_next_batch
+        // re-seeks a TRANSIENT scan from pos each call, so peak memory is one batch and nothing
+        // pinned survives — the same streaming source the agent drives for the fetch-next scan.
+        std::vector<std::size_t> projected_cols(key_col_indices.begin(), key_col_indices.end());
+        std::vector<std::uint64_t> scan_col_ids(key_col_indices.begin(), key_col_indices.end());
+        components::storage::scan_position_t pos{};
+        // The scan error is intentionally NOT propagated (return discarded): a fetch failure
+        // stops the scan and leaves the remaining buckets empty — the partial-result behavior
+        // the comment above describes and callers already tolerate.
+        for_each_storage_batch(
+            storage, pos, /*filter=*/nullptr, &projected_cols, txn, resource,
+            [&](components::vector::data_chunk_t& batch) -> core::error_t {
+                const uint64_t rows = batch.size();
+                // Flatten the projected key columns so the typed verify can read raw cells.
+                for (auto ci : key_col_indices) {
+                    auto& col = batch.data[ci];
+                    if (col.get_vector_type() != components::vector::vector_type::FLAT) {
+                        col.flatten(rows);
+                    }
+                }
+                components::vector::vector_t row_hash_vec(resource, components::types::logical_type::UBIGINT, rows);
+                batch.hash(scan_col_ids, row_hash_vec);
+                const auto* row_hashes = row_hash_vec.data<std::uint64_t>();
+                const auto* row_ids = batch.row_ids.data<std::int64_t>();
+                for (uint64_t r = 0; r < rows; ++r) {
+                    // Skip a scanned row with ANY NULL key cell (a NULL never satisfies FK equality).
+                    bool any_null = false;
+                    for (auto ci : key_col_indices) {
+                        if (batch.data[ci].is_null(r)) {
+                            any_null = true;
+                            break;
+                        }
+                    }
+                    if (any_null) {
+                        continue;
+                    }
+                    auto it_h = key_index.find(row_hashes[r]);
+                    if (it_h == key_index.end()) {
+                        continue;
+                    }
+                    // Verify every hash-colliding input key against this row (typed, no coercion —
+                    // both sides are already in the stored physical type) and bucket the row_id into
+                    // each matching key (duplicate input keys each collect the row).
+                    for (std::uint64_t cand : it_h->second) {
+                        bool match = true;
+                        for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
+                            if (!components::vector::cells_equal(norm_keys.data[j], cand, batch.data[key_col_indices[j]], r)) {
+                                match = false;
+                                break;
+                            }
+                        }
+                        if (match) {
+                            result[cand].push_back(row_ids[r]);
+                        }
+                    }
+                }
+                return core::error_t::no_error();
+            });
+        return result;
+    }
+
+    // Resolve the key-column NAMES to storage column indices against an owned slice entry.
+    // Returns true (and fills out_indices in name order) on success; false when the entry is not
+    // owned / a record-only marker / has no key columns / names a column the table lacks — the
+    // caller then degrades the whole keyed batch to one empty entry per key. Shared verbatim by
+    // scan_by_keys_inner and read_chunks_by_keys_inner (the storages_ null-guard + the columns()
+    // linear name search were byte-identical in both).
+    static bool resolve_key_col_indices(const collection_storage_entry_t* entry,
+                                        const std::pmr::vector<std::string>& key_col_names,
+                                        std::pmr::vector<std::uint64_t>& out_indices) {
+        if (entry == nullptr || entry->storage == nullptr || key_col_names.empty()) {
+            return false;
+        }
         const auto& cols = entry->storage->columns();
-        std::pmr::vector<std::uint64_t> key_col_indices{resource()};
-        key_col_indices.reserve(key_col_names.size());
+        out_indices.reserve(key_col_names.size());
         for (const auto& kname : key_col_names) {
             std::size_t col_idx = cols.size();
             for (std::size_t ci = 0; ci < cols.size(); ++ci) {
@@ -1258,52 +1622,45 @@ namespace services::disk {
                 }
             }
             if (col_idx == cols.size()) {
-                for (std::size_t i = 0; i < keys.size(); ++i) {
-                    result.emplace_back();
-                }
-                co_return std::move(result);
+                return false;
             }
-            key_col_indices.push_back(static_cast<std::uint64_t>(col_idx));
+            out_indices.push_back(static_cast<std::uint64_t>(col_idx));
         }
+        return true;
+    }
 
-        // Columnar keys: column j == key_col_names[j], row i == key-tuple i. Arity is
-        // uniform across the chunk, so a mismatch (chunk column count != resolved key
-        // columns) voids the whole batch with one empty row per key. Each filter
-        // constant is the single materialization of a key cell (keys.value(ki, i)): the
-        // filter API requires a logical_value_t, so this is the irreducible floor — no
-        // row-major keys cross the mailbox.
-        const std::uint64_t nkeys = keys.size();
-        if (keys.column_count() != key_col_indices.size()) {
-            for (std::uint64_t i = 0; i < nkeys; ++i) {
+    agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
+    agent_disk_t::scan_by_keys_inner(components::catalog::oid_t table_oid,
+                                     std::pmr::vector<std::string> key_col_names,
+                                     components::vector::data_chunk_t keys,
+                                     components::table::transaction_data txn) {
+        // result[i] = row_ids matching keys[i]; one (possibly empty) entry per key,
+        // preserving input order. Name→index resolution runs once for the whole batch,
+        // then the whole key set is answered by ONE streamed hash semi-join pass
+        // (fk_hash_semijoin), not one filtered scan per key.
+        std::pmr::vector<std::pmr::vector<std::int64_t>> result{resource()};
+        result.reserve(keys.size());
+
+        // Resolve the key column NAMES to storage indices once (same column set for every key).
+        // A not-owned / record-only / empty-names / unknown-column entry degrades the whole batch
+        // to one empty row per key.
+        auto it = storages_.find(table_oid);
+        const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
+        std::pmr::vector<std::uint64_t> key_col_indices{resource()};
+        if (!resolve_key_col_indices(entry, key_col_names, key_col_indices)) {
+            for (std::size_t i = 0; i < keys.size(); ++i) {
                 result.emplace_back();
             }
             co_return std::move(result);
         }
-        for (std::uint64_t i = 0; i < nkeys; ++i) {
-            std::pmr::vector<std::int64_t> row_ids{resource()};
-            auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
-            for (std::size_t ki = 0; ki < key_col_indices.size(); ++ki) {
-                std::pmr::vector<std::uint64_t> idx_vec{resource()};
-                idx_vec.push_back(key_col_indices[ki]);
-                filter->child_filters.push_back(
-                    std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                           keys.value(ki, i),
-                                                                           std::move(idx_vec)));
-            }
-            std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
-            // Keyed catalog read: a scan_error leaves this key's match set empty
-            // (mirrors the not-owned fallback above); callers tolerate empty per-key entries.
-            auto scan_r = entry->storage->scan_batched(batches, filter.get(), int64_t{-1}, nullptr, txn);
-            if (!scan_r.has_error()) {
-                for (auto& chunk : batches) {
-                    for (uint64_t r = 0; r < chunk.size(); ++r) {
-                        row_ids.push_back(chunk.row_ids.data<std::int64_t>()[r]);
-                    }
-                }
-            }
-            result.emplace_back(std::move(row_ids));
-        }
-        co_return std::move(result);
+
+        // Delegate the actual match to the streaming SINGLE-PASS hash semi-join (phase 3b-C),
+        // which REPLACES the retired O(nkeys * table_rows) per-key filtered-scan loop with ONE
+        // streamed pass over the table per call. The helper is a free function so it can be
+        // driven directly by a counting storage in unit tests; scan_by_keys_inner is the sole
+        // production caller (single path, R6). The `result` reserved above is only consumed by
+        // the early-return (not-owned / unknown-column) branches; here the helper owns the reply.
+        co_return fk_hash_semijoin(resource(), *entry->storage, key_col_indices, keys, txn);
     }
 
     agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
@@ -1311,57 +1668,13 @@ namespace services::disk {
                                            std::pmr::vector<std::string> key_col_names,
                                            components::vector::data_chunk_t keys,
                                            components::table::transaction_data txn) {
-        // Single key-tuple (keys has exactly one row): resolve the key column NAMES to
-        // storage indices, build an eq-AND filter and scan its own slice directly via
-        // scan_local (D6: no self-send). Empty result on any degenerate input.
+        // Single key-tuple: `keys` already carries exactly one row, so it IS the 1-row
+        // batch view the plural read_chunks_by_keys_inner expects. Delegate to it inline
+        // on this same agent thread (its resolve/filter/scan_local body never crosses the
+        // mailbox) and unwrap the single entry — no duplicated resolve/filter/scan here.
         std::pmr::vector<components::vector::data_chunk_t> empty{resource()};
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr || key_col_names.empty() ||
-            keys.size() == 0) {
-            co_return std::move(empty);
-        }
-        auto& entry = it->second;
-
-        // Resolve each key column NAME to a storage column index; an unknown column voids
-        // the whole call (empty result).
-        const auto& cols = entry->storage->columns();
-        std::pmr::vector<std::uint64_t> key_col_indices{resource()};
-        key_col_indices.reserve(key_col_names.size());
-        for (const auto& kname : key_col_names) {
-            std::size_t col_idx = cols.size();
-            for (std::size_t ci = 0; ci < cols.size(); ++ci) {
-                if (cols[ci].name() == kname) {
-                    col_idx = ci;
-                    break;
-                }
-            }
-            if (col_idx == cols.size()) {
-                co_return std::move(empty);
-            }
-            key_col_indices.push_back(static_cast<std::uint64_t>(col_idx));
-        }
-
-        // Each filter constant is keys.value(ki, 0) — a logical_value_t materialized only
-        // here for the filter API (the irreducible floor, same as scan_by_keys_inner). No
-        // row-major key crosses the mailbox; the carrier is the columnar `keys` chunk.
-        auto filter = std::make_unique<components::table::conjunction_and_filter_t>();
-        for (std::size_t ki = 0; ki < key_col_indices.size(); ++ki) {
-            std::pmr::vector<std::uint64_t> idx_vec{resource()};
-            idx_vec.push_back(key_col_indices[ki]);
-            filter->child_filters.push_back(
-                std::make_unique<components::table::constant_filter_t>(components::expressions::compare_type::eq,
-                                                                       keys.value(ki, 0),
-                                                                       std::move(idx_vec)));
-        }
-
-        // All columns (projected = nullptr), no row limit (-1). Catalog-read path: a scan_error
-        // degrades to an empty result, matching the not-owned/record-only fallback (resolve
-        // callers handle empty).
-        auto scan_r = scan_local(table_oid, filter.get(), int64_t{-1}, nullptr, txn);
-        if (scan_r.has_error()) {
-            co_return std::move(empty);
-        }
-        co_return std::move(scan_r.value());
+        auto r = co_await read_chunks_by_keys_inner(table_oid, std::move(key_col_names), std::move(keys), txn);
+        co_return r.empty() ? std::move(empty) : std::move(r[0]);
     }
 
     agent_disk_t::unique_future<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>
@@ -1375,36 +1688,17 @@ namespace services::disk {
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> result{resource()};
         result.reserve(keys.size());
 
+        // Resolve the key column NAMES to storage indices once (same column set for every key).
+        // A not-owned / record-only / empty-names / unknown-column entry degrades the whole batch
+        // to one empty entry per key.
         auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr || key_col_names.empty()) {
-            // Not owned / record-only marker / no key columns: one empty entry per key.
+        const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
+        std::pmr::vector<std::uint64_t> key_col_indices{resource()};
+        if (!resolve_key_col_indices(entry, key_col_names, key_col_indices)) {
             for (std::size_t i = 0; i < keys.size(); ++i) {
                 result.emplace_back();
             }
             co_return std::move(result);
-        }
-        auto& entry = it->second;
-
-        // Resolve key column NAMES to storage indices once (same column set for every key).
-        // Any unknown column degrades the whole batch to empty entries.
-        const auto& cols = entry->storage->columns();
-        std::pmr::vector<std::uint64_t> key_col_indices{resource()};
-        key_col_indices.reserve(key_col_names.size());
-        for (const auto& kname : key_col_names) {
-            std::size_t col_idx = cols.size();
-            for (std::size_t ci = 0; ci < cols.size(); ++ci) {
-                if (cols[ci].name() == kname) {
-                    col_idx = ci;
-                    break;
-                }
-            }
-            if (col_idx == cols.size()) {
-                for (std::size_t i = 0; i < keys.size(); ++i) {
-                    result.emplace_back();
-                }
-                co_return std::move(result);
-            }
-            key_col_indices.push_back(static_cast<std::uint64_t>(col_idx));
         }
 
         // Columnar keys: column j == key_col_names[j], row i == key-tuple i. Arity is uniform

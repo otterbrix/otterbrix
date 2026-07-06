@@ -1,12 +1,14 @@
 #include "benchmark_runner.hpp"
 
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <regex>
 #include <set>
+#include <system_error>
 
 #include <components/configuration/configuration.hpp>
 #include <integration/cpp/base_spaces.hpp>
@@ -316,6 +318,19 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
     }
 
     try {
+        // Fresh persisted state per benchmark. Every disk instance points at the
+        // same current_path()/"disk" (+ "/wal") — see benchmark_instance_t::make_config
+        // — so without a reset each load() re-runs CREATE TABLE IF NOT EXISTS and
+        // appends its @load_csv rows onto the previously persisted table, doubling
+        // row counts across benchmarks (60k -> 120k -> 180k ...). Clear the persisted
+        // dirs before opening the instance. Best-effort (error_code, no throw): a
+        // missing dir is not an error, and the fresh instance recreates them.
+        if (config.disk_on && !config.skip_load) {
+            std::error_code ec;
+            std::filesystem::remove_all(std::filesystem::current_path() / "disk", ec);
+            std::filesystem::remove_all(std::filesystem::current_path() / "wal", ec);
+        }
+
         benchmark_instance_t instance(config);
         benchmark_state_t state;
         state.dispatcher = instance.dispatcher();

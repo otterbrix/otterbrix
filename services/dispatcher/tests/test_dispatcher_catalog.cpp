@@ -177,7 +177,7 @@ private:
 };
 
 TEST_CASE("services::dispatcher::schemeful_operations") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_schemeful");
 
     test.execute_sql("CREATE DATABASE test;");
@@ -247,7 +247,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
 }
 
 TEST_CASE("services::dispatcher::computed_operations") {
-    auto mr = std::make_unique<std::pmr::synchronized_pool_resource>();
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), "/tmp/test_dispatcher_disk_computed");
 
     test.execute_sql("CREATE DATABASE test;");

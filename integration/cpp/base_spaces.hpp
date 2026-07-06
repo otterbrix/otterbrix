@@ -67,7 +67,7 @@ namespace otterbrix {
             bool do_is_equal(const memory_resource& other) const noexcept override { return this == &other; }
         } resource;
 #else
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
 #endif
         log_t log_;
         actor_zeta::scheduler_ptr scheduler_;

@@ -31,7 +31,7 @@ static node_ptr make_match_with_expr(std::pmr::memory_resource* r, const express
 // T1. Scalar folding: add
 // ================================================================
 TEST_CASE("optimizer::scalar_fold_add") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(2));
     auto id1 = params->add_parameter(int64_t(3));
@@ -59,7 +59,7 @@ TEST_CASE("optimizer::scalar_fold_add") {
 // T2. Scalar folding: subtract
 // ================================================================
 TEST_CASE("optimizer::scalar_fold_subtract") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(10));
     auto id1 = params->add_parameter(int64_t(3));
@@ -85,7 +85,7 @@ TEST_CASE("optimizer::scalar_fold_subtract") {
 // T3. Scalar folding: multiply
 // ================================================================
 TEST_CASE("optimizer::scalar_fold_multiply") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(4));
     auto id1 = params->add_parameter(int64_t(5));
@@ -111,7 +111,7 @@ TEST_CASE("optimizer::scalar_fold_multiply") {
 // T4. Scalar folding: divide
 // ================================================================
 TEST_CASE("optimizer::scalar_fold_divide") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(10));
     auto id1 = params->add_parameter(int64_t(3));
@@ -137,7 +137,7 @@ TEST_CASE("optimizer::scalar_fold_divide") {
 // T5. Scalar folding: mod
 // ================================================================
 TEST_CASE("optimizer::scalar_fold_mod") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(10));
     auto id1 = params->add_parameter(int64_t(3));
@@ -163,7 +163,7 @@ TEST_CASE("optimizer::scalar_fold_mod") {
 // T6. Compare folding: eq true
 // ================================================================
 TEST_CASE("optimizer::compare_fold_eq_true") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
     auto id1 = params->add_parameter(int64_t(5));
@@ -180,7 +180,7 @@ TEST_CASE("optimizer::compare_fold_eq_true") {
 // T7. Compare folding: eq false
 // ================================================================
 TEST_CASE("optimizer::compare_fold_eq_false") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
     auto id1 = params->add_parameter(int64_t(7));
@@ -197,7 +197,7 @@ TEST_CASE("optimizer::compare_fold_eq_false") {
 // T8. Compare folding: gt true
 // ================================================================
 TEST_CASE("optimizer::compare_fold_gt_true") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(10));
     auto id1 = params->add_parameter(int64_t(5));
@@ -214,7 +214,7 @@ TEST_CASE("optimizer::compare_fold_gt_true") {
 // T9. Compare folding: lt false
 // ================================================================
 TEST_CASE("optimizer::compare_fold_lt_false") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(10));
     auto id1 = params->add_parameter(int64_t(5));
@@ -231,7 +231,7 @@ TEST_CASE("optimizer::compare_fold_lt_false") {
 // T9a. Compare folding: ne true
 // ================================================================
 TEST_CASE("optimizer::compare_fold_ne_true") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
     auto id1 = params->add_parameter(int64_t(7));
@@ -248,7 +248,7 @@ TEST_CASE("optimizer::compare_fold_ne_true") {
 // T9b. Compare folding: ne false
 // ================================================================
 TEST_CASE("optimizer::compare_fold_ne_false") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
     auto id1 = params->add_parameter(int64_t(5));
@@ -265,7 +265,7 @@ TEST_CASE("optimizer::compare_fold_ne_false") {
 // T9c. Compare folding: gte true (equal)
 // ================================================================
 TEST_CASE("optimizer::compare_fold_gte_true_equal") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
     auto id1 = params->add_parameter(int64_t(5));
@@ -282,7 +282,7 @@ TEST_CASE("optimizer::compare_fold_gte_true_equal") {
 // T9d. Compare folding: gte true (greater)
 // ================================================================
 TEST_CASE("optimizer::compare_fold_gte_true_greater") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(10));
     auto id1 = params->add_parameter(int64_t(5));
@@ -299,7 +299,7 @@ TEST_CASE("optimizer::compare_fold_gte_true_greater") {
 // T9e. Compare folding: gte false
 // ================================================================
 TEST_CASE("optimizer::compare_fold_gte_false") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(3));
     auto id1 = params->add_parameter(int64_t(5));
@@ -316,7 +316,7 @@ TEST_CASE("optimizer::compare_fold_gte_false") {
 // T9f. Compare folding: lte true (equal)
 // ================================================================
 TEST_CASE("optimizer::compare_fold_lte_true_equal") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
     auto id1 = params->add_parameter(int64_t(5));
@@ -333,7 +333,7 @@ TEST_CASE("optimizer::compare_fold_lte_true_equal") {
 // T9g. Compare folding: lte true (less)
 // ================================================================
 TEST_CASE("optimizer::compare_fold_lte_true_less") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(3));
     auto id1 = params->add_parameter(int64_t(5));
@@ -350,7 +350,7 @@ TEST_CASE("optimizer::compare_fold_lte_true_less") {
 // T9h. Compare folding: lte false
 // ================================================================
 TEST_CASE("optimizer::compare_fold_lte_false") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(10));
     auto id1 = params->add_parameter(int64_t(5));
@@ -367,7 +367,7 @@ TEST_CASE("optimizer::compare_fold_lte_false") {
 // T9i. Compare folding: lt true
 // ================================================================
 TEST_CASE("optimizer::compare_fold_lt_true") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(3));
     auto id1 = params->add_parameter(int64_t(10));
@@ -384,7 +384,7 @@ TEST_CASE("optimizer::compare_fold_lt_true") {
 // T10. No folding: key + param (mixed)
 // ================================================================
 TEST_CASE("optimizer::no_fold_key_param") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
 
@@ -400,7 +400,7 @@ TEST_CASE("optimizer::no_fold_key_param") {
 // T11. No folding: NULL param
 // ================================================================
 TEST_CASE("optimizer::no_fold_null_param") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(components::types::logical_value_t{
         &resource,
@@ -426,7 +426,7 @@ TEST_CASE("optimizer::no_fold_null_param") {
 // T12. No folding: group node (skip non-match)
 // ================================================================
 TEST_CASE("optimizer::no_fold_group_node") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(2));
     auto id1 = params->add_parameter(int64_t(3));
@@ -451,7 +451,7 @@ TEST_CASE("optimizer::no_fold_group_node") {
 // T13. Nested folding: scalar inside compare
 // ================================================================
 TEST_CASE("optimizer::nested_scalar_in_compare") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(2));
     auto id1 = params->add_parameter(int64_t(3));
@@ -482,7 +482,7 @@ TEST_CASE("optimizer::nested_scalar_in_compare") {
 // T14. Division by zero: skip
 // ================================================================
 TEST_CASE("optimizer::div_by_zero_skip") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(10));
     auto id1 = params->add_parameter(int64_t(0));
@@ -509,7 +509,7 @@ TEST_CASE("optimizer::div_by_zero_skip") {
 // T15. Union AND: children fold independently
 // ================================================================
 TEST_CASE("optimizer::union_and_fold") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
     auto id1 = params->add_parameter(int64_t(5));
@@ -536,7 +536,7 @@ TEST_CASE("optimizer::union_and_fold") {
 // T16. Union OR: children fold independently
 // ================================================================
 TEST_CASE("optimizer::union_or_fold") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
     auto id1 = params->add_parameter(int64_t(7));
@@ -564,7 +564,7 @@ TEST_CASE("optimizer::union_or_fold") {
 // T17. Deep nested scalar: (2+3)*4
 // ================================================================
 TEST_CASE("optimizer::deep_nested_scalar") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(2));
     auto id1 = params->add_parameter(int64_t(3));
@@ -596,7 +596,7 @@ TEST_CASE("optimizer::deep_nested_scalar") {
 // T18. Triple nested: ((2+3)*4)+1
 // ================================================================
 TEST_CASE("optimizer::triple_nested_scalar") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(2));
     auto id1 = params->add_parameter(int64_t(3));
@@ -632,7 +632,7 @@ TEST_CASE("optimizer::triple_nested_scalar") {
 // T19. Scalar folding: double arithmetic
 // ================================================================
 TEST_CASE("optimizer::scalar_fold_double") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(double(2.5));
     auto id1 = params->add_parameter(double(1.5));
@@ -658,7 +658,7 @@ TEST_CASE("optimizer::scalar_fold_double") {
 // T20. Scalar folding: mixed int * double
 // ================================================================
 TEST_CASE("optimizer::scalar_fold_mixed_types") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(3));
     auto id1 = params->add_parameter(double(2.5));
@@ -684,7 +684,7 @@ TEST_CASE("optimizer::scalar_fold_mixed_types") {
 // T21. Compare folding: double comparison
 // ================================================================
 TEST_CASE("optimizer::compare_fold_double") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(double(3.14));
     auto id1 = params->add_parameter(double(2.71));
@@ -701,7 +701,7 @@ TEST_CASE("optimizer::compare_fold_double") {
 // T22. Aggregate pipeline: match → group → sort (match folds, group/sort untouched)
 // ================================================================
 TEST_CASE("optimizer::aggregate_match_folds_group_not") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(5));
     auto id1 = params->add_parameter(int64_t(5));
@@ -739,7 +739,7 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
 // T23. Multiple match nodes in aggregate
 // ================================================================
 TEST_CASE("optimizer::multiple_match_nodes") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(10));
     auto id1 = params->add_parameter(int64_t(5));
@@ -796,7 +796,7 @@ TEST_CASE("optimizer::mirror_compare_symmetric") {
 // T27. has_index_on: positive (single-field)
 // ================================================================
 TEST_CASE("optimizer::has_index_on_positive") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
 
     components::logical_plan::keys_base_storage_t keys(&resource);
@@ -810,7 +810,7 @@ TEST_CASE("optimizer::has_index_on_positive") {
 // T28. has_index_on: negative (no match)
 // ================================================================
 TEST_CASE("optimizer::has_index_on_negative") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
 
     components::logical_plan::keys_base_storage_t keys(&resource);
@@ -824,7 +824,7 @@ TEST_CASE("optimizer::has_index_on_negative") {
 // T29. has_index_on: multi-field index skip
 // ================================================================
 TEST_CASE("optimizer::has_index_on_multi_field_skip") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
 
     components::logical_plan::keys_base_storage_t keys(&resource);
@@ -839,7 +839,7 @@ TEST_CASE("optimizer::has_index_on_multi_field_skip") {
 // T30. has_index_on: empty indexed_keys
 // ================================================================
 TEST_CASE("optimizer::has_index_on_empty") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
 
     REQUIRE(ctx.has_index_on(key(&resource, "any")) == false);
@@ -849,7 +849,7 @@ TEST_CASE("optimizer::has_index_on_empty") {
 // Diagnostic: parameter copy chain
 // ================================================================
 TEST_CASE("optimizer::param_copy_survives") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto id0 = params->add_parameter(int64_t(2));
     auto id1 = params->add_parameter(int64_t(3));
@@ -912,7 +912,7 @@ static void add_single_field_index(services::context_storage_t& ctx,
 }
 
 TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto pid = params->add_parameter(int64_t(42));
     constexpr auto table_oid = components::catalog::oid_t{777};
@@ -934,7 +934,7 @@ TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
 }
 
 TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto pid = params->add_parameter(int64_t(30));
     constexpr auto table_oid = components::catalog::oid_t{778};
@@ -956,7 +956,7 @@ TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
 }
 
 TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto pid = params->add_parameter(int64_t(30));
     constexpr auto table_oid = components::catalog::oid_t{779};
@@ -975,7 +975,7 @@ TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
 }
 
 TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto pid = params->add_parameter(int64_t(30));
     constexpr auto table_oid = components::catalog::oid_t{780};
@@ -996,7 +996,7 @@ TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan")
 }
 
 TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto pid = params->add_parameter(int64_t(30));
     constexpr auto table_oid = components::catalog::oid_t{781};

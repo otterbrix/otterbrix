@@ -6,7 +6,7 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 
 TEST_CASE("components::expression::aggregate::equals") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto expr1 = make_aggregate_expression(&resource, "sum", key(&resource, "name"));
     auto expr2 = make_aggregate_expression(&resource, "sum", key(&resource, "name"));
     auto expr3 = make_aggregate_expression(&resource, "avg", key(&resource, "name"));
@@ -42,7 +42,7 @@ TEST_CASE("components::expression::aggregate::equals") {
 }
 
 TEST_CASE("components::expression::aggregate::to_string") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum"), key(&resource, "count"));
     REQUIRE(expr->to_string() == R"(sum: {$sum: "count"})");
 

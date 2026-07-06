@@ -3,7 +3,7 @@
 #include <components/vector/vector.hpp>
 
 TEST_CASE("components::vector::vector") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     struct test_struct {
         bool flag;
         int32_t number;

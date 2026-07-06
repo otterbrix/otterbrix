@@ -11,7 +11,7 @@ TEST_CASE("components::table::data_table") {
     using namespace components::vector;
     using namespace components::table;
 
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     struct test_struct {
         bool flag;

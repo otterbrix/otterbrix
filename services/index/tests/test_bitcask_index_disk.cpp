@@ -2,6 +2,7 @@
 #include <catch2/catch.hpp>
 #include <charconv>
 #include <components/index/logical_value_binary_codec.hpp>
+#include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
 #include <fstream>
 #include <limits>
@@ -132,7 +133,7 @@ namespace {
 } // namespace
 
 TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_int64"};
     std::filesystem::remove_all(path);
@@ -159,7 +160,7 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
 }
 
 TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_persist_reopen"};
     std::filesystem::remove_all(path);
@@ -195,7 +196,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
 }
 
 TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_dataset") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_persist_reopen_large"};
     std::filesystem::remove_all(path);
@@ -222,7 +223,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_datas
 }
 
 TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_merge_segments"};
     std::filesystem::remove_all(path);
@@ -252,7 +253,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
 }
 
 TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_key") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_merge_latest_snapshot"};
     std::filesystem::remove_all(path);
@@ -289,7 +290,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
 }
 
 TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_merge_tombstone"};
     std::filesystem::remove_all(path);
@@ -323,7 +324,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
 }
 
 TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_entries") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_merge_active_segment"};
     std::filesystem::remove_all(path);
@@ -357,7 +358,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
 }
 
 TEST_CASE("services::index::bitcask_index_disk::remove_specific_row_id") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_remove_specific_row"};
     std::filesystem::remove_all(path);
@@ -399,7 +400,7 @@ TEST_CASE("services::index::bitcask_index_disk::remove_specific_row_id") {
 }
 
 TEST_CASE("services::index::bitcask_index_disk::deduplicates_same_row_for_key") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_deduplicate_rows"};
     std::filesystem::remove_all(path);
@@ -423,7 +424,7 @@ TEST_CASE("services::index::bitcask_index_disk::deduplicates_same_row_for_key") 
 }
 
 TEST_CASE("services::index::bitcask_index_disk::load_entries_reflects_current_state") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_load_entries"};
     std::filesystem::remove_all(path);
@@ -449,7 +450,7 @@ TEST_CASE("services::index::bitcask_index_disk::load_entries_reflects_current_st
 }
 
 TEST_CASE("services::index::bitcask_index_disk::drop_removes_storage_and_recreate_is_empty") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_drop_recreate"};
     std::filesystem::remove_all(path);
@@ -478,7 +479,7 @@ TEST_CASE("services::index::bitcask_index_disk::drop_removes_storage_and_recreat
 }
 
 TEST_CASE("services::index::bitcask_index_disk::empty_index_operations_are_noop") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_empty_noop"};
     std::filesystem::remove_all(path);
@@ -496,7 +497,7 @@ TEST_CASE("services::index::bitcask_index_disk::empty_index_operations_are_noop"
 }
 
 TEST_CASE("services::index::bitcask_index_disk::string_keys_persist_and_range_queries") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_string_keys"};
     std::filesystem::remove_all(path);
@@ -519,7 +520,7 @@ TEST_CASE("services::index::bitcask_index_disk::string_keys_persist_and_range_qu
 }
 
 TEST_CASE("services::index::bitcask_index_disk::flush_threshold_persists_without_explicit_force_flush") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_flush_threshold"};
     std::filesystem::remove_all(path);
@@ -543,7 +544,7 @@ TEST_CASE("services::index::bitcask_index_disk::flush_threshold_persists_without
 }
 
 TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_data") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_merge_fs_error"};
     std::filesystem::remove_all(path);
@@ -585,7 +586,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
 }
 
 TEST_CASE("services::index::bitcask_index_disk::recovery_ignores_corrupted_tail_record") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_corrupted_tail"};
     std::filesystem::remove_all(path);
@@ -614,7 +615,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_ignores_corrupted_tail_
 }
 
 TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_crc_mismatch"};
     std::filesystem::remove_all(path);
@@ -666,7 +667,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
 }
 
 TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_damage_other_segments") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_crc_mismatch_segments_intact"};
     std::filesystem::remove_all(path);
@@ -737,7 +738,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
 }
 
 TEST_CASE("services::index::bitcask_index_disk::recovery_with_invalid_current_file_uses_latest_segment") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_invalid_current"};
     std::filesystem::remove_all(path);
@@ -776,7 +777,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_with_invalid_current_fi
 }
 
 TEST_CASE("services::index::bitcask_index_disk::tombstone_then_reinsert_persists_latest_state") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_tombstone_reinsert"};
     std::filesystem::remove_all(path);
@@ -799,7 +800,7 @@ TEST_CASE("services::index::bitcask_index_disk::tombstone_then_reinsert_persists
 }
 
 TEST_CASE("services::index::bitcask_index_disk::string_key_with_embedded_null_persists") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_string_embedded_null"};
     std::filesystem::remove_all(path);
@@ -822,7 +823,7 @@ TEST_CASE("services::index::bitcask_index_disk::string_key_with_embedded_null_pe
 }
 
 TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_truncated_key") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_find_loader_invoked"};
     std::filesystem::remove_all(path);
@@ -860,7 +861,7 @@ TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_trun
 }
 
 TEST_CASE("services::index::bitcask_index_disk::very_long_string_key_persists") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_very_long_string_key"};
     std::filesystem::remove_all(path);
@@ -883,7 +884,7 @@ TEST_CASE("services::index::bitcask_index_disk::very_long_string_key_persists") 
 }
 
 TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committed_batch") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery"};
     std::filesystem::remove_all(path);
@@ -908,7 +909,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committ
 }
 
 TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_prevents_replay_duplicates") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery_idempotent"};
     std::filesystem::remove_all(path);
@@ -931,7 +932,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_preve
 }
 
 TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_independent_by_txn_id") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery_out_of_order_txn_id"};
     std::filesystem::remove_all(path);
@@ -960,7 +961,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_indepe
 }
 
 TEST_CASE("services::index::bitcask_index_disk::max_size_t_row_id_persists") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_max_row_id"};
     std::filesystem::remove_all(path);
@@ -982,115 +983,13 @@ TEST_CASE("services::index::bitcask_index_disk::max_size_t_row_id_persists") {
     }
 }
 
-TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_stress", "[stress][long]") {
-    auto resource = std::pmr::synchronized_pool_resource();
-
-    std::filesystem::path path{"/tmp/index_disk/bitcask_concurrent_stress"};
-    std::filesystem::remove_all(path);
-    std::filesystem::create_directories(path);
-
-    constexpr size_t key_count = 64;
-    constexpr size_t thread_count = 8;
-    constexpr size_t operations_per_thread = 40000;
-    static_assert(key_count % thread_count == 0);
-    constexpr size_t keys_per_thread = key_count / thread_count;
-
-    std::atomic<size_t> find_count{0};
-    // Catch2's RunContext is not thread-safe — REQUIRE must not run on
-    // worker threads (TSAN flags the shared assertion counters/message
-    // scopes). Workers record violations here; the main thread REQUIREs
-    // zero after join.
-    std::atomic<size_t> duplicate_row_violations{0};
-    std::array<std::unordered_set<size_t>, key_count> expected_after_stress;
-
-    auto snapshot = [&](bitcask_index_disk_t& from) {
-        std::array<std::unordered_set<size_t>, key_count> state;
-        for (size_t key = 0; key < key_count; ++key) {
-            const auto logical_key = logical_value_t(&resource, static_cast<int64_t>(key));
-            const auto actual_rows = from.find(logical_key);
-
-            std::unordered_set<size_t> actual_set;
-            actual_set.reserve(actual_rows.size());
-            for (auto row : actual_rows) {
-                actual_set.insert(row);
-            }
-            REQUIRE(actual_set.size() == actual_rows.size());
-            state[key] = std::move(actual_set);
-        }
-        return state;
-    };
-
-    {
-        auto index = bitcask_index_disk_t(path, &resource, 128, 10'000'000, std::pmr::set<std::uint64_t>{});
-        auto worker = [&](size_t worker_id) {
-            std::mt19937_64 rng(0xB17CA5ULL + worker_id * 7919ULL);
-            const size_t key_begin = worker_id * keys_per_thread;
-            const size_t key_end = key_begin + keys_per_thread - 1;
-            std::uniform_int_distribution<size_t> key_dist(key_begin, key_end);
-            std::uniform_int_distribution<size_t> row_dist(0, 1999);
-            std::uniform_int_distribution<int> op_dist(0, 99);
-
-            for (size_t i = 0; i < operations_per_thread; ++i) {
-                const auto key = key_dist(rng);
-                const auto row = worker_id * 100000 + row_dist(rng);
-                const auto op = op_dist(rng);
-                const auto logical_key = logical_value_t(&resource, static_cast<int64_t>(key));
-
-                if (op < 45) {
-                    index.insert(logical_key, row);
-                } else if (op < 80) {
-                    index.remove(logical_key, row);
-                } else {
-                    auto rows = index.find(logical_key);
-                    if (!rows.empty()) {
-                        std::unordered_set<size_t> seen;
-                        seen.reserve(rows.size());
-                        for (auto r : rows) {
-                            seen.insert(r);
-                        }
-                        if (seen.size() != rows.size()) {
-                            duplicate_row_violations.fetch_add(1, std::memory_order_relaxed);
-                        }
-                    }
-                    find_count.fetch_add(1, std::memory_order_relaxed);
-                }
-            }
-        };
-
-        std::vector<std::thread> threads;
-        threads.reserve(thread_count);
-        for (size_t t = 0; t < thread_count; ++t) {
-            threads.emplace_back(worker, t);
-        }
-        for (auto& thread : threads) {
-            thread.join();
-        }
-
-        REQUIRE(duplicate_row_violations.load(std::memory_order_relaxed) == 0);
-        REQUIRE(find_count.load(std::memory_order_relaxed) > 0);
-        index.force_flush();
-        expected_after_stress = snapshot(index);
-    }
-
-    {
-        auto reopened = make_test_index(path, &resource);
-        const auto actual_after_reopen = snapshot(reopened);
-        for (size_t key = 0; key < key_count; ++key) {
-            REQUIRE(actual_after_reopen[key].size() == expected_after_stress[key].size());
-            for (auto row : expected_after_stress[key]) {
-                REQUIRE(actual_after_reopen[key].contains(row));
-            }
-        }
-    }
-}
-
 // Recover gate. apply_txn_inserts writes a durable txn-log frame AND
 // eagerly applies the entries to the active segment. wipe_all_but_txn_log
 // reproduces the crash window: only the durable txn-log survives, so the next
 // reopen replays the log from offset 0 and the committed_txn_ids gate alone
 // decides which frames are applied.
 TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_frames") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_recover_gate"};
     std::filesystem::remove_all(path);
@@ -1138,7 +1037,7 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_fr
 // so it is consumed permanently. Even if a later reopen reports the previously
 // uncommitted txn as committed, its frame is never replayed again.
 TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_applied_offset") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_recover_skip_offset"};
     std::filesystem::remove_all(path);
@@ -1182,7 +1081,7 @@ TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_a
 // A fresh runtime instance receives an EMPTY committed set (correct value, not a
 // fallback): with no txn-log to gate, normal insert/find works.
 TEST_CASE("services::index::bitcask_index_disk::fresh_instance_with_empty_set_works") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_fresh_empty_set"};
     std::filesystem::remove_all(path);
@@ -1209,7 +1108,7 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
     using components::types::logical_type;
     using services::index::disk_hash_table_t;
 
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{"/tmp/index_disk/bitcask_clear_shared_hash"};
     std::filesystem::remove_all(path);

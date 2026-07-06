@@ -34,7 +34,7 @@ namespace {
     void cleanup() { std::filesystem::remove_all(dep_dir()); }
 
     struct fixture {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         log_t log;
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
@@ -247,7 +247,7 @@ TEST_CASE("services::disk::pg_depend::test_circular_dependency_detection") {
     constexpr components::catalog::oid_t OID_A = 100;
     constexpr components::catalog::oid_t OID_B = 200;
 
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     // A depends on B and B depends on A — a minimal 2-node cycle.
     auto fetch = [&](std::pmr::memory_resource* mr,
                      components::catalog::oid_t /*cls*/,
@@ -282,7 +282,7 @@ TEST_CASE("services::disk::pg_depend::test_no_cycle_linear_chain") {
     constexpr components::catalog::oid_t OID_B = 200; // depends on A
     constexpr components::catalog::oid_t OID_C = 300; // depends on B
 
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     // fetch_deps(cls, X) → objects that depend ON X.
     auto fetch = [&](std::pmr::memory_resource* mr,
                      components::catalog::oid_t /*cls*/,

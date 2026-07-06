@@ -53,7 +53,7 @@ protected:
     bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
 };
 #else
-using test_pool_resource_t = std::pmr::synchronized_pool_resource;
+using test_pool_resource_t = core::pmr::otterbrix_resource;
 #endif
 
 // The manager self-drives on an internal loop thread and runs its children on

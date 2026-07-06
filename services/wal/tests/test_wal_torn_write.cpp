@@ -53,7 +53,7 @@ TEST_CASE("wal::torn::id_zero_is_noop_value") {
 TEST_CASE("wal::torn::table_storage_tracks_wal_id_chain") {
     cleanup();
     std::filesystem::create_directories(torn_wal_dir());
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx = std::filesystem::path(torn_wal_dir()) / "chain.otbx";
     std::vector<components::table::column_definition_t> cols;
@@ -86,7 +86,7 @@ TEST_CASE("wal::torn::table_storage_tracks_wal_id_chain") {
 TEST_CASE("wal::torn::checkpoint_zero_id_is_legal") {
     cleanup();
     std::filesystem::create_directories(torn_wal_dir());
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx = std::filesystem::path(torn_wal_dir()) / "zero.otbx";
     std::vector<components::table::column_definition_t> cols;
@@ -105,7 +105,7 @@ TEST_CASE("wal::torn::checkpoint_zero_id_is_legal") {
 TEST_CASE("wal::torn::prev_le_current_invariant") {
     cleanup();
     std::filesystem::create_directories(torn_wal_dir());
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto otbx = std::filesystem::path(torn_wal_dir()) / "inv.otbx";
     std::vector<components::table::column_definition_t> cols;

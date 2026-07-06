@@ -46,13 +46,13 @@ namespace {
             for (size_t r = 0; r < 2; ++r) {
                 switch (cols[c].type()) {
                     case types::logical_type::INTEGER:
-                        chunk.set_value(c, r, types::logical_value_t(resource, static_cast<int32_t>(r + 1)));
+                        chunk.set_value(c, r, static_cast<int32_t>(r + 1));
                         break;
                     case types::logical_type::DOUBLE:
-                        chunk.set_value(c, r, types::logical_value_t(resource, 100.5 * (r + 1)));
+                        chunk.set_value(c, r, 100.5 * (r + 1));
                         break;
                     default:
-                        chunk.set_value(c, r, types::logical_value_t(resource, std::string("n_") + std::to_string(r)));
+                        chunk.set_value(c, r, std::string_view{std::string("n_") + std::to_string(r)});
                         break;
                 }
             }
@@ -154,10 +154,10 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
     REQUIRE(chunk.column_count() == 3); // campaign_name, product_count, avg_product_price
     bool seen_campaign[2] = {false, false};
     for (uint64_t row = 0; row < cursor->size(); ++row) {
-        auto key = chunk.value(0, row).value<int32_t>();
+        auto key = chunk.get_value<int32_t>(0, row);
         REQUIRE((key == 1 || key == 2));
-        REQUIRE(chunk.value(1, row).value<uint64_t>() == 1);
-        REQUIRE(chunk.value(2, row).value<double>() == Approx(key == 1 ? 100.5 : 201.0));
+        REQUIRE(chunk.get_value<uint64_t>(1, row) == 1);
+        REQUIRE(chunk.get_value<double>(2, row) == Approx(key == 1 ? 100.5 : 201.0));
         seen_campaign[key - 1] = true;
     }
     REQUIRE(seen_campaign[0]);

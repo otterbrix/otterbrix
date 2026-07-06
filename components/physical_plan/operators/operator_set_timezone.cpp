@@ -50,11 +50,8 @@ namespace components::operators {
         }
         components::vector::data_chunk_t row(this->resource(), types, 1);
         row.set_cardinality(1);
-        row.set_value(0, 0, components::types::logical_value_t(this->resource(), std::string{"TimeZone"}));
-        row.set_value(1,
-                      0,
-                      components::types::logical_value_t(this->resource(),
-                                                         std::string{timezone_name_.data(), timezone_name_.size()}));
+        row.set_value(0, 0, std::string_view("TimeZone"));
+        row.set_value(1, 0, std::string_view(timezone_name_.data(), timezone_name_.size()));
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz};
         auto [_u, uf] = actor_zeta::send(ctx->disk_address,

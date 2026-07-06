@@ -168,7 +168,7 @@ TEST_CASE("components::compute::aggregate::batch_accumulates_across_chunks") {
         data_chunk_t chunk(&fx.resource, types, vals.size());
         uint64_t row = 0;
         for (int32_t v : vals) {
-            chunk.set_value(0, row++, logical_value_t(&fx.resource, v));
+            chunk.set_value(0, row++, v);
         }
         chunk.set_cardinality(vals.size());
         return chunk;

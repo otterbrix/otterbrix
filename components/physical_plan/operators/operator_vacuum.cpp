@@ -105,17 +105,16 @@ namespace components::operators {
         for (const auto& pg_class_rows : pg_class_batches) {
             for (std::uint64_t i = 0; i < pg_class_rows.size(); ++i) {
                 // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode
-                auto rk_v = pg_class_rows.value(3, i);
-                const auto rkv = rk_v.is_null() ? std::string_view{"r"} : rk_v.value<std::string_view>();
+                const auto rkv = pg_class_rows.is_null(3, i) ? std::string_view{"r"}
+                                                             : pg_class_rows.get_value<std::string_view>(3, i);
                 const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
                 if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed) {
                     continue;
                 }
 
-                auto oid_v = pg_class_rows.value(0, i);
-                if (oid_v.is_null())
+                if (pg_class_rows.is_null(0, i))
                     continue;
-                const auto this_oid = static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>());
+                const auto this_oid = static_cast<catalog::oid_t>(pg_class_rows.get_value<std::uint32_t>(0, i));
                 if (this_oid == catalog::INVALID_OID)
                     continue;
 
@@ -214,18 +213,14 @@ namespace components::operators {
             for (const auto table_oid : computing_table_oids) {
                 // pg_computed_column layout: 0=relid 1=attoid 2=attname
                 // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
-                types::logical_value_t toid_lv(resource_, table_oid);
                 std::pmr::vector<std::string> cc_keys(resource_);
                 cc_keys.emplace_back("relid");
-                std::pmr::vector<types::logical_value_t> cc_vals(resource_);
-                cc_vals.emplace_back(toid_lv);
-                auto [_cc, ccf] =
-                    actor_zeta::send(ctx->disk_address,
-                                     &services::disk::manager_disk_t::read_chunks_by_key,
-                                     cc_ctx,
-                                     kPgComputedColumn,
-                                     std::move(cc_keys),
-                                     components::operators::make_key_chunk(resource_, std::move(cc_vals)));
+                auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::read_chunks_by_key,
+                                                   cc_ctx,
+                                                   kPgComputedColumn,
+                                                   std::move(cc_keys),
+                                                   components::operators::make_key_chunk(resource_, table_oid));
                 auto cc_batches = co_await std::move(ccf);
 
                 // Both GC passes below delete by (kPgComputedColumn, col 1=attoid)
@@ -239,14 +234,12 @@ namespace components::operators {
                     if (chunk.column_count() < 7)
                         continue;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
-                        auto attoid_v = chunk.value(1, i);
-                        auto refcount_v = chunk.value(6, i);
-                        if (attoid_v.is_null() || refcount_v.is_null())
+                        if (chunk.is_null(1, i) || chunk.is_null(6, i))
                             continue;
-                        const auto rc = refcount_v.value<std::int64_t>();
+                        const auto rc = chunk.get_value<std::int64_t>(6, i);
                         if (rc > 0)
                             continue;
-                        dead_attoids.push_back(static_cast<catalog::oid_t>(attoid_v.value<std::uint32_t>()));
+                        dead_attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i)));
                     }
                 }
 
@@ -268,20 +261,15 @@ namespace components::operators {
                     if (chunk.column_count() < 7)
                         continue;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
-                        auto attoid_v = chunk.value(1, i);
-                        auto attname_v = chunk.value(2, i);
-                        auto attversion_v = chunk.value(5, i);
-                        auto refcount_v = chunk.value(6, i);
-                        if (attoid_v.is_null() || attname_v.is_null() || attversion_v.is_null() ||
-                            refcount_v.is_null()) {
+                        if (chunk.is_null(1, i) || chunk.is_null(2, i) || chunk.is_null(5, i) || chunk.is_null(6, i)) {
                             continue;
                         }
                         // Skip rows already queued for deletion as tombstones.
-                        if (refcount_v.value<std::int64_t>() <= 0)
+                        if (chunk.get_value<std::int64_t>(6, i) <= 0)
                             continue;
-                        auto attname = attname_v.value<std::string_view>();
-                        auto attversion = attversion_v.value<std::int64_t>();
-                        auto attoid = static_cast<catalog::oid_t>(attoid_v.value<std::uint32_t>());
+                        auto attname = chunk.get_value<std::string_view>(2, i);
+                        auto attversion = chunk.get_value<std::int64_t>(5, i);
+                        auto attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                         grouped[std::string(attname)].push_back({attoid, attversion});
                     }
                 }
@@ -320,18 +308,14 @@ namespace components::operators {
                 // taken BEFORE the deletes; row[5]>0 there can include rows
                 // whose live counterparts were just version-GC'd.
                 {
-                    types::logical_value_t toid_lv2(resource_, table_oid);
                     std::pmr::vector<std::string> cc2_keys(resource_);
                     cc2_keys.emplace_back("relid");
-                    std::pmr::vector<types::logical_value_t> cc2_vals(resource_);
-                    cc2_vals.emplace_back(toid_lv2);
-                    auto [_cc2, ccf2] =
-                        actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::read_chunks_by_key,
-                                         cc_ctx,
-                                         kPgComputedColumn,
-                                         std::move(cc2_keys),
-                                         components::operators::make_key_chunk(resource_, std::move(cc2_vals)));
+                    auto [_cc2, ccf2] = actor_zeta::send(ctx->disk_address,
+                                                         &services::disk::manager_disk_t::read_chunks_by_key,
+                                                         cc_ctx,
+                                                         kPgComputedColumn,
+                                                         std::move(cc2_keys),
+                                                         components::operators::make_key_chunk(resource_, table_oid));
                     auto live_cc = co_await std::move(ccf2);
 
                     std::set<std::string> live_attnames;
@@ -339,13 +323,11 @@ namespace components::operators {
                         if (chunk.column_count() < 7)
                             continue;
                         for (uint64_t i = 0; i < chunk.size(); ++i) {
-                            auto attname_v = chunk.value(2, i);
-                            auto refcount_v = chunk.value(6, i);
-                            if (attname_v.is_null() || refcount_v.is_null())
+                            if (chunk.is_null(2, i) || chunk.is_null(6, i))
                                 continue;
-                            if (refcount_v.value<std::int64_t>() <= 0)
+                            if (chunk.get_value<std::int64_t>(6, i) <= 0)
                                 continue;
-                            live_attnames.emplace(std::string(attname_v.value<std::string_view>()));
+                            live_attnames.emplace(std::string(chunk.get_value<std::string_view>(2, i)));
                         }
                     }
 

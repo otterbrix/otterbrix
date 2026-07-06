@@ -73,7 +73,7 @@ namespace {
             data_chunk_t chunk(resource, types, batch);
             chunk.set_cardinality(batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.set_value(0, i, logical_value_t{resource, static_cast<int64_t>(offset + i)});
+                chunk.set_value(0, i, static_cast<int64_t>(offset + i));
             }
             table_append_state state(resource);
             REQUIRE_FALSE(table.append_lock(state).has_error());

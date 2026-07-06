@@ -25,7 +25,7 @@ namespace components::sql::transform {
             , extensions_(extensions)
             , parameter_map_(resource_)
             , parameter_insert_map_(resource_)
-            , parameter_insert_rows_(resource_, {})
+            , parameter_insert_rows_(resource_)
             , error_(core::error_t::no_error()) {}
 
         transform_result transform(Node& node);
@@ -231,7 +231,7 @@ namespace components::sql::transform {
         const parser::parser_extension_registry_t* extensions_;
         std::pmr::unordered_map<size_t, core::parameter_id_t> parameter_map_;
         std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>> parameter_insert_map_;
-        vector::data_chunk_t parameter_insert_rows_;
+        std::pmr::vector<vector::data_chunk_t> parameter_insert_rows_;
         std::vector<deferred_limit_t> deferred_limits_;
         size_t aggregate_counter_{0};
         std::pmr::vector<expressions::expression_ptr> pending_internal_aggs_{resource_};

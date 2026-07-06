@@ -22,12 +22,11 @@ namespace components::operators {
         }
 
         template<typename T>
-        bool cells_equal_typed(const vector::vector_t& a, size_t ra, const vector::vector_t& b, size_t rb) {
-            if constexpr (std::is_floating_point_v<T>) {
-                return core::is_equals(a.data<T>()[ra], b.data<T>()[rb]);
-            } else {
-                return a.data<T>()[ra] == b.data<T>()[rb];
-            }
+        bool cells_equal_typed(const vector::vector_t& lhs,
+                               size_t lhs_index,
+                               const vector::vector_t& rhs,
+                               size_t rhs_index) {
+            return core::is_equals(lhs.get_value<T>(lhs_index), rhs.get_value<T>(rhs_index));
         }
 
         // Typed cell-by-cell equality between two vectors (R1-b VERIFY). No
@@ -65,7 +64,7 @@ namespace components::operators {
                 case types::physical_type::DOUBLE:
                     return cells_equal_typed<double>(a, ra, b, rb);
                 case types::physical_type::STRING:
-                    return a.data<std::string_view>()[ra] == b.data<std::string_view>()[rb];
+                    return cells_equal_typed<std::string_view>(a, ra, b, rb);
                 default:
                     // Nested / unsupported physical types fall back to the typed
                     // logical_value comparison (preserves struct/list/array

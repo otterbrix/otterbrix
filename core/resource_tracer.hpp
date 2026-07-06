@@ -138,7 +138,7 @@ protected:
         } else {
             std::cout << "do_deallocate: ptr does not exists: " << p << std::endl;
         }
-        std::cout << "do_deallocate: region: " << p << " - " << p + bytes << std::endl;
+        std::cout << "do_deallocate: region: " << p << " - " << static_cast<std::byte*>(p) + bytes << std::endl;
         std::cout << "do_deallocate: bytes: " << bytes << std::endl;
         std::cout << "do_deallocate: alignment: " << alignment << std::endl;
         if (with_alignment != bytes) {

@@ -2,6 +2,7 @@
 
 #include "optimizer/rules/constant_folding.hpp"
 #include "optimizer/rules/hash_join.hpp"
+#include "optimizer/rules/promote_cross_join.hpp"
 #include "optimizer/rules/pushdown_aggregate.hpp"
 #include "optimizer/rules/pushdown_filter.hpp"
 
@@ -24,7 +25,13 @@ namespace components::planner {
         if (parameters) {
             optimizer::fold_constants(resource, node, parameters);
         }
-        node = optimizer::pushdown_filter(resource, node);
+        // Promote comma-join CROSS joins to INNER before pushdown_filter: its join
+        // branch wraps the join's children in fresh, unstamped aggregates whose
+        // output_types() is empty (validation already ran), which would collapse the
+        // promote rule's left_width to 0. fold_constants (above) never restructures
+        // joins, so the children stay stamped for the range classification.
+        node = optimizer::promote_cross_joins(resource, std::move(node));
+        node = optimizer::pushdown_filter(resource, std::move(node));
         node = optimizer::rewrite_hash_joins(resource, std::move(node));
 
         // Annotate pushable single-owned-table aggregates. Runs LAST — it only

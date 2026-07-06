@@ -83,12 +83,43 @@ namespace services::planner::impl {
         // equi-key column indices. Lower straight to operator_hash_join_t (O(L+R)). No
         // detection here — the annotation is the single source of truth.
         if (join_node->algo() == join_algo::hash) {
+            // Build-side selection (Stage 2b): operator_hash_join_t materializes its
+            // physical RIGHT child as the hash build side, so the default build is the
+            // LOGICAL-right table. Move the SMALLER table onto the build side IFF this
+            // is an INNER join, both children are distinct base tables whose live row
+            // counts are known (fetched into context.row_counts by execute_plan_full),
+            // and the current build (right) is the LARGER side. When swapping, the
+            // smaller logical-left child moves into the physical build slot and
+            // swapped_=true tells compute_join_layout to re-assemble the output in
+            // logical [left, right] order, so results are byte-for-byte identical.
+            // Outer joins are never swapped (their NULL-pad side is orientation-fixed);
+            // a self-join (same oid), a missing/equal count, or an INVALID_OID side
+            // keeps the default child order. A wrong estimate only picks a
+            // slower-but-correct plan.
+            bool swap_build_side = false;
+            if (join_node->type() == join_type::inner && left_oid != components::catalog::INVALID_OID &&
+                right_oid != components::catalog::INVALID_OID && left_oid != right_oid) {
+                const auto left_it = context.row_counts.find(left_oid);
+                const auto right_it = context.row_counts.find(right_oid);
+                if (left_it != context.row_counts.end() && right_it != context.row_counts.end() &&
+                    left_it->second < right_it->second) {
+                    swap_build_side = true;
+                }
+            }
+
+            // After a swap the probe (physical left_) is the logical-right table and
+            // the build (physical right_) is the logical-left table, so the ctor key
+            // columns are swapped too (left_col == probe key col, right_col == build
+            // key col — see operator_hash_join_t's ctor contract).
+            const std::size_t probe_key_col = swap_build_side ? join_node->right_col() : join_node->left_col();
+            const std::size_t build_key_col = swap_build_side ? join_node->left_col() : join_node->right_col();
             components::operators::operator_ptr hash_join =
                 boost::intrusive_ptr(new components::operators::operator_hash_join_t(resource,
                                                                                      log.clone(),
                                                                                      join_node->type(),
-                                                                                     join_node->left_col(),
-                                                                                     join_node->right_col()));
+                                                                                     probe_key_col,
+                                                                                     build_key_col,
+                                                                                     swap_build_side));
             // Push the LIMIT down to whichever side an outer join preserves. The hash
             // path covers inner/left/right/full only (cross never carries an equi-key).
             auto hash_limit_left = components::logical_plan::limit_t::unlimit();
@@ -109,13 +140,21 @@ namespace services::planner::impl {
                     // nullptr -> executor surfaces the error (rule 9: no throw here).
                     return nullptr;
             }
+            // Physical roles: probe = left_, build = right_. When swapped the
+            // logical-right child becomes the probe and the logical-left child the
+            // build; the per-side LIMIT follows the LOGICAL side (only outer joins ever
+            // set a limit, and those never swap, so this is a no-op under a swap).
+            const auto& probe_child = swap_build_side ? node->children().back() : node->children().front();
+            const auto& build_child = swap_build_side ? node->children().front() : node->children().back();
+            const auto probe_limit = swap_build_side ? hash_limit_right : hash_limit_left;
+            const auto build_limit = swap_build_side ? hash_limit_left : hash_limit_right;
             components::operators::operator_ptr hash_left;
             components::operators::operator_ptr hash_right;
-            if (node->children().front()) {
-                hash_left = create_plan(context, function_registry, node->children().front(), hash_limit_left, params);
+            if (probe_child) {
+                hash_left = create_plan(context, function_registry, probe_child, probe_limit, params);
             }
-            if (node->children().back()) {
-                hash_right = create_plan(context, function_registry, node->children().back(), hash_limit_right, params);
+            if (build_child) {
+                hash_right = create_plan(context, function_registry, build_child, build_limit, params);
             }
             hash_join->set_children(std::move(hash_left), std::move(hash_right));
             return hash_join;

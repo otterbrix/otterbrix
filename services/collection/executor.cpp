@@ -112,6 +112,40 @@ namespace services::collection::executor {
                       "add a case to behavior() AND an entry to kBehaviorHandledIds");
     } // namespace
 
+    namespace {
+        // Stage 2b build-side selection: collect the resolved child table oids of
+        // every INNER hash join in the optimized plan tree. execute_plan_full
+        // fetches each oid's live row count so create_plan_join can put the
+        // smaller table on the hash build side. Recurses the whole tree because
+        // q2-q4 lower to several stacked joins. A child that is not a single base
+        // table (nested join / subquery -> INVALID_OID) is dropped here, so it is
+        // never sent to disk. Duplicate oids collapse in the set.
+        void collect_inner_hash_join_oids(const components::logical_plan::node_ptr& node,
+                                          std::pmr::set<components::catalog::oid_t>& out) {
+            if (!node) {
+                return;
+            }
+            if (node->type() == components::logical_plan::node_type::join_t) {
+                const auto* join = static_cast<const components::logical_plan::node_join_t*>(node.get());
+                if (join->type() == components::logical_plan::join_type::inner &&
+                    join->algo() == components::logical_plan::node_join_t::join_algo::hash &&
+                    !node->children().empty()) {
+                    const auto left_oid = node->children().front()->table_oid();
+                    const auto right_oid = node->children().back()->table_oid();
+                    if (left_oid != components::catalog::INVALID_OID) {
+                        out.insert(left_oid);
+                    }
+                    if (right_oid != components::catalog::INVALID_OID) {
+                        out.insert(right_oid);
+                    }
+                }
+            }
+            for (const auto& child : node->children()) {
+                collect_inner_hash_join_oids(child, out);
+            }
+        }
+    } // namespace
+
     plan_t::plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
                    const components::logical_plan::storage_parameters* parameters,
                    services::context_storage_t&& context_storage,
@@ -1380,6 +1414,27 @@ namespace services::collection::executor {
                                                                plan.parameters.get(),
                                                                can_push_to_agent);
 
+        // (O2) Stage 2b build-side selection — fetch live row counts for the child
+        // tables of every INNER hash join so create_plan_join can put the smaller
+        // side on the hash build. Gated on an owning agent existing (reuse
+        // can_push_to_agent); in-memory mode leaves row_counts empty and the swap
+        // no-ops. The sequential co_await loop is safe (actor-zeta inter-await
+        // guard; operator_vacuum drains storage_total_rows the same way), and a
+        // wrong/absent count only picks a slower-but-correct plan (the join output
+        // is orientation-restored regardless). INVALID_OID children are dropped by
+        // the walk, so nothing invalid is ever sent.
+        if (can_push_to_agent) {
+            std::pmr::set<components::catalog::oid_t> inner_hash_join_oids{resource()};
+            collect_inner_hash_join_oids(plan.sub_queries.back(), inner_hash_join_oids);
+            for (auto oid : inner_hash_join_oids) {
+                auto [_tr, trf] = actor_zeta::send(disk_address_,
+                                                   &services::disk::manager_disk_t::storage_total_rows,
+                                                   session,
+                                                   oid);
+                context_storage.row_counts[oid] = co_await std::move(trf);
+            }
+        }
+
         trace(log_, "executor::execute_plan_full: delegating to execute_plan, session: {}", session.data());
         // Operator-pipeline run, forwarding resolve_txn so the operator path
         // sees the same MVCC snapshot the resolves did.
@@ -1818,9 +1873,23 @@ namespace services::collection::executor {
         // operator's source_next would read an already-drained cursor (0 rows). So drive
         // source_next only when this pipeline owns its scan source (chain bottom); when
         // the bottom is already executed, stream from that operator's materialized output_.
+        // A materialized sub-plan (a join build/probe side split off by
+        // traverse_plan_) marks only its ROOT operator executed and stashes the rows
+        // in that root's output_; the drained SOURCE beneath it stays un-executed. So
+        // when a side is more than one operator deep — e.g. a single-table filter
+        // pushed below a join lowers to a streaming match/full_scan over its scan
+        // source — the executed operators are NOT a contiguous bottom prefix:
+        // chain[k] (the sub-plan root) is executed while chain[k-1] (its drained
+        // source) is not. Take the materialized boundary as the operator just ABOVE
+        // the TOPMOST executed op: everything at or below it belongs to an already-run
+        // sub-plan (stream from that root's output_), and re-driving the drained
+        // source below it would read an empty cursor. A bottom-scan-owned pipeline
+        // (nothing pre-executed) leaves start == 0.
         std::size_t start = 0;
-        while (start < chain.size() && chain[start]->is_executed()) {
-            ++start;
+        for (std::size_t i = 0; i < chain.size(); ++i) {
+            if (chain[i]->is_executed()) {
+                start = i + 1;
+            }
         }
         // SOURCELESS SINK BOTTOM: a DDL/txn/catalog-read operator (create_collection,
         // set_timezone, begin_transaction, resolve_*, ...) OR a producing recursive_cte

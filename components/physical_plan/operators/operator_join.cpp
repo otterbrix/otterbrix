@@ -25,7 +25,14 @@ namespace components::operators {
         assert(!build_chunks.empty());
 
         res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
-        join_detail::compute_join_layout(probe_front, build_chunks.front(), res_types_, indices_left_, indices_right_);
+        // Nested-loop is never swapped: it evaluates its ON via key.side(), so the
+        // probe is always logical-left and the build always logical-right.
+        join_detail::compute_join_layout(probe_front,
+                                         build_chunks.front(),
+                                         /*swapped=*/false,
+                                         res_types_,
+                                         indices_left_,
+                                         indices_right_);
 
         predicate_ = expression_ ? predicates::create_predicate(resource_,
                                                                 context->function_registry,

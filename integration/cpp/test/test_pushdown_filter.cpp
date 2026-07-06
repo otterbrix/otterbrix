@@ -35,7 +35,32 @@ static node_data_ptr make_data(std::pmr::memory_resource* r, std::initializer_li
     }
     // optimizer only looks at the schema, so one row is enough
     auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, r);
-    return make_node_raw_data(r, std::move(chunk));
+    auto node = make_node_raw_data(r, std::move(chunk));
+    // Stage 3: collect_subtree_columns() now reads a node's output_types() (the
+    // node_data_t column-name branch was removed). Stamp them here so a scan used
+    // under a join exposes its columns to pushdown exactly as validate_schema would
+    // — otherwise the columns come back empty and nothing is pushed. Build the list
+    // on `r` (rule 8) and move it in.
+    std::pmr::vector<components::types::complex_logical_type> out_types(r);
+    for (const char* name : col_names) {
+        out_types.emplace_back(components::types::logical_type::BIGINT, name);
+    }
+    node->set_output_types(std::move(out_types));
+    return node;
+}
+
+// disk-shaped scan: an aggregate_t{db,rel} that carries its columns ONLY in
+// output_types() (a real disk scan has no in-memory node_data_t child). Used to
+// prove collect_subtree_columns() reads output_types() rather than a data node.
+static node_aggregate_ptr
+make_disk_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> col_names) {
+    auto agg = make_node_aggregate(r, db, rel);
+    std::pmr::vector<components::types::complex_logical_type> out_types(r);
+    for (const char* name : col_names) {
+        out_types.emplace_back(components::types::logical_type::BIGINT, name);
+    }
+    agg->set_output_types(std::move(out_types));
+    return agg;
 }
 
 // --- Filter through projection ----------------------------------------------
@@ -584,3 +609,121 @@ TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {
     // BUGGY kernel returns incoming [a, b, c] = 3
     REQUIRE(schema.size() == 2);
 }
+
+// --- Stage 3: pushdown reads output_types(), not a node_data_t --------------
+
+// A disk scan is an aggregate_t{db,rel} whose columns live ONLY in output_types()
+// (no in-memory node_data_t). Stage 3 made collect_subtree_columns() read
+// output_types(), so single-table filters still bucket to the correct join side.
+// RED before Stage 3: the old code looked for a node_data_t under each side, found
+// none, produced empty column sets, and pushed nothing (out == outer).
+TEST_CASE("logical_plan::pushdown_filter_into_join_branch_disk_shaped_scans") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto left_scan = make_disk_scan(&resource, {"a", "b"});
+    auto right_scan = make_disk_scan(&resource, {"c", "d"});
+
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
+    join->append_child(left_scan);
+    join->append_child(right_scan);
+
+    auto cmp_a = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp_c = make_compare_expression(&resource, compare_type::gt, key(&resource, "c", side_t::left), id_par{2});
+    auto conj = make_compare_union_expression(&resource, compare_type::union_and);
+    conj->append_child(cmp_a);
+    conj->append_child(cmp_c);
+
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource, db, rel, conj));
+
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+
+    REQUIRE(out == join);
+    REQUIRE(join->children().size() == 2);
+    REQUIRE(join->children()[0]->type() == node_type::aggregate_t);
+    REQUIRE(join->children()[1]->type() == node_type::aggregate_t);
+
+    // Each single-table filter was pushed below its side, wrapping the disk-shaped
+    // scan (still present, unchanged) in aggregate{scan, match}.
+    auto left_pushed = join->children()[0];
+    REQUIRE(left_pushed->children().size() == 2);
+    REQUIRE(left_pushed->children()[0] == left_scan);
+    REQUIRE(left_pushed->children()[1]->type() == node_type::match_t);
+
+    auto right_pushed = join->children()[1];
+    REQUIRE(right_pushed->children().size() == 2);
+    REQUIRE(right_pushed->children()[0] == right_scan);
+    REQUIRE(right_pushed->children()[1]->type() == node_type::match_t);
+}
+
+// --- Stage 3 part 2: pushdown below a join UNDER GROUP BY + ORDER BY ---------
+
+// The bail-lift: a group_t AND a sort_t above an inner join no longer stop
+// single-table filters from being pushed below the join. group/sort commute with
+// pushing a per-side filter down (they only reorder/aggregate the join's output).
+// Both filters land on their respective join side; the match above the join is
+// fully consumed and dropped; group_t + sort_t stay above the join. This is the
+// structural counterpart of the end-to-end repro (test_batch_execution
+// "join + WHERE ... GROUP BY", test_column_projection "inner JOIN + GROUP BY with
+// WHERE on non-select column") that returned 0 rows before the executor fix.
+// RED before the bail-lift: the old group/sort guard returned the node unchanged,
+// leaving both filters in the match above the join.
+TEST_CASE("logical_plan::pushdown_filter_into_join_branch_under_group_and_sort") {
+    auto resource = std::pmr::synchronized_pool_resource();
+    auto left_scan = make_disk_scan(&resource, {"a", "b"});
+    auto right_scan = make_disk_scan(&resource, {"c", "d"});
+
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
+    join->append_child(left_scan);
+    join->append_child(right_scan);
+
+    auto cmp_a = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    auto cmp_c = make_compare_expression(&resource, compare_type::gt, key(&resource, "c", side_t::left), id_par{2});
+    auto conj = make_compare_union_expression(&resource, compare_type::union_and);
+    conj->append_child(cmp_a);
+    conj->append_child(cmp_c);
+
+    auto group = make_node_group(&resource, db, rel);
+    group->append_expression(make_scalar_expression(&resource, scalar_type::group_field, key(&resource, "a")));
+    auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_b"));
+    sum_expr->append_param(key(&resource, "b"));
+    group->append_expression(std::move(sum_expr));
+
+    std::vector<components::expressions::expression_ptr> sort_exprs;
+    sort_exprs.emplace_back(make_sort_expression(key(&resource, "a"), sort_order::asc));
+    auto sort = make_node_sort(&resource, db, rel, sort_exprs);
+
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource, db, rel, conj));
+    outer->append_child(group);
+    outer->append_child(sort);
+
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+
+    // outer keeps group + sort, so it is not elided; the join stays its source.
+    REQUIRE(out == outer);
+    REQUIRE(outer->children()[0] == join);
+    bool has_group = false, has_sort = false, has_match = false;
+    for (size_t i = 1; i < outer->children().size(); ++i) {
+        auto t = outer->children()[i]->type();
+        if (t == node_type::group_t)
+            has_group = true;
+        if (t == node_type::sort_t)
+            has_sort = true;
+        if (t == node_type::match_t)
+            has_match = true;
+    }
+    REQUIRE(has_group);
+    REQUIRE(has_sort);
+    REQUIRE_FALSE(has_match); // both filters consumed -> no residual above the join
+
+    // Each single-table filter was pushed below its side despite group + sort.
+    REQUIRE(join->children()[0]->children().size() == 2);
+    REQUIRE(join->children()[0]->children()[0] == left_scan);
+    REQUIRE(join->children()[0]->children()[1]->type() == node_type::match_t);
+    REQUIRE(join->children()[1]->children().size() == 2);
+    REQUIRE(join->children()[1]->children()[0] == right_scan);
+    REQUIRE(join->children()[1]->children()[1]->type() == node_type::match_t);
+}
+

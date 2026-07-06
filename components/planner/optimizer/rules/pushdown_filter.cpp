@@ -1,5 +1,7 @@
 #include "pushdown_filter.hpp"
 
+#include "conjunct_utils.hpp"
+
 #include <optional>
 #include <set>
 #include <string>
@@ -110,6 +112,90 @@ namespace components::planner::optimizer {
             return result;
         }
 
+        // Re-localize a conjunct's column keys from the join's MERGED coordinate space
+        // to the right child's LOCAL space when a right-side single-table filter is
+        // pushed below the join. A key's merged path()[0] equals its local index only
+        // for the left prefix ([0, left_width)); a right-side column sits at
+        // left_width + local, so pushing it into the right child unchanged leaves an
+        // out-of-range column index. Subtract left_width from the leading path element
+        // (deeper elements index nested struct fields and stay put). The new path is
+        // built on `resource` — never set_path({...}), which pulls the default resource
+        // (rule 14). The left bucket needs no rewrite (merged == local there) and the
+        // residual keeps its merged paths (it evaluates over the join's merged output).
+        void relocalize_key_path(key_t& k, size_t left_width, std::pmr::memory_resource* resource) {
+            const auto& old_path = k.path();
+            if (old_path.empty()) {
+                return;
+            }
+            std::pmr::vector<size_t> p{resource};
+            p.reserve(old_path.size());
+            p.push_back(old_path[0] - left_width);
+            for (size_t i = 1; i < old_path.size(); ++i) {
+                p.push_back(old_path[i]);
+            }
+            k.set_path(std::move(p));
+        }
+
+        void relocalize_keys(const expression_ptr& expr, size_t left_width, std::pmr::memory_resource* resource);
+
+        void relocalize_param(param_storage& param, size_t left_width, std::pmr::memory_resource* resource) {
+            if (is_key(param)) {
+                relocalize_key_path(as_key(param), left_width, resource);
+            } else if (is_expr(param)) {
+                relocalize_keys(as_expr(param), left_width, resource);
+            }
+        }
+
+        // Mirrors collect_referenced_columns exactly: it visits precisely the keys that
+        // classify a conjunct as right-side, so every such key is re-localized here.
+        void relocalize_keys(const expression_ptr& expr, size_t left_width, std::pmr::memory_resource* resource) {
+            if (!expr) {
+                return;
+            }
+            switch (expr->group()) {
+                case expression_group::compare: {
+                    auto* cmp = static_cast<compare_expression_t*>(expr.get());
+                    if (is_union_compare_condition(cmp->type())) {
+                        for (auto& child : cmp->children()) {
+                            relocalize_keys(child, left_width, resource);
+                        }
+                    } else {
+                        relocalize_param(cmp->left(), left_width, resource);
+                        relocalize_param(cmp->right(), left_width, resource);
+                    }
+                    break;
+                }
+                case expression_group::scalar: {
+                    auto* sc = static_cast<scalar_expression_t*>(expr.get());
+                    for (auto& param : sc->params()) {
+                        relocalize_param(param, left_width, resource);
+                    }
+                    break;
+                }
+                case expression_group::aggregate: {
+                    auto* agg = static_cast<aggregate_expression_t*>(expr.get());
+                    for (auto& param : agg->params()) {
+                        relocalize_param(param, left_width, resource);
+                    }
+                    break;
+                }
+                case expression_group::sort: {
+                    auto* srt = static_cast<sort_expression_t*>(expr.get());
+                    relocalize_key_path(srt->key(), left_width, resource);
+                    break;
+                }
+                case expression_group::function: {
+                    auto* fn = static_cast<function_expression_t*>(expr.get());
+                    for (auto& arg : fn->args()) {
+                        relocalize_param(arg, left_width, resource);
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+
         bool filter_supported_through_identity_select(const node_select_t& sel,
                                                       const std::set<std::string>& filter_cols,
                                                       const std::set<std::string>& input_cols) {
@@ -161,12 +247,19 @@ namespace components::planner::optimizer {
             if (!node) {
                 return;
             }
-            if (node->type() == node_type::data_t) {
-                auto* data = static_cast<node_data_t*>(node.get());
-                auto types = data->data_chunk().types();
-                for (size_t i = 0; i < types.size(); ++i) {
-                    if (!types[i].alias().empty()) {
-                        cols.insert(types[i].alias());
+            // Single canonical source (rule 6): a node's own validate_schema-stamped
+            // output_types() carries its VISIBLE column names (aliases) — this is the
+            // set a predicate above the node references, and it is stamped for disk
+            // scans (aggregate_t{db,rel}), in-memory data_t, subquery and join nodes
+            // alike. Read it directly. Only when a node is UNstamped (an
+            // optimizer-synthesized wrapper — e.g. the aggregate this rule's own join
+            // branch appends) do we recurse into its children to the first stamped
+            // node. Never recurse straight to a leaf: a renamed side (`… AS x`) carries
+            // the pre-rename name at the leaf, which would mis-bucket a predicate on `x`.
+            if (node->has_output_types()) {
+                for (const auto& t : node->output_types()) {
+                    if (!t.alias().empty()) {
+                        cols.insert(t.alias());
                     }
                 }
                 return;
@@ -174,40 +267,6 @@ namespace components::planner::optimizer {
             for (const auto& child : node->children()) {
                 collect_subtree_columns(child, cols);
             }
-        }
-
-        std::vector<expression_ptr> split_conjuncts(const expression_ptr& expr) {
-            std::vector<expression_ptr> result;
-            if (!expr) {
-                return result;
-            }
-            if (expr->group() == expression_group::compare) {
-                auto* cmp = static_cast<compare_expression_t*>(expr.get());
-                if (cmp->type() == compare_type::union_and) {
-                    for (const auto& child : cmp->children()) {
-                        auto sub = split_conjuncts(child);
-                        result.insert(result.end(), sub.begin(), sub.end());
-                    }
-                    return result;
-                }
-            }
-            result.push_back(expr);
-            return result;
-        }
-
-        expression_ptr rebuild_conjunction(std::pmr::memory_resource* resource,
-                                           const std::vector<expression_ptr>& conjuncts) {
-            if (conjuncts.empty()) {
-                return nullptr;
-            }
-            if (conjuncts.size() == 1) {
-                return conjuncts.front();
-            }
-            auto conj = make_compare_union_expression(resource, compare_type::union_and);
-            for (const auto& c : conjuncts) {
-                conj->append_child(c);
-            }
-            return conj;
         }
 
         size_t type_width(const components::types::complex_logical_type& t) { return t.size(); }
@@ -321,13 +380,29 @@ namespace components::planner::optimizer {
                 }
             }
 
-            if (!match_child || group_child || sort_child) {
+            // Only a match child is required to attempt a push. A group_t/sort_t above
+            // the join no longer bails: pushing a single-table filter below the join
+            // under GROUP BY/ORDER BY + a projection is now driven end-to-end. That
+            // shape wraps the join's probe child in a streaming filter over its scan
+            // source (a 2-operator sub-plan); the executor's streaming driver
+            // (executor.cpp execute_pipeline) was taught to treat the TOPMOST executed
+            // operator — not a contiguous bottom prefix — as the materialized sub-plan
+            // boundary, so the filtered probe rows now reach the group/sort instead of
+            // the drained scan source being re-driven to 0 rows (repro:
+            // test_batch_execution "join + WHERE with UDF batch predicate",
+            // test_column_projection "inner JOIN + GROUP BY with WHERE on non-select
+            // column").
+            //
+            // The aggregate-SOURCE branch below keeps its original !group_child &&
+            // !sort_child guard: only the join-source branch is validated under
+            // grouping/sort here.
+            if (!match_child) {
                 return node;
             }
 
             auto source = agg->children()[0];
 
-            if (source->type() == node_type::aggregate_t) {
+            if (source->type() == node_type::aggregate_t && !group_child && !sort_child) {
                 auto* source_agg = static_cast<node_aggregate_t*>(source.get());
                 bool source_has_sort = false;
                 bool source_has_group = false;
@@ -427,8 +502,8 @@ namespace components::planner::optimizer {
                         }
                     }
                     if (!group_keys.empty() && !match_child->expressions().empty()) {
-                        auto conjuncts = split_conjuncts(match_child->expressions()[0]);
-                        std::vector<expression_ptr> pushable, residual;
+                        auto conjuncts = split_conjuncts(resource, match_child->expressions()[0]);
+                        std::pmr::vector<expression_ptr> pushable{resource}, residual{resource};
                         for (const auto& conj : conjuncts) {
                             auto cols = collect_referenced_columns(conj);
                             if (!cols.empty() &&
@@ -462,16 +537,32 @@ namespace components::planner::optimizer {
                     collect_subtree_columns(join->children()[0], left_cols);
                     collect_subtree_columns(join->children()[1], right_cols);
 
+                    // Width of the left child's output = the merged prefix that the left
+                    // columns occupy. A right-side column's merged path()[0] is
+                    // left_width + its local index, so pushing a right-side filter into
+                    // the right child requires subtracting left_width (relocalize_keys).
+                    // Read it from the child's stamped output_types() — reliable for a
+                    // validator-stamped scan/cross join AND a promoted inner join (which
+                    // promote_cross_join now stamps). MUST be captured BEFORE the left
+                    // bucket wraps children()[0] in an unstamped aggregate below.
+                    const bool left_width_known = join->children()[0]->has_output_types();
+                    const size_t left_width =
+                        left_width_known ? join->children()[0]->output_types().size() : 0;
+
                     // Only push below a row-preserving side of an outer join
                     // Left preserves left, right preserves right, full preserves none, inner/cross preserve both.
                     const auto jt = join->type();
                     const bool can_push_left =
                         jt == join_type::inner || jt == join_type::cross || jt == join_type::left;
+                    // A right-side push also needs a known left_width to re-localize the
+                    // conjunct; without it, keep the conjunct in the residual (safe no-op,
+                    // rules 2/9) rather than push an out-of-range merged path.
                     const bool can_push_right =
-                        jt == join_type::inner || jt == join_type::cross || jt == join_type::right;
+                        (jt == join_type::inner || jt == join_type::cross || jt == join_type::right) &&
+                        left_width_known;
 
-                    auto conjuncts = split_conjuncts(match_child->expressions()[0]);
-                    std::vector<expression_ptr> left_bucket, right_bucket, residual;
+                    auto conjuncts = split_conjuncts(resource, match_child->expressions()[0]);
+                    std::pmr::vector<expression_ptr> left_bucket{resource}, right_bucket{resource}, residual{resource};
                     for (const auto& conj : conjuncts) {
                         auto cols = collect_referenced_columns(conj);
                         bool in_left = !cols.empty() &&
@@ -499,6 +590,17 @@ namespace components::planner::optimizer {
                         }
                         if (!right_bucket.empty()) {
                             auto [r_db, r_rel] = node_cfn(join->children()[1]);
+                            // Re-localize each pushed right-side conjunct from the join's
+                            // merged coordinates to the right child's local space (subtract
+                            // left_width). Each conjunct lands in exactly one bucket, so the
+                            // right-bucket entries are not shared with the residual or the
+                            // left bucket — mutating their keys in place is safe. The nested
+                            // recursion below re-applies this at each deeper level with that
+                            // level's own left_width, so a deep left-then-right push
+                            // localizes step by step.
+                            for (const auto& conj : right_bucket) {
+                                relocalize_keys(conj, left_width, resource);
+                            }
                             auto new_agg = make_node_aggregate(resource, r_db, r_rel);
                             new_agg->append_child(join->children()[1]);
                             new_agg->append_child(
@@ -507,7 +609,35 @@ namespace components::planner::optimizer {
                         }
                         auto residual_expr = rebuild_conjunction(resource, residual);
                         if (!residual_expr) {
-                            return pushdown_filter_impl(resource, source);
+                            // All conjuncts pushed below the join → the match is empty.
+                            // Drop ONLY the (now-empty) match child, NOT the enclosing
+                            // aggregate: returning `source` here would discard node's
+                            // group_t/sort_t — reachable now that Stage 3 lifted the
+                            // group/sort bail for this join branch (e.g. SSB
+                            // `SUM(...) ... GROUP BY ... ORDER BY` whose WHERE, after
+                            // promote moved the equi onto the join ON, is entirely
+                            // single-table filters). Preserve the aggregate; recurse
+                            // into the pushed join. The match sits at index >= 1, the
+                            // join at index 0, so erasing it does not shift index 0.
+                            auto& agg_children = node->children();
+                            for (size_t i = 0; i < agg_children.size(); ++i) {
+                                if (agg_children[i] == match_child) {
+                                    agg_children.erase(agg_children.begin() + static_cast<std::ptrdiff_t>(i));
+                                    break;
+                                }
+                            }
+                            auto pushed_source = pushdown_filter_impl(resource, source);
+                            // If the aggregate now wraps ONLY the join (its match was the
+                            // sole pipeline stage), it is a redundant pass-through — expose
+                            // the pushed join directly (the canonical minimal plan the
+                            // unit tests assert). Keep the aggregate only when a group_t/
+                            // sort_t (or other pipeline stage) still needs it (the SSB
+                            // SUM/GROUP BY/ORDER BY case, which then keeps its residual).
+                            if (node->children().size() == 1) {
+                                return pushed_source;
+                            }
+                            node->children()[0] = pushed_source;
+                            return node;
                         }
                         match_child->expressions()[0] = residual_expr;
                         node->children()[0] = pushdown_filter_impl(resource, source);

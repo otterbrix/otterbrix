@@ -8,7 +8,7 @@
 using namespace core::pmr;
 
 TEST_CASE("components::cursor::construction") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     INFO("empty cursor") {
         auto cursor = components::cursor::make_cursor(&resource);
         REQUIRE(cursor->is_success());
@@ -31,7 +31,7 @@ TEST_CASE("components::cursor::construction") {
 }
 
 TEST_CASE("components::cursor::data_chunk") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     SECTION("cursor with data_chunk") {
         auto chunk = gen_data_chunk(100, &resource);

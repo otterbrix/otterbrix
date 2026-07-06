@@ -4,6 +4,7 @@
 
 #include <components/log/log.hpp>
 #include <core/assert/trace_full_exception.hpp>
+#include <core/pmr.hpp>
 #include <cstddef>
 #include <memory_resource>
 
@@ -14,7 +15,7 @@ TEMPLATE_TEST_CASE("core::tests::memory_resource",
                    std::uint64_t,
                    float,
                    double) {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&resource, 128);
     REQUIRE(vec.memory_resource() == &resource);
 }
@@ -26,7 +27,7 @@ TEMPLATE_TEST_CASE("core::tests::zero_size_constructor",
                    std::uint64_t,
                    float,
                    double) {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, 0);
     REQUIRE(vec.size() == 0);
     REQUIRE(vec.end() == vec.begin());
@@ -41,7 +42,7 @@ TEMPLATE_TEST_CASE("core::tests::non_zero_size_constructor",
                    float,
                    double) {
     auto const size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, size);
     REQUIRE(vec.size() == size);
     REQUIRE(vec.ssize() == size);
@@ -58,7 +59,7 @@ TEMPLATE_TEST_CASE("core::tests::copy_constructor",
                    std::uint64_t,
                    float,
                    double) {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     auto const size{12345};
     core::uvector<TestType> vec(&mr, size);
     core::uvector<TestType> uv_copy(&mr, vec);
@@ -77,7 +78,7 @@ TEMPLATE_TEST_CASE("core::tests::resize_smaller",
                    float,
                    double) {
     auto const original_size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, original_size);
     auto* original_data = vec.data();
     auto* original_begin = vec.begin();
@@ -103,7 +104,7 @@ TEMPLATE_TEST_CASE("core::tests::resize_larger",
                    float,
                    double) {
     auto const original_size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, original_size);
     auto* original_data = vec.data();
     auto* original_begin = vec.begin();
@@ -134,7 +135,7 @@ TEMPLATE_TEST_CASE("core::tests::reserve_smaller",
                    float,
                    double) {
     auto const original_size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, original_size);
     auto* const original_data = vec.data();
     auto* const original_begin = vec.begin();
@@ -157,7 +158,7 @@ TEMPLATE_TEST_CASE("core::tests::reserve_larger",
                    float,
                    double) {
     auto const original_size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, original_size);
     vec.set_element(0, 1);
     auto* const original_data = vec.data();
@@ -181,7 +182,7 @@ TEMPLATE_TEST_CASE("core::tests::resize_to_zero",
                    float,
                    double) {
     auto const original_size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, original_size);
     vec.resize(0);
 
@@ -201,7 +202,7 @@ TEMPLATE_TEST_CASE("core::tests::release",
                    float,
                    double) {
     auto const original_size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, original_size);
 
     auto* original_data = vec.data();
@@ -223,7 +224,7 @@ TEMPLATE_TEST_CASE("core::tests::element_pointer",
                    float,
                    double) {
     auto const size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, size);
     for (std::size_t i = 0; i < vec.size(); ++i) {
         REQUIRE(vec.element_ptr(i) != nullptr);
@@ -238,7 +239,7 @@ TEMPLATE_TEST_CASE("core::tests::get_set_element",
                    float,
                    double) {
     auto const size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, size);
     for (std::size_t i = 0; i < vec.size(); ++i) {
         auto init = static_cast<TestType>(i);
@@ -255,7 +256,7 @@ TEMPLATE_TEST_CASE("core::tests::set_element_zero",
                    float,
                    double) {
     auto const size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, size);
     for (std::size_t i = 0; i < vec.size(); ++i) {
         vec.set_element_to_zero(i);
@@ -271,7 +272,7 @@ TEMPLATE_TEST_CASE("core::tests::front_back_element",
                    float,
                    double) {
     auto const size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, size);
 
     auto const first = TestType{42};
@@ -291,7 +292,7 @@ TEMPLATE_TEST_CASE("core::tests::iterators",
                    float,
                    double) {
     auto const size{12345};
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::uvector<TestType> vec(&mr, size);
 
     REQUIRE(vec.begin() == vec.data());

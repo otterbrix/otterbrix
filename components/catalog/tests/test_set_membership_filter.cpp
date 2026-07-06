@@ -3,13 +3,14 @@
 #include <components/table/column_state.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
+#include <core/pmr.hpp>
 
 using namespace components::table;
 using namespace components::types;
 
 // 1. Basic IN-list — values stored verbatim, contains() returns truth for member values.
 TEST_CASE("table::set_membership_filter::basic_contains") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     std::pmr::vector<logical_value_t> vals(&resource);
     vals.emplace_back(&resource, int64_t(10));
     vals.emplace_back(&resource, int64_t(20));
@@ -27,7 +28,7 @@ TEST_CASE("table::set_membership_filter::basic_contains") {
 
 // 2. Empty value set never matches — used by M4 batch resolve when nothing to look up.
 TEST_CASE("table::set_membership_filter::empty_set_never_matches") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     std::pmr::vector<logical_value_t> vals(&resource);
     std::pmr::vector<uint64_t> indices(&resource);
     indices.push_back(0);
@@ -39,7 +40,7 @@ TEST_CASE("table::set_membership_filter::empty_set_never_matches") {
 
 // 3. copy() preserves values and table_indices (deep semantic copy via copy ctor).
 TEST_CASE("table::set_membership_filter::copy_preserves_values") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     std::pmr::vector<logical_value_t> vals(&resource);
     vals.emplace_back(&resource, int64_t(7));
     vals.emplace_back(&resource, int64_t(8));
@@ -62,7 +63,7 @@ TEST_CASE("table::set_membership_filter::copy_preserves_values") {
 
 // 4. equals() — same values + indices match; different sizes don't match.
 TEST_CASE("table::set_membership_filter::equals") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto make = [&](std::initializer_list<int64_t> ns) {
         std::pmr::vector<logical_value_t> vals(&resource);
@@ -86,7 +87,7 @@ TEST_CASE("table::set_membership_filter::equals") {
 
 // 5. The filter type is EQUALS (treated as multi-valued equality by dispatch sites).
 TEST_CASE("table::set_membership_filter::filter_type_is_eq") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     std::pmr::vector<logical_value_t> vals(&resource);
     vals.emplace_back(&resource, int64_t(1));
     std::pmr::vector<uint64_t> indices(&resource);

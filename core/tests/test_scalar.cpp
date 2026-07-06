@@ -5,6 +5,7 @@
 #include <type_traits>
 
 #include <core/operations_helper.hpp>
+#include <core/pmr.hpp>
 #include <core/scalar.hpp>
 
 template<typename T>
@@ -47,7 +48,7 @@ TEMPLATE_TEST_CASE("core::tests::unitialized",
                    std::int64_t,
                    float,
                    double) {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     core::scalar<TestType> scalar(&mr);
     REQUIRE(nullptr != scalar.data());
 }
@@ -61,7 +62,7 @@ TEMPLATE_TEST_CASE("core::tests::initialValue",
                    std::int64_t,
                    float,
                    double) {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     gen_scalar<TestType> gen;
     auto value = gen.value;
     core::scalar<TestType> scalar(&mr, value);
@@ -78,7 +79,7 @@ TEMPLATE_TEST_CASE("core::tests::const_ptr_data",
                    std::int64_t,
                    float,
                    double) {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     gen_scalar<TestType> gen;
     auto value = gen.value;
     core::scalar<TestType> scalar(&mr, value);
@@ -95,7 +96,7 @@ TEMPLATE_TEST_CASE("core::tests::copy_ctor",
                    std::int64_t,
                    float,
                    double) {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     gen_scalar<TestType> gen;
     auto value = gen.value;
     core::scalar<TestType> scalar(&mr, value);
@@ -117,7 +118,7 @@ TEMPLATE_TEST_CASE("core::tests::move_ctor",
                    std::int64_t,
                    float,
                    double) {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     gen_scalar<TestType> gen;
     auto value = gen.value;
     core::scalar<TestType> scalar(&mr, value);
@@ -143,7 +144,7 @@ TEMPLATE_TEST_CASE("core::tests::set_value",
                    std::int64_t,
                    float,
                    double) {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     gen_scalar<TestType> gen;
     auto value = gen.value;
     core::scalar<TestType> scalar(&mr, value);
@@ -164,7 +165,7 @@ TEMPLATE_TEST_CASE("core::tests::set_value_to_zero",
                    std::int64_t,
                    float,
                    double) {
-    auto mr = std::pmr::synchronized_pool_resource();
+    auto mr = core::pmr::otterbrix_resource();
     gen_scalar<TestType> gen;
     auto value = gen.value;
     core::scalar<TestType> scalar(&mr, value);

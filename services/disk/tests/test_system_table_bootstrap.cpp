@@ -66,7 +66,7 @@ namespace {
     }
 
     struct disk_only_fixture {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         log_t log;
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
@@ -182,7 +182,7 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
 
 // 4. Empty config_disk.path — bootstrap is a safe no-op (in-memory deployment).
 TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     log_t log = initialization_logger("python", "/tmp/docker_logs/");
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk c;

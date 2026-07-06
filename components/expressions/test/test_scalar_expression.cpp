@@ -6,7 +6,7 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 
 TEST_CASE("components::expression::scalar::equals") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto expr1 = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "name"));
     auto expr2 = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "name"));
     auto expr3 = make_scalar_expression(&resource, scalar_type::abs, key(&resource, "name"));
@@ -41,7 +41,7 @@ TEST_CASE("components::expression::scalar::equals") {
 }
 
 TEST_CASE("components::expression::scalar::to_string") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto expr =
         make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "count"), key(&resource, "count"));
     REQUIRE(expr->to_string() == R"(count: "count")");

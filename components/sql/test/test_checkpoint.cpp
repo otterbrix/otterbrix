@@ -11,7 +11,7 @@ using namespace components::logical_plan;
 using namespace components::sql::transform;
 
 TEST_CASE("components::sql::checkpoint") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -35,7 +35,7 @@ TEST_CASE("components::sql::checkpoint") {
 }
 
 TEST_CASE("components::sql::vacuum") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 

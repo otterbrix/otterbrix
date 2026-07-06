@@ -3,6 +3,7 @@
 #include <components/catalog/table_id.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
+#include <core/pmr.hpp>
 
 #include <atomic>
 #include <thread>
@@ -129,7 +130,7 @@ TEST_CASE("test_column_oid_assignment") {
 //    idempotent, but assigning a different value raises std::logic_error. Covers Design Rule 1
 //    by the design rule "OIDs are immutable after assignment".
 TEST_CASE("test_oid_immutability") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     // set_oid / set_attoid are programmer-error precondition guards: assert in
     // debug, silent no-op in release. The original value MUST survive a stray
@@ -153,7 +154,7 @@ TEST_CASE("test_oid_immutability") {
 // 10. table_id OID round-trip.
 //     Doc test alias: test_table_oid_assignment.
 TEST_CASE("test_table_oid_assignment") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     qualified_name_t cfn("main", "users");
     table_id tid(&resource, cfn);

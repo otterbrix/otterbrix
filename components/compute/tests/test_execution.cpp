@@ -98,7 +98,7 @@ row_exec_fail(kernel_context&, const std::pmr::vector<logical_value_t>&, std::pm
 inline function_doc function_doc_with_options() { return function_doc{"", "", {}, true}; }
 
 TEST_CASE("components::compute::vector::single") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -120,7 +120,7 @@ TEST_CASE("components::compute::vector::single") {
 }
 
 TEST_CASE("components::compute::vector::batch") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -152,7 +152,7 @@ TEST_CASE("components::compute::vector::batch") {
 }
 
 TEST_CASE("components::compute::aggregate::single") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     auto fn = std::make_unique<aggregate_function>("agg_single", arity::unary(), function_doc{}, 1);
 
     kernel_signature_t sig(function_type_t::aggregate,
@@ -173,7 +173,7 @@ TEST_CASE("components::compute::aggregate::single") {
 }
 
 TEST_CASE("components::compute::aggregate::batch") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     auto fn = std::make_unique<aggregate_function>("agg_batch", arity::unary(), function_doc{}, 1);
 
     kernel_signature_t sig(function_type_t::aggregate,
@@ -203,7 +203,7 @@ TEST_CASE("components::compute::aggregate::batch") {
 }
 
 TEST_CASE("components::compute::aggregate::batch_per_group") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     auto fn = std::make_unique<aggregate_function>("agg_per_group", arity::unary(), function_doc{}, 1);
 
     kernel_signature_t sig(function_type_t::aggregate,
@@ -235,7 +235,7 @@ TEST_CASE("components::compute::aggregate::batch_per_group") {
 }
 
 TEST_CASE("components::compute::row::single") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     auto fn = std::make_unique<row_function>("row_single", arity::unary(), function_doc{}, 1);
 
     kernel_signature_t sig(function_type_t::row,
@@ -260,7 +260,7 @@ TEST_CASE("components::compute::row::single") {
 }
 
 TEST_CASE("components::compute::row::batch") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     auto fn = std::make_unique<row_function>("row_batch", arity::unary(), function_doc{}, 1);
 
     kernel_signature_t sig(function_type_t::row,
@@ -292,7 +292,7 @@ TEST_CASE("components::compute::row::batch") {
 }
 
 TEST_CASE("components::compute::row::values") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     // Direct pmr::vector path — single scalar call
     auto fn = std::make_unique<row_function>("row_vals", arity::unary(), function_doc{}, 1);
 
@@ -313,7 +313,7 @@ TEST_CASE("components::compute::row::values") {
 }
 
 TEST_CASE("components::compute::options_required") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     auto fn = std::make_unique<vector_function>("opts", arity::unary(), function_doc_with_options(), 1);
 
     kernel_signature_t sig(function_type_t::vector,
@@ -332,7 +332,7 @@ TEST_CASE("components::compute::options_required") {
 }
 
 TEST_CASE("components::compute::errors") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     data_chunk_t chunk(&resource, {logical_type::INTEGER});
 
     SECTION("arity mismatch") {
@@ -413,7 +413,7 @@ TEST_CASE("components::compute::errors") {
 
 namespace {
     struct string_registry_fixture {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         function_registry_t registry{&resource};
 
         string_registry_fixture() { register_string_functions(registry); }

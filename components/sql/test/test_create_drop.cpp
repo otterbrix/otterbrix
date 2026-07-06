@@ -44,7 +44,7 @@ namespace {
 } // namespace
 
 TEST_CASE("components::sql::database") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -61,7 +61,7 @@ TEST_CASE("components::sql::database") {
 }
 
 TEST_CASE("components::sql::table") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -234,7 +234,7 @@ TEST_CASE("components::sql::table") {
 }
 
 TEST_CASE("components::sql::index") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -284,7 +284,7 @@ TEST_CASE("components::sql::index") {
 }
 
 TEST_CASE("components::sql::types") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 

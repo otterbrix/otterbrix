@@ -35,6 +35,7 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <cstring>
@@ -56,7 +57,7 @@ namespace {
     };
 
     struct test_env_t {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         test_buffer_pool_t buffer_pool;
         standard_buffer_manager_t buffer_manager;

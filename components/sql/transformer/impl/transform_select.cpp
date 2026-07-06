@@ -364,19 +364,18 @@ namespace components::sql::transform {
             //
             // The synthesized tree mutates `node.fromClause->lst.front()` so the
             // existing T_JoinExpr branch below picks it up unchanged.
+
+            // Arena (upstream=resource_) for temporary nodes
+            std::pmr::monotonic_buffer_resource transient(resource_);
             if (node.fromClause->lst.size() > 1) {
-                // Synth parser-AST nodes — consumed within this function by
-                // join_dfs which builds independent logical_plan nodes. Live in
-                // a transient arena (upstream=resource_) so they don't outlive
-                // their scope on the session resource.
-                std::pmr::monotonic_buffer_resource transient(resource_);
-                auto* resource = &transient; // makeNode macro reads `resource_` / `resource`
+                // makeNode requires a pointer to a resource
+                auto* arena = &transient;
                 auto it = node.fromClause->lst.begin();
                 Node* acc = pg_ptr_cast<Node>(it->data);
                 ++it;
                 for (; it != node.fromClause->lst.end(); ++it) {
                     auto* rhs = pg_ptr_cast<Node>(it->data);
-                    JoinExpr* synth = makeNode(resource, JoinExpr);
+                    JoinExpr* synth = makeNode(arena, JoinExpr);
                     synth->jointype = JOIN_INNER;
                     synth->isNatural = false;
                     synth->larg = acc;

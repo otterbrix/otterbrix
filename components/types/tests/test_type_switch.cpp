@@ -2,6 +2,7 @@
 
 #include <components/types/logical_value.hpp>
 #include <components/types/operations_helper.hpp>
+#include <core/pmr.hpp>
 
 using namespace components::types;
 
@@ -75,7 +76,7 @@ struct double_bool_callback_t<void> {
 };
 
 TEST_CASE("components::types::test_type_switch") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     SECTION("callback - void") {
         const bool check_v1{false};

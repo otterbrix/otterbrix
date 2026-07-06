@@ -3,6 +3,7 @@
 #include <components/log/log.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/file/file_system.hpp>
+#include <core/pmr.hpp>
 #include <cstdint>
 #include <cstring>
 #include <thread>
@@ -58,7 +59,7 @@ public:
 private:
     size_t memory_limit_;
     size_t memory_used_ = 0;
-    std::pmr::synchronized_pool_resource resource_ = std::pmr::synchronized_pool_resource();
+    core::pmr::otterbrix_resource resource_ = core::pmr::otterbrix_resource();
 };
 
 std::string gen_random(size_t len, std::size_t seed) {
@@ -76,7 +77,7 @@ std::string gen_random(size_t len, std::size_t seed) {
 
 TEST_CASE("core::b_plus_tree::block_t") {
     path_t testing_directory = "block_test";
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     INFO("initialization") {
         local_file_system_t fs = local_file_system_t();
@@ -386,7 +387,7 @@ TEST_CASE("core::b_plus_tree::block_t") {
 }
 
 TEST_CASE("core::b_plus_tree::segment_tree") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = "segment_tree_test";
 
     INFO("initialization") {
@@ -862,7 +863,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
 }
 
 TEST_CASE("core::b_plus_tree::b+tree") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = "b+tree_test";
 
     INFO("initialization") {

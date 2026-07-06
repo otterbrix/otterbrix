@@ -24,7 +24,7 @@ using namespace components;
 // itself never dereferences them; only the function-under-test would, which is
 // precisely the bug being guarded.
 TEST_CASE("compute_binary_arithmetic: empty chunk operands, count==0 does not deref") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     // Degenerate batch chunk: no columns, zero rows.
     std::pmr::vector<types::complex_logical_type> no_types(&resource);

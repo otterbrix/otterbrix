@@ -167,12 +167,15 @@ namespace otterbrix {
     result_t py_connection_t::execute(const components::logical_plan::node_ptr& node_in, bool optimize) {
         auto session = session_id_t();
         auto node = node_in;
-        if (optimize) {
-            node = components::planner::optimize(node->resource(), node, nullptr);
-        }
-        return space->dispatcher()->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{node->resource(), node, expression_factory_t::get_params()});
+        // The executor runs the single optimizer pass (executor.cpp O1), so do
+        // NOT optimize here. Thread the caller's flag through execution_plan_t:
+        // optimize=false then yields a genuinely non-pushed-down plan instead of
+        // being re-optimized unconditionally downstream.
+        components::logical_plan::execution_plan_t plan{node->resource(),
+                                                        node,
+                                                        expression_factory_t::get_params()};
+        plan.enable_pushdown = optimize;
+        return space->dispatcher()->execute_plan(session, std::move(plan));
     }
 
     cursor::cursor_t_ptr py_connection_t::query_relation(const components::logical_plan::node_ptr& rel) {

@@ -32,6 +32,13 @@ namespace components::logical_plan {
 
         // hold various parameters for the whole execution_plan_t, including subquery mapping
         parameter_node_ptr parameters;
+
+        // When false, the executor's single optimizer pass skips predicate
+        // pushdown (rule pushdown_filter) for this plan; constant-folding and
+        // hash-join selection still run. Defaults to true so SQL and every
+        // existing path keep optimizing; the Python relation API sets it from
+        // rel.optimize to expose a genuine optimized/non-optimized toggle.
+        bool enable_pushdown = true;
     };
 
 } // namespace components::logical_plan

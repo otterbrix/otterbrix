@@ -28,6 +28,18 @@ namespace components::planner::optimizer {
     // If a nested join's children are unstamped, that join is left cross (safe no-op)
     // while the others still promote — partial promotion is correct, never wrong.
     //
+    // Star reordering (fact-LAST): `FROM dim0, .., fact WHERE fact=dim0 AND ..` lowers
+    // to a left-deep CROSS chain whose inner joins hold only DIMENSIONS, so no equi
+    // straddles them and the canonical promotion leaves them CROSS — a dimension
+    // cartesian. A pure pre-normalizer (normalize_star_shape) detects the single-fact
+    // star, rebuilds the CROSS chain fact-FIRST over the ORIGINAL leaf scans, and
+    // block-permutes every frozen column ref (the match, group keys, aggregate
+    // arguments, and — without a GROUP BY — sort/select loci) so this same canonical
+    // path then claims every boundary. It NEVER promotes anything itself (rule 6, one
+    // promotion engine). All detection/verify is read-only and precedes any mutation, so
+    // a non-star / already-claimable / unclassifiable shape leaves the tree pristine and
+    // flows through unchanged.
+    //
     // Must run BEFORE pushdown_filter (whose join branch wraps the join's children in
     // fresh, unstamped aggregates that would collapse left_width to 0) and BEFORE
     // rewrite_hash_joins (which then accepts the promoted inner join).

@@ -159,17 +159,22 @@ namespace components::sql::transform {
         names.left_name = rangevar_to_qualified_name(node.relation);
         names.left_alias = construct_alias(node.relation->alias);
 
-        if (!node.fromClause->lst.empty()) {
-            // has from
-            auto from_first = node.fromClause->lst.front().data;
-            if (nodeTag(from_first) == T_RangeVar) {
-                names.right_name = rangevar_to_qualified_name(pg_ptr_cast<RangeVar>(from_first));
-                names.right_alias = construct_alias(pg_ptr_cast<RangeVar>(from_first)->alias);
-            } else {
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"undefined token in UPDATE FROM", resource_});
+        // UPDATE ... FROM: build the FROM clause as a source sub-plan (a table, a
+        // join tree, a table function, or a — possibly LATERAL — derived table) that
+        // becomes the RIGHT side of the update join. The source is a plain child node
+        // whose scans self-resolve by name, exactly like SELECT's FROM; the operator
+        // consumes its materialized output. target = left, source = right for the
+        // predicate: register the source's primary relation as right and let validate
+        // resolve any further source columns against the source schema.
+        logical_plan::node_ptr source_child = nullptr;
+        if (node.fromClause && !node.fromClause->lst.empty()) {
+            name_collection_t source_names;
+            source_child = transform_from_source(node.fromClause, source_names, plan);
+            if (has_error()) {
                 return nullptr;
             }
+            names.right_name = source_names.left_name;
+            names.right_alias = source_names.left_alias;
         }
         // set
         {
@@ -197,14 +202,9 @@ namespace components::sql::transform {
 
         // where
         if (node.whereClause) {
-            expressions::expression_ptr where_expr;
-            if (nodeTag(node.whereClause) == T_NullTest) {
-                where_expr =
-                    transform_null_test(pg_ptr_cast<NullTest>(node.whereClause), names, plan->parameters.get());
-            } else if (nodeTag(node.whereClause) == T_SubLink) {
-                where_expr = transform_sublink_expr(pg_ptr_cast<SubLink>(node.whereClause), names, plan);
-            } else {
-                where_expr = transform_a_expr(pg_ptr_cast<A_Expr>(node.whereClause), names, plan);
+            expressions::expression_ptr where_expr = transform_predicate(node.whereClause, names, plan);
+            if (has_error()) {
+                return nullptr;
             }
             match = logical_plan::make_node_match(resource_,
                                                   core::dbname_t{names.left_name.dbname},
@@ -222,6 +222,12 @@ namespace components::sql::transform {
         // sibling resolve_table for the target, and table_oid_from() for the
         // UPDATE ... FROM source).
         auto upd = logical_plan::make_node_update_many(resource_, match, updates, false);
+        // The FROM source is a child sub-plan (the RIGHT side of the update join).
+        // Its scans self-resolve by name during enrich, so no table_oid_from / sibling
+        // resolve_table splice is needed.
+        if (source_child) {
+            upd->append_child(source_child);
+        }
         if (node.returningList) {
             upd->returning() = transform_returning(node.returningList, names, plan);
             if (error_.contains_error()) {
@@ -230,24 +236,11 @@ namespace components::sql::transform {
         }
         // Catalog-resolve wrap for UPDATE target table. Emit
         // resolve_constraint(outgoing) so enrich reads FKs from the plan tree
-        // (FK info stamped by operator_resolve_constraint_t). When UPDATE ...
-        // FROM is present, first wrap with the target resolve, then splice a
-        // resolve_table for the FROM source into the wrapping sequence_t so
-        // enrich's stamp_drop_oids_from_resolves picks it up as `rt_index` and
-        // stamps node->table_oid_from().
-        auto wrapped = maybe_wrap_with_catalog_resolve_table(resource_,
-                                                             names.left_name.dbname,
-                                                             names.left_name.relname,
-                                                             std::move(upd),
-                                                             constraint_resolve_kind::outgoing);
-        if (!names.right_name.empty() && wrapped->type() == logical_plan::node_type::sequence_t) {
-            auto from_resolve =
-                logical_plan::make_node_catalog_resolve_table(resource_,
-                                                              core::dbname_t{names.right_name.dbname},
-                                                              core::relname_t{names.right_name.relname});
-            auto& kids = wrapped->children();
-            kids.insert(kids.end() - 1, from_resolve);
-        }
-        return wrapped;
+        // (FK info stamped by operator_resolve_constraint_t).
+        return maybe_wrap_with_catalog_resolve_table(resource_,
+                                                     names.left_name.dbname,
+                                                     names.left_name.relname,
+                                                     std::move(upd),
+                                                     constraint_resolve_kind::outgoing);
     }
 } // namespace components::sql::transform

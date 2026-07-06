@@ -35,6 +35,7 @@ namespace components::operators {
         hash_join,
         aggregate,
         raw_data,
+        function,
         union_op,
         recursive_cte,
         cte_scan,

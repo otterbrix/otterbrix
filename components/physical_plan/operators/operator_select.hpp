@@ -3,6 +3,8 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 
+#include <optional>
+
 namespace components::operators {
 
     // One column in the SELECT output list.
@@ -28,8 +30,11 @@ namespace components::operators {
 
         std::pmr::vector<expressions::param_storage> operands;
 
-        // Used for constant.
+        // Used for constant. When constant_param_id is set the value is read LIVE from
+        // the parameter map on every projection, so a LATERAL correlation rebound per
+        // outer row is honoured; otherwise the baked constant_value is used.
         types::logical_value_t constant_value;
+        std::optional<core::parameter_id_t> constant_param_id{};
 
         // Plan-time resolved output type (variant 1). The column type IS this type,
         // authoritatively — the validator resolved it data-independently and physgen

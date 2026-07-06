@@ -6,9 +6,12 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
+
+#include <optional>
 
 namespace components::sql::parser {
     class parser_extension_registry_t;
@@ -91,6 +94,9 @@ namespace components::sql::transform {
 
         expressions::expression_ptr
         transform_a_expr(A_Expr* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
+
+        expressions::expression_ptr
+        transform_predicate(Node* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
 
         expressions::expression_ptr
         transform_sublink_expr(SubLink* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);
@@ -206,6 +212,16 @@ namespace components::sql::transform {
         logical_plan::node_ptr
         transform_function(FuncCall& node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
+        // Build the logical node for a FROM-clause table function that is the right
+        // side of a join. A column-ref argument references the outer (left) relation,
+        // making the function implicitly LATERAL: each such argument is lowered to an
+        // outer-bound parameter and recorded as a correlation on `node_join` (which is
+        // marked lateral), so the lateral join operator rebinds it per outer row.
+        logical_plan::node_ptr transform_from_function(RangeFunction& node,
+                                                       const name_collection_t& names,
+                                                       logical_plan::node_join_ptr& node_join,
+                                                       logical_plan::execution_plan_t* plan);
+
         // Build the logical node for a FROM-clause reference to a recursive CTE.
         // Returns an aggregate wrapping either a cte_scan (inside recursive member) or
         // a recursive_cte node (in the outer query). Returns nullptr on error.
@@ -219,12 +235,39 @@ namespace components::sql::transform {
                       name_collection_t& names,
                       logical_plan::execution_plan_t* plan);
 
+        // Build the source relation for a FROM/USING clause: a single table, a
+        // (possibly LATERAL) join tree, a table function, or a derived table. A
+        // comma-separated list is folded into a left-deep cross-join first. Returns
+        // an aggregate wrapping the source, and populates `names` with the source's
+        // left/right relations for predicate side-resolution. Shared by SELECT's
+        // FROM, UPDATE's FROM, and DELETE's USING. Returns nullptr on error (sets
+        // error_). `from_items` must be a non-empty List.
+        logical_plan::node_aggregate_ptr
+        transform_from_source(List* from_items, name_collection_t& names, logical_plan::execution_plan_t* plan);
+
         expressions::update_expr_ptr
         transform_update_expr(Node* node, const name_collection_t& names, logical_plan::parameter_node_t* params);
 
         std::string get_str_value(Node* node);
 
         core::parameter_id_t add_param_value(Node* node, logical_plan::parameter_node_t* params);
+
+        // While transforming the body of a LATERAL subquery, a column reference
+        // qualified by an OUTER-scope relation (and not shadowed by an inner one) is
+        // lowered to a correlated parameter: allocate one parameter per distinct outer
+        // column key, record it as a correlation on lateral_join_ (marked lateral), and
+        // return its id so callers emit the parameter in place of the column. The
+        // lateral join operator rebinds each such parameter from the outer row before
+        // re-running the inner sub-plan. Returns nullopt outside a LATERAL body or when
+        // `ref` is an ordinary in-scope column.
+        std::optional<core::parameter_id_t> try_lateral_correlate(ColumnRef* ref, const name_collection_t& inner_names);
+
+        // Non-mutating predicate: true when `ref` is a qualified column that names an
+        // OUTER-scope relation inside a LATERAL body (i.e. try_lateral_correlate would
+        // correlate it). Used to reject a correlated column in a SELECT projection,
+        // which the projection operator cannot re-read per outer row (constants are
+        // bound once at plan build) — see create_plan_select.
+        bool references_lateral_outer(ColumnRef* ref, const name_collection_t& inner_names) const;
 
         std::pmr::memory_resource* resource_;
         const char* raw_sql_;
@@ -238,6 +281,16 @@ namespace components::sql::transform {
         std::pmr::unordered_map<std::string_view, SelectStmt*> cte_queries_{resource_};
         std::pmr::unordered_map<std::string, SelectStmt*> recursive_cte_queries_{resource_};
         bool transforming_recursive_member_{false};
+
+        // LATERAL subquery correlation scope. Non-null only while transforming a
+        // LATERAL subquery body. lateral_outer_names_ is the outer relation scope the
+        // subquery may correlate against; lateral_join_ is the join the correlations
+        // attach to; lateral_correlation_map_ dedups one parameter per outer key.
+        const name_collection_t* lateral_outer_names_{nullptr};
+        logical_plan::node_join_t* lateral_join_{nullptr};
+        logical_plan::execution_plan_t* lateral_plan_{nullptr};
+        std::pmr::unordered_map<std::string, core::parameter_id_t> lateral_correlation_map_{resource_};
+
         core::error_t error_;
     };
 } // namespace components::sql::transform

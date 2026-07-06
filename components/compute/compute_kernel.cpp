@@ -84,4 +84,14 @@ namespace components::compute {
         return exec_(ctx, inputs, output);
     }
 
+    expand_kernel::expand_kernel(kernel_signature_t signature, expand_exec_fn exec)
+        : compute_kernel(std::move(signature))
+        , exec_(exec) {}
+
+    core::error_t expand_kernel::execute(kernel_context& ctx,
+                                         const vector::data_chunk_t& inputs,
+                                         std::pmr::vector<vector::data_chunk_t>& outputs) const {
+        return exec_(ctx, inputs, outputs);
+    }
+
 } // namespace components::compute

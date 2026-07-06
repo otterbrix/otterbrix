@@ -312,6 +312,54 @@ TEST_CASE("components::compute::row::values") {
     REQUIRE(vals[0].value<int>() == 42);
 }
 
+TEST_CASE("components::compute::expand::generate_series") {
+    std::pmr::synchronized_pool_resource resource;
+
+    auto* reg = function_registry_t::get_default();
+    function_uid uid = invalid_function_uid;
+    for (const auto& [n, u] : reg->get_functions()) {
+        if (n == "generate_series") {
+            uid = u;
+        }
+    }
+    REQUIRE(uid != invalid_function_uid);
+    auto* fn = reg->get_function(uid);
+    REQUIRE(fn != nullptr);
+
+    // Argument columns for one input row: start=1, stop=5.
+    std::pmr::vector<complex_logical_type> arg_types(&resource);
+    arg_types.emplace_back(logical_type::BIGINT);
+    arg_types.emplace_back(logical_type::BIGINT);
+    data_chunk_t args(&resource, arg_types, 1);
+    args.set_value(0, 0, logical_value_t(&resource, static_cast<int64_t>(1)));
+    args.set_value(1, 0, logical_value_t(&resource, static_cast<int64_t>(5)));
+    args.set_cardinality(1);
+
+    auto kres = fn->dispatch_exact(&resource, arg_types);
+    REQUIRE_FALSE(kres.has_error());
+    const auto* expand = dynamic_cast<const expand_kernel*>(&kres.value().get());
+    REQUIRE(expand != nullptr);
+
+    exec_context_t exec_ctx(&resource, reg);
+    kernel_context kctx(exec_ctx, *expand);
+    std::pmr::vector<data_chunk_t> outputs(&resource);
+    REQUIRE_FALSE(expand->execute(kctx, args, outputs).contains_error());
+
+    size_t total = 0;
+    for (const auto& chunk : outputs) {
+        total += chunk.size();
+    }
+    REQUIRE(total == 5);
+    // Values 1..5 in order across the produced chunks.
+    int64_t expected = 1;
+    for (const auto& chunk : outputs) {
+        for (uint64_t i = 0; i < chunk.size(); ++i) {
+            REQUIRE(chunk.value(0, i).value<int64_t>() == expected);
+            ++expected;
+        }
+    }
+}
+
 TEST_CASE("components::compute::options_required") {
     core::pmr::otterbrix_resource resource;
     auto fn = std::make_unique<vector_function>("opts", arity::unary(), function_doc_with_options(), 1);

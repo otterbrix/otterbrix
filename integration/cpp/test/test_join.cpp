@@ -206,6 +206,30 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
+    INFO("inner join ON true") {
+        auto session = otterbrix::session_id_t();
+        {
+            std::stringstream query;
+            query << "SELECT * FROM " << database_name + "." << collection_name_1 << " INNER JOIN " << database_name
+                  << "." << collection_name_2 << " ON TRUE;";
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10100);
+        }
+    }
+
+    INFO("left join ON true") {
+        auto session = otterbrix::session_id_t();
+        {
+            std::stringstream query;
+            query << "SELECT * FROM " << database_name + "." << collection_name_1 << " LEFT JOIN " << database_name
+                  << "." << collection_name_2 << " ON TRUE;";
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10100);
+        }
+    }
+
     INFO("two join predicates") {
         auto session = otterbrix::session_id_t();
         {

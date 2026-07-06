@@ -9,6 +9,7 @@ set(${PROJECT_NAME}_SOURCES
 
         kernels/aggregate.cpp
         kernels/string_functions.cpp
+        kernels/expand_functions.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

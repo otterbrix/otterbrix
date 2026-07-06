@@ -65,11 +65,25 @@ namespace components::operators::predicates::impl {
         }
     }
 
-    value_getter create_value_getter(std::pmr::memory_resource*,
+    value_getter create_value_getter(std::pmr::memory_resource* resource,
                                      core::parameter_id_t id,
                                      const logical_plan::storage_parameters* parameters) {
-        return [val = core::result_wrapper_t<types::logical_value_t>{parameters->parameters.at(
-                    id)}](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return val; };
+        // Read the parameter LAZILY (per row-check) rather than snapshotting it at
+        // predicate-build time. For an ordinary query this is equivalent (parameters do
+        // not change mid-execution), but a LATERAL join rebinds correlation parameters
+        // between re-runs of the same (cached) inner predicate — a snapshot would freeze
+        // the first outer row's value. Reading live keeps every re-run correct.
+        return [resource, id, parameters](const vector::data_chunk_t&,
+                                          const vector::data_chunk_t&,
+                                          size_t,
+                                          size_t) -> core::result_wrapper_t<types::logical_value_t> {
+            auto it = parameters->parameters.find(id);
+            if (it == parameters->parameters.end()) {
+                return core::error_t(core::error_code_t::create_physical_plan_error,
+                                     std::pmr::string{"value getter: parameter not bound", resource});
+            }
+            return it->second;
+        };
     }
 
     value_getter create_value_getter(std::pmr::memory_resource* resource,

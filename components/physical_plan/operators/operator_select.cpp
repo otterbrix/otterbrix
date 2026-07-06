@@ -219,7 +219,17 @@ namespace components::operators {
                     // Build the literal as a CONSTANT vector (one stored value) and
                     // flatten it across the chunk, instead of a per-row set_value
                     // loop that copies the same logical_value_t num_rows times.
-                    vector::vector_t vec(resource, col.constant_value, cap);
+                    // Read the value live from the parameter map when the column carries
+                    // a parameter id (a LATERAL correlation rebound per outer row);
+                    // otherwise use the baked literal.
+                    const types::logical_value_t* value = &col.constant_value;
+                    if (col.constant_param_id.has_value()) {
+                        auto it = parameters.parameters.find(*col.constant_param_id);
+                        if (it != parameters.parameters.end()) {
+                            value = &it->second;
+                        }
+                    }
+                    vector::vector_t vec(resource, *value, cap);
                     if (num_rows > 0) {
                         vec.flatten(num_rows);
                     }

@@ -3,6 +3,8 @@
 #include "identifier_types.hpp"
 #include "node.hpp"
 
+#include <components/expressions/key.hpp>
+
 namespace components::logical_plan {
 
     enum class join_type : uint8_t
@@ -44,6 +46,15 @@ namespace components::logical_plan {
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 
+        using correlation_t = std::pair<core::parameter_id_t, expressions::key_t>;
+
+        bool is_lateral() const noexcept { return lateral_; }
+        void set_lateral(bool lateral) noexcept { lateral_ = lateral; }
+        const std::pmr::vector<correlation_t>& correlations() const noexcept { return correlations_; }
+        void add_correlation(core::parameter_id_t id, expressions::key_t key) {
+            correlations_.emplace_back(id, std::move(key));
+        }
+
     private:
         std::string dbname_;
         std::string relname_;
@@ -51,6 +62,8 @@ namespace components::logical_plan {
         join_algo algo_{join_algo::nested};
         std::size_t left_col_{0};
         std::size_t right_col_{0};
+        bool lateral_{false};
+        std::pmr::vector<correlation_t> correlations_{resource()};
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;

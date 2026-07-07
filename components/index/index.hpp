@@ -176,6 +176,6 @@ namespace components::index {
         friend struct index_engine_t;
     };
 
-    using index_ptr = core::pmr::unique_ptr<index_t>;
+    using index_ptr = core::pmr::polymorphic_unique_ptr<index_t>;
 
 } // namespace components::index

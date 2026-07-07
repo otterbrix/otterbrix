@@ -315,6 +315,19 @@ namespace components::compute {
         return result;
     }
 
+    expand_function::expand_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
+        : function_impl<expand_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots) {}
+
+    void expand_function::accept_visitor(function_visitor& visitor) const { visitor.visit(*this); }
+
+    std::unique_ptr<function> expand_function::get_copy(std::pmr::memory_resource* resource) const {
+        auto result = std::make_unique<expand_function>(name_, arity_, doc_, kernel_slots_);
+        for (const auto& kernel : kernels_) {
+            (void) result->add_kernel(resource, kernel);
+        }
+        return result;
+    }
+
     function_registry_t::function_registry_t(std::pmr::memory_resource* resource)
         : resource_(resource)
         , functions_(resource_) {}
@@ -418,6 +431,8 @@ namespace components::compute {
 
         void kernel_nth_visitor::visit(const row_function& func) { result = &func.kernels()[nth_].get(); }
 
+        void kernel_nth_visitor::visit(const expand_function& func) { result = &func.kernels()[nth_].get(); }
+
         kernel_executor_visitor::kernel_executor_visitor()
             : function_visitor_with_result<std::unique_ptr<detail::kernel_executor_t>>(nullptr) {}
 
@@ -430,6 +445,8 @@ namespace components::compute {
         }
 
         void kernel_executor_visitor::visit(const row_function&) { result = detail::kernel_executor_t::make_row(); }
+
+        void kernel_executor_visitor::visit(const expand_function&) {}
 
         const compute_kernel* dispatch_exact_impl(const function& func,
                                                   const std::pmr::vector<complex_logical_type>& in_types) {

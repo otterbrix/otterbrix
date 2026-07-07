@@ -21,6 +21,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_check_constraint.cpp
         impl/create_plan_fk_check.cpp
         impl/create_plan_fk_cascade.cpp
+        impl/create_plan_function.cpp
         impl/create_plan_sequence.cpp
         impl/create_plan_dynamic_cascade_delete.cpp
         impl/create_plan_checkpoint.cpp

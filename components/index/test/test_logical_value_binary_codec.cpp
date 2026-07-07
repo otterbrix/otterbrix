@@ -2,6 +2,7 @@
 
 #include <components/index/logical_value_binary_codec.hpp>
 #include <core/date/date_types.hpp>
+#include <core/pmr.hpp>
 
 TEST_CASE("logical_value_binary_codec: roundtrip_supported_types") {
     using components::index::codec::append_logical_value;
@@ -9,7 +10,7 @@ TEST_CASE("logical_value_binary_codec: roundtrip_supported_types") {
     using components::types::complex_logical_type;
     using components::types::logical_value_t;
 
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     std::vector<logical_value_t> values;
     values.emplace_back(&resource, complex_logical_type{components::types::logical_type::NA});

@@ -10,7 +10,7 @@ namespace components::table::test_block_e {
         using namespace components::table;
         using namespace components::session;
 
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         transaction_manager_t mgr(&resource);
 
         // T2 begins + commits (allocates commit_id, ADDS to in_flight_commits_).
@@ -58,7 +58,7 @@ namespace components::table::test_block_e {
         using namespace components::table;
         using namespace components::session;
 
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         transaction_manager_t mgr(&resource);
 
         auto session = session_id_t::generate_uid();
@@ -93,7 +93,7 @@ namespace components::table::test_block_e {
         using namespace components::table;
         using namespace components::session;
 
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         transaction_manager_t mgr(&resource);
 
         // Inlined copy of the row_version_manager.cpp visibility filter.
@@ -165,7 +165,7 @@ namespace components::table::test_block_e {
         using namespace components::logical_plan;
         using namespace components::catalog;
 
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
 
         // Fresh node defaults to INVALID_OID.
         auto node = make_node_catalog_resolve_database(&resource, core::dbname_t{"main"});

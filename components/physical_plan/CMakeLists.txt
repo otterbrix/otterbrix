@@ -8,6 +8,8 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_write_data.cpp
         operators/operator_empty.cpp
         operators/operator_raw_data.cpp
+        operators/operator_function.cpp
+        operators/operator_lateral_join.cpp
 
         operators/aggregate/operator_aggregate.cpp
         operators/aggregate/operator_func.cpp

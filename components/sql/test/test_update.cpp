@@ -37,7 +37,7 @@ using vec = std::vector<v>;
 using fields = std::pmr::vector<update_expr_ptr>;
 
 TEST_CASE("components::sql::update") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -87,7 +87,7 @@ TEST_CASE("components::sql::update") {
 }
 
 TEST_CASE("components::sql::update_where") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -144,7 +144,7 @@ TEST_CASE("components::sql::update_where") {
 }
 
 TEST_CASE("components::sql::update_from") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -175,13 +175,14 @@ TEST_CASE("components::sql::update_from") {
             new update_expr_get_value_t(components::expressions::key_t{&resource, "price", side_t::right});
         calculate_2->right() = std::move(calculate_1);
         f.back()->left() = std::move(calculate_2);
-        TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection
+        TEST_SIMPLE_UPDATE(
+            R"_(UPDATE TestDatabase.TestCollection
 SET price = OtherTestCollection.price - (OtherTestCollection.price * TestCollection.discount)
 FROM OtherTestCollection
 WHERE TestCollection.id = OtherTestCollection.id;)_",
-                           R"_($update: <oid:0> {$upsert: 0, $match: {"id": {$eq: "id"}}, $limit: -1})_",
-                           vec({}),
-                           f);
+            R"_($update: <oid:0> {$upsert: 0, $match: {"id": {$eq: "id"}}, $limit: -1, $aggregate: {}})_",
+            vec({}),
+            f);
     }
 
     {

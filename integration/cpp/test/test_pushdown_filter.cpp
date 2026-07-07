@@ -43,7 +43,7 @@ static node_data_ptr make_data(std::pmr::memory_resource* r, std::initializer_li
 // select a, b (both columns unchanged)
 // filter a > ?: pushed down
 TEST_CASE("logical_plan::pushdown_filter_under_identity_select") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b"});
 
     node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
@@ -69,7 +69,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_identity_select") {
 // select a as x (renames a)
 // filter x > ?: not pushed (x has no matching input column)
 TEST_CASE("logical_plan::pushdown_filter_skips_renamed_select_output") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b"});
 
     node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
@@ -96,7 +96,7 @@ TEST_CASE("logical_plan::pushdown_filter_skips_renamed_select_output") {
 // sort by b
 // filter a > ?: pushed down (sort preserves rows)
 TEST_CASE("logical_plan::pushdown_filter_under_sort") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b"});
 
     node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
@@ -124,7 +124,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_sort") {
 // inner join of (a, b) and (c, d)
 // filter a > ?: pushed into the left branch (left columns only)
 TEST_CASE("logical_plan::pushdown_filter_into_join_branch") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
@@ -153,7 +153,7 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch") {
 // inner join of (a, b) and (c, d)
 // filter a == c: not pushed (references both sides)
 TEST_CASE("logical_plan::pushdown_filter_skips_join_predicate_on_both_sides") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
@@ -183,7 +183,7 @@ TEST_CASE("logical_plan::pushdown_filter_skips_join_predicate_on_both_sides") {
 // group by a, sum(b) as sum_b
 // filter a > ?: pushed below the group (a is the grouping key)
 TEST_CASE("logical_plan::pushdown_filter_under_group_by_key") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b"});
 
     auto group = make_node_group(&resource, db, rel);
@@ -213,7 +213,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_group_by_key") {
 // group by a, sum(b) as sum_b
 // filter sum_b > ?: not pushed (aggregate output, not a key)
 TEST_CASE("logical_plan::pushdown_filter_skips_group_by_aggregate_output") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b"});
 
     auto group = make_node_group(&resource, db, rel);
@@ -246,7 +246,7 @@ TEST_CASE("logical_plan::pushdown_filter_skips_group_by_aggregate_output") {
 // inner join of (a, b) and (c, d)
 // filter (a > ?) AND (c > ?): split into both branches
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_both_join_branches") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
@@ -285,7 +285,7 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_both_join_branc
 // inner join of (a, b) and (c, d)
 // filter (a > ?) AND (a == c): a > ? pushed left, a == c kept above
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_with_residual_join") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
@@ -322,7 +322,7 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_with_residual_join")
 // inner join of (a, b) and (c, d)
 // filter (a > ?) AND (c > ?) AND (a == c): a left, c right, a == c kept above
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_all_three_buckets") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
@@ -367,7 +367,7 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_all_three_bucke
 // inner join of (a, b) and (c, d)
 // filter (a > ?) AND ((b < ?) AND (c > ?)): flattened, then a,b pushed left and c right
 TEST_CASE("logical_plan::pushdown_filter_flattens_nested_conjunction") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto left_data = make_data(&resource, {"a", "b"});
     auto right_data = make_data(&resource, {"c", "d"});
 
@@ -421,7 +421,7 @@ TEST_CASE("logical_plan::pushdown_filter_flattens_nested_conjunction") {
 // group by a, sum(b) as sum_b
 // filter (a > ?) AND (sum_b > ?): a > ? pushed below the group, sum_b > ? kept above
 TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_through_group_by") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b"});
 
     auto group = make_node_group(&resource, db, rel);
@@ -462,7 +462,7 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_through_group_by") {
 // select a (drops b, c)
 // filter a > ?: not pushed (cost guard vetoes the wider scan)
 TEST_CASE("logical_plan::pushdown_filter_vetoed_by_narrowing_projection") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b", "c"});
 
     node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
@@ -487,7 +487,7 @@ TEST_CASE("logical_plan::pushdown_filter_vetoed_by_narrowing_projection") {
 // select b, a (reorders, same width)
 // filter a > ?: pushed down
 TEST_CASE("logical_plan::pushdown_filter_allowed_through_non_narrowing_projection") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b"});
 
     node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
@@ -514,7 +514,7 @@ TEST_CASE("logical_plan::pushdown_filter_allowed_through_non_narrowing_projectio
 // select a, k (k is a constant, so width can't be estimated)
 // filter a > ?: pushed down (cost guard doesn't veto unknown width)
 TEST_CASE("logical_plan::pushdown_filter_allowed_when_projection_width_unknown") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b", "c"});
 
     node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
@@ -539,7 +539,7 @@ TEST_CASE("logical_plan::pushdown_filter_allowed_when_projection_width_unknown")
 }
 
 TEST_CASE("kernel_bug_proof::join_keeps_all_physical_columns") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     // left {id, k}, right {k, val}: column "k" shared, both with empty result_alias
     auto left = make_data(&resource, {"id", "k"});
     auto right = make_data(&resource, {"k", "val"});
@@ -562,7 +562,7 @@ TEST_CASE("kernel_bug_proof::join_keeps_all_physical_columns") {
 }
 
 TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto data = make_data(&resource, {"a", "b", "c"});
 
     auto agg = make_node_aggregate(&resource, db, rel);

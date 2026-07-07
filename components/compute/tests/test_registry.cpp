@@ -4,7 +4,7 @@
 using namespace components::compute;
 
 TEST_CASE("components::compute::registry::basic") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     auto* reg = function_registry_t::get_default();
     REQUIRE(reg != nullptr);
     auto registered_functions = reg->get_functions();
@@ -30,6 +30,10 @@ TEST_CASE("components::compute::registry::basic") {
                 REQUIRE(fn->fn_arity().varargs == true);
             } else if (name == "regexp_replace") {
                 REQUIRE(fn->fn_arity().num_args == 3);
+            } else if (name == "generate_series") {
+                // generate_series(start, stop[, step]) — 2 or 3 args
+                REQUIRE(fn->fn_arity().num_args == 2);
+                REQUIRE(fn->fn_arity().varargs == true);
             } else {
                 // sum, min, max, avg, length
                 REQUIRE(fn->fn_arity().num_args == 1);

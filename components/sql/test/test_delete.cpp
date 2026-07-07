@@ -33,7 +33,7 @@ using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 
 TEST_CASE("components::sql::delete_from_where") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -56,6 +56,6 @@ TEST_CASE("components::sql::delete_from_where") {
 
     TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection USING TestDatabase.OtherTestCollection WHERE "
                        "TestCollection.number = OtherTestCollection.number;",
-                       R"_($delete: <oid:0> {$match: {"number": {$eq: "number"}}, $limit: -1})_",
+                       R"_($delete: <oid:0> {$match: {"number": {$eq: "number"}}, $limit: -1, $aggregate: {}})_",
                        vec());
 }

@@ -72,7 +72,7 @@ using vec = std::vector<v>;
     }
 
 TEST_CASE("components::sql::select_bind") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -91,7 +91,7 @@ TEST_CASE("components::sql::select_bind") {
 }
 
 TEST_CASE("components::sql::update_bind") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
     using fields = std::pmr::vector<update_expr_ptr>;
@@ -137,7 +137,7 @@ TEST_CASE("components::sql::update_bind") {
 }
 
 TEST_CASE("components::sql::insert_bind") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -220,7 +220,7 @@ TEST_CASE("components::sql::insert_bind") {
 }
 
 TEST_CASE("components::sql::limit_offset_bind") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -290,7 +290,7 @@ TEST_CASE("components::sql::limit_offset_bind") {
 }
 
 TEST_CASE("components::sql::transform_result") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
@@ -318,7 +318,7 @@ TEST_CASE("components::sql::transform_result") {
     }
 
     SECTION("intrusive ptr update") {
-        auto resource = std::pmr::synchronized_pool_resource();
+        auto resource = core::pmr::otterbrix_resource();
         std::pmr::monotonic_buffer_resource arena_resource(&resource);
         transform::transformer transformer(&resource);
 

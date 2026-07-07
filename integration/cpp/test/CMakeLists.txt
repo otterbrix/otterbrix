@@ -21,6 +21,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_connections.cpp
         test_udfs.cpp
         test_batch_execution.cpp
+        test_table_function.cpp
+        test_lateral_subquery.cpp
         test_group_by_node_data.cpp
         test_group_operator_contracts.cpp
         test_arithmetic.cpp
@@ -50,6 +52,9 @@ set( ${PROJECT_NAME}_SOURCES
         test_bounded_dml_flush.cpp
         test_aggregate_pushdown_e2e.cpp
         test_pushdown_traffic.cpp
+
+        # stress tests with sanitizer are incredibly slow
+        $<$<NOT:$<BOOL:${ENABLE_ASAN}>>:stress_test_sql_features.cpp>
 )
 
 add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})

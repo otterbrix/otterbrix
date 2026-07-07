@@ -262,6 +262,20 @@ TEST_CASE("integration::cpp::test_batch_where") {
             REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] == static_cast<int64_t>(i + 11));
         }
     }
+
+    INFO("WHERE TRUE keeps every row") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT count FROM TestDatabase.TestCollection WHERE TRUE;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == N);
+    }
+
+    INFO("WHERE FALSE drops every row") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT count FROM TestDatabase.TestCollection WHERE FALSE;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
 }
 
 // in tests below SUM(count + 0) forces compute path (expression arg, not simple key) instead of builtin

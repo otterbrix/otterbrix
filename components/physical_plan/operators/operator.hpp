@@ -42,6 +42,7 @@ namespace components::operators {
         // sharded-slice future turns into a real kernel merge (see operator_group_merge.hpp).
         group_merge,
         raw_data,
+        function,
         union_op,
         recursive_cte,
         cte_scan,

@@ -45,7 +45,7 @@ namespace {
     void cleanup() { std::filesystem::remove_all(resolve_dir()); }
 
     struct fixture {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         log_t log;
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;

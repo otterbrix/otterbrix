@@ -2362,24 +2362,31 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::function_t: {
-                if (node->children().empty()) {
-                    return core::error_t(
-                        core::error_code_t::unimplemented_yet,
-                        std::pmr::string{"otterbrix does not support constants as function arguments in this context",
-                                         resource});
-                }
+                // FROM-clause table function (e.g. generate_series). The argument
+                // input types come from the node's args: constants resolve through the
+                // parameter map; a column-ref argument is a correlated (LATERAL)
+                // reference, which needs an outer row and is handled by the LATERAL
+                // join path (not yet supported here).
                 auto* function_node = reinterpret_cast<node_function_t*>(node);
-                auto input_schema = validate_schema(resource, idx, node->children().front().get(), parameters);
-                if (input_schema.has_error()) {
-                    return input_schema;
-                }
                 std::pmr::vector<complex_logical_type> function_input(resource);
-                function_input.reserve(input_schema.value().size());
-                for (const auto& pair : input_schema.value()) {
-                    function_input.emplace_back(pair.type);
+                function_input.reserve(function_node->args().size());
+                for (const auto& arg : function_node->args()) {
+                    if (!std::holds_alternative<core::parameter_id_t>(arg)) {
+                        return core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"table functions with correlated arguments require LATERAL "
+                                             "(not yet supported)",
+                                             resource});
+                    }
+                    auto param_it = parameters.parameters.find(std::get<core::parameter_id_t>(arg));
+                    if (param_it == parameters.parameters.end()) {
+                        return core::error_t(
+                            core::error_code_t::create_physical_plan_error,
+                            std::pmr::string{"unbound parameter referenced in table function arguments", resource});
+                    }
+                    function_input.emplace_back(param_it->second.type());
                 }
-                // TODO: check for errors between function_node->args() and input_schema (amount of args and name correctness)
-                // Also order could be different
+
                 auto fn_lk = impl::lookup_function(function_node->name(), function_input);
                 if (!fn_lk.name_exists) {
                     return core::error_t(
@@ -2388,14 +2395,21 @@ namespace services::dispatcher {
                             ("function: \'" + function_node->name() + "(...)\' was not found by the name").c_str(),
                             resource});
                 } else if (fn_lk.match_found) {
+                    const std::string& alias =
+                        function_node->result_alias().empty() ? function_node->name() : function_node->result_alias();
+                    function_node->add_function_uid(fn_lk.uid);
                     result.reserve(fn_lk.signature.output_types.size());
                     for (const auto& output_type : fn_lk.signature.output_types) {
                         auto res = output_type.resolve(resource, function_input);
                         if (res.has_error()) {
                             return res.convert_error<named_schema>();
                         }
-                        result.emplace_back(type_from_t{node->result_alias(), res.value()});
-                        function_node->add_function_uid(fn_lk.uid);
+                        // Carry the column name on the type itself (not just in
+                        // type_from_t.result_alias): downstream schema consumers read
+                        // complex_logical_type::alias() and assert an alias is present.
+                        complex_logical_type out_type = res.value();
+                        out_type.set_alias(alias);
+                        result.emplace_back(type_from_t{alias, std::move(out_type)});
                     }
                 } else {
                     return core::error_t(
@@ -2407,11 +2421,55 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::join_t: {
+                const auto* join_node = static_cast<const node_join_t*>(node);
+                // A LATERAL reference can only appear on the right (inner) side of the
+                // join, so RIGHT/FULL JOIN LATERAL is ill-defined and PostgreSQL rejects
+                // it. The lateral join operator only honours LEFT-style NULL-extension;
+                // RIGHT/FULL would otherwise fall through to plain inner semantics and
+                // return a silently wrong answer. Reject it here instead.
+                if (join_node->is_lateral() &&
+                    (join_node->type() == join_type::right || join_node->type() == join_type::full)) {
+                    return core::error_t(
+                        core::error_code_t::unimplemented_yet,
+                        std::pmr::string{"RIGHT/FULL JOIN LATERAL is not supported: a LATERAL reference cannot "
+                                         "appear on the right side of a RIGHT or FULL join",
+                                         resource});
+                }
                 auto left_schema = validate_schema(resource, idx, node->children().front().get(), parameters);
                 if (left_schema.has_error()) {
                     return left_schema;
                 }
-                auto right_schema = validate_schema(resource, idx, node->children().back().get(), parameters);
+                // LATERAL: the inner (right) sub-plan may reference outer columns via
+                // correlation parameters (a WHERE compare or a projected column). Those
+                // parameters carry only a placeholder type from the transformer, so bind
+                // each one's TYPE here from the matching outer (left-schema) column before
+                // validating the inner plan — otherwise a projected correlated column has
+                // no concrete type. The lateral join operator rebinds the real value per
+                // outer row at execution; only the type matters for validation.
+                const storage_parameters* inner_parameters = &parameters;
+                storage_parameters lateral_parameters(resource);
+                if (join_node->is_lateral() && !join_node->correlations().empty()) {
+                    lateral_parameters.parameters = parameters.parameters;
+                    for (const auto& correlation : join_node->correlations()) {
+                        const auto& param_id = correlation.first;
+                        const auto& key = correlation.second;
+                        const std::string full = key.as_string();
+                        const std::string last = key.storage().empty() ? full
+                                                                       : std::string(key.storage().back().data(),
+                                                                                     key.storage().back().size());
+                        for (const auto& outer_col : left_schema.value()) {
+                            if (outer_col.type.has_alias() &&
+                                (outer_col.type.alias() == full || outer_col.type.alias() == last)) {
+                                lateral_parameters.parameters.insert_or_assign(
+                                    param_id,
+                                    logical_value_t(resource, outer_col.type));
+                                break;
+                            }
+                        }
+                    }
+                    inner_parameters = &lateral_parameters;
+                }
+                auto right_schema = validate_schema(resource, idx, node->children().back().get(), *inner_parameters);
                 if (right_schema.has_error()) {
                     return right_schema;
                 }
@@ -2684,52 +2742,27 @@ namespace services::dispatcher {
                         std::pmr::string{"could not find table in update/delete validation", resource});
                 }
                 if (node_data) {
-                    auto node_data_res = validate_schema(resource, idx, node_data, parameters);
-                    if (node_data_res.has_error()) {
-                        return node_data_res;
+                    // UPDATE ... FROM / DELETE ... USING: the source is a child sub-plan
+                    // (a table, a join tree, a — possibly LATERAL — derived table, a table
+                    // function, or raw VALUES). Schema it and use it as the RIGHT side of
+                    // the join predicate: target columns resolve LEFT (table_schema),
+                    // source columns RIGHT (this schema). The whole source is the right
+                    // relation, so stamp every column right regardless of any side it
+                    // carries from an internal join — otherwise a source column sharing a
+                    // name with a target column would resolve to the target index and read
+                    // OOB on the (differently shaped) source chunk at runtime.
+                    auto source_res = validate_schema(resource, idx, node_data, parameters);
+                    if (source_res.has_error()) {
+                        return source_res;
                     }
-                    incoming_schema = std::move(node_data_res.value());
-                    if (incoming_schema.size() != table_schema.size()) {
-                        return core::error_t(
-                            core::error_code_t::schema_error,
-                            std::pmr::string{"update_node: computed schema and table schema missmatch", resource});
+                    incoming_schema = std::move(source_res.value());
+                    for (auto& entry : incoming_schema) {
+                        entry.side = components::expressions::side_t::right;
                     }
-                    for (size_t i = 0; i < table_schema.size(); i++) {
-                        // ignore aliases, since they do not matter here
-                        if (incoming_schema[i].type != table_schema[i].type) {
-                            return core::error_t(
-                                core::error_code_t::schema_error,
-                                std::pmr::string{"update_node: computed schema and table schema name missmatch",
-                                                 resource});
-                        }
-                    }
+                    same_schema = false;
                 } else {
-                    // DELETE ... USING / UPDATE ... FROM: the USING/FROM table is a sibling resolve
-                    // node (table_oid_from), not a child, so it never becomes node_data. Build its
-                    // schema and use it as the RIGHT side of the join predicate, so a right-stamped
-                    // join key (e.g. using_tbl.k) resolves against the USING/FROM table's OWN columns
-                    // — not the target's. Otherwise a column with the same name at a different index
-                    // (target id,k vs using k) resolves to the target index and reads OOB on the
-                    // narrower USING chunk at runtime.
-                    const auto from_oid_join = node->type() == node_type::update_t
-                                                   ? reinterpret_cast<node_update_t*>(node)->table_oid_from()
-                                                   : reinterpret_cast<node_delete_t*>(node)->table_oid_from();
-                    named_schema from_schema_join(resource);
-                    if (from_oid_join != components::catalog::INVALID_OID) {
-                        if (const auto* tbl_from = impl::tbl_md_for_oid(idx, from_oid_join)) {
-                            for (const auto& column : tbl_from->columns) {
-                                from_schema_join.emplace_back(
-                                    type_from_t{tbl_from->name, column.type, components::expressions::side_t::right});
-                            }
-                        }
-                    }
-                    if (!from_schema_join.empty()) {
-                        incoming_schema = std::move(from_schema_join);
-                        same_schema = false;
-                    } else {
-                        incoming_schema = table_schema;
-                        same_schema = true;
-                    }
+                    incoming_schema = table_schema;
+                    same_schema = true;
                 }
                 if (node_match) {
                     auto node_match_res = impl::validate_schema(resource,
@@ -2765,30 +2798,15 @@ namespace services::dispatcher {
                                           ? &reinterpret_cast<node_update_t*>(node)->returning()
                                           : &reinterpret_cast<node_delete_t*>(node)->returning();
                     if (!returning->empty() && !table_schema.empty()) {
-                        // The USING/FROM table is a sibling resolve node, not a
-                        // child, so it never reaches incoming_schema. Build its
-                        // schema from table_oid_from() (the catalog columns) and use
-                        // it as the right side: a right-stamped RETURNING key (a
-                        // joined column) resolves against it, while target columns
-                        // resolve against table_schema as before.
-                        const auto from_oid = node->type() == node_type::update_t
-                                                  ? reinterpret_cast<node_update_t*>(node)->table_oid_from()
-                                                  : reinterpret_cast<node_delete_t*>(node)->table_oid_from();
-                        named_schema from_schema(resource);
-                        if (from_oid != components::catalog::INVALID_OID) {
-                            if (const auto* tbl_from = impl::tbl_md_for_oid(idx, from_oid)) {
-                                for (const auto& column : tbl_from->columns) {
-                                    from_schema.emplace_back(type_from_t{tbl_from->name,
-                                                                         column.type,
-                                                                         components::expressions::side_t::right});
-                                }
-                            }
-                        }
-                        const bool has_join = !from_schema.empty();
+                        // A RETURNING key naming a FROM/USING source column resolves
+                        // against the source schema (built above as incoming_schema, all
+                        // columns stamped right); target columns resolve against
+                        // table_schema. No source child -> resolve against the target only.
+                        const bool has_join = node_data != nullptr && !incoming_schema.empty();
                         auto ret_err = impl::resolve_returning_columns(resource,
                                                                        returning,
                                                                        table_schema,
-                                                                       has_join ? from_schema : table_schema,
+                                                                       has_join ? incoming_schema : table_schema,
                                                                        /*same_schema=*/!has_join);
                         if (ret_err.contains_error()) {
                             return ret_err;

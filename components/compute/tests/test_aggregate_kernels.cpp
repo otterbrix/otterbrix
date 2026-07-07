@@ -20,7 +20,7 @@ using namespace components::vector;
 
 namespace {
     struct aggregate_registry_fixture {
-        std::pmr::synchronized_pool_resource resource;
+        core::pmr::otterbrix_resource resource;
         function_registry_t registry{&resource};
         exec_context_t ctx{&resource, &registry};
 

@@ -133,4 +133,20 @@ namespace components::compute {
         row_exec_fn exec_;
     };
 
+    using expand_exec_fn = core::error_t (*)(kernel_context& ctx,
+                                             const vector::data_chunk_t& inputs,
+                                             std::pmr::vector<vector::data_chunk_t>& outputs);
+
+    class expand_kernel : public compute_kernel {
+    public:
+        expand_kernel(kernel_signature_t signature, expand_exec_fn exec);
+
+        core::error_t execute(kernel_context& ctx,
+                              const vector::data_chunk_t& inputs,
+                              std::pmr::vector<vector::data_chunk_t>& outputs) const;
+
+    private:
+        expand_exec_fn exec_;
+    };
+
 } // namespace components::compute

@@ -87,7 +87,7 @@ public:
     virtual std::string verify(benchmark_state_t& /*state*/) { return ""; }
 
     // Only SQL benchmarks have a setup phase to skip; the default is a no-op so the
-    // runner can request it uniformly without a dynamic_cast (rule 14).
+    // runner can request it uniformly without a dynamic_cast.
     virtual void set_disable_setup(bool /*disable*/) {}
 
     virtual uint64_t nruns() const { return 5; }

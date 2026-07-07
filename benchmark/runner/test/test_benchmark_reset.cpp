@@ -1,4 +1,4 @@
-// Regression test for the benchmark-runner disk-reset (Stage 0).
+// Regression test for the benchmark-runner disk-reset.
 //
 // The runner points every disk instance at the same current_path()/"disk"
 // (+ "/wal") directory. Each benchmark's load() does CREATE TABLE IF NOT EXISTS
@@ -8,10 +8,10 @@
 // disk/wal dirs before opening each instance.
 //
 // This test drives the real public runner path (run() -> run_single) with a
-// tiny self-contained benchmark loaded twice. RED without the reset: the second
+// tiny self-contained benchmark loaded twice. Without the reset: the second
 // run re-loads onto the first run's 3 persisted rows -> 6 rows -> the
 // @expected_rows=3 check fails -> the result CSV's verified column is FAIL.
-// GREEN with the reset: the second run starts empty -> 3 rows -> both OK.
+// With the reset: the second run starts empty -> 3 rows -> both OK.
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>

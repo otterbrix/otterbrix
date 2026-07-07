@@ -35,7 +35,7 @@ namespace components::planner::optimizer {
     // star, rebuilds the CROSS chain fact-FIRST over the ORIGINAL leaf scans, and
     // block-permutes every frozen column ref (the match, group keys, aggregate
     // arguments, and — without a GROUP BY — sort/select loci) so this same canonical
-    // path then claims every boundary. It NEVER promotes anything itself (rule 6, one
+    // path then claims every boundary. It NEVER promotes anything itself (one
     // promotion engine). All detection/verify is read-only and precedes any mutation, so
     // a non-star / already-claimable / unclassifiable shape leaves the tree pristine and
     // flows through unchanged.
@@ -45,7 +45,7 @@ namespace components::planner::optimizer {
     // rewrite_hash_joins (which then accepts the promoted inner join).
     //
     // Any malformed / unclassifiable shape is left unchanged (no-op skip) — optimizer
-    // rules have no error channel, so they never throw (rules 2, 9).
+    // rules have no error channel, so they never throw.
     logical_plan::node_ptr promote_cross_joins(std::pmr::memory_resource* resource, logical_plan::node_ptr node);
 
 } // namespace components::planner::optimizer

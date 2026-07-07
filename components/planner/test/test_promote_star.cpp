@@ -56,7 +56,7 @@ using expressions::sort_order;
 // then the canonical promote_join_subtree lowers each level to an inner hash join
 // with each dim on the (small) build side.
 //
-// SSB column layout (benchmark/ssb/_setup.sql) and merged FROM-order offsets:
+// SSB column layout and merged FROM-order offsets:
 //   dim_date  (17 cols) @ 0    d_datekey=0  ... d_year=4  ...
 //   customer  ( 8 cols) @ 17   c_custkey=17 ... c_nation=21 c_region=22 ...
 //   supplier  ( 7 cols) @ 25   s_suppkey=25 ... s_region=30 ...
@@ -244,9 +244,9 @@ namespace {
 //  * GROUP-OUTPUT loci (sort/select keys) UNCHANGED (they index the small group
 //    output schema 0,1,2 — never the merged join schema).
 //
-// RED until the star pre-normalizer lands: today's rule promotes only the top
-// (fact-bearing) boundary, leaving three CROSS joins and the three fact-dim equis
-// unclaimed in the residual match.
+// Without the star pre-normalizer, the rule promotes only the top (fact-bearing)
+// boundary, leaving three CROSS joins and the three fact-dim equis unclaimed in
+// the residual match.
 // ----------------------------------------------------------------------------
 TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     std::pmr::monotonic_buffer_resource arena;
@@ -421,7 +421,7 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
 // ----------------------------------------------------------------------------
 // Chain-negative — the 3-table chain from test_promote_multiway must be left
 // exactly as the canonical path handles it. The star pre-normalizer's load-bearing
-// short-circuit (rule 17): when EVERY boundary already claims an equi, the input is
+// short-circuit: when EVERY boundary already claims an equi, the input is
 // a chain / fact-threaded shape (here the middle `b` is incident to both edges and
 // would be MIS-SELECTED as the "fact" and reordered), so it returns source
 // unchanged and the canonical path promotes it exactly as today.
@@ -429,7 +429,6 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
 // Observable proof of "not reordered": leaves stay in FROM order (a,b,c) and the
 // two joins claim their ORIGINAL boundaries (a_k=b_k -> 1/0, b_v=c_k -> 3/0). A
 // mistaken star reorder would permute the leaves and change these columns.
-// Green before AND after the fix.
 // ----------------------------------------------------------------------------
 TEST_CASE("optimizer::promote_star::three_table_chain_not_reordered") {
     std::pmr::monotonic_buffer_resource arena;
@@ -488,8 +487,6 @@ TEST_CASE("optimizer::promote_star::three_table_chain_not_reordered") {
 // Expect after reorder: the sort operands are remapped (lo_revenue 53->12,
 // lo_supplycost 54->13), the direction (desc) is preserved on the OWN key, and the
 // no-group SELECT get_field is remapped too (lo_orderkey 41->0).
-// RED until the star reorder lands (today the fact-last star is not reordered, so
-// the operands stay at 53/54).
 // ----------------------------------------------------------------------------
 TEST_CASE("optimizer::promote_star::no_group_computed_order_by_remapped") {
     std::pmr::monotonic_buffer_resource arena;
@@ -552,7 +549,6 @@ TEST_CASE("optimizer::promote_star::no_group_computed_order_by_remapped") {
 // and P-remap the condition key (the OWN case key is an alias/sentinel — untouched).
 //
 // Expect after reorder: the CASE condition key lo_revenue is remapped 53->12.
-// RED until the star reorder lands.
 // ----------------------------------------------------------------------------
 TEST_CASE("optimizer::promote_star::no_group_select_case_condition_remapped") {
     std::pmr::monotonic_buffer_resource arena;
@@ -604,8 +600,6 @@ TEST_CASE("optimizer::promote_star::no_group_select_case_condition_remapped") {
 // per-boundary promotion: fact-last => only the top (fact-bearing) boundary claims,
 // three CROSS joins remain. Assert the canonical PARTIAL promotion (CROSS joins
 // survive) — i.e. the star full-reorder did NOT run.
-//
-// A green guard (bail behavior is unchanged by the fix).
 // ----------------------------------------------------------------------------
 TEST_CASE("optimizer::promote_star::select_star_bails_to_canonical") {
     std::pmr::monotonic_buffer_resource arena;
@@ -650,7 +644,7 @@ TEST_CASE("optimizer::promote_star::select_star_bails_to_canonical") {
 //   (d1 x d2)          : no straddling equi          -> stays CROSS
 //   (.. x d3)          : d2<->d3 straddles           -> inner
 //   (.. x fact)        : fact<->d1 (or fact<->d3)    -> inner
-// => exactly one surviving CROSS. Green guard.
+// => exactly one surviving CROSS.
 // ----------------------------------------------------------------------------
 TEST_CASE("optimizer::promote_star::snowflake_bails_to_partial_promotion") {
     std::pmr::monotonic_buffer_resource arena;
@@ -698,7 +692,7 @@ TEST_CASE("optimizer::promote_star::snowflake_bails_to_partial_promotion") {
 //
 // FROM d1, d2, fact ; fact<->d1 via TWO equis (f_a=d1_a AND f_b=d1_b), fact<->d2 via
 // one. Fact LAST ((d1 x d2) x fact): (d1 x d2) stays CROSS (no straddle); the top
-// boundary claims one equi -> partial. Green guard.
+// boundary claims one equi -> partial.
 // ----------------------------------------------------------------------------
 TEST_CASE("optimizer::promote_star::composite_key_bails_to_partial_promotion") {
     std::pmr::monotonic_buffer_resource arena;

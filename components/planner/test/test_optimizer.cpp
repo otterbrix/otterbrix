@@ -1217,7 +1217,7 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
 }
 
 // ================================================================
-// Stage 1. Cross->inner promotion (promote_cross_join.cpp)
+// Cross->inner promotion (promote_cross_join.cpp)
 //
 // SELECT SUM(ap) FROM a, b WHERE ak = bk AND ap < ?
 // lowers to:
@@ -1240,7 +1240,7 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
 //
 // The scans are driven through the REAL validate_schema (never hand-stamped) so
 // key.side()/key.path()/output_types() are exactly what the SQL pipeline produces
-// (Stage 1 note: make_agg 5-arg would stamp the wrapper, not the scans).
+// (make_agg 5-arg would stamp the wrapper, not the scans).
 // ================================================================
 namespace {
     // A raw BIGINT scan, left UNstamped on purpose: validate_schema derives and

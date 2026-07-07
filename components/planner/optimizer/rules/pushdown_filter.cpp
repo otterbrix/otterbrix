@@ -119,8 +119,8 @@ namespace components::planner::optimizer {
         // left_width + local, so pushing it into the right child unchanged leaves an
         // out-of-range column index. Subtract left_width from the leading path element
         // (deeper elements index nested struct fields and stay put). The new path is
-        // built on `resource` — never set_path({...}), which pulls the default resource
-        // (rule 14). The left bucket needs no rewrite (merged == local there) and the
+        // built on `resource` — never set_path({...}), which pulls the default resource.
+        // The left bucket needs no rewrite (merged == local there) and the
         // residual keeps its merged paths (it evaluates over the join's merged output).
         void relocalize_key_path(key_t& k, size_t left_width, std::pmr::memory_resource* resource) {
             const auto& old_path = k.path();
@@ -247,7 +247,7 @@ namespace components::planner::optimizer {
             if (!node) {
                 return;
             }
-            // Single canonical source (rule 6): a node's own validate_schema-stamped
+            // Single canonical source: a node's own validate_schema-stamped
             // output_types() carries its VISIBLE column names (aliases) — this is the
             // set a predicate above the node references, and it is stamped for disk
             // scans (aggregate_t{db,rel}), in-memory data_t, subquery and join nodes
@@ -555,8 +555,8 @@ namespace components::planner::optimizer {
                     const bool can_push_left =
                         jt == join_type::inner || jt == join_type::cross || jt == join_type::left;
                     // A right-side push also needs a known left_width to re-localize the
-                    // conjunct; without it, keep the conjunct in the residual (safe no-op,
-                    // rules 2/9) rather than push an out-of-range merged path.
+                    // conjunct; without it, keep the conjunct in the residual (safe
+                    // no-op) rather than push an out-of-range merged path.
                     const bool can_push_right =
                         (jt == join_type::inner || jt == join_type::cross || jt == join_type::right) &&
                         left_width_known;
@@ -612,8 +612,8 @@ namespace components::planner::optimizer {
                             // All conjuncts pushed below the join → the match is empty.
                             // Drop ONLY the (now-empty) match child, NOT the enclosing
                             // aggregate: returning `source` here would discard node's
-                            // group_t/sort_t — reachable now that Stage 3 lifted the
-                            // group/sort bail for this join branch (e.g. SSB
+                            // group_t/sort_t — reachable now that the group/sort bail
+                            // was lifted for this join branch (e.g. SSB
                             // `SUM(...) ... GROUP BY ... ORDER BY` whose WHERE, after
                             // promote moved the equi onto the join ON, is entirely
                             // single-table filters). Preserve the aggregate; recurse

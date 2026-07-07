@@ -113,7 +113,7 @@ namespace services::collection::executor {
     } // namespace
 
     namespace {
-        // Stage 2b build-side selection: collect the resolved child table oids of
+        // Build-side selection: collect the resolved child table oids of
         // every INNER hash join in the optimized plan tree. execute_plan_full
         // fetches each oid's live row count so create_plan_join can put the
         // smaller table on the hash build side. Recurses the whole tree because
@@ -1412,7 +1412,7 @@ namespace services::collection::executor {
                                                                plan.parameters.get(),
                                                                can_push_to_agent);
 
-        // (O2) Stage 2b build-side selection — fetch live row counts for the child
+        // Build-side selection: fetch live row counts for the child
         // tables of every INNER hash join so create_plan_join can put the smaller
         // side on the hash build. Gated on an owning agent existing (reuse
         // can_push_to_agent); in-memory mode leaves row_counts empty and the swap

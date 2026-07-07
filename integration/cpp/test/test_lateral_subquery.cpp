@@ -78,7 +78,7 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where") {
     REQUIRE(collect(*cur, id_i, n_i, v_i) == expected);
 }
 
-// Regression (red-first) for the batched-join_builder use-after-free / row-mixup under
+// Regression for the batched-join_builder use-after-free / row-mixup under
 // LATERAL. The lazy builder buffered a raw pointer to each outer row's per-iteration
 // inner result (destroyed each iteration) and a SINGLE left_chunk_ pointer overwritten
 // across outer chunks; with > DEFAULT_VECTOR_CAPACITY (1024) outer rows the correlated

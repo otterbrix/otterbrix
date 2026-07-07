@@ -245,7 +245,7 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
 }
 
 // ----------------------------------------------------------------------------
-// Stage 2 guard — the batched join_builder gathers matched rows one output chunk
+// The batched join_builder gathers matched rows one output chunk
 // at a time with ONE indexed copy per (build-chunk, column), REORDERING rows so
 // that each such copy targets a contiguous range from a single build chunk. That
 // reorder makes output row order unspecified, so every value assert here is under
@@ -325,7 +325,7 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
 }
 
 // ----------------------------------------------------------------------------
-// Stage 2b — build-side selection ("smaller side → hash build"), plan-time.
+// Build-side selection ("smaller side → hash build"), plan-time.
 //
 // operator_hash_join_t materializes its physical RIGHT child as the hash build.
 // create_plan_join moves the SMALLER table onto that build slot IFF the join is
@@ -334,7 +334,7 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
 // (logical-right) is the LARGER side. The swap re-orders the physical children,
 // so the ORIGIN table of the build (right_) child flips — observable here via the
 // build child's distinct key-column name. Outer joins, equal/missing/self-join
-// counts keep the default order. swapped_=true (part 1, Stage 2) restores the
+// counts keep the default order. swapped_=true restores the
 // logical [left,right] output order so results stay identical (checked E2E below).
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::build_side_selection") {
@@ -411,7 +411,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
 }
 
 // ----------------------------------------------------------------------------
-// Stage 2b — build-side selection end-to-end (disk ON). execute_plan_full fetches
+// Build-side selection end-to-end (disk ON). execute_plan_full fetches
 // live row counts for the INNER hash join's child tables, and create_plan_join
 // moves the SMALLER table onto the hash build. This query puts the SMALL table on
 // the LEFT and the LARGE table on the RIGHT, so the default build (right) is the
@@ -474,11 +474,11 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
         REQUIRE(cur->value(1, 0).value<int64_t>() == 6);
     }
 
-    // A single-table filter that matches NOTHING on the build (right) side. Stage 3
+    // A single-table filter that matches NOTHING on the build (right) side. Pushdown
     // pushes it below the join, so the build scan yields ZERO chunks (not one empty
     // chunk). operator_hash_join_t::push must treat an empty build the same as an
     // absent one — emit nothing — instead of dereferencing build_chunks.front() on
-    // an empty vector. RED before the fix: null data_chunk_t → EXC_BAD_ACCESS in
+    // an empty vector. Before the fix: null data_chunk_t → EXC_BAD_ACCESS in
     // compute_join_layout under -O2 (Debug fires assert(!build_chunks.empty())).
     // `small` (3 rows) stays the build side: it is smaller than `large` (30), so
     // build-side selection does not swap it out. This is the SSB-load crash shrunk
@@ -502,7 +502,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
 }
 
 // ----------------------------------------------------------------------------
-// Stage 4 — multi-way (nested) cross-join promotion. An SSB-q2-shaped 3-table
+// Multi-way (nested) cross-join promotion. An SSB-q2-shaped 3-table
 // comma join `FROM lo, p, s` lowers to a left-deep chain of CROSS joins with the
 // two equi predicates in a sibling match_t (WHERE), both keys stamped side=left.
 // promote_cross_joins must promote BOTH nested cross joins to INNER (each claiming

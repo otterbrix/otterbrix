@@ -37,8 +37,8 @@ namespace services {
         // manager_disk_t::storage_total_rows), keyed by resolved table_oid.
         // execute_plan_full fetches these for the child tables of every INNER
         // hash join BEFORE lowering; create_plan_join reads them to put the
-        // smaller side on the hash build (Stage 2b build-side selection). Empty
-        // in in-memory mode (no owning disk agent) -> the build-side swap no-ops.
+        // smaller side on the hash build. Empty in in-memory mode (no owning
+        // disk agent) -> the build-side swap no-ops.
         std::pmr::unordered_map<components::catalog::oid_t, uint64_t> row_counts;
 
         context_storage_t(std::pmr::memory_resource* resource,

@@ -65,8 +65,7 @@ namespace components::expressions {
     compare_type get_compare_type(const std::string& key);
 
     // Encapsulated access to the `key_t` alternative of `param_storage` (a
-    // std::variant type alias — rule 14). These are the ONLY sanctioned readers of
-    // that variant in NEW code: callers name is_key/as_key instead of
+    // std::variant type alias). New code names is_key/as_key instead of
     // std::holds_alternative/std::get<key_t>, so no new site names std::variant.
     // as_key must be guarded by is_key (it delegates to std::get, which throws on a
     // mismatched alternative).
@@ -76,7 +75,7 @@ namespace components::expressions {
 
     // Same encapsulation for the nested-expression alternative of `param_storage` (a
     // compare/scalar/function operand that is itself an expression). New code reads it
-    // via is_expr/as_expr instead of std::holds_alternative/std::get (rule 14).
+    // via is_expr/as_expr instead of std::holds_alternative/std::get.
     // as_expr must be guarded by is_expr (it delegates to std::get, which throws on a
     // mismatched alternative).
     bool is_expr(const param_storage& param) noexcept;

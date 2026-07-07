@@ -83,7 +83,7 @@ namespace services::planner::impl {
         // equi-key column indices. Lower straight to operator_hash_join_t (O(L+R)). No
         // detection here — the annotation is the single source of truth.
         if (join_node->algo() == join_algo::hash) {
-            // Build-side selection (Stage 2b): operator_hash_join_t materializes its
+            // Build-side selection: operator_hash_join_t materializes its
             // physical RIGHT child as the hash build side, so the default build is the
             // LOGICAL-right table. Move the SMALLER table onto the build side IFF this
             // is an INNER join, both children are distinct base tables whose live row

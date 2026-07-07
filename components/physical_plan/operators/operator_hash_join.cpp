@@ -187,7 +187,7 @@ namespace components::operators {
     core::error_t operator_hash_join_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // Degenerate build side → emit nothing. This covers a truly absent right_
         // AND a build side that materialized ZERO chunks: a single-table filter
-        // pushed BELOW the join (Stage 3) can empty the build scan, and a disk scan
+        // pushed BELOW the join can empty the build scan, and a disk scan
         // over no rows yields an operator_data_t whose chunks() is empty (not one
         // empty chunk). Either way there is no build schema to lay out and, for an
         // inner/right-probe join, no build rows to match — so compute_join_layout

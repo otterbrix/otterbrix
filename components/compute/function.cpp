@@ -344,8 +344,8 @@ namespace components::compute {
         // registry is a lazily-created singleton torn down during static destruction, so
         // its resource must outlive that teardown; a never-destroyed heap resource
         // (reachable from this static pointer, hence not a leak under LSan) guarantees it
-        // without std::pmr::get_default_resource() (rule 14), using the sanctioned
-        // core::pmr::otterbrix_resource (rule 20).
+        // without relying on std::pmr::get_default_resource(), using
+        // core::pmr::otterbrix_resource.
         std::pmr::memory_resource* default_registry_resource() {
             static core::pmr::otterbrix_resource* resource = new core::pmr::otterbrix_resource();
             return resource;

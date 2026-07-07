@@ -56,8 +56,8 @@ namespace components::operators {
         // right_col are the probe/build key columns after that swap). It is passed
         // through to compute_join_layout so the output is re-assembled in logical
         // [left, right] order. Defaulted so the (still unswapped) call sites and the
-        // nested-loop lowering compile unchanged; the build-side heuristic (Stage 2b)
-        // sets it. INNER-only — an outer join is never swapped.
+        // nested-loop lowering compile unchanged; the build-side heuristic sets it.
+        // INNER-only — an outer join is never swapped.
         operator_hash_join_t(std::pmr::memory_resource* resource,
                              log_t log,
                              type join_type,

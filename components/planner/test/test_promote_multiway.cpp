@@ -22,7 +22,7 @@ using expressions::compare_type;
 using expressions::side_t;
 
 // ----------------------------------------------------------------------------
-// Stage 4 — multi-way (nested) cross-join promotion.
+// Multi-way (nested) cross-join promotion.
 //
 // `FROM a, b, c WHERE a.k = b.k AND b.v = c.k` lowers to a left-deep chain
 //   aggregate_t
@@ -38,8 +38,8 @@ using expressions::side_t;
 // the true both-sides-left, merged-relative paths and every scan/join node gets
 // output_types() stamped (the promote rule reads those widths).
 //
-// Against the depth-1-only rule this is RED: only the outer join would promote,
-// leaving the inner join a nested-loop cross join.
+// A depth-1-only rule would promote only the outer join, leaving the inner join
+// a nested-loop cross join.
 // ----------------------------------------------------------------------------
 namespace {
 

@@ -36,11 +36,11 @@ static node_data_ptr make_data(std::pmr::memory_resource* r, std::initializer_li
     // optimizer only looks at the schema, so one row is enough
     auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, r);
     auto node = make_node_raw_data(r, std::move(chunk));
-    // Stage 3: collect_subtree_columns() now reads a node's output_types() (the
+    // collect_subtree_columns() now reads a node's output_types() (the
     // node_data_t column-name branch was removed). Stamp them here so a scan used
     // under a join exposes its columns to pushdown exactly as validate_schema would
     // — otherwise the columns come back empty and nothing is pushed. Build the list
-    // on `r` (rule 8) and move it in.
+    // on `r` and move it in.
     std::pmr::vector<components::types::complex_logical_type> out_types(r);
     for (const char* name : col_names) {
         out_types.emplace_back(components::types::logical_type::BIGINT, name);
@@ -610,12 +610,12 @@ TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {
     REQUIRE(schema.size() == 2);
 }
 
-// --- Stage 3: pushdown reads output_types(), not a node_data_t --------------
+// --- pushdown reads output_types(), not a node_data_t --------------
 
 // A disk scan is an aggregate_t{db,rel} whose columns live ONLY in output_types()
-// (no in-memory node_data_t). Stage 3 made collect_subtree_columns() read
+// (no in-memory node_data_t). collect_subtree_columns() reads
 // output_types(), so single-table filters still bucket to the correct join side.
-// RED before Stage 3: the old code looked for a node_data_t under each side, found
+// Before the fix: the old code looked for a node_data_t under each side, found
 // none, produced empty column sets, and pushed nothing (out == outer).
 TEST_CASE("logical_plan::pushdown_filter_into_join_branch_disk_shaped_scans") {
     auto resource = core::pmr::otterbrix_resource();
@@ -656,7 +656,7 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch_disk_shaped_scans") {
     REQUIRE(right_pushed->children()[1]->type() == node_type::match_t);
 }
 
-// --- Stage 3 part 2: pushdown below a join UNDER GROUP BY + ORDER BY ---------
+// --- pushdown below a join UNDER GROUP BY + ORDER BY ---------
 
 // The bail-lift: a group_t AND a sort_t above an inner join no longer stop
 // single-table filters from being pushed below the join. group/sort commute with
@@ -666,7 +666,7 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch_disk_shaped_scans") {
 // structural counterpart of the end-to-end repro (test_batch_execution
 // "join + WHERE ... GROUP BY", test_column_projection "inner JOIN + GROUP BY with
 // WHERE on non-select column") that returned 0 rows before the executor fix.
-// RED before the bail-lift: the old group/sort guard returned the node unchanged,
+// Before the bail-lift: the old group/sort guard returned the node unchanged,
 // leaving both filters in the match above the join.
 TEST_CASE("logical_plan::pushdown_filter_into_join_branch_under_group_and_sort") {
     auto resource = core::pmr::otterbrix_resource();

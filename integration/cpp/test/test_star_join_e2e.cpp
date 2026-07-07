@@ -139,7 +139,7 @@ TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
 // Fact-first target order fct(6) @0, dd(2) @6, cust(3) @8, supp(2) @11, prt(2) @13,
 // so the four joins come out (left_col/right_col) bottom-up 0/0, 1/0, 2/0, 3/0.
 //
-// RED until the star reorder lands: today the fact-last star promotes only the top
+// Without the star reorder, the fact-last star promotes only the top
 // boundary, leaving three CROSS joins and three unclaimed fact-dim equis in the
 // residual match.
 // ----------------------------------------------------------------------------

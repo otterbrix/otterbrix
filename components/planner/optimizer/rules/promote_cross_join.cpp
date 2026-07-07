@@ -73,8 +73,8 @@ namespace components::planner::optimizer {
         //
         // Returns the (possibly new) subtree root. A leaf / non-join subtree, an
         // unstamped or non-cross join, or a join with no straddling equi is returned
-        // unchanged (kept as-is), never throwing — optimizer rules have no error channel
-        // (rules 2, 9). Each claimed conjunct is flagged so a later join cannot re-claim
+        // unchanged (kept as-is), never throwing — optimizer rules have no error channel.
+        // Each claimed conjunct is flagged so a later join cannot re-claim
         // it and so the caller can keep the unclaimed ones as the residual match.
         node_ptr promote_join_subtree(std::pmr::memory_resource* resource,
                                       node_ptr node,
@@ -133,8 +133,8 @@ namespace components::planner::optimizer {
             auto* eq = static_cast<compare_expression_t*>(picked.get());
             // Re-stamp both keys against THIS join's boundary. The right-range key
             // becomes side=right with a right-local path (mergedIdx - left_width) built on
-            // the rule's resource (NOT set_path({...}), which pulls the default resource —
-            // rule 14). The left-range key's merged path is already left-child-local, so
+            // the rule's resource (NOT set_path({...}), which pulls the default resource).
+            // The left-range key's merged path is already left-child-local, so
             // only its side is (re)affirmed left.
             key_t& kl = as_key(eq->left());
             key_t& kr = as_key(eq->right());
@@ -149,7 +149,7 @@ namespace components::planner::optimizer {
             left_key.set_side(side_t::left);
 
             // Immutable join_type -> a fresh inner join. oid flows from the moved scan
-            // children (rule 16 OK). Hash selection stays in rewrite_hash_joins (runs
+            // children. Hash selection stays in rewrite_hash_joins (runs
             // after); the re-stamp makes detect_equi_columns accept it. Use the PROMOTED
             // children so a nested inner join is carried up.
             auto inner = make_node_join(resource, core::dbname_t{}, core::relname_t{}, join_type::inner);
@@ -162,7 +162,7 @@ namespace components::planner::optimizer {
             // from children()[i]->output_types() — a PARENT promoted join (nested left-deep)
             // and pushdown_filter, which re-localizes a pushed right-side conjunct by that
             // left_width. The promoted children preserve their pre-promotion widths, so this
-            // equals the width of the cross join it replaces. Built on `resource` (rule 8).
+            // equals the width of the cross join it replaces. Built on `resource`.
             std::pmr::vector<components::types::complex_logical_type> merged{resource};
             merged.reserve(new_left->output_types().size() + new_right->output_types().size());
             for (const auto& t : new_left->output_types()) {
@@ -175,7 +175,7 @@ namespace components::planner::optimizer {
             return inner;
         }
 
-        // === Star-schema pre-normalizer (rules 6/17) ===============================
+        // === Star-schema pre-normalizer ===========================================
         //
         // A fact-LAST comma-join star (`FROM dim0, dim1, .., fact`) lowers to a
         // left-deep CROSS chain whose inner joins hold only DIMENSIONS -> no straddling
@@ -192,8 +192,8 @@ namespace components::planner::optimizer {
         // Read-only mirror of promote_join_subtree's claiming, on a scratch `claimed`
         // array: returns true iff EVERY cross-join boundary in the subtree claims a
         // straddling equi. That is a chain / fact-threaded shape the canonical path
-        // already promotes fully; reordering it would MIS-select the fact (rule 17
-        // short-circuit -> caller returns the tree unchanged).
+        // already promotes fully; reordering it would MIS-select the fact
+        // (short-circuit -> caller returns the tree unchanged).
         bool simulate_all_boundaries_claim(const node_ptr& node,
                                            const std::pmr::vector<expression_ptr>& conjuncts,
                                            std::pmr::vector<char>& claimed) {
@@ -257,7 +257,7 @@ namespace components::planner::optimizer {
             return true;
         }
 
-        // The walker (rule-14-compliant; per-form OWN-key dispatch). One pass over the
+        // The walker (per-form OWN-key dispatch). One pass over the
         // aggregate's non-source children, either VERIFY (apply=false: only classify every
         // merged locus, flag `ok=false` on any that is out of range / unresolvable) or
         // APPLY (apply=true: remap each merged locus IN PLACE via P). Every param_storage
@@ -492,7 +492,7 @@ namespace components::planner::optimizer {
                 return source;
             }
 
-            // (1a) Rule-17 short-circuit: if the canonical path already claims every cross
+            // (1a) short-circuit: if the canonical path already claims every cross
             // boundary, this is a chain / fact-threaded shape -> leave it untouched.
             {
                 std::pmr::vector<char> scratch{resource};
@@ -665,7 +665,7 @@ namespace components::planner::optimizer {
             }
 
             // (4) Commit. Rebuild the CROSS chain fact-first over the ORIGINAL leaf scans
-            // (oids flow, rule 16); stamp each new cross join's output_types = left ++ right
+            // (oids flow); stamp each new cross join's output_types = left ++ right
             // BOTTOM-UP so a parent reads its freshly-stamped child's width.
             node_ptr new_source = leaves[new_order[0]];
             for (size_t pos = 1; pos < new_order.size(); ++pos) {
@@ -743,7 +743,7 @@ namespace components::planner::optimizer {
                 return node;
             }
 
-            // Star pre-normalizer (rules 6/17): reshape a fact-LAST star into a fact-FIRST
+            // Star pre-normalizer: reshape a fact-LAST star into a fact-FIRST
             // cross chain and P-remap frozen consumers so the ONE canonical promotion path
             // below claims every boundary. This mutates `match_child`'s keys (and the other
             // siblings') in place merged->new; since `conjuncts` holds those same shared

@@ -1151,6 +1151,44 @@ TEST_CASE("optimizer::pushdown_aggregate::non_mergeable_kind_is_skipped") {
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
+TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
+    // The pushdown rule now reads the RESOLVED fragment-merge capability
+    // (aggregate_expression::is_mergeable(), stamped at validate from
+    // function::is_mergeable()) instead of a hardcoded name list.
+    // A mergeable builtin SUM over one owned table IS stamped; the SAME SUM made
+    // DISTINCT must stay coordinator-side.
+    auto resource = std::pmr::synchronized_pool_resource();
+    {
+        std::vector<expression_ptr> exprs;
+        auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
+        sum->append_param(key(&resource, "v"));
+        sum->set_mergeable(true);
+        exprs.push_back(expression_ptr(sum));
+        auto group = make_node_group(&resource,
+                                     core::dbname_t{database_name},
+                                     core::relname_t{collection_name},
+                                     exprs,
+                                     nullptr);
+        auto agg = make_agg(&resource, group);
+        REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
+    }
+    {
+        std::vector<expression_ptr> exprs;
+        auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
+        sum->append_param(key(&resource, "v"));
+        sum->set_mergeable(true);
+        sum->set_distinct(true);
+        exprs.push_back(expression_ptr(sum));
+        auto group = make_node_group(&resource,
+                                     core::dbname_t{database_name},
+                                     core::relname_t{collection_name},
+                                     exprs,
+                                     nullptr);
+        auto agg = make_agg(&resource, group);
+        REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+    }
+}
+
 TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
     auto resource = std::pmr::synchronized_pool_resource();
     // A shape-/kind-pushable fragment, but an aggregate arg references a UDF
@@ -1159,6 +1197,9 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
     // => skip (e), subtree_references_udf.
     std::vector<expression_ptr> exprs;
     auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
+    // SUM itself is mergeable; the skip must come from the UDF gate, not from the
+    // mergeability check — so stamp mergeable to reach subtree_references_udf.
+    sum->set_mergeable(true);
     auto udf = make_function_expression(&resource, std::string("my_udf"));
     udf->add_function_uid(components::compute::DEFAULT_FUNCTIONS.size());
     sum->append_param(expression_ptr(udf));

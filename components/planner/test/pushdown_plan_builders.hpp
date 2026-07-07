@@ -66,9 +66,15 @@ namespace planner_test {
         }
         auto sum = make_aggregate_expression(r, "sum", key(r, "s"));
         sum->append_param(key(r, "v"));
+        // Stamp the resolved fragment-merge capability the validator would set for a
+        // builtin SUM/COUNT (the optimizer now reads is_mergeable() rather than a
+        // hardcoded name list). Tests build the plan directly, bypassing validate,
+        // so mirror the stamp here.
+        sum->set_mergeable(true);
         exprs.push_back(expression_ptr(sum));
         auto cnt = make_aggregate_expression(r, "count", key(r, "c"));
         cnt->set_distinct(distinct_agg);
+        cnt->set_mergeable(true);
         cnt->append_param(key(r, "v"));
         exprs.push_back(expression_ptr(cnt));
         return components::logical_plan::make_node_group(r, dbn(), reln(), exprs, having);

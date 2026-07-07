@@ -1,7 +1,5 @@
 #include "pushdown_aggregate.hpp"
 
-#include <algorithm>
-#include <array>
 #include <cctype>
 #include <string>
 #include <string_view>
@@ -38,30 +36,20 @@ namespace components::planner::optimizer {
             }
         }
 
-        // Only these aggregate kinds have a fragment-merge kernel (partial results
-        // per agent, then a coordinator/agent reduce). Anything else — DISTINCT
-        // variants, custom UDAs — must stay coordinator-side. Matched case-
-        // insensitively: the SQL parser lowercases unquoted function names, but
-        // guard against a quoted/upper spelling.
-        bool is_mergeable_kind(std::string_view function_name) noexcept {
-            std::string lowered(function_name);
-            std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
-                return static_cast<char>(std::tolower(c));
-            });
-            static constexpr std::array<std::string_view, 5> mergeable{"sum", "count", "min", "max", "avg"};
-            return std::find(mergeable.begin(), mergeable.end(), lowered) != mergeable.end();
-        }
-
         // The node_group_t child carries the aggregate exprs (expression_group::
         // aggregate) interleaved with the scalar group-key exprs. Skip (b) fires
-        // if any aggregate is distinct or a non-mergeable kind.
+        // if any aggregate is distinct or non-mergeable. Mergeability is a resolved
+        // capability (aggregate_expression::is_mergeable(), stamped at validate from
+        // the function's function::is_mergeable()) — only SUM/COUNT/MIN/MAX/AVG (or
+        // a future UDA with a fragment-merge kernel) carry it. Everything else must
+        // stay coordinator-side.
         bool has_unmergeable_aggregate(const lp::node_group_t* group) noexcept {
             for (const auto& expr : group->expressions()) {
                 if (expr->group() != ce::expression_group::aggregate) {
                     continue;
                 }
                 const auto* agg = static_cast<const ce::aggregate_expression_t*>(expr.get());
-                if (agg->is_distinct() || !is_mergeable_kind(agg->function_name())) {
+                if (agg->is_distinct() || !agg->is_mergeable()) {
                     return true;
                 }
             }

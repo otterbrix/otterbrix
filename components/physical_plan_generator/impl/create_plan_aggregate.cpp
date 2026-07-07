@@ -77,6 +77,11 @@ namespace services::planner::impl {
                     const auto* a = static_cast<const ce::aggregate_expression_t*>(expr.get());
                     // The owning agent rebuilds its registry with register_default_functions ONLY,
                     // so only a RESOLVED builtin uid (< DEFAULT_FUNCTIONS.size()) resolves there.
+                    // This uid >= DEFAULT_FUNCTIONS.size() test is the agent RESOLVABILITY gate (a
+                    // UDF the agent cannot look up), a DIFFERENT concern from mergeability — the
+                    // fragment-merge capability is enforced upstream by the optimizer's pushdown
+                    // stamp (aggregate_expression::is_mergeable()); here we only re-check
+                    // resolvability + distinct before emitting the pushed spec.
                     if (a->is_distinct() || a->function_uid() == components::compute::invalid_function_uid ||
                         a->function_uid() >= components::compute::DEFAULT_FUNCTIONS.size()) {
                         return false;

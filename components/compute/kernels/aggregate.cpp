@@ -606,7 +606,7 @@ namespace {
                                                       size_t available_kernel_slots = 1) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
+        auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {numeric_types_matcher()},
@@ -624,7 +624,7 @@ namespace {
                                                       size_t available_kernel_slots = 1) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
+        auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {always_true_type_matcher()},
@@ -642,7 +642,7 @@ namespace {
                                                       size_t available_kernel_slots = 1) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
+        auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {always_true_type_matcher()},
@@ -660,7 +660,11 @@ namespace {
                                                         size_t available_kernel_slots = 1) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<aggregate_function>(name, arity::var_args(0), doc, available_kernel_slots + 1);
+        auto fn = std::make_unique<aggregate_function>(name,
+                                                       arity::var_args(0),
+                                                       doc,
+                                                       available_kernel_slots + 1,
+                                                       /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {always_true_type_matcher()},
@@ -683,7 +687,7 @@ namespace {
                                                       size_t available_kernel_slots = 1) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots);
+        auto fn = std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {numeric_types_matcher()},

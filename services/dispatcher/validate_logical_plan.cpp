@@ -92,6 +92,10 @@ namespace services::dispatcher {
             components::compute::kernel_signature_t signature{components::compute::function_type_t::invalid, {}, {}};
             bool name_exists{false};
             bool match_found{false};
+            // Resolved fragment-merge capability of the matched overload (function::
+            // is_mergeable()); stamped onto the aggregate_expression so the optimizer
+            // reads a capability rather than a hardcoded name list.
+            bool mergeable{false};
         };
 
         inline function_lookup_t
@@ -113,6 +117,7 @@ namespace services::dispatcher {
                         out.uid = uid;
                         out.signature = sig;
                         out.match_found = true;
+                        out.mergeable = fn->is_mergeable();
                         return out;
                     }
                 }
@@ -2232,6 +2237,7 @@ namespace services::dispatcher {
                                     }
                                 }
                                 agg_expr->add_function_uid(agg_lk.uid);
+                                agg_expr->set_mergeable(agg_lk.mergeable);
                                 // Collect for post_agg_schema
                                 if (!is_internal && !function_output_types.empty()) {
                                     agg_result_positions.push_back(result.size() - 1);

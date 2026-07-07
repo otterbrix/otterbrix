@@ -52,6 +52,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_bounded_dml_flush.cpp
         test_aggregate_pushdown_e2e.cpp
         test_pushdown_traffic.cpp
+        test_pushed_reduce_scan_lateral.cpp
 
         # stress tests with sanitizer are incredibly slow
         $<$<NOT:$<BOOL:${ENABLE_ASAN}>>:stress_test_sql_features.cpp>

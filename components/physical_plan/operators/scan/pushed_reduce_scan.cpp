@@ -52,13 +52,22 @@ namespace components::operators {
             // non-all_false compare, so transform_predicate never trips its assert.
             std::unique_ptr<table::table_filter_t> filter;
             if (expression_ && expression_->type() != expressions::compare_type::all_true) {
-                auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::storage_types,
-                                                 ctx->session,
-                                                 table_oid_);
-                auto types = co_await std::move(tf);
+                // Fetch the column types once and cache them: the schema is invariant
+                // across re-drives, so a correlated-LATERAL re-open reuses the cache and
+                // SKIPS the storage_types round-trip. The filter itself is still rebuilt
+                // every drive — its correlated parameter (ctx->parameters) changes per
+                // outer row — so only the types are cached, never the filter.
+                if (!types_cached_) {
+                    auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::storage_types,
+                                                     ctx->session,
+                                                     table_oid_);
+                    auto types = co_await std::move(tf);
+                    cached_types_ = std::move(types);
+                    types_cached_ = true;
+                }
                 auto filter_result =
-                    transform_predicate(resource_, expression_, types, &ctx->parameters, ctx->session_tz);
+                    transform_predicate(resource_, expression_, cached_types_, &ctx->parameters, ctx->session_tz);
                 if (filter_result.has_error()) {
                     set_error(filter_result.error());
                     mark_failed();

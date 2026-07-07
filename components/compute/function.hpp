@@ -108,6 +108,12 @@ namespace components::compute {
 
         [[nodiscard]] virtual std::vector<kernel_signature_t> get_signatures() const;
 
+        // Whether partial results of this function can be combined by a fragment-
+        // merge kernel (SUM/COUNT/MIN/MAX/AVG). Resolved as a capability here rather
+        // than by a hardcoded name list; row/expand functions inherit the false
+        // default, only algebraically-mergeable aggregates override it.
+        [[nodiscard]] virtual bool is_mergeable() const { return false; }
+
         [[nodiscard]] virtual std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const = 0;
 
     protected:
@@ -227,10 +233,19 @@ namespace components::compute {
 
     class aggregate_function : public detail::function_impl<aggregate_kernel> {
     public:
-        aggregate_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
+        aggregate_function(std::string name,
+                           arity fn_arity,
+                           function_doc doc,
+                           size_t available_kernel_slots,
+                           bool mergeable = false);
         void accept_visitor(function_visitor& visitor) const override;
 
+        [[nodiscard]] bool is_mergeable() const override { return mergeable_; }
+
         [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
+
+    private:
+        bool mergeable_;
     };
 
     class row_function : public detail::function_impl<row_kernel> {

@@ -26,10 +26,7 @@ namespace components::operators {
         // after the pump (needs_async_finalize()==true). This streams over BOTH a scan
         // source (INSERT...SELECT) and a raw_data source (INSERT...VALUES, now that
         // operator_raw_data_t is role()==source) — the VALUES rows are folded one
-        // chunk at a time instead of adopting left_->output() wholesale. The legacy
-        // on_execute path (adopt left_->output(), single append) remains as the
-        // materialized entry point for any sourceless caller; both share the SAME
-        // append core, so results are identical.
+        // chunk at a time instead of adopting left_->output() wholesale.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t
@@ -40,9 +37,22 @@ namespace components::operators {
         // swap-info fields, then mark_executed.
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
+        // Rows folded into output_ but not yet flushed to storage. The executor's
+        // mid-pump flush gate compares this to the flush threshold. Catalog
+        // inserts stay single-shot (return 0) so the gate never mid-flushes them.
+        [[nodiscard]] uint64_t buffered_rows() const noexcept override {
+            return (output_ && !components::catalog::is_catalog_table(table_oid_)) ? output_->size() : 0;
+        }
+
     private:
         catalog::oid_t table_oid_;
         std::pmr::vector<select_column_t> returning_;
+        // Cross-flush accumulators for the incremental drive. RETURNING rows are
+        // projected into returning_accum_ as each slice is read back; when the
+        // statement has no RETURNING, affected_rows_ tallies the appended count.
+        // Both are materialized into output_ only on the final (is_final) drive.
+        chunks_vector_t returning_accum_{resource_};
+        uint64_t affected_rows_{0};
     };
 
 } // namespace components::operators

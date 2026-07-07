@@ -2,6 +2,7 @@
 
 #include <components/logical_plan/node_check_constraint.hpp>
 #include <components/physical_plan/operators/operator_check_constraint.hpp>
+#include <components/physical_plan/operators/operator_unique_constraint.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 
 namespace services::planner::impl {
@@ -16,9 +17,34 @@ namespace services::planner::impl {
                                                                                                 context.log.clone(),
                                                                                                 n->not_null_columns(),
                                                                                                 n->check_exprs(),
-                                                                                                n->array_size_reqs()));
+                                                                                                n->array_size_reqs(),
+                                                                                                n->column_defaults(),
+                                                                                                n->write_set_named()));
+        // Child sub-plan (the DML sink, possibly under an fk_check chain).
+        components::operators::operator_ptr child;
         if (!node->children().empty()) {
-            plan->set_children(create_plan(context, function_registry, node->children().front(), {}, params));
+            child = create_plan(context, function_registry, node->children().front(), {}, params);
+        }
+
+        // When the table carries UNIQUE / PRIMARY KEY constraints, splice an
+        // operator_unique_constraint_t BETWEEN the check sink and the DML so both
+        // constraint operators validate the SAME written-row snapshot (the unique op
+        // reads its child DML's constraint_input(), exactly like an fk_check chain).
+        // With no unique groups the check sink adopts the child directly.
+        if (!n->unique_groups().empty()) {
+            auto unique = boost::intrusive_ptr(
+                new components::operators::operator_unique_constraint_t(context.resource,
+                                                                        context.log.clone(),
+                                                                        n->table_oid(),
+                                                                        n->unique_groups(),
+                                                                        n->column_defaults(),
+                                                                        n->write_set_named()));
+            if (child) {
+                unique->set_children(child);
+            }
+            plan->set_children(unique);
+        } else if (child) {
+            plan->set_children(child);
         }
         return plan;
     }

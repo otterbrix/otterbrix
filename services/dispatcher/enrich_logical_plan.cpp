@@ -17,6 +17,7 @@
 #include "resolve_type.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -47,6 +48,7 @@
 #include <components/sql/transformer/utils.hpp>
 #include <services/index/manager_index.hpp>
 
+#include <algorithm>
 #include <limits>
 #include <queue>
 #include <string>
@@ -66,6 +68,54 @@ namespace services::dispatcher { namespace {
                 out.push_back(col.attname);
             }
         }
+    }
+
+    // PRIMARY KEY implies NOT NULL, but pg_attribute.attnotnull is only written for
+    // column-level constraints at CREATE TABLE — ALTER TABLE ADD PRIMARY KEY / a
+    // table-level PK never back-fills it. Merge the resolved PK columns into the DML
+    // node's NOT-NULL list. include_with_defaults mirrors fill_not_null's policy:
+    // INSERT skips DEFAULT-backed columns (the disk agent fills them non-NULL);
+    // UPDATE keeps them (the write-set carries every column, an explicit NULL must
+    // still fail).
+    void merge_pk_not_null(const components::logical_plan::resolved_table_metadata_t* md,
+                           const std::vector<std::string>& pk_columns,
+                           std::vector<std::string>& not_null,
+                           bool include_with_defaults) {
+        for (const auto& col : pk_columns) {
+            if (!include_with_defaults && md != nullptr) {
+                bool has_default = false;
+                for (const auto& c : md->columns) {
+                    if (c.attname == col) {
+                        has_default = c.atthasdefault;
+                        break;
+                    }
+                }
+                if (has_default) {
+                    continue;
+                }
+            }
+            if (std::find(not_null.begin(), not_null.end(), col) == not_null.end()) {
+                not_null.push_back(col);
+            }
+        }
+    }
+
+    // Decoded column DEFAULT values for the constraint operators: an INSERT omitting
+    // a defaulted column stores the default (filled agent-side at storage_append), so
+    // CHECK / UNIQUE must evaluate the ABSENT column AS its default.
+    std::vector<std::pair<std::string, components::types::logical_value_t>>
+    decode_column_defaults(std::pmr::memory_resource* resource,
+                           const components::logical_plan::resolved_table_metadata_t& md) {
+        std::vector<std::pair<std::string, components::types::logical_value_t>> defaults;
+        for (const auto& col : md.columns) {
+            if (!col.atthasdefault || col.attdefspec.empty()) {
+                continue;
+            }
+            if (auto v = components::catalog::decode_default_spec(resource, col.attdefspec)) {
+                defaults.emplace_back(col.attname, std::move(*v));
+            }
+        }
+        return defaults;
     }
 
     void enrich_insert_sync(components::logical_plan::node_insert_t* node,
@@ -815,6 +865,20 @@ namespace services::dispatcher { namespace {
                     if (auto it = idx->check_exprs_by_oid.find(tbl_oid); it != idx->check_exprs_by_oid.end()) {
                         node->set_check_exprs(it->second);
                     }
+                    if (auto it = idx->unique_constraints_by_oid.find(tbl_oid);
+                        it != idx->unique_constraints_by_oid.end()) {
+                        node->set_unique_groups(it->second);
+                    }
+                    const auto* md = tbl_md_for_oid(idx, tbl_oid);
+                    if (auto it = idx->pk_columns_by_oid.find(tbl_oid);
+                        it != idx->pk_columns_by_oid.end() && !it->second.empty()) {
+                        auto nn = node->not_null_cols();
+                        merge_pk_not_null(md, it->second, nn, /*include_with_defaults=*/false);
+                        node->set_not_null_cols(std::move(nn));
+                    }
+                    if (md != nullptr) {
+                        node->set_column_defaults(decode_column_defaults(node->resource(), *md));
+                    }
                 }
                 break;
             }
@@ -825,6 +889,20 @@ namespace services::dispatcher { namespace {
                 if (tbl_oid != components::catalog::INVALID_OID && idx) {
                     if (auto it = idx->outgoing_fks_by_oid.find(tbl_oid); it != idx->outgoing_fks_by_oid.end()) {
                         node->set_outgoing_fks(it->second);
+                    }
+                    if (auto it = idx->unique_constraints_by_oid.find(tbl_oid);
+                        it != idx->unique_constraints_by_oid.end()) {
+                        node->set_unique_groups(it->second);
+                    }
+                    const auto* md = tbl_md_for_oid(idx, tbl_oid);
+                    if (auto it = idx->pk_columns_by_oid.find(tbl_oid);
+                        it != idx->pk_columns_by_oid.end() && !it->second.empty()) {
+                        auto nn = node->not_null_cols();
+                        merge_pk_not_null(md, it->second, nn, /*include_with_defaults=*/true);
+                        node->set_not_null_cols(std::move(nn));
+                    }
+                    if (md != nullptr) {
+                        node->set_column_defaults(decode_column_defaults(node->resource(), *md));
                     }
                 }
                 break;

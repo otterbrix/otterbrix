@@ -14,11 +14,18 @@ namespace components::planner {
     //   - constant_folding (on parameter expressions)
     //   - pushdown_filter
     //   - hash_join selection (needs the validate_schema stamps)
+    //   - pushdown_aggregate — annotates pushable single-owned-table aggregates.
+    //     Runs whenever `can_push_to_agent` is true. This is NOT a rollout flag: it
+    //     is a hard CAPABILITY precondition — false only in disk-less (in-memory)
+    //     mode, where there is no owning agent to push to, so pushable aggregates
+    //     architecturally must stay coordinator-side. Defaults false so a bare
+    //     3-arg caller (unit/planner tests without a disk manager) does not stamp.
     // On DDL trees (sequence_t of primitive writes) it is a harmless no-op:
     // the planner leaves the match_t/join_t/aggregate_t these rules target
     // intact (DML wrappers sit on top; DDL has no such nodes).
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
-                                    logical_plan::parameter_node_t* parameters);
+                                    logical_plan::parameter_node_t* parameters,
+                                    bool can_push_to_agent = false);
 
 } // namespace components::planner

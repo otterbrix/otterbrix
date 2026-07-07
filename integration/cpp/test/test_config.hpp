@@ -5,6 +5,9 @@
 #include <components/sql/transformer/utils.hpp>
 #include <integration/cpp/base_spaces.hpp>
 
+#include <sstream>
+#include <string>
+
 inline configuration::config test_create_config(const std::filesystem::path& path = std::filesystem::current_path()) {
     return configuration::config::create_config(path);
     // To change log level
@@ -53,3 +56,44 @@ public:
         components::compute::function_registry_t::reset_default();
     }
 };
+
+// Shared integration-test helpers. Kept in a NAMED namespace (not global) so
+// they never collide with the anonymous-namespace `exec`/`seed` helpers that
+// several on-main test files still define locally — a global `exec` overload
+// with the same signature would make every unqualified call in those files
+// ambiguous. New test files opt in with `using namespace test_helpers;`.
+namespace test_helpers {
+
+    // Run one SQL statement on a fresh session and return the cursor.
+    inline components::cursor::cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
+        return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
+    }
+
+    // create_config + clear_directory + disk/wal flags in one call.
+    inline configuration::config
+    make_test_config(const std::filesystem::path& path, bool disk_on = false, bool wal_on = false) {
+        auto config = test_create_config(path);
+        test_clear_directory(config);
+        config.disk.on = disk_on;
+        config.wal.on = wal_on;
+        return config;
+    }
+
+    // Emit `INSERT INTO <table> (<cols>) VALUES <row(0)>, <row(1)>, ...;` for `n`
+    // rows, where `row(i)` returns the parenthesized tuple text for row i, and run
+    // it. Callers assert on the returned cursor (success + affected size).
+    template<typename RowFn>
+    inline components::cursor::cursor_t_ptr seed_rows(otterbrix::wrapper_dispatcher_t* dispatcher,
+                                                      const std::string& table,
+                                                      const std::string& cols,
+                                                      unsigned n,
+                                                      RowFn&& row) {
+        std::stringstream q;
+        q << "INSERT INTO " << table << " (" << cols << ") VALUES ";
+        for (unsigned i = 0; i < n; ++i) {
+            q << row(i) << (i + 1 == n ? ";" : ", ");
+        }
+        return exec(dispatcher, q.str());
+    }
+
+} // namespace test_helpers

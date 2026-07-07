@@ -30,12 +30,19 @@ namespace components::expressions {
         void set_distinct(bool d) { distinct_ = d; }
         bool is_distinct() const { return distinct_; }
 
+        void set_mergeable(bool m) { mergeable_ = m; }
+        [[nodiscard]] bool is_mergeable() const { return mergeable_; }
+
     private:
         std::string function_name_;
         compute::function_uid function_uid_{compute::invalid_function_uid};
         key_t key_;
         std::pmr::vector<param_storage> params_;
         bool distinct_{false};
+        // Resolved at validate from the function's is_mergeable() capability, NOT a
+        // hardcoded name list. Excluded from hash_impl/equal_impl (a resolved
+        // property, not identity — same as function_uid_).
+        bool mergeable_{false};
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;

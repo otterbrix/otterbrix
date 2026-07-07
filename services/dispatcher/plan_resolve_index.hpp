@@ -60,6 +60,16 @@ namespace services::catalog_resolve {
             referencing_fks_by_oid;
         std::unordered_map<components::catalog::oid_t, std::vector<std::pair<std::string, std::string>>>
             check_exprs_by_oid;
+        // UNIQUE / PRIMARY KEY column groups for INSERT/UPDATE (contype 'u'/'p').
+        // One ordered local column-name list per constraint, from the outgoing
+        // resolve_constraint gather (same branch as fks/check). Read by enrich to
+        // stamp the INSERT/UPDATE node so operator_unique_constraint_t can enforce.
+        std::unordered_map<components::catalog::oid_t, std::vector<std::vector<std::string>>> unique_constraints_by_oid;
+        // PRIMARY KEY column names (flattened, contype 'p' only) for INSERT/UPDATE:
+        // PK implies NOT NULL, and pg_attribute.attnotnull is not back-filled by
+        // ALTER TABLE ADD PRIMARY KEY / table-level PK — enrich merges these into
+        // the DML node's not_null_cols.
+        std::unordered_map<components::catalog::oid_t, std::vector<std::string>> pk_columns_by_oid;
 
         // CTE name → anchor column schema for recursive CTE working-set resolution.
         // Populated by validate_schema when processing node_recursive_cte_t;
@@ -70,7 +80,7 @@ namespace services::catalog_resolve {
             // type_md_by_qname is the live read signal that resolve-type data is
             // present; check it (not the oid map) so resolve-type isn't lost here.
             return ns_by_dbname.empty() && type_md_by_qname.empty() && outgoing_fks_by_oid.empty() &&
-                   referencing_fks_by_oid.empty() && check_exprs_by_oid.empty();
+                   referencing_fks_by_oid.empty() && check_exprs_by_oid.empty() && unique_constraints_by_oid.empty();
         }
     };
 
@@ -142,6 +152,8 @@ namespace services::catalog_resolve {
                         if (cr->direction() == resolve_direction::outgoing) {
                             out->outgoing_fks_by_oid[md->table_oid] = cr->fks();
                             out->check_exprs_by_oid[md->table_oid] = cr->check_exprs();
+                            out->unique_constraints_by_oid[md->table_oid] = cr->unique_constraints();
+                            out->pk_columns_by_oid[md->table_oid] = cr->pk_columns();
                         } else {
                             out->referencing_fks_by_oid[md->table_oid] = cr->fks();
                         }

@@ -653,6 +653,16 @@ namespace services::disk {
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);
+        // Aggregate-pushdown REDUCE: transparent router to the owning agent's
+        // storage_reduce_inner — one reply carrying ALL final aggregated rows (see
+        // disk_contract for the protocol + the single-owner invariant).
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
+        storage_reduce(session_id_t session,
+                       components::catalog::oid_t table_oid,
+                       std::unique_ptr<components::table::table_filter_t> filter,
+                       std::vector<size_t> projected_cols,
+                       components::table::transaction_data txn,
+                       components::operators::pushed_aggregate_spec_t spec);
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
@@ -715,6 +725,7 @@ namespace services::disk {
                                                        // Storage data operations
                                                        &manager_disk_t::storage_scan,
                                                        &manager_disk_t::storage_fetch_next_batch,
+                                                       &manager_disk_t::storage_reduce,
                                                        &manager_disk_t::storage_fetch,
                                                        &manager_disk_t::storage_scan_segment,
                                                        &manager_disk_t::storage_append,

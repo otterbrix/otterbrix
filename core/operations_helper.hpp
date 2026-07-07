@@ -20,6 +20,14 @@ namespace core {
     template<typename T>
     bool constexpr is_equals(T x, T y) {
         if constexpr (std::is_floating_point_v<T>) {
+            // NaN compares EQUAL to NaN and unequal to everything else (Postgres float
+            // semantics). The hash+verify dedup paths (GROUP BY / hash join / UNIQUE /
+            // FK semi-join) bucket identical NaN bit patterns together via std::hash,
+            // so the verify half must agree — an all-false NaN would let a UNIQUE/PK
+            // NaN duplicate through and make an FK NaN never match its own parent.
+            if (std::isnan(x) || std::isnan(y)) {
+                return std::isnan(x) && std::isnan(y);
+            }
             return std::fabs(x - y) < std::numeric_limits<T>::epsilon();
         } else {
             return x == y;

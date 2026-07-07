@@ -4,10 +4,23 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/storage/storage.hpp>
 #include <components/table/column_state.hpp>
 #include <core/result_wrapper.hpp>
 
 namespace components::operators {
+
+    // Build a table_filter_t from a compare-expression predicate + bound parameters, resolving
+    // parameter ids against `parameters` and coercing literals in `session_tz`. Defined in
+    // full_scan.cpp; used by the full_scan disk-send OPEN to lower the WHERE once.
+    // Returns a null unique_ptr for an all-true / absent predicate, or a physical_plan_error /
+    // invalid_parameter on a malformed expression — never throws (R2).
+    core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
+    transform_predicate(std::pmr::memory_resource* resource,
+                        const expressions::compare_expression_ptr& expression,
+                        const std::pmr::vector<types::complex_logical_type>& types,
+                        const logical_plan::storage_parameters* parameters,
+                        core::date::timezone_offset_t session_tz);
 
     class full_scan final : public read_only_operator_t {
     public:
@@ -21,6 +34,7 @@ namespace components::operators {
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const expressions::compare_expression_ptr& expression() const { return expression_; }
         const logical_plan::limit_t& limit() const { return limit_; }
+        const std::vector<size_t>& projected_cols() const noexcept { return projected_cols_; }
 
         // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
         // role()==source drives the streaming push/finalize pipeline. The FIRST source_next call

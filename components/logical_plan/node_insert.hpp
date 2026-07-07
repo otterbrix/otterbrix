@@ -3,7 +3,10 @@
 #include "node.hpp"
 
 #include <components/catalog/fk_info.hpp>
+#include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
+
+#include <utility>
 
 namespace components::logical_plan {
 
@@ -35,6 +38,25 @@ namespace components::logical_plan {
         void set_array_size_reqs(std::vector<std::pair<std::string, uint64_t>> v) { array_size_reqs_ = std::move(v); }
         const std::vector<std::pair<std::string, uint64_t>>& array_size_reqs() const { return array_size_reqs_; }
 
+        // UNIQUE / PRIMARY KEY column groups (contype 'u'/'p'), one ordered
+        // column-name list per constraint. Stamped by the dispatcher's enrich pass
+        // from the resolved pg_constraint rows; the planner forwards these onto the
+        // node_check_constraint_t wrapper so operator_unique_constraint_t enforces them.
+        void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
+        const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
+
+        // Decoded column DEFAULT values (name -> value), stamped by the enrich pass
+        // from pg_attribute.attdefspec. A column omitted from the INSERT column list
+        // stores its DEFAULT (filled agent-side at storage_append), so the constraint
+        // operators must evaluate an ABSENT column AS its default — the planner
+        // forwards these onto the node_check_constraint_t wrapper.
+        void set_column_defaults(std::vector<std::pair<std::string, types::logical_value_t>> v) {
+            column_defaults_ = std::move(v);
+        }
+        const std::vector<std::pair<std::string, types::logical_value_t>>& column_defaults() const {
+            return column_defaults_;
+        }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -46,6 +68,8 @@ namespace components::logical_plan {
         std::vector<catalog::fk_info_t> outgoing_fks_;
         std::vector<std::pair<std::string, std::string>> check_exprs_;  // (name, expr)
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
+        std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
+        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

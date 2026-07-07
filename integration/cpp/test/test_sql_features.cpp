@@ -4403,3 +4403,45 @@ TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty c
         }
     }
 }
+
+// Regression (transform_insert): a VALUES column whose FIRST row is a NULL literal was
+// typed NA, then aborted at set_value when a LATER row carried a concrete type. The NA
+// column must promote to the concrete type (prior NULLs preserved) instead of asserting.
+TEST_CASE("integration::cpp::test_sql_features::values_leading_null_column_promotes") {
+    auto config = test_create_config("/tmp/test_sql_features/values_leading_null");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE NullFirstDb;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE NullFirstDb.t (id BIGINT, name TEXT);")->is_success());
+    }
+    INFO("VALUES with a LEADING NULL id then a concrete BIGINT is accepted (NA -> BIGINT promotion)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            session, "INSERT INTO NullFirstDb.t (id, name) VALUES (NULL, 'a'), (1, 'b'), (NULL, 'c'), (2, 'd');");
+        REQUIRE(cur->is_success());
+        REQUIRE_FALSE(cur->is_error());
+    }
+    INFO("all four rows land") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS c FROM NullFirstDb.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 4);
+    }
+    INFO("exactly two rows carry a non-NULL id (the promoted BIGINT column)") {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM NullFirstDb.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 2);
+    }
+}

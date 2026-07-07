@@ -54,6 +54,14 @@ namespace components::operators {
         // swap-info, then mark_executed.
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
+        // Bounded-sink hook: the pending row count buffered in modified_.
+        // The executor mid-flushes await_async_and_resume once this crosses the
+        // configured dml_flush_row_threshold. The catalog form buffers nothing
+        // (buffered_rows()==0), so it is never mid-flushed.
+        [[nodiscard]] uint64_t buffered_rows() const noexcept override {
+            return modified_ ? modified_->size() : 0;
+        }
+
     private:
         // Shared SIMPLE-path core. Matches expression_ (all-true when null — the
         // scan already filtered) over ONE scan chunk; appends matched ABSOLUTE
@@ -86,6 +94,13 @@ namespace components::operators {
         chunks_vector_t index_old_chunks_{resource_};
         std::pmr::vector<int64_t> index_old_row_ids_{resource_};
         bool simple_init_done_{false};
+        // Bounded-sink accumulators. affected_rows_ sums the rows deleted
+        // across every flush (the final affected-count result is built from it, not
+        // from the just-flushed slice). delete_marker_recorded_ guards the ONE
+        // ctx->dml_deletes marker so repeated mid-flushes push it only once (the
+        // COMMIT-side revert keys on the txn id, not per-flush ranges).
+        uint64_t affected_rows_{0};
+        bool delete_marker_recorded_{false};
         // Catalog-delete spec (set only by the catalog constructor). oid_col_idx_
         // < 0 marks "not a catalog delete" → the predicate-scan path runs.
         std::int64_t oid_col_idx_{-1};

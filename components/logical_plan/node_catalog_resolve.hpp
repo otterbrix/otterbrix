@@ -158,6 +158,21 @@ namespace components::logical_plan {
         const std::vector<std::pair<std::string, std::string>>& check_exprs() const noexcept { return check_exprs_; }
         void set_check_exprs(std::vector<std::pair<std::string, std::string>> v) { check_exprs_ = std::move(v); }
 
+        // constraint (outgoing) — UNIQUE / PRIMARY KEY column groups (contype 'u'/'p').
+        // Each entry is one constraint's ordered local column-name list, resolved from
+        // pg_constraint.conkey by operator_resolve_constraint_t. Read by enrich to stamp
+        // the INSERT/UPDATE node so operator_unique_constraint_t can enforce them.
+        const std::vector<std::vector<std::string>>& unique_constraints() const noexcept { return unique_constraints_; }
+        void set_unique_constraints(std::vector<std::vector<std::string>> v) { unique_constraints_ = std::move(v); }
+
+        // constraint (outgoing) — PRIMARY KEY column names (contype 'p' only; the
+        // flattened union of all PK groups). PRIMARY KEY implies NOT NULL, but
+        // pg_attribute.attnotnull is only written for column-level constraints at
+        // CREATE TABLE — ALTER TABLE ADD PRIMARY KEY / a table-level PK never
+        // back-fills it. Read by enrich to merge into the DML node's not_null_cols.
+        const std::vector<std::string>& pk_columns() const noexcept { return pk_columns_; }
+        void set_pk_columns(std::vector<std::string> v) { pk_columns_ = std::move(v); }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -175,6 +190,8 @@ namespace components::logical_plan {
         resolve_direction direction_{resolve_direction::outgoing};
         std::vector<components::catalog::fk_info_t> fks_;
         std::vector<std::pair<std::string, std::string>> check_exprs_;
+        std::vector<std::vector<std::string>> unique_constraints_;
+        std::vector<std::string> pk_columns_;
     };
 
     using node_catalog_resolve_ptr = boost::intrusive_ptr<node_catalog_resolve_t>;

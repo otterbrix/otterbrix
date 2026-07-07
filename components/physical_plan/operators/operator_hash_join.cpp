@@ -2,6 +2,7 @@
 #include "join_utils.hpp"
 
 #include <components/types/types.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/vector.hpp>
 #include <core/operations_helper.hpp>
 
@@ -16,59 +17,11 @@ namespace components::operators {
 
     namespace {
 
-        // Typed cell == cell between two flat vectors, read directly from their
-        // physical buffers — no logical_value_t round-trip on the hot path. Used to
-        // CONFIRM a hash-bucket candidate (collision-safe verify). Callers have
-        // already excluded NULLs on both sides (NULL keys never equi-join).
-        template<typename T>
-        bool scalar_equal(const vector::vector_t& a, uint64_t ai, const vector::vector_t& b, uint64_t bi) {
-            if constexpr (std::is_floating_point_v<T>) {
-                return core::is_equals<T>(a.data<T>()[ai], b.data<T>()[bi]);
-            } else {
-                return a.data<T>()[ai] == b.data<T>()[bi];
-            }
-        }
-
-        bool cell_equal(const vector::vector_t& a, uint64_t ai, const vector::vector_t& b, uint64_t bi) {
-            switch (a.type().to_physical_type()) {
-                case types::physical_type::BOOL:
-                case types::physical_type::INT8:
-                    return scalar_equal<int8_t>(a, ai, b, bi);
-                case types::physical_type::INT16:
-                    return scalar_equal<int16_t>(a, ai, b, bi);
-                case types::physical_type::INT32:
-                    return scalar_equal<int32_t>(a, ai, b, bi);
-                case types::physical_type::INT64:
-                    return scalar_equal<int64_t>(a, ai, b, bi);
-                case types::physical_type::UINT8:
-                    return scalar_equal<uint8_t>(a, ai, b, bi);
-                case types::physical_type::UINT16:
-                    return scalar_equal<uint16_t>(a, ai, b, bi);
-                case types::physical_type::UINT32:
-                    return scalar_equal<uint32_t>(a, ai, b, bi);
-                case types::physical_type::UINT64:
-                    return scalar_equal<uint64_t>(a, ai, b, bi);
-                case types::physical_type::INT128:
-                    return scalar_equal<types::int128_t>(a, ai, b, bi);
-                case types::physical_type::UINT128:
-                    return scalar_equal<types::uint128_t>(a, ai, b, bi);
-                case types::physical_type::FLOAT:
-                    return scalar_equal<float>(a, ai, b, bi);
-                case types::physical_type::DOUBLE:
-                    return scalar_equal<double>(a, ai, b, bi);
-                case types::physical_type::STRING:
-                    return a.data<std::string_view>()[ai] == b.data<std::string_view>()[bi];
-                default:
-                    // The optimizer only stamps a scalar single-column equi-key, so a
-                    // nested/unknown physical type never reaches the probe verify.
-                    assert(false && "unhandled physical_type in hash-join key verify");
-                    return false;
-            }
-        }
-
         // Confirm a probe row against a candidate build row by a TYPED cell-by-cell
         // comparison over every key column (uniform for single- and multi-column
-        // keys). A non-matching column short-circuits to false.
+        // keys). A non-matching column short-circuits to false. Callers have already
+        // excluded NULLs on both sides (NULL keys never equi-join), so
+        // vector::cells_equal's NULL==NULL semantics are never exercised here.
         bool keys_verify(const vector::data_chunk_t& probe,
                          const std::pmr::vector<uint64_t>& probe_cols,
                          uint64_t probe_row,
@@ -76,7 +29,7 @@ namespace components::operators {
                          const std::pmr::vector<uint64_t>& build_cols,
                          uint64_t build_row) {
             for (size_t k = 0; k < probe_cols.size(); ++k) {
-                if (!cell_equal(probe.data[probe_cols[k]], probe_row, build.data[build_cols[k]], build_row)) {
+                if (!vector::cells_equal(probe.data[probe_cols[k]], probe_row, build.data[build_cols[k]], build_row)) {
                     return false;
                 }
             }

@@ -41,8 +41,7 @@ namespace components::pipeline {
         virtual ~subplan_runner_t() = default;
 
         // Run a prepared sub-plan root to completion through the streaming executor
-        // (the same routing seam execute_sub_plan_ uses: streaming pipeline vs.
-        // materialized on_execute + async-await loop) and return its output chunks.
+        // (the same routing seam execute_sub_plan_ uses) and return its output chunks.
         // The caller owns `ctx` (a pipeline::context_t built for this sub-plan).
         [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         run_subplan(boost::intrusive_ptr<components::operators::operator_t> root, context_t* ctx) = 0;

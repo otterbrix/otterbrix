@@ -72,26 +72,28 @@ namespace components::pipeline {
         // and patches the rows. Empty in implicit-txn / non-ALTER paths.
         std::vector<pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
 
-        // DML operators (insert/delete/update) record MVCC swap-info here from
-        // inside await_async_and_resume; the executor lifts these into the
-        // per-statement accumulators that feed txn_accumulate_msg. WAL physical
-        // writes happen in the operators; only the commit-side swap needs this
-        // back-channel.
-        int64_t dml_append_row_start{0};
-        uint64_t dml_append_row_count{0};
-        uint64_t dml_delete_txn_id{0};
-        catalog::oid_t dml_table_oid{catalog::INVALID_OID};
-        // FK cascade back-channel. operator_fk_cascade_t mutates a DIFFERENT table
-        // (the child) than the single-slot dml_* fields above (which the parent
-        // operator_delete already claimed), so its child delete / SET NULL-DEFAULT
-        // update ranges cannot ride the single-slot fields without clobbering the
-        // parent's. They are pushed here under the PARENT txn id so the executor
-        // lifts them into the same dml_deletes / dml_appends vectors the parent's
-        // ranges land in — COMMIT publishes the child mutation and ABORT
-        // (revert_all_deletes(parent_txn_id) / storage_revert_appends) reverts it,
-        // making cascade child mutations transactionally atomic with the parent.
-        std::vector<table::dml_delete_range_t> cascade_dml_deletes;
-        std::vector<table::dml_append_range_t> cascade_dml_appends;
+        // DML append/delete RANGE-LISTS. insert/update/delete/backfill record their
+        // MVCC swap-info here from inside await_async_and_resume; the executor's
+        // lift_dml_ranges drains them into the per-statement accumulators that feed
+        // txn_accumulate_msg. WAL physical writes happen in the operators; only the
+        // commit-side swap needs this back-channel. LISTS so a bounded DML sink
+        // can flush per-batch and record ONE range per flush; a single-flush op
+        // records exactly one. operator_fk_cascade_t (a DIFFERENT child table)
+        // pushes here too under the PARENT txn id, so COMMIT publishes and ABORT
+        // (revert_all_deletes(parent_txn_id) / storage_revert_appends) reverts
+        // parent + cascade child mutations as one atomic batch.
+        std::vector<table::dml_append_range_t> dml_appends;
+        std::vector<table::dml_delete_range_t> dml_deletes;
+        // Executor-set flush control for bounded DML sinks. dml_flush_is_final:
+        // false before a MID-pump flush of a buffering DML sink, true before the final
+        // post-pump async-finalize drive (the DML emits its RETURNING / affected-count
+        // output_ + mark_executed ONLY on the true call). dml_has_parent_constraint:
+        // true when a constraint sink (fk_check / fk_cascade / check_constraint) sits
+        // ABOVE the DML in the chain -> the DML accumulates constraint_input_ across
+        // flushes; false -> it drops it (bounded memory). Defaults match the
+        // single-final-flush, no-parent-constraint case.
+        bool dml_flush_is_final{true};
+        bool dml_has_parent_constraint{false};
         // DROP back-channel: operator_dynamic_cascade_delete_t records each
         // storage oid it dropped (alongside the mark_storage_dropped_many send). The
         // executor lifts these into execute_result_t.dropped_storage_oids and

@@ -21,6 +21,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/predicates/utils.cpp
 
         operators/scan/full_scan.cpp
+        operators/scan/pushed_reduce_scan.cpp
         operators/scan/index_scan.cpp
         operators/scan/transfer_scan.cpp
 
@@ -32,6 +33,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_match.cpp
         operators/operator_distinct.cpp
         operators/operator_group.cpp
+        operators/operator_group_merge.cpp
         operators/operator_select.cpp
         operators/operator_sort.cpp
         operators/operator_join.cpp
@@ -43,6 +45,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_check_constraint.cpp
         operators/operator_fk_check.cpp
         operators/operator_fk_cascade.cpp
+        operators/operator_unique_constraint.cpp
         operators/operator_sequence.cpp
         operators/operator_create_collection.cpp
         operators/operator_create_matview.cpp

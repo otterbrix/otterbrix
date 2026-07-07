@@ -54,6 +54,11 @@ namespace services::planner {
                                                     const components::logical_plan::storage_parameters* params) {
         switch (node->type()) {
             case node_type::aggregate_t:
+                // Aggregate-pushdown is lowered INSIDE create_plan_aggregate: when the group
+                // child is stamped pushdown() and the shape is POD-representable it returns a
+                // group_merge over a pushed_reduce_scan carrying the reduce spec (the owning agent
+                // reduces its slice); otherwise it builds the normal coordinator aggregate chain.
+                // No separate routing here.
                 return impl::create_plan_aggregate(context, function_registry, node, std::move(limit), params);
             case node_type::data_t:
                 return impl::create_plan_data(node);

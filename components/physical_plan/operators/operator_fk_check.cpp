@@ -1,5 +1,7 @@
 #include "operator_fk_check.hpp"
 
+#include "constraint_util.hpp"
+
 #include <components/context/context.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -14,49 +16,14 @@ namespace components::operators {
         : read_write_operator_t(resource, log, operator_type::fk_check)
         , fk_(std::move(fk)) {}
 
-    namespace {
-        // Resolve the rows fk_check validates. The DML child snapshots the
-        // just-written rows into constraint_input() at the top of its
-        // await_async_and_resume (BEFORE replacing its output_ with the
-        // RETURNING / affected-count chunk), so prefer that — it is populated in
-        // BOTH the streaming and materialized paths, since fk_check always runs
-        // after the DML's await. Fall back to the legacy lookup for any caller
-        // that did not snapshot (left_->output() then the DML's data source) so
-        // the materialized entry point keeps working unchanged.
-        const operator_data_ptr& resolve_fk_check_source(const operator_ptr& left) {
-            if (left->constraint_input() && left->constraint_input()->size() > 0) {
-                return left->constraint_input();
-            }
-            if (left->output() && !left->output()->chunks().empty() &&
-                left->output()->chunks().front().column_count() > 0) {
-                return left->output();
-            }
-            if (left->left() && left->left()->output()) {
-                return left->left()->output();
-            }
-            static const operator_data_ptr empty{nullptr};
-            return empty;
-        }
-
-        // The constraint operator is the plan ROOT, so its output_ becomes the
-        // result cursor (executor reads plan->output() in the is_root default case).
-        // Surface the DML child's final result: its RETURNING projection
-        // (column_count > 0) when present, else the raw written rows so the cursor
-        // reports the affected-row count.
-        const operator_data_ptr& resolve_cursor_output(const operator_ptr& left,
-                                                       const operator_data_ptr& validation_source) {
-            if (left->output() && !left->output()->chunks().empty() &&
-                left->output()->chunks().front().column_count() > 0) {
-                return left->output();
-            }
-            return validation_source;
-        }
-    } // namespace
+    using constraint_detail::resolve_cursor_output;
 
     actor_zeta::unique_future<void> operator_fk_check_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Resolve the source here directly in await_async_and_resume (the executor
-        // marks the root executed after the pump).
-        const auto& source = resolve_fk_check_source(left_);
+        // marks the root executed after the pump). fk_check validates the DML's
+        // constraint_input() snapshot: constraint ops STACK above one DML, so walk DOWN
+        // the left_ spine to the DML's snapshot (single canonical source, R6).
+        const auto& source = constraint_detail::resolve_constraint_source(left_);
         if (!source || source->size() == 0) {
             // Nothing to validate; still surface the DML result as the cursor.
             output_ = resolve_cursor_output(left_, source);
@@ -88,9 +55,10 @@ namespace components::operators {
         }
 
         // Collect the qualifying child rows as a per-chunk SELECTION, preserving the
-        // MATCH null policy + error path. The selections are gathered across every input
-        // chunk and the qualifying keys are concatenated into one owned keys-chunk so a
-        // single batched scan_by_keys verifies them all.
+        // MATCH null policy + error path. Each input chunk's qualifying keys become their
+        // own owned keys-chunk, verified by one scan_by_keys call per input chunk (below);
+        // scan_by_keys does ONE single-pass hash semi-join scan of the parent per call, so
+        // the whole verify is O(child_rows + parent_rows), not O(keys * parent_rows).
         // qualifying[c] = selection into in_chunks[c]; counts[c] = its qualifying count.
         std::pmr::vector<components::vector::indexing_vector_t> qualifying(resource_);
         std::pmr::vector<uint64_t> counts(resource_);

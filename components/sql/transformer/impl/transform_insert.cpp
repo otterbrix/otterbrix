@@ -450,6 +450,14 @@ namespace components::sql::transform {
                                 chunk.set_value(column_index,
                                                 chunk_row,
                                                 to_list_value(resource_, value.value(), elem_type));
+                            } else if (col_type == types::logical_type::NA && !value.value().is_null()) {
+                                // The column was created from a LEADING NULL literal (typed NA);
+                                // a later row now carries a concrete type. Every prior row is NULL,
+                                // so promote the NA column to the concrete type (nulls preserved)
+                                // before storing — otherwise set_value asserts on the type mismatch.
+                                chunk.data[column_index] =
+                                    promote_column(resource_, *it, chunk_row, val_type, chunk.capacity());
+                                chunk.set_value(column_index, chunk_row, std::move(value.value()));
                             } else {
                                 chunk.set_value(column_index, chunk_row, std::move(value.value()));
                             }

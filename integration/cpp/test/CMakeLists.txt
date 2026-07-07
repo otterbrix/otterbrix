@@ -12,6 +12,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_pool.cpp
         test_persistence.cpp
         test_sql_features.cpp
+        test_unique_constraint_operator.cpp
+        test_create_index_backfill_batched.cpp
         test_correctness_bugs.cpp
         test_production_scenarios.cpp
         test_join.cpp
@@ -45,6 +47,12 @@ set( ${PROJECT_NAME}_SOURCES
         test_streaming_ddl_leaf.cpp
         test_streaming_recursive_cte.cpp
         test_large_aggregate_dml.cpp
+        test_stacked_constraints.cpp
+        test_unique_constraint_e2e.cpp
+        test_bounded_dml_flush.cpp
+        test_aggregate_pushdown_e2e.cpp
+        test_pushdown_traffic.cpp
+        test_pushed_reduce_scan_lateral.cpp
 
         # stress tests with sanitizer are incredibly slow
         $<$<NOT:$<BOOL:${ENABLE_ASAN}>>:stress_test_sql_features.cpp>

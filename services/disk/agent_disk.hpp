@@ -17,6 +17,7 @@
 #include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -41,11 +42,41 @@ namespace services::disk {
 
     class base_manager_disk_t;
 
+    // Test-observable counter of ROWS the agent ships back for an aggregate-pushdown
+    // reduce — the sum of data_chunk_t::size() over the FINAL aggregated chunks
+    // produced by the reduce in storage_reduce_inner, i.e. exactly the
+    // rows that cross the agent->coordinator mailbox. This is the direct measurement of
+    // aggregate-pushdown traffic reduction: a scalar aggregate must reply exactly 1 row and
+    // a GROUP BY exactly one row per group, regardless of how many raw rows the agent
+    // scanned. Tests reset it to 0, run one aggregate, then assert the reply row count is
+    // TINY (<< the scanned input), proving only the finalized partial crossed the wire. Bumped
+    // ONLY on the spec/reduce path (a raw scan never touches it). Process-global + relaxed:
+    // coarse instrumentation, not a synchronization primitive; off every hot path. DEV_MODE-
+    // only, mirroring services::collection::executor::dml_flush_count() — production binaries
+    // carry neither the counter nor these accessors.
+#ifdef DEV_MODE
+    uint64_t pushdown_reply_rows() noexcept;
+    void reset_pushdown_reply_rows() noexcept;
+#endif
+
     // Forward-declared (full definitions in manager_disk.hpp). agent_disk_t's slice
     // maps use these as incomplete value types — safe because the user-provided
     // destructor in agent_disk.cpp defers template instantiation past this header.
     struct collection_storage_entry_t;
     struct dropped_storage_entry_t;
+
+    // Streaming single-pass hash semi-join used by scan_by_keys_inner. Returns
+    // result[i] = row_ids of every row of `storage` whose key columns equal input key-tuple i
+    // (one bucket per input key, input order; empty when nothing matches). Column j of `keys`
+    // holds the value for stored column key_col_indices[j]. STREAMS `storage` exactly ONCE
+    // (fetch_next_batch) regardless of key count — O(table_rows + nkeys), NOT O(nkeys *
+    // table_rows). Exposed at namespace scope so tests can drive it against a counting storage.
+    std::pmr::vector<std::pmr::vector<std::int64_t>>
+    fk_hash_semijoin(std::pmr::memory_resource* resource,
+                     components::storage::storage_t& storage,
+                     const std::pmr::vector<std::uint64_t>& key_col_indices,
+                     components::vector::data_chunk_t& keys,
+                     components::table::transaction_data txn);
 
     // Plain cross-mailbox result for checkpoint_inner. Folds the IN_MEMORY-twin
     // signal (formerly read post-await via has_in_memory_inner_sync) into the
@@ -279,20 +310,35 @@ namespace services::disk {
                                        std::vector<size_t> projected_cols,
                                        components::table::transaction_data txn);
 
+        // storage_reduce_inner — the aggregate-pushdown REDUCE, a dedicated protocol
+        //   leg (NOT a scan mode): runs the whole GROUP BY over this agent's OWN slice via
+        //   operator_group rebuilt from the POD spec (WHERE rides `filter`, projection
+        //   rides `projected_cols`), and replies ALL final aggregated rows in ONE reply — the
+        //   result is bounded by #groups, so no cursor exists. A not-owned / record-only oid
+        //   reduces over the EMPTY input (a scalar aggregate still emits its single row).
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
+        storage_reduce_inner(session_id_t session,
+                             components::catalog::oid_t table_oid,
+                             std::unique_ptr<components::table::table_filter_t> filter,
+                             std::vector<size_t> projected_cols,
+                             components::table::transaction_data txn,
+                             components::operators::pushed_aggregate_spec_t spec);
+
         // storage_scan_segment_inner — start-offset / count window scan. Returns the
         //   segment as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks (as storage yields them).
         unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_scan_segment_inner(components::catalog::oid_t table_oid, int64_t start, uint64_t count);
 
         // scan_by_keys_inner — batched keyed scan for one owned table. Resolves the
-        //   key column NAMES to storage indices once, then loops the key-tuples of the
-        //   columnar `keys` chunk: per row i it builds an eq-AND filter over the shared
-        //   key columns (constant = keys.value(j, i)) and scans, collecting the matching
-        //   row_ids. result[i] == match row_ids for key-tuple i; result has one
-        //   (possibly empty) entry per key. A not-owned OID / unknown column / arity
-        //   mismatch yields a same-length result of empty rows (or empty when keys is
-        //   empty). The whole batch is one mailbox message so name resolution happens
-        //   once and every key scan is serialized against same-oid mutations.
+        //   key column NAMES to storage indices once, then delegates to the streaming
+        //   single-pass hash semi-join fk_hash_semijoin: builds ONE typed hash of the
+        //   input key set and STREAMS the table exactly once (fetch_next_batch), bucketing
+        //   each row_id into every matching key. result[i] == match row_ids for key-tuple i;
+        //   result has one (possibly empty) entry per key. A not-owned OID / unknown column /
+        //   arity mismatch yields a same-length result of empty rows (or empty when keys is
+        //   empty). The whole batch is one mailbox message so name resolution happens once,
+        //   the scan is O(table_rows + nkeys) (NOT one full scan per key), and it is
+        //   serialized against same-oid mutations.
         unique_future<std::pmr::vector<std::pmr::vector<std::int64_t>>>
         scan_by_keys_inner(components::catalog::oid_t table_oid,
                            std::pmr::vector<std::string> key_col_names,
@@ -493,6 +539,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_fetch_inner,
                                                             &agent_disk_t::storage_scan_inner,
                                                             &agent_disk_t::storage_fetch_next_batch_inner,
+                                                            &agent_disk_t::storage_reduce_inner,
                                                             &agent_disk_t::storage_scan_segment_inner,
                                                             &agent_disk_t::scan_by_keys_inner,
                                                             &agent_disk_t::read_chunks_by_key_inner,
@@ -568,14 +615,12 @@ namespace services::disk {
         // (session counter), which scopes a source to one query.
         struct active_scan_t {
             components::catalog::oid_t table_oid{components::catalog::INVALID_OID}; // gates compact() on this oid
-            components::storage::scan_position_t pos; // absolute resume position (re-seek each fetch)
-            std::unique_ptr<components::table::table_filter_t>
-                filter;                                    // owned; bound into the transient state per fetch
-            std::vector<std::size_t> projected_cols;       // empty == all columns
-            components::table::transaction_data txn{0, 0}; // MVCC snapshot for the whole scan
-            int64_t matched_limit{-1};                     // post-filter matched-row cap (-1 == unbounded)
-            uint64_t matched_emitted{0};                   // running matched rows handed out (enforces matched_limit)
-            explicit active_scan_t(std::pmr::memory_resource*) {}
+            components::storage::scan_position_t pos;         // absolute resume position (re-seek each fetch)
+            std::unique_ptr<components::table::table_filter_t> filter; // owned; bound into the transient state per fetch
+            std::vector<std::size_t> projected_cols;          // empty == all columns
+            components::table::transaction_data txn{0, 0};    // MVCC snapshot for the whole scan
+            int64_t matched_limit{-1};                        // post-filter matched-row cap (-1 == unbounded)
+            uint64_t matched_emitted{0};                      // running matched rows handed out (enforces matched_limit)
         };
         std::pmr::unordered_map<uint64_t, active_scan_t> active_scans_;
         // Monotonic per-agent cursor-id counter, combined with the session at mint time so the id

@@ -289,13 +289,15 @@ namespace components::compute {
     aggregate_function::aggregate_function(std::string name,
                                            arity fn_arity,
                                            function_doc doc,
-                                           size_t available_kernel_slots)
-        : function_impl<aggregate_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots) {}
+                                           size_t available_kernel_slots,
+                                           bool mergeable)
+        : function_impl<aggregate_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots)
+        , mergeable_(mergeable) {}
 
     void aggregate_function::accept_visitor(compute::function_visitor& visitor) const { visitor.visit(*this); }
 
     std::unique_ptr<function> aggregate_function::get_copy(std::pmr::memory_resource* resource) const {
-        auto result = std::make_unique<aggregate_function>(name_, arity_, doc_, kernel_slots_);
+        auto result = std::make_unique<aggregate_function>(name_, arity_, doc_, kernel_slots_, mergeable_);
         for (const auto& kernel : kernels_) {
             (void) result->add_kernel(resource, kernel);
         }

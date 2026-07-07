@@ -44,11 +44,19 @@ namespace configuration {
         uint64_t analyze_sample_size{1000};
     };
 
+    struct config_execution final {
+        // Mid-pump flush threshold (rows) for streaming DML sinks. 0 = DISABLED:
+        // single post-pump flush, unbounded accumulator.
+        // A rollout gate — the executor guards `threshold != 0`.
+        uint64_t dml_flush_row_threshold{0};
+    };
+
     struct config final {
         config_log log;
         config_wal wal;
         config_disk disk;
         config_pandas pandas;
+        config_execution execution;
         std::filesystem::path main_path; // mainly used for checking, because log, wal and disk could be missing
 
         config(const std::filesystem::path& path = std::filesystem::current_path());
@@ -62,5 +70,6 @@ namespace configuration {
         , wal(path)
         , disk(path)
         , pandas()
+        , execution()
         , main_path(path) {}
 } // namespace configuration

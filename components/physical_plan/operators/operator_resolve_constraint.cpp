@@ -106,6 +106,16 @@ namespace components::operators {
         std::pmr::vector<catalog::oid_t> child_oids(resource_);
         std::pmr::vector<catalog::oid_t> parent_oids(resource_);
 
+        // UNIQUE ('u') / PRIMARY KEY ('p') constraints on the target table (outgoing
+        // only). conkey carries the local column attoids; column names are resolved
+        // below via one batched pg_attribute read keyed on table_oid. Each entry is
+        // one constraint's ordered attoid list, preserving column order.
+        std::vector<std::vector<catalog::oid_t>> pending_unique_attoids;
+        // Parallel to pending_unique_attoids: true when that group is a PRIMARY KEY
+        // (contype 'p'). PK implies NOT NULL, so the resolved PK column names are
+        // additionally stamped flat via set_pk_columns for enrich to merge.
+        std::vector<bool> pending_unique_is_pk;
+
         for (auto& con_chunk : con_batches) {
             if (con_chunk.column_count() <= catalog::pg_constraint_col::confupdtype)
                 continue;
@@ -173,6 +183,18 @@ namespace components::operators {
                             std::string(con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
                     }
                     check_exprs.emplace_back(std::move(name), std::string(conexpr_sv));
+                } else if ((contype == 'u' || contype == 'p') && direction == direction_t::outgoing) {
+                    // UNIQUE / PRIMARY KEY: the enforced columns live in conkey (same
+                    // encoding as an FK's conkey). Names are resolved after the loop.
+                    auto attoids = catalog::parse_oid_csv(
+                        con_chunk.value(catalog::pg_constraint_col::conkey, ci).is_null()
+                            ? std::string{}
+                            : std::string(
+                                  con_chunk.value(catalog::pg_constraint_col::conkey, ci).value<std::string_view>()));
+                    if (!attoids.empty()) {
+                        pending_unique_attoids.push_back(std::move(attoids));
+                        pending_unique_is_pk.push_back(contype == 'p');
+                    }
                 }
             }
         }
@@ -369,8 +391,62 @@ namespace components::operators {
             }
         }
 
+        // Resolve UNIQUE / PRIMARY KEY column attoids → names via a single batched
+        // pg_attribute read keyed on the target table_oid, then stamp the groups.
+        // Mirrors the FK child-column resolution above but for one table (all groups
+        // reference the same conrelid == table_oid).
+        std::vector<std::vector<std::string>> unique_groups;
+        std::vector<std::string> pk_columns;
+        if (!pending_unique_attoids.empty()) {
+            std::pmr::vector<std::string> attr_keys(resource_);
+            attr_keys.emplace_back("attrelid");
+            auto [_u, fut_attr_u] =
+                actor_zeta::send(ctx->disk_address,
+                                 &services::disk::manager_disk_t::read_chunks_by_key,
+                                 exec_ctx,
+                                 kPgAttribute,
+                                 std::move(attr_keys),
+                                 components::operators::make_key_chunk(resource_, table_oid));
+            auto attr_batches = co_await std::move(fut_attr_u);
+
+            for (std::size_t gi = 0; gi < pending_unique_attoids.size(); ++gi) {
+                const auto& attoids = pending_unique_attoids[gi];
+                std::vector<std::string> names;
+                names.reserve(attoids.size());
+                for (const auto& wanted_oid : attoids) {
+                    for (auto& attr_chunk : attr_batches) {
+                        if (attr_chunk.column_count() <= catalog::pg_attribute_col::attname)
+                            continue;
+                        bool found = false;
+                        for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
+                            auto row_attoid = static_cast<catalog::oid_t>(
+                                attr_chunk.value(catalog::pg_attribute_col::attoid, ai).value<std::uint32_t>());
+                            if (row_attoid == wanted_oid) {
+                                names.emplace_back(std::string(
+                                    attr_chunk.value(catalog::pg_attribute_col::attname, ai).value<std::string_view>()));
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found)
+                            break;
+                    }
+                }
+                // Only stamp a group whose every column resolved (a partially
+                // unresolved group cannot be enforced positionally).
+                if (names.size() == attoids.size()) {
+                    if (pending_unique_is_pk[gi]) {
+                        pk_columns.insert(pk_columns.end(), names.begin(), names.end());
+                    }
+                    unique_groups.push_back(std::move(names));
+                }
+            }
+        }
+
         target_node_->set_fks(std::move(fks));
         target_node_->set_check_exprs(std::move(check_exprs));
+        target_node_->set_unique_constraints(std::move(unique_groups));
+        target_node_->set_pk_columns(std::move(pk_columns));
         mark_executed();
         co_return;
     }

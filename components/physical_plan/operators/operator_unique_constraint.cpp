@@ -9,6 +9,7 @@
 #include <components/vector/vector_operations.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -131,9 +132,12 @@ namespace components::operators {
                     if (sources[j].col != kAbsentCol) {
                         keys_chunk.data[j].reference(chunk.data[sources[j].col]);
                     } else {
-                        for (uint64_t row = 0; row < n; ++row) {
-                            keys_chunk.data[j].set_value(row, *sources[j].def);
-                        }
+                        // Absent-with-default: reference the default as ONE CONSTANT
+                        // vector rather than n per-row logical_value_t writes (LAYER-0
+                        // minimize, rule 1). A CONSTANT column with cardinality n is
+                        // valid — downstream hash / vector_ops::copy / cells_equal all
+                        // read CONSTANT via get_value / zero-indexing.
+                        keys_chunk.data[j].reference(*sources[j].def);
                     }
                 }
                 keys_chunk.set_cardinality(n);
@@ -171,6 +175,16 @@ namespace components::operators {
                     // hash() takes column_ids by non-const ref; hand it a copy.
                     std::vector<uint64_t> hash_cols = col_ids;
                     chunk.hash(hash_cols, hash_vec);
+                    // When EVERY key column is an absent-with-default CONSTANT (LAYER 0
+                    // fills those via reference()), data_chunk_t::hash returns a CONSTANT
+                    // hash vector — only element 0 is written. The per-row hashes[row]
+                    // read below assumes FLAT, so broadcast the constant across all n
+                    // rows. A mixed present/CONSTANT key already flattens inside
+                    // combine_hash; this only fires for the all-defaulted group (e.g. a
+                    // lone defaulted UNIQUE column omitted by every batch row).
+                    if (hash_vec.get_vector_type() != components::vector::vector_type::FLAT) {
+                        hash_vec.flatten(n);
+                    }
                 }
                 const auto* hashes = hash_vec.data<uint64_t>();
 
@@ -226,32 +240,71 @@ namespace components::operators {
                 continue;
             }
 
-            for (std::size_t c = 0; c < key_chunks.size(); ++c) {
-                if (counts[c] == 0)
-                    continue;
-                components::vector::data_chunk_t keys(resource_, key_types, counts[c]);
-                for (std::size_t j = 0; j < col_ids.size(); ++j) {
-                    components::vector::vector_ops::copy(key_chunks[c].data[j],
-                                                         keys.data[j],
-                                                         qualifying[c],
-                                                         counts[c],
-                                                         0,
-                                                         0);
-                }
-                keys.set_cardinality(counts[c]);
+            // STRADDLE-PACK all qualifying rows of the group (across input chunks)
+            // into keys chunks of EXACTLY DEFAULT_VECTOR_CAPACITY rows, then scan
+            // each packed chunk once. Total scans = ceil(total_qualifying / 1024),
+            // instead of one scan per input chunk (which under-fills every chunk and
+            // multiplies the mailbox round-trips on multi-chunk inserts). LAYER 1 has
+            // already made every qualifying key unique across the batch, so a key's
+            // scan-match count is never split by packing and the `> 1` threshold —
+            // "the just-written row plus a pre-existing distinct row" — still holds.
+            uint64_t total_qualifying = 0;
+            for (uint64_t q : counts) {
+                total_qualifying += q;
+            }
+            if (total_qualifying == 0)
+                continue;
 
-                // Key column names cross the mailbox per scan; copy them each time.
-                std::pmr::vector<std::string> col_names(resource_);
-                col_names.reserve(group.size());
-                for (const auto& n : group) {
-                    col_names.emplace_back(n);
-                }
+            // Key column names cross the mailbox per scan; build ONCE, copy per scan.
+            std::pmr::vector<std::string> col_names(resource_);
+            col_names.reserve(group.size());
+            for (const auto& gname : group) {
+                col_names.emplace_back(gname);
+            }
 
+            std::size_t c = 0; // current input chunk
+            uint64_t off = 0;  // qualifying rows of chunk c already packed
+            while (c < key_chunks.size()) {
+                // FLAT target sized to a full vector; filled by straddling input
+                // chunks until it holds DEFAULT_VECTOR_CAPACITY rows (or input ends).
+                components::vector::data_chunk_t keys(resource_,
+                                                      key_types,
+                                                      components::vector::DEFAULT_VECTOR_CAPACITY);
+                uint64_t cur_n = 0; // rows packed into `keys` so far
+                while (c < key_chunks.size() && cur_n < components::vector::DEFAULT_VECTOR_CAPACITY) {
+                    if (off == counts[c]) { // chunk c exhausted (also skips counts[c] == 0)
+                        ++c;
+                        off = 0;
+                        continue;
+                    }
+                    const uint64_t take = std::min<uint64_t>(counts[c] - off,
+                                                             components::vector::DEFAULT_VECTOR_CAPACITY - cur_n);
+                    // 7-arg copy: bounded partial of qualifying[c]. source_count is the
+                    // FULL selection length (counts[c]) so a DICTIONARY source's merged
+                    // indexing covers the slice; source_offset walks the selection and
+                    // target_offset appends into the packed chunk.
+                    for (std::size_t j = 0; j < col_ids.size(); ++j) {
+                        components::vector::vector_ops::copy(key_chunks[c].data[j],
+                                                             keys.data[j],
+                                                             qualifying[c],
+                                                             counts[c],
+                                                             off,
+                                                             cur_n,
+                                                             take);
+                    }
+                    cur_n += take;
+                    off += take;
+                }
+                if (cur_n == 0)
+                    break; // only trailing exhausted chunks remained
+                keys.set_cardinality(cur_n);
+
+                std::pmr::vector<std::string> names(col_names, resource_);
                 auto [_, fut] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::scan_by_keys,
                                                  exec_ctx,
                                                  table_oid_,
-                                                 std::move(col_names),
+                                                 std::move(names),
                                                  std::move(keys));
                 auto matches = co_await std::move(fut);
 

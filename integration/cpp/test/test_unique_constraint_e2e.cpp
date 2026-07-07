@@ -239,3 +239,71 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_rejects_nul
         REQUIRE(cur->value(0, 0).value<uint64_t>() == 1);
     }
 }
+
+// ---------------------------------------------------------------------------
+// (G) MULTI-CHUNK STRADDLE — the existing-row scan layer STRADDLE-PACKS the
+//     whole write-set's qualifying rows (across the >1024-row insert's several
+//     input chunks) into DEFAULT_VECTOR_CAPACITY-sized keys chunks and scans
+//     each once, instead of one under-filled scan per input chunk.
+//
+//     Every OTHER row is NULL-keyed (UNIQUE => NULLS DISTINCT, so those rows are
+//     NOT key-bearing). That drops each input chunk's qualifying count below 1024,
+//     so a packed keys chunk is filled by MIXING key-bearing rows drawn from more
+//     than one input chunk — the cross-input-chunk path the old one-scan-per-chunk
+//     code never took. The insert must still be ACCEPTED (the pack copies the
+//     RIGHT rows — no NULL row leaks in, no manufactured collision), and a later
+//     duplicate of a HIGH existing key is still rejected. (The violation-across-
+//     chunks path is covered by bounded_dml_flush::error_after_mid_flush_reverts_all.)
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_accepted") {
+    auto config = make_test_config("/tmp/test_unique_constraint_e2e/multi_chunk_straddle", /*disk_on=*/true);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    // > 2 * DEFAULT_VECTOR_CAPACITY (1024): the write set spans 3 input chunks.
+    constexpr unsigned kRows = 3000;
+    auto id_is_null = [](unsigned i) { return i % 2 == 0; };
+
+    unsigned expected_non_null = 0;
+    for (unsigned i = 0; i < kRows; ++i) {
+        if (!id_is_null(i)) {
+            ++expected_non_null;
+        }
+    }
+
+    INFO("setup: big(id) UNIQUE, empty") {
+        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.big (id bigint, name text);")->is_success());
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.big ADD CONSTRAINT uq_big_id UNIQUE (id);")
+                    ->is_success());
+    }
+
+    INFO("one >1024-row insert (NULLs interspersed, non-NULLs all distinct) is accepted") {
+        auto cur = seed_rows(dispatcher, "TestDatabase.big", "id, name", kRows, [&](unsigned i) {
+            std::stringstream s;
+            if (id_is_null(i)) {
+                s << "(NULL, 'n')";
+            } else {
+                s << "(" << i << ", 'n')";
+            }
+            return s.str();
+        });
+        INFO("bulk insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == kRows);
+
+        // All rows landed (name is never NULL) and exactly the non-NULL keys count.
+        auto all = exec(dispatcher, "SELECT COUNT(name) AS c FROM TestDatabase.big;");
+        REQUIRE(all->is_success());
+        REQUIRE(all->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRows));
+        auto keyed = exec(dispatcher, "SELECT COUNT(id) AS c FROM TestDatabase.big;");
+        REQUIRE(keyed->is_success());
+        REQUIRE(keyed->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(expected_non_null));
+    }
+
+    INFO("a duplicate of a HIGH existing key (beyond the first packed chunk) is rejected") {
+        // 2001 is odd => it was inserted; a second copy collides against it.
+        auto cur = exec(dispatcher, "INSERT INTO TestDatabase.big (id, name) VALUES (2001, 'dup');");
+        REQUIRE(cur->is_error());
+    }
+}

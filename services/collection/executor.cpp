@@ -584,10 +584,9 @@ namespace services::collection::executor {
         // is not visible to promise_type::operator new). The throw-away
         // context_storage keeps the caller's own context_storage untouched.
         auto run_resolve_subplan = [this, session, resolve_txn, &session_ctx, &context_storage](
-                                       executor_t* self,
+                                       [[maybe_unused]] executor_t* self,
                                        std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes)
             -> executor_t::unique_future<execute_result_t> {
-            (void) self;
             auto root = boost::intrusive_ptr<components::logical_plan::node_t>(
                 new components::logical_plan::node_sequence_t(resource()));
             for (auto& n : resolve_nodes) {
@@ -1177,9 +1176,8 @@ namespace services::collection::executor {
             // via self->resource() — the [this] capture is not visible to the
             // coroutine frame allocator, and without `self` extract_resource_or_abort
             // fires.
-            auto allocate_oids_inline = [this, session, &context_storage](executor_t* self, std::size_t count)
+            auto allocate_oids_inline = [this, session, &context_storage]([[maybe_unused]] executor_t* self, std::size_t count)
                 -> executor_t::unique_future<std::vector<components::catalog::oid_t>> {
-                (void) self;
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
                 services::context_storage_t cstor{resource(), log_.clone(), context_storage.session_timezone};
@@ -1450,9 +1448,8 @@ namespace services::collection::executor {
         // finds the PMR resource — the [this] capture is not visible to
         // promise_type::operator new (same pattern as allocate_oids_inline).
         auto revert_failed_txn = [this, session, resolve_txn, &session_ctx](
-                                     executor_t* self,
+                                     [[maybe_unused]] executor_t* self,
                                      execute_result_t& exec_result) -> executor_t::unique_future<void> {
-            (void) self;
             // Storage revert: fold DML append ranges + pg_catalog append ranges
             // into a single storage_revert_appends (each range carries its own
             // table_oid; the handler routes per-range).
@@ -1677,10 +1674,9 @@ namespace services::collection::executor {
             // longer reference a valid index once indisvalid stays false).
             auto undo_create_index =
                 [this, session, resolve_txn, &create_index_pg_index_range, &has_create_index_pg_index_range](
-                    executor_t* self,
+                    [[maybe_unused]] executor_t* self,
                     components::catalog::oid_t table_oid,
                     std::pmr::string index_name) -> executor_t::unique_future<void> {
-                (void) self;
                 if (has_create_index_pg_index_range && disk_address_ != actor_zeta::address_t::empty_address()) {
                     std::vector<components::pg_catalog_append_range_t> revert_ranges;
                     revert_ranges.push_back(create_index_pg_index_range);

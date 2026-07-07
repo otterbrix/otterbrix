@@ -618,7 +618,7 @@ TEST_CASE("kernel_bug_proof::projection_reports_selected_columns") {
 // RED before Stage 3: the old code looked for a node_data_t under each side, found
 // none, produced empty column sets, and pushed nothing (out == outer).
 TEST_CASE("logical_plan::pushdown_filter_into_join_branch_disk_shaped_scans") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto left_scan = make_disk_scan(&resource, {"a", "b"});
     auto right_scan = make_disk_scan(&resource, {"c", "d"});
 
@@ -669,7 +669,7 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch_disk_shaped_scans") {
 // RED before the bail-lift: the old group/sort guard returned the node unchanged,
 // leaving both filters in the match above the join.
 TEST_CASE("logical_plan::pushdown_filter_into_join_branch_under_group_and_sort") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto left_scan = make_disk_scan(&resource, {"a", "b"});
     auto right_scan = make_disk_scan(&resource, {"c", "d"});
 

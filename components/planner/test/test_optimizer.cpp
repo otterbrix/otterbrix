@@ -1060,21 +1060,21 @@ namespace {
 } // namespace
 
 TEST_CASE("optimizer::pushdown_aggregate::scalar_mergeable_is_stamped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::grouped_mergeable_is_stamped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/true, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::no_agent_capability_does_not_stamp") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // Capability precondition (NOT a rollout flag): can_push_to_agent==false means
@@ -1084,14 +1084,14 @@ TEST_CASE("optimizer::pushdown_aggregate::no_agent_capability_does_not_stamp") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::count_distinct_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/true);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto having = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "h"));
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false, expression_ptr(having));
     auto agg = make_agg(&resource, group);
@@ -1099,7 +1099,7 @@ TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::join_child_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // A join sibling means this is not one owned base table => skip (a).
@@ -1111,7 +1111,7 @@ TEST_CASE("optimizer::pushdown_aggregate::join_child_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::nested_aggregate_child_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // A nested aggregate child => not a single owned base table => skip (a).
@@ -1123,7 +1123,7 @@ TEST_CASE("optimizer::pushdown_aggregate::nested_aggregate_child_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::union_child_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // A union sibling => multi-source, not one owned base table => skip (a).
@@ -1135,7 +1135,7 @@ TEST_CASE("optimizer::pushdown_aggregate::union_child_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // A cte_scan sibling => multi-source, not one owned base table => skip (a).
@@ -1144,7 +1144,7 @@ TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::non_mergeable_kind_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     // A non-whitelisted aggregate kind (no fragment-merge kernel) must stay
     // coordinator-side => skip (b), has_unmergeable_aggregate.
     std::vector<expression_ptr> exprs;
@@ -1163,7 +1163,7 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
     // function::is_mergeable()) instead of a hardcoded name list.
     // A mergeable builtin SUM over one owned table IS stamped; the SAME SUM made
     // DISTINCT must stay coordinator-side.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     {
         std::vector<expression_ptr> exprs;
         auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
@@ -1196,7 +1196,7 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     // A shape-/kind-pushable fragment, but an aggregate arg references a UDF
     // (function_uid >= DEFAULT_FUNCTIONS.size()). The owning agent rebuilds its
     // registry with builtins only, so the pushed fragment could not resolve it
@@ -1256,7 +1256,7 @@ namespace {
 } // namespace
 
 TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto lt_param = params->add_parameter(int64_t(5));
 

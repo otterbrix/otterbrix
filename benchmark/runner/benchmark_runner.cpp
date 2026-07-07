@@ -202,9 +202,7 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
     for (auto& b : benchmarks_) {
         if (matches_filter(*b, config)) {
             if (config.no_setup) {
-                if (auto* sql = dynamic_cast<sql_benchmark_t*>(b.get())) {
-                    sql->set_disable_setup(true);
-                }
+                b->set_disable_setup(true);
             }
             filtered.push_back(b.get());
         }

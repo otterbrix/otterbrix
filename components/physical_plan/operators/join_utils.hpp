@@ -281,4 +281,97 @@ namespace components::operators::join_detail {
         std::pmr::vector<uint64_t> buf_right_rows_;
     };
 
+    // Eager join output builder for operators whose BUILD (right) side is NOT
+    // materialized once for the whole probe but REGENERATED per outer row — namely
+    // operator_lateral_join_t, which re-runs its inner sub-plan for every outer row.
+    //
+    // The lazy join_builder above buffers raw (left_chunk, right_chunk) POINTERS and
+    // gathers them at flush(). That is sound ONLY when (i) a single probe chunk feeds
+    // the whole build and (ii) every build chunk outlives flush(). LATERAL breaks
+    // BOTH invariants: the outer input spans several persistent chunks (so a single
+    // overwritten left_chunk_ would mix rows across a flush window), and each inner
+    // result is destroyed at the end of its outer-row iteration (so a buffered right
+    // pointer would dangle by the post-loop flush → heap-use-after-free). This builder
+    // instead COPIES each row's left+right cells into the current output chunk at emit
+    // time, while both sources are still alive and correctly identified — no pointer
+    // buffering, so neither invariant is needed.
+    //
+    // Row/column semantics match join_builder: logical [left, right] output layout via
+    // the indices_* source→slot maps, NULL-padding the absent side for emit_left_only.
+    // It is a distinct strategy for a distinct operator — the two builders never share
+    // an instance or a flush path (no runtime lazy/eager toggle).
+    class eager_join_builder {
+    public:
+        eager_join_builder(std::pmr::memory_resource* resource,
+                           const std::pmr::vector<types::complex_logical_type>& out_types,
+                           const std::vector<size_t>& indices_left,
+                           const std::vector<size_t>& indices_right,
+                           chunks_vector_t& out_chunks)
+            : resource_(resource)
+            , out_types_(out_types)
+            , indices_left_(indices_left)
+            , indices_right_(indices_right)
+            , out_chunks_(out_chunks)
+            , cur_(resource, out_types, vector::DEFAULT_VECTOR_CAPACITY)
+            , idx1_(resource, uint64_t{1}) {}
+
+        // Matched (L row li) × (R row rj): copy both source rows into the output now.
+        void emit_matched(const vector::data_chunk_t& L, uint64_t li, const vector::data_chunk_t& R, uint64_t rj) {
+            copy_row_(L, li, indices_left_);
+            copy_row_(R, rj, indices_right_);
+            advance_();
+        }
+
+        // L row li with NULLs on all right-side output columns.
+        void emit_left_only(const vector::data_chunk_t& L, uint64_t li) {
+            copy_row_(L, li, indices_left_);
+            null_side_(indices_right_);
+            advance_();
+        }
+
+        void flush() {
+            if (filled_ == 0) {
+                return;
+            }
+            cur_.set_cardinality(filled_);
+            out_chunks_.emplace_back(std::move(cur_));
+            cur_ = vector::data_chunk_t(resource_, out_types_, vector::DEFAULT_VECTOR_CAPACITY);
+            filled_ = 0;
+        }
+
+    private:
+        // Gather source row `srow` into output row `filled_` via the side's source→slot map.
+        void copy_row_(const vector::data_chunk_t& src, uint64_t srow, const std::vector<size_t>& slots) {
+            idx1_.set_index(0, srow);
+            const size_t cols = src.column_count();
+            for (size_t c = 0; c < cols; ++c) {
+                if (is_placeholder(src.data[c])) {
+                    continue;
+                }
+                vector::vector_ops::copy(src.data[c], cur_.data[slots[c]], idx1_, 1, 0, filled_, 1);
+            }
+        }
+
+        void null_side_(const std::vector<size_t>& slots) {
+            for (size_t c = 0; c < slots.size(); ++c) {
+                cur_.data[slots[c]].validity().set_invalid(filled_);
+            }
+        }
+
+        void advance_() {
+            if (++filled_ == vector::DEFAULT_VECTOR_CAPACITY) {
+                flush();
+            }
+        }
+
+        std::pmr::memory_resource* resource_;
+        const std::pmr::vector<types::complex_logical_type>& out_types_;
+        const std::vector<size_t>& indices_left_;
+        const std::vector<size_t>& indices_right_;
+        chunks_vector_t& out_chunks_;
+        vector::data_chunk_t cur_;
+        vector::indexing_vector_t idx1_;
+        uint64_t filled_ = 0;
+    };
+
 } // namespace components::operators::join_detail

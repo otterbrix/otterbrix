@@ -78,6 +78,77 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where") {
     REQUIRE(collect(*cur, id_i, n_i, v_i) == expected);
 }
 
+// Regression (red-first) for the batched-join_builder use-after-free / row-mixup under
+// LATERAL. The lazy builder buffered a raw pointer to each outer row's per-iteration
+// inner result (destroyed each iteration) and a SINGLE left_chunk_ pointer overwritten
+// across outer chunks; with > DEFAULT_VECTOR_CAPACITY (1024) outer rows the correlated
+// inner is re-run per row, so the post-loop flush() gathered from freed inner chunks
+// (heap-use-after-free under ASan) and, when a flush window spanned two outer chunks,
+// paired left rows with the wrong outer chunk. The eager LATERAL builder copies each row
+// at emit time, fixing both. This asserts the full, correct 1:1 output at scale.
+TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
+    constexpr int64_t N = 1100; // > 1024 so the outer input spans >= 2 chunks
+    auto config = test_create_config("/tmp/test_lateral_subquery_multichunk");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto session = otterbrix::session_id_t();
+    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE TABLE s.outer_big (id BIGINT);");
+    dispatcher->execute_sql(session, "CREATE TABLE s.inr (k BIGINT, v BIGINT);");
+    // Each outer id 0..N-1 matches exactly one inner row (v = id + 100000). Insert in
+    // batches to keep individual INSERT statements small.
+    auto insert_batched = [&](const std::string& head, auto tuple_for) {
+        std::string sql;
+        int in_batch = 0;
+        for (int64_t i = 0; i < N; ++i) {
+            if (in_batch == 0) {
+                sql = head;
+            }
+            sql += tuple_for(i);
+            if (++in_batch == 200 || i == N - 1) {
+                sql += ";";
+                dispatcher->execute_sql(session, sql);
+                in_batch = 0;
+            } else {
+                sql += ",";
+            }
+        }
+    };
+    insert_batched("INSERT INTO s.outer_big (id) VALUES ",
+                   [](int64_t i) { return "(" + std::to_string(i) + ")"; });
+    insert_batched("INSERT INTO s.inr (k, v) VALUES ",
+                   [](int64_t i) { return "(" + std::to_string(i) + "," + std::to_string(i + 100000) + ")"; });
+
+    auto cur = dispatcher->execute_sql(
+        session,
+        "SELECT * FROM s.outer_big, LATERAL (SELECT inr.v FROM s.inr WHERE inr.k = outer_big.id) sub;");
+    INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == static_cast<uint64_t>(N));
+    int id_i = find_column(*cur, "id");
+    int v_i = find_column(*cur, "v");
+    REQUIRE(id_i >= 0);
+    REQUIRE(v_i >= 0);
+    // Every outer id must appear exactly once, paired with its own inner v (id + 100000).
+    // A left/right chunk mixup would break the pairing; a UAF would abort under ASan.
+    std::set<int64_t> seen_ids;
+    for (uint64_t r = 0; r < cur->size(); ++r) {
+        auto id_cell = cur->value(static_cast<uint64_t>(id_i), r);
+        auto v_cell = cur->value(static_cast<uint64_t>(v_i), r);
+        REQUIRE_FALSE(id_cell.is_null());
+        REQUIRE_FALSE(v_cell.is_null());
+        const int64_t id = id_cell.value<int64_t>();
+        const int64_t v = v_cell.value<int64_t>();
+        REQUIRE(v == id + 100000);
+        seen_ids.insert(id);
+    }
+    REQUIRE(seen_ids.size() == static_cast<size_t>(N));
+}
+
 TEST_CASE("integration::cpp::lateral_subquery::left_join_empty") {
     auto config = test_create_config("/tmp/test_lateral_subquery_left");
     test_clear_directory(config);

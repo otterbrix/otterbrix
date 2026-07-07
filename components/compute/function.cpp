@@ -1,5 +1,7 @@
 #include "function.hpp"
 
+#include <core/pmr.hpp>
+
 #include <optional>
 
 using namespace components::vector;
@@ -281,7 +283,7 @@ namespace components::compute {
     std::unique_ptr<function> vector_function::get_copy(std::pmr::memory_resource* resource) const {
         auto result = std::make_unique<vector_function>(name_, arity_, doc_, kernel_slots_);
         for (const auto& kernel : kernels_) {
-            (void) result->add_kernel(resource, kernel);
+            [[maybe_unused]] auto add_res = result->add_kernel(resource, kernel);
         }
         return result;
     }
@@ -299,7 +301,7 @@ namespace components::compute {
     std::unique_ptr<function> aggregate_function::get_copy(std::pmr::memory_resource* resource) const {
         auto result = std::make_unique<aggregate_function>(name_, arity_, doc_, kernel_slots_, mergeable_);
         for (const auto& kernel : kernels_) {
-            (void) result->add_kernel(resource, kernel);
+            [[maybe_unused]] auto add_res = result->add_kernel(resource, kernel);
         }
         return result;
     }
@@ -312,7 +314,7 @@ namespace components::compute {
     std::unique_ptr<function> row_function::get_copy(std::pmr::memory_resource* resource) const {
         auto result = std::make_unique<row_function>(name_, arity_, doc_, kernel_slots_);
         for (const auto& kernel : kernels_) {
-            (void) result->add_kernel(resource, kernel);
+            [[maybe_unused]] auto add_res = result->add_kernel(resource, kernel);
         }
         return result;
     }
@@ -325,7 +327,7 @@ namespace components::compute {
     std::unique_ptr<function> expand_function::get_copy(std::pmr::memory_resource* resource) const {
         auto result = std::make_unique<expand_function>(name_, arity_, doc_, kernel_slots_);
         for (const auto& kernel : kernels_) {
-            (void) result->add_kernel(resource, kernel);
+            [[maybe_unused]] auto add_res = result->add_kernel(resource, kernel);
         }
         return result;
     }
@@ -337,9 +339,22 @@ namespace components::compute {
     std::once_flag function_registry_t::init_flag_;
     std::unique_ptr<function_registry_t> function_registry_t::default_registry_;
 
+    namespace {
+        // Backing resource for the process-wide default function registry. The default
+        // registry is a lazily-created singleton torn down during static destruction, so
+        // its resource must outlive that teardown; a never-destroyed heap resource
+        // (reachable from this static pointer, hence not a leak under LSan) guarantees it
+        // without std::pmr::get_default_resource() (rule 14), using the sanctioned
+        // core::pmr::otterbrix_resource (rule 20).
+        std::pmr::memory_resource* default_registry_resource() {
+            static core::pmr::otterbrix_resource* resource = new core::pmr::otterbrix_resource();
+            return resource;
+        }
+    } // namespace
+
     function_registry_t* function_registry_t::get_default() {
         std::call_once(init_flag_, []() {
-            default_registry_ = std::make_unique<function_registry_t>(std::pmr::get_default_resource());
+            default_registry_ = std::make_unique<function_registry_t>(default_registry_resource());
             default_registry_->register_builtin_functions();
         });
         return default_registry_.get();
@@ -348,8 +363,8 @@ namespace components::compute {
     void function_registry_t::reset_default() {
         // Ensure init_flag_ has fired (so get_default() won't later overwrite our
         // fresh instance), then replace with a clean builtins-only registry.
-        (void) get_default();
-        default_registry_ = std::make_unique<function_registry_t>(std::pmr::get_default_resource());
+        [[maybe_unused]] auto* fired = get_default();
+        default_registry_ = std::make_unique<function_registry_t>(default_registry_resource());
         default_registry_->register_builtin_functions();
     }
 

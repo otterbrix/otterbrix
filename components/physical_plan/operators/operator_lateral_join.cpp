@@ -12,7 +12,7 @@
 
 namespace components::operators {
 
-    using join_detail::join_builder;
+    using join_detail::eager_join_builder;
     using join_type = components::logical_plan::join_type;
 
     operator_lateral_join_t::operator_lateral_join_t(std::pmr::memory_resource* resource,
@@ -147,7 +147,7 @@ namespace components::operators {
         }
 
         chunks_vector_t result(res);
-        join_builder builder(res, out_types, indices_left, indices_right, result);
+        eager_join_builder builder(res, out_types, indices_left, indices_right, result);
         // The ON predicate spans (outer columns | inner columns); build it over the
         // outer (left/probe) and inner (right/build) schemas. all_true for the comma /
         // ON true forms passes every inner row. Correlation parameters are read live

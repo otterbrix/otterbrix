@@ -79,7 +79,6 @@ target_link_libraries(
         absl::node_hash_map
         actor-zeta::actor-zeta
         Boost::boost
-        msgpackc-cxx
         spdlog::spdlog
 )
 

@@ -27,7 +27,6 @@ target_link_libraries(
         actor-zeta::actor-zeta
         Catch2::Catch2
         Boost::boost
-        msgpackc-cxx
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

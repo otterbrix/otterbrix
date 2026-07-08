@@ -360,8 +360,8 @@ namespace components::planner {
         //             with relkind='c' + one pg_attribute row per field. We reuse
         //             build_create_table_writes (the same builder used for CREATE
         //             TABLE) since pg_class+pg_attribute is the source of truth for
-        //             composite types — sidesteps the msgpack roundtrip bug for
-        //             nested STRUCT typdefspec encoding.
+        //             composite types — sidesteps the flat-text type_spec roundtrip bug
+        //             for nested STRUCT typdefspec encoding.
         //
         //   ENUM/other → persisted via pg_type; build_create_type_writes encodes the
         //                non-composite definition into a single typdefspec string.

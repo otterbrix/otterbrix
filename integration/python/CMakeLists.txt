@@ -43,7 +43,6 @@ target_link_libraries(otterbrix_python PRIVATE
     ${external_LIBS}
     pybind11::pybind11
     spdlog::spdlog
-    msgpackc-cxx
     absl::crc32c
     absl::int128
     actor-zeta::actor-zeta

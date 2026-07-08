@@ -55,7 +55,7 @@ target_link_libraries(
         otterbrix::vector
 
         absl::crc32c
-        msgpackc-cxx
+        Boost::boost
 )
 
 target_include_directories(

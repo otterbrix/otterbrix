@@ -104,9 +104,10 @@ namespace components::catalog {
     // (typdefspec). For built-in scalar types `encode_type_spec` returns "" — atttypid /
     // typdefspec=NULL is sufficient for round-trip. For complex types (DECIMAL, ARRAY,
     // LIST, ENUM, STRUCT, MAP, UNKNOWN) the full complex_logical_type tree is serialized
-    // via msgpack so readers can reconstruct precision/scale, element types, child
-    // fields, enum entries, etc. across restart. `decode_type_spec` returns
-    // logical_type::UNKNOWN on empty/malformed input — non-throwing best-effort.
+    // as flat-text (e.g. "DECIMAL(18,6)") so readers can reconstruct precision/scale,
+    // element types, child fields, enum entries, etc. across restart.
+    // `decode_type_spec` returns logical_type::UNKNOWN on empty/malformed input —
+    // non-throwing best-effort.
     std::string encode_type_spec(const types::complex_logical_type& t);
     types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec);
 

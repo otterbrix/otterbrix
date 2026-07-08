@@ -30,9 +30,8 @@ target_link_libraries(
     absl::int128
     actor-zeta::actor-zeta
     Boost::boost
-    Catch2::Catch2
-    msgpackc-cxx
-    spdlog::spdlog
+        Catch2::Catch2
+        spdlog::spdlog
 )
 
 include(CTest)

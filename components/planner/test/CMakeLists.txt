@@ -24,7 +24,6 @@ target_link_libraries(
         actor-zeta::actor-zeta
         Boost::boost
         Catch2::Catch2WithMain
-        msgpackc-cxx
         spdlog::spdlog
 )
 

@@ -20,8 +20,8 @@ set_property(TARGET otterbrix_${PROJECT_NAME} PROPERTY EXPORT_NAME ${PROJECT_NAM
 target_link_libraries(
         otterbrix_${PROJECT_NAME} PRIVATE
         absl::int128
-        msgpackc-cxx
         otterbrix::vector
+        Boost::boost
 )
 
 target_include_directories(otterbrix_${PROJECT_NAME}

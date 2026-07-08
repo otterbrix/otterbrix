@@ -24,7 +24,6 @@ set(otterbrix_LIBS
         absl::node_hash_map
         actor-zeta::actor-zeta
         Boost::boost
-        msgpackc-cxx
         spdlog::spdlog
 )
 
@@ -49,7 +48,6 @@ target_link_libraries(
         ${PROJECT_NAME}_shared PRIVATE
         ${otterbrix_LIBS}
         spdlog::spdlog
-        msgpackc-cxx
         #CONAN_PKG::date
         absl::crc32c
         absl::int128
@@ -90,7 +88,6 @@ if (DEV_MODE OR ALLOW_BENCHMARK)
             ${otterbrix_LIBS}
 
             spdlog::spdlog
-            msgpackc-cxx
             #CONAN_PKG::date
             absl::crc32c
             absl::int128

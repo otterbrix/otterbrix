@@ -25,7 +25,6 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
         otterbrix::vector
         absl::int128
-        msgpackc-cxx
 )
 
 target_include_directories( otterbrix_${PROJECT_NAME} PUBLIC )

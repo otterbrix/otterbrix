@@ -5,7 +5,6 @@
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 
-#include <boost/lexical_cast.hpp>
 
 #include <ctime>
 #include <limits>

@@ -77,7 +77,6 @@ target_link_libraries(
         otterbrix::locks
 
         spdlog::spdlog
-        msgpackc-cxx
         #CONAN_PKG::date
         Catch2::Catch2WithMain
         absl::crc32c
@@ -108,7 +107,6 @@ target_link_libraries(profile_arithmetic PRIVATE
         otterbrix::services
         otterbrix::locks
         spdlog::spdlog
-        msgpackc-cxx
         Catch2::Catch2
         absl::crc32c
         absl::int128

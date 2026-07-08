@@ -1,24 +1,13 @@
 #include "btree_index_disk.hpp"
 
-#include <components/types/logical_value_msgpack.hpp>
-#include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
-#include <msgpack.hpp>
+#include "btree_record_codec.hpp"
+
+#include <components/index/logical_value_binary_codec.hpp>
 
 namespace services::index {
 
     using namespace core::b_plus_tree;
     using components::types::logical_type;
-
-    auto item_key_getter = [](const btree_t::item_data& item) -> btree_t::index_t {
-        msgpack::unpacked msg;
-        msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) { return true; });
-        return get_field(msg.get(), "/0");
-    };
-    auto id_getter = [](const btree_t::item_data& item) -> btree_t::index_t {
-        msgpack::unpacked msg;
-        msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) { return true; });
-        return get_field(msg.get(), "/1");
-    };
 
     components::types::physical_value convert(const components::types::logical_value_t& value) {
         switch (value.type().type()) {
@@ -76,12 +65,10 @@ namespace services::index {
         auto values = find(key);
         if (std::find(values.begin(), values.end(), value) == values.end()) {
             values.push_back(value);
-            msgpack::sbuffer sbuf;
-            msgpack::packer packer(sbuf);
-            packer.pack_array(2);
-            packer.pack(key);
-            packer.pack(value);
-            db_->append(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
+            std::pmr::string out(resource_);
+            components::index::codec::append_logical_value(out, key);
+            components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(value));
+            db_->append(out.data(), static_cast<uint32_t>(out.size()));
             mark_operation_dirty();
             flush_if_needed();
         }
@@ -97,12 +84,10 @@ namespace services::index {
         auto values = find(key);
         if (!values.empty()) {
             values.erase(std::remove(values.begin(), values.end(), row_id), values.end());
-            msgpack::sbuffer sbuf;
-            msgpack::packer packer(sbuf);
-            packer.pack_array(2);
-            packer.pack(key);
-            packer.pack(row_id);
-            db_->remove(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
+            std::pmr::string out(resource_);
+            components::index::codec::append_logical_value(out, key);
+            components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(row_id));
+            db_->remove(out.data(), static_cast<uint32_t>(out.size()));
             mark_operation_dirty();
             flush_if_needed();
         }
@@ -116,28 +101,24 @@ namespace services::index {
 
     void btree_index_disk_t::insert_bulk_unchecked(const value_t& key, size_t value) {
         // Bulk fast path: append (key,value) WITHOUT the per-insert find() dedup
-        // (insert()'s O(items-per-key) scan + msgpack unpack) and WITHOUT a per-insert
+        // (insert()'s O(items-per-key) scan + binary decode) and WITHOUT a per-insert
         // flush. The caller (bulk load / repopulate) guarantees uniqueness, so the
         // dedup is unnecessary; force_flush() persists once at the end. This turns a
         // bulk load from O(rows^2) into O(rows).
-        msgpack::sbuffer sbuf;
-        msgpack::packer packer(sbuf);
-        packer.pack_array(2);
-        packer.pack(key);
-        packer.pack(value);
-        db_->append(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
+        std::pmr::string out(resource_);
+        components::index::codec::append_logical_value(out, key);
+        components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(value));
+        db_->append(out.data(), static_cast<uint32_t>(out.size()));
         mark_operation_dirty();
     }
 
     void btree_index_disk_t::remove_bulk_unchecked(const value_t& key, size_t row_id) {
         // Bulk fast path: erase the (key,row_id) entry directly WITHOUT the per-remove
         // find() guard. The caller guarantees the entry is present; force_flush() once.
-        msgpack::sbuffer sbuf;
-        msgpack::packer packer(sbuf);
-        packer.pack_array(2);
-        packer.pack(key);
-        packer.pack(row_id);
-        db_->remove(data_ptr_t(sbuf.data()), static_cast<uint32_t>(sbuf.size()));
+        std::pmr::string out(resource_);
+        components::index::codec::append_logical_value(out, key);
+        components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(row_id));
+        db_->remove(out.data(), static_cast<uint32_t>(out.size()));
         mark_operation_dirty();
     }
 

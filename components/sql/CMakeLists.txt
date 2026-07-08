@@ -70,7 +70,6 @@ target_link_libraries(
     otterbrix::logical_plan
 
     absl::int128
-    msgpackc-cxx
 )
 
 target_include_directories(

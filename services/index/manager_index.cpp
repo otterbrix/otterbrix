@@ -2,6 +2,7 @@
 
 #include "bitcask_index_disk.hpp"
 #include "btree_index_disk.hpp"
+#include "btree_record_codec.hpp"
 #include "disk_hash_table.hpp"
 
 #include <actor-zeta/spawn.hpp>
@@ -11,9 +12,7 @@
 #include <components/index/index_engine.hpp>
 #include <components/index/single_field_index.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
-#include <core/b_plus_tree/msgpack_reader/msgpack_reader.hpp>
 #include <core/executor.hpp>
-#include <msgpack.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/wal/record.hpp>
 #include <set>
@@ -21,18 +20,6 @@
 
 namespace {
     using namespace core::b_plus_tree;
-
-    auto item_key_getter = [](const btree_t::item_data& item) -> btree_t::index_t {
-        msgpack::unpacked msg;
-        msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) { return true; });
-        return get_field(msg.get(), "/0");
-    };
-
-    auto id_getter = [](const btree_t::item_data& item) -> btree_t::index_t {
-        msgpack::unpacked msg;
-        msgpack::unpack(msg, item.data, item.size, [](msgpack::type::object_type, std::size_t, void*) { return true; });
-        return get_field(msg.get(), "/1");
-    };
 
     using value_t = components::types::logical_value_t;
     using namespace components::types;

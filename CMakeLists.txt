@@ -118,13 +118,9 @@ endif()
 # conan
 message(STATUS "DCMAKE_TOOLCHAIN_FILE = ${CMAKE_TOOLCHAIN_FILE}")
 
-if(POLICY CMP0167)
-    cmake_policy(SET CMP0167 OLD)
-endif()
-find_package(Boost 1.86.0 REQUIRED)
+find_package(Boost 1.88.0 REQUIRED)
 find_package(fmt 11.1.3 REQUIRED)
 find_package(spdlog 1.15.1 REQUIRED)
-find_package(msgpack 4.1.1 REQUIRED)
 find_package(Catch2 3 REQUIRED)
 find_package(benchmark 1.6.1 REQUIRED)
 find_package(ZLIB 1.2.12 REQUIRED)
@@ -141,30 +137,15 @@ if(BUILD_PYTHON)
 endif()
 
 if (ENABLE_ASAN AND NOT APPLE)
-    # build abseil-cpp locally to avoid ABI issues (skip on macOS ARM64 due to SSE flags)
+    # build abseil-cpp locally to avoid ABI issues with ASAN-instrumented code
     include(FetchContent)
     FetchContent_Declare(
             absl
-            URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20230802.1.zip
+            URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20260107.1.zip
     )
     FetchContent_MakeAvailable(absl)
-    # Fix: abseil 20230802.1 on Apple ARM64 produces -Xarch_x86_64 -maes -msse4.1
-    # where CMake deduplicates the second -Xarch_x86_64, leaving bare -msse4.1
-    # which fails on ARM64. Override to ARM64-only flags on affected targets.
-    if(APPLE AND CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
-        get_target_property(_opts absl_random_internal_randen_hwaes_impl COMPILE_OPTIONS)
-        if(_opts)
-            list(REMOVE_ITEM _opts "-Xarch_x86_64" "-maes" "-msse4.1")
-            set_target_properties(absl_random_internal_randen_hwaes_impl PROPERTIES COMPILE_OPTIONS "${_opts}")
-        endif()
-        get_target_property(_opts2 absl_random_internal_randen_hwaes COMPILE_OPTIONS)
-        if(_opts2)
-            list(REMOVE_ITEM _opts2 "-Xarch_x86_64" "-maes" "-msse4.1")
-            set_target_properties(absl_random_internal_randen_hwaes PROPERTIES COMPILE_OPTIONS "${_opts2}")
-        endif()
-    endif()
 else()
-    find_package(absl 20230802.1 REQUIRED)
+    find_package(absl CONFIG REQUIRED)
 endif()
 
 

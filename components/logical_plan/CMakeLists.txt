@@ -66,7 +66,6 @@ target_link_libraries(
 
         absl::int128
         Boost::boost
-        msgpackc-cxx
 )
 
 target_include_directories(

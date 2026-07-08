@@ -86,6 +86,10 @@ public:
     virtual void cleanup(benchmark_state_t& /*state*/) {}
     virtual std::string verify(benchmark_state_t& /*state*/) { return ""; }
 
+    // Only SQL benchmarks have a setup phase to skip; the default is a no-op so the
+    // runner can request it uniformly without a dynamic_cast.
+    virtual void set_disable_setup(bool /*disable*/) {}
+
     virtual uint64_t nruns() const { return 5; }
     virtual uint64_t timeout_seconds() const { return 30; }
 };

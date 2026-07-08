@@ -2,7 +2,6 @@
 
 #include <optional>
 #include <utility>
-#include <variant>
 
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -27,11 +26,11 @@ namespace components::planner::optimizer {
             if (cmp->type() != ce::compare_type::eq) {
                 return std::nullopt;
             }
-            if (!std::holds_alternative<ce::key_t>(cmp->left()) || !std::holds_alternative<ce::key_t>(cmp->right())) {
+            if (!ce::is_key(cmp->left()) || !ce::is_key(cmp->right())) {
                 return std::nullopt;
             }
-            const auto& lk = std::get<ce::key_t>(cmp->left());
-            const auto& rk = std::get<ce::key_t>(cmp->right());
+            const auto& lk = ce::as_key(cmp->left());
+            const auto& rk = ce::as_key(cmp->right());
             // Only a single top-level column maps to a hash-table probe. A multi-element
             // path is a nested-struct/UDT field access (e.g. `(custom_type).f1`); path()[0]
             // would address the whole struct column, not the scalar being compared, so we

@@ -22,3 +22,7 @@ target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         cpp_otterbrix
 )
+
+if (DEV_MODE)
+    add_subdirectory(test)
+endif()

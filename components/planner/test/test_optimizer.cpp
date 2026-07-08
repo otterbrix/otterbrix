@@ -7,6 +7,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_cte_scan.hpp>
+#include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -17,7 +18,12 @@
 #include <components/physical_plan_generator/impl/create_plan_match.hpp>
 #include <components/physical_plan_generator/impl/index_selection_helpers.hpp>
 #include <components/planner/optimizer.hpp>
+#include <components/planner/optimizer/rules/hash_join.hpp>
+#include <components/planner/optimizer/rules/promote_cross_join.hpp>
+#include <components/tests/generaty.hpp>
+#include <components/types/types.hpp>
 #include <services/collection/context_storage.hpp>
+#include <services/dispatcher/validate_logical_plan.hpp>
 
 #include "pushdown_plan_builders.hpp"
 
@@ -1054,21 +1060,21 @@ namespace {
 } // namespace
 
 TEST_CASE("optimizer::pushdown_aggregate::scalar_mergeable_is_stamped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::grouped_mergeable_is_stamped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/true, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::no_agent_capability_does_not_stamp") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // Capability precondition (NOT a rollout flag): can_push_to_agent==false means
@@ -1078,14 +1084,14 @@ TEST_CASE("optimizer::pushdown_aggregate::no_agent_capability_does_not_stamp") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::count_distinct_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/true);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto having = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "h"));
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false, expression_ptr(having));
     auto agg = make_agg(&resource, group);
@@ -1093,7 +1099,7 @@ TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::join_child_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // A join sibling means this is not one owned base table => skip (a).
@@ -1105,7 +1111,7 @@ TEST_CASE("optimizer::pushdown_aggregate::join_child_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::nested_aggregate_child_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // A nested aggregate child => not a single owned base table => skip (a).
@@ -1117,7 +1123,7 @@ TEST_CASE("optimizer::pushdown_aggregate::nested_aggregate_child_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::union_child_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // A union sibling => multi-source, not one owned base table => skip (a).
@@ -1129,7 +1135,7 @@ TEST_CASE("optimizer::pushdown_aggregate::union_child_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     // A cte_scan sibling => multi-source, not one owned base table => skip (a).
@@ -1138,7 +1144,7 @@ TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::non_mergeable_kind_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     // A non-whitelisted aggregate kind (no fragment-merge kernel) must stay
     // coordinator-side => skip (b), has_unmergeable_aggregate.
     std::vector<expression_ptr> exprs;
@@ -1157,7 +1163,7 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
     // function::is_mergeable()) instead of a hardcoded name list.
     // A mergeable builtin SUM over one owned table IS stamped; the SAME SUM made
     // DISTINCT must stay coordinator-side.
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     {
         std::vector<expression_ptr> exprs;
         auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
@@ -1190,7 +1196,7 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     // A shape-/kind-pushable fragment, but an aggregate arg references a UDF
     // (function_uid >= DEFAULT_FUNCTIONS.size()). The owning agent rebuilds its
     // registry with builtins only, so the pushed fragment could not resolve it
@@ -1208,4 +1214,132 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
         make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs, nullptr);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+}
+
+// ================================================================
+// Cross->inner promotion (promote_cross_join.cpp)
+//
+// SELECT SUM(ap) FROM a, b WHERE ak = bk AND ap < ?
+// lowers to:
+//   aggregate_t[ join{cross}(scan_a{ak,ap}, scan_b{bk}) + all_true,
+//                match{ union_and[ eq(ak, bk), lt(ap, ?) ] },
+//                group{ SUM(ap) } ].
+//
+// The comma-join uses UNQUALIFIED column names, so validate_schema stamps BOTH
+// equi keys side=left over the merged [ak, ap, bk] schema (the same_schema path)
+// and stamps output_types() on the scan children. Because both keys are side=left,
+// detect_equi_columns cannot accept the cross join as-is.
+//
+// promote_cross_joins classifies the equi keys by PATH RANGE against the intact
+// stamped scans (left_width = scan_a.output_types().size() == 2): ak -> merged
+// idx 0 (left range), bk -> merged idx 2 (right range). It moves the eq onto a
+// fresh INNER join, re-localizes + re-sides the right-range key (merged 2 ->
+// right-local 0, side=right), and keeps the non-join lt filter as the residual
+// match. rewrite_hash_joins (run AFTER, as optimize() orders it) then lowers the
+// promoted inner join to algo()==hash.
+//
+// The scans are driven through the REAL validate_schema (never hand-stamped) so
+// key.side()/key.path()/output_types() are exactly what the SQL pipeline produces
+// (make_agg 5-arg would stamp the wrapper, not the scans).
+// ================================================================
+namespace {
+    // A raw BIGINT scan, left UNstamped on purpose: validate_schema derives and
+    // stamps its output_types() from the data chunk (the test must not hand-stamp).
+    static node_ptr make_promote_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
+        std::pmr::vector<components::types::complex_logical_type> types(r);
+        for (const char* name : cols) {
+            types.emplace_back(components::types::logical_type::BIGINT, name);
+        }
+        auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, r);
+        return make_node_raw_data(r, std::move(chunk));
+    }
+} // namespace
+
+TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto lt_param = params->add_parameter(int64_t(5));
+
+    // Distinct column names => each unqualified reference resolves to exactly one
+    // merged column (the validator rejects ambiguous duplicates), which is what
+    // makes the promote rule's path-range classification well-defined.
+    auto scan_a = make_promote_scan(&resource, {"ak", "ap"});
+    auto scan_b = make_promote_scan(&resource, {"bk"});
+
+    auto join =
+        make_node_join(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, join_type::cross);
+    join->append_child(scan_a);
+    join->append_child(scan_b);
+    // FROM a, b lowers the join with an all_true ON placeholder.
+    join->append_expression(make_compare_expression(&resource, compare_type::all_true));
+
+    // WHERE ak = bk AND ap < ?  (unqualified keys => both stamped side=left)
+    auto eq = make_compare_expression(&resource, compare_type::eq, key(&resource, "ak"), key(&resource, "bk"));
+    auto lt = make_compare_expression(&resource, compare_type::lt, key(&resource, "ap"), lt_param);
+    auto where = make_compare_union_expression(&resource, compare_type::union_and);
+    where->append_child(eq);
+    where->append_child(lt);
+
+    auto outer = make_node_aggregate(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
+    outer->append_child(join);
+    outer->append_child(
+        make_node_match(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, where));
+
+    // group { SUM(ap) }
+    auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_ap"));
+    sum_expr->append_param(key(&resource, "ap"));
+    std::vector<expression_ptr> group_exprs;
+    group_exprs.emplace_back(expression_ptr(sum_expr));
+    outer->append_child(
+        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
+
+    // Drive the REAL validator: stamps key.side()/key.path() and output_types().
+    auto validated = services::dispatcher::validate_schema(&resource, nullptr, outer.get(), params->parameters());
+    REQUIRE_FALSE(validated.has_error());
+    // Precondition the promote rule relies on: the scans carry their columns in
+    // output_types() (left_width == 2, right_width == 1).
+    REQUIRE(scan_a->output_types().size() == 2);
+    REQUIRE(scan_b->output_types().size() == 1);
+
+    // Rule under test, then the hash-selection that runs after it in optimize().
+    node_ptr out = components::planner::optimizer::promote_cross_joins(&resource, outer);
+    out = components::planner::optimizer::rewrite_hash_joins(&resource, out);
+
+    REQUIRE(out == outer);
+    auto* agg = static_cast<node_aggregate_t*>(out.get());
+    REQUIRE(agg->children().size() == 3);
+
+    // child[0] is now an INNER hash join with the detected equi columns.
+    REQUIRE(agg->children()[0]->type() == node_type::join_t);
+    auto* jn = static_cast<node_join_t*>(agg->children()[0].get());
+    REQUIRE(jn->type() == join_type::inner);
+    REQUIRE(jn->algo() == node_join_t::join_algo::hash);
+    REQUIRE(jn->left_col() == 0);  // ak, left input col 0
+    REQUIRE(jn->right_col() == 0); // bk, right input col 0
+
+    // The equi moved onto the join's ON; the right-range key is re-localized
+    // (merged idx 2 -> right-local 0) and re-sided (side=right).
+    REQUIRE(jn->expressions().size() == 1);
+    auto* on = static_cast<compare_expression_t*>(jn->expressions()[0].get());
+    REQUIRE(on->type() == compare_type::eq);
+    REQUIRE(is_key(on->left()));
+    REQUIRE(is_key(on->right()));
+    const auto& lk = as_key(on->left());
+    const auto& rk = as_key(on->right());
+    REQUIRE(lk.side() == side_t::left);
+    REQUIRE(lk.path().size() == 1);
+    REQUIRE(lk.path()[0] == 0);
+    REQUIRE(rk.side() == side_t::right);
+    REQUIRE(rk.path().size() == 1);
+    REQUIRE(rk.path()[0] == 0);
+
+    // The residual match holds ONLY the non-join lt filter.
+    REQUIRE(agg->children()[1]->type() == node_type::match_t);
+    auto residual_match = agg->children()[1];
+    REQUIRE(residual_match->expressions().size() == 1);
+    auto* residual = static_cast<compare_expression_t*>(residual_match->expressions()[0].get());
+    REQUIRE(residual->type() == compare_type::lt);
+
+    // The group{SUM} pipeline stage is left untouched by the promotion.
+    REQUIRE(agg->children()[2]->type() == node_type::group_t);
 }

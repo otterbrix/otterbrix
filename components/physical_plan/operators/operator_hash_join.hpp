@@ -51,11 +51,19 @@ namespace components::operators {
     public:
         using type = logical_plan::join_type;
 
+        // `swapped` records that the build-side-selection heuristic moved the
+        // LOGICAL-left table into the physical build (right_) slot (so left_col /
+        // right_col are the probe/build key columns after that swap). It is passed
+        // through to compute_join_layout so the output is re-assembled in logical
+        // [left, right] order. Defaulted so the (still unswapped) call sites and the
+        // nested-loop lowering compile unchanged; the build-side heuristic sets it.
+        // INNER-only — an outer join is never swapped.
         operator_hash_join_t(std::pmr::memory_resource* resource,
                              log_t log,
                              type join_type,
                              size_t left_col,
-                             size_t right_col);
+                             size_t right_col,
+                             bool swapped = false);
 
         // The join is a SINK on its build side (it must fully retain the right
         // input before any match can be decided) and STREAMING on its probe side
@@ -86,6 +94,10 @@ namespace components::operators {
 
     private:
         type join_type_;
+        // Plan-time orientation: true iff the physical build (right_) side is the
+        // LOGICAL-left table. Fixed at construction — NOT cleared in
+        // reset_pipeline_state() (a re-driven recursive-CTE term keeps the same plan).
+        bool swapped_;
         // Equi-key column indices into the left (probe) / right (build) input
         // chunks. Stored as one-element lists so the build/probe machinery iterates
         // a key column list uniformly for single- and (future) multi-column keys.

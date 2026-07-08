@@ -3,6 +3,8 @@ project(test_translator)
 set(${PROJECT_NAME}_SOURCES
         test_logical_plan.cpp
         test_optimizer.cpp
+        test_promote_multiway.cpp
+        test_promote_star.cpp
         test_pushed_spec_build.cpp
         test_create_plan_pushdown.cpp
 )

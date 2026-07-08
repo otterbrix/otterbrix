@@ -33,6 +33,13 @@ namespace services {
         // Slot pointers for recursive CTE working sets. Keyed by CTE name.
         // Each entry points into the owning operator_recursive_cte_t's working_set_ field.
         std::pmr::unordered_map<std::pmr::string, components::operators::operator_data_ptr*> cte_working_sets;
+        // Live per-table row counts (physical appended count from
+        // manager_disk_t::storage_total_rows), keyed by resolved table_oid.
+        // execute_plan_full fetches these for the child tables of every INNER
+        // hash join BEFORE lowering; create_plan_join reads them to put the
+        // smaller side on the hash build. Empty in in-memory mode (no owning
+        // disk agent) -> the build-side swap no-ops.
+        std::pmr::unordered_map<components::catalog::oid_t, uint64_t> row_counts;
 
         context_storage_t(std::pmr::memory_resource* resource,
                           log_t log,
@@ -42,7 +49,8 @@ namespace services {
             , session_timezone(session_timezone)
             , indexed_keys(resource)
             , indexed_descriptions(resource)
-            , cte_working_sets(resource) {}
+            , cte_working_sets(resource)
+            , row_counts(resource) {}
 
         bool has_table_oid(components::catalog::oid_t oid) const noexcept {
             return oid != components::catalog::INVALID_OID && known_oids.count(oid) > 0;

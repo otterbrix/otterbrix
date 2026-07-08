@@ -64,9 +64,11 @@ namespace components::operators {
                                                log_t log,
                                                type join_type,
                                                size_t left_col,
-                                               size_t right_col)
+                                               size_t right_col,
+                                               bool swapped)
         : read_only_operator_t(resource, std::move(log), operator_type::hash_join)
-        , join_type_(join_type) {
+        , join_type_(join_type)
+        , swapped_(swapped) {
         // Single-column equi-key today (the optimizer stamps one eq(left,right));
         // stored as one-element lists so the build/probe path is arity-agnostic.
         probe_key_cols_.push_back(static_cast<uint64_t>(left_col));
@@ -183,11 +185,19 @@ namespace components::operators {
     }
 
     core::error_t operator_hash_join_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t& out) {
-        // The build (right) side is materialized by a separate sub-plan before the
-        // first push and always holds at least one (possibly empty) chunk. A truly
-        // absent right_ is a degenerate plan: emit nothing (no left layout to
-        // pad against, no build rows to preserve).
-        if (!right_ || !right_->output()) {
+        // Degenerate build side → emit nothing. This covers a truly absent right_
+        // AND a build side that materialized ZERO chunks: a single-table filter
+        // pushed BELOW the join can empty the build scan, and a disk scan
+        // over no rows yields an operator_data_t whose chunks() is empty (not one
+        // empty chunk). Either way there is no build schema to lay out and, for an
+        // inner/right-probe join, no build rows to match — so compute_join_layout
+        // must never be handed a missing front chunk (dereferencing
+        // build_chunks.front() on an empty vector is UB: a null data_chunk_t whose
+        // types() faulted under -O2). Left NULL-padding is not preserved for this
+        // degenerate shape, matching the long-standing absent-right behavior;
+        // pushdown never pushes a filter onto an outer join's optional side, so an
+        // emptied build here is always an inner join with genuinely zero matches.
+        if (!right_ || !right_->output() || right_->output()->chunks().empty()) {
             index_built_ = true;
             return core::error_t::no_error();
         }
@@ -195,10 +205,14 @@ namespace components::operators {
         // Build the index + derive the output layout once, lazily.
         if (!index_built_) {
             const auto& build_chunks = right_->output()->chunks();
-            // operator_data_t always holds at least one (possibly empty) chunk.
-            assert(!build_chunks.empty());
+            // Non-empty by the degenerate-build guard above.
             res_types_ = std::pmr::vector<types::complex_logical_type>{resource_};
-            join_detail::compute_join_layout(input, build_chunks.front(), res_types_, indices_left_, indices_right_);
+            join_detail::compute_join_layout(input,
+                                             build_chunks.front(),
+                                             swapped_,
+                                             res_types_,
+                                             indices_left_,
+                                             indices_right_);
             build_index_();
             index_built_ = true;
         }

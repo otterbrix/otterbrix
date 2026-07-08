@@ -113,6 +113,18 @@ namespace components::expressions {
         return new compare_expression_t(resource, type, nullptr, nullptr);
     }
 
+    bool is_key(const param_storage& param) noexcept { return std::holds_alternative<key_t>(param); }
+
+    const key_t& as_key(const param_storage& param) { return std::get<key_t>(param); }
+
+    key_t& as_key(param_storage& param) { return std::get<key_t>(param); }
+
+    bool is_expr(const param_storage& param) noexcept { return std::holds_alternative<expression_ptr>(param); }
+
+    const expression_ptr& as_expr(const param_storage& param) { return std::get<expression_ptr>(param); }
+
+    expression_ptr& as_expr(param_storage& param) { return std::get<expression_ptr>(param); }
+
     compare_type get_compare_type(const std::string& key) {
         if (key.empty()) {
             return compare_type::invalid;

@@ -11,7 +11,6 @@ namespace components::session {
         session_id_t();
         std::size_t hash() const;
         bool operator==(const session_id_t& other) const;
-        bool operator==(const session_id_t& other);
         bool operator<(const session_id_t& other) const;
         auto data() const -> std::uint64_t;
 

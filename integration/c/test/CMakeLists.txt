@@ -22,7 +22,6 @@ target_link_libraries(
         otterbrix::locks
 
         spdlog::spdlog
-        msgpackc-cxx
         #CONAN_PKG::date
         Catch2::Catch2
         absl::crc32c

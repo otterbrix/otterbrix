@@ -14,7 +14,6 @@ target_link_libraries(jsonbench_otterbrix PRIVATE
     otterbrix::services
     otterbrix::locks
     spdlog::spdlog
-    msgpackc-cxx
     actor-zeta::actor-zeta
     Boost::boost
     fmt::fmt

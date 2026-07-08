@@ -17,7 +17,6 @@ target_link_libraries(
         Catch2::Catch2
         actor-zeta::actor-zeta
         absl::int128
-        msgpackc-cxx
 )
 
 include(CTest)

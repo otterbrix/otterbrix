@@ -25,7 +25,6 @@ target_link_libraries(
         actor-zeta::actor-zeta
         Boost::boost
         Catch2::Catch2
-        msgpackc-cxx
 )
 
 include(CTest)

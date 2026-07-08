@@ -36,7 +36,7 @@ target_link_libraries(
         otterbrix_${PROJECT_NAME} PUBLIC
         otterbrix::types
         otterbrix::string_buffer
-        boost::boost
+        Boost::boost
 )
 
 if (DEV_MODE)

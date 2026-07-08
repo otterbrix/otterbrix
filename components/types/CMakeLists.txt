@@ -25,7 +25,6 @@ target_link_libraries(
 
         absl::int128
         Boost::boost
-        msgpackc-cxx
 )
 
 if (DEV_MODE)

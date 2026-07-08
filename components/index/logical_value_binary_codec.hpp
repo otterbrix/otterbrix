@@ -314,7 +314,7 @@ namespace components::index::codec {
     }
 
     template<typename T>
-    inline T read_le_raw(const char* data, size_t size, size_t& pos) {
+    inline T read_le_raw(const char* data, [[maybe_unused]] size_t size, size_t& pos) {
         assert(pos + sizeof(T) <= size);
         T v{};
         std::memcpy(&v, data + pos, sizeof(T));

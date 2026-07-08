@@ -2,7 +2,7 @@
 #include <components/types/operations_helper.hpp>
 #include <core/operations_helper.hpp>
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
@@ -22,7 +22,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -33,7 +34,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -47,7 +49,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("schema") {
+    INFO("schema");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -57,7 +60,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
@@ -116,7 +120,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("find order by") {
+    INFO("find order by");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -158,7 +163,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("comparison operators") {
+    INFO("comparison operators");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -185,7 +191,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("standalone aggregates") {
+    INFO("standalone aggregates");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(count) AS cnt FROM TestDatabase.TestCollection;");
@@ -227,7 +234,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("filtered aggregates") {
+    INFO("filtered aggregates");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -275,7 +283,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("select with limit") {
+    INFO("select with limit");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -294,7 +303,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("select with offset") {
+    INFO("select with offset");
+    {
         {
             // OFFSET 0 is same as no offset: first 5 rows by count order
             auto session = otterbrix::session_id_t();
@@ -339,7 +349,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("delete") {
+    INFO("delete");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -366,7 +377,8 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
         }
     }
 
-    INFO("update") {
+    INFO("update");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -411,7 +423,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -431,7 +444,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         }
     }
 
-    INFO("group by") {
+    INFO("group by");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT name, COUNT(count) AS count_, )_"
@@ -453,7 +467,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         }
     }
 
-    INFO("group by with order by") {
+    INFO("group by with order by");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT name, COUNT(count) AS count_, )_"
@@ -476,7 +491,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         }
     }
 
-    INFO("group by unique field") {
+    INFO("group by unique field");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT name, COUNT(name) AS cnt "
@@ -486,7 +502,8 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->size() == 10);
     }
 
-    INFO("unknown function") {
+    INFO("unknown function");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT name, UNREGISTERED_FUNCTION(count) AS result )_"
@@ -506,19 +523,22 @@ TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("not exists database") {
+    INFO("not exists database");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_error());
         REQUIRE(cur->get_error().type == core::error_code_t::database_not_exists);
     }
 
-    INFO("create database") {
+    INFO("create database");
+    {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, R"_(CREATE DATABASE TestDatabase;)_");
     }
 
-    INFO("not exists database") {
+    INFO("not exists database");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_error());
@@ -534,7 +554,8 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -545,13 +566,15 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
         }
     }
 
-    INFO("create index before insert") {
+    INFO("create index before insert");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "CREATE INDEX base_name ON TestDatabase.TestCollection (name);");
         REQUIRE(cur->is_error());
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -565,7 +588,8 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
         }
     }
 
-    INFO("create_index") {
+    INFO("create_index");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -580,7 +604,8 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
         }
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
@@ -597,7 +622,8 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
         }
     }
 
-    INFO("find with limit") {
+    INFO("find with limit");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -616,7 +642,8 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
         }
     }
 
-    INFO("find with limit and offset") {
+    INFO("find with limit and offset");
+    {
         {
             // count > 90 → 9 rows (91..99); skip 2 (91,92), take 3 → count values 93,94,95
             auto session = otterbrix::session_id_t();
@@ -640,7 +667,8 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
         }
     }
 
-    INFO("drop") {
+    INFO("drop");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DROP INDEX TestDatabase.TestCollection.base_name;");
@@ -662,7 +690,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("register types") {
+    INFO("register types");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, R"_(CREATE TYPE custom_type_field AS (f1 float, f2 int);)_");
@@ -682,7 +711,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         }
     }
 
-    INFO("create table") {
+    INFO("create table");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, R"_(CREATE DATABASE TestDatabase;)_");
@@ -703,7 +733,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         }
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -726,7 +757,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         }
     }
 
-    INFO("compare on enum column") {
+    INFO("compare on enum column");
+    {
         // TODO: push-down filter for ENUM is broken — the planner pushes the WHERE into full_scan as a
         // constant_filter_t, and storage segments hand the comparator a raw int32_t (fixed_size_check_row<int32_t>)
         // wrapped as a typeless INTEGER value. The ENUM extension is gone by then. Fix needs the column's logical_type
@@ -761,7 +793,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         }
     }
 
-    INFO("order by nested udt field") {
+    INFO("order by nested udt field");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -788,7 +821,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         }
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
@@ -832,7 +866,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->value(2, 0).children()[1] == types::logical_value_t{dispatcher->resource(), 92});
         }
     }
-    INFO("update") {
+    INFO("update");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -853,7 +888,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             }
         }
     }
-    INFO("join") {
+    INFO("join");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -865,7 +901,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->size() == 33);
         }
     }
-    INFO("delete") {
+    INFO("delete");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -881,7 +918,8 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->size() == 55);
         }
     }
-    INFO("group by non-existent field") {
+    INFO("group by non-existent field");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT no_such_field, COUNT(count) AS cnt "

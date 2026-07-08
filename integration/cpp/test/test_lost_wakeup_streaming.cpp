@@ -29,7 +29,7 @@
 // HANG  => (caught by the watchdog timeout below, reported as a FAILED REQUIRE)
 //          the construct genuinely flaps and needs the framework/structure fix.
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/dispatch.hpp>

@@ -6,7 +6,7 @@
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <filesystem>
 
 using components::expressions::compare_type;
@@ -88,7 +88,8 @@ TEST_CASE("integration::cpp::test_wal_pool::per_worker_files_created") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/per_worker_files");
     test_clear_directory(config);
 
-    INFO("insert data to trigger WAL writes") {
+    INFO("insert data to trigger WAL writes");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -96,7 +97,8 @@ TEST_CASE("integration::cpp::test_wal_pool::per_worker_files_created") {
         FILL_COLLECTION_WAL(database_name, collection_name, 100);
     }
 
-    INFO("verify per-worker WAL segment files exist") {
+    INFO("verify per-worker WAL segment files exist");
+    {
         // WAL creates per-database-oid directories. Otterbrix routes all
         // DML in this scenario to main_database (oid=4) — single worker.
         constexpr auto kMainDb = components::catalog::well_known_oid::main_database;
@@ -123,7 +125,8 @@ TEST_CASE("integration::cpp::test_wal_pool::recovery_after_restart") {
 
     constexpr int kDocuments = 100;
 
-    INFO("phase 1: create and fill data") {
+    INFO("phase 1: create and fill data");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -135,7 +138,8 @@ TEST_CASE("integration::cpp::test_wal_pool::recovery_after_restart") {
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1;", 1);
     }
 
-    INFO("phase 2: restart and verify data recovered from WAL") {
+    INFO("phase 2: restart and verify data recovered from WAL");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -153,7 +157,8 @@ TEST_CASE("integration::cpp::test_wal_pool::index_durability") {
 
     constexpr int kDocuments = 100;
 
-    INFO("phase 1: create collection, index, and fill data") {
+    INFO("phase 1: create collection, index, and fill data");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -178,7 +183,8 @@ TEST_CASE("integration::cpp::test_wal_pool::index_durability") {
                        1);
     }
 
-    INFO("phase 2: restart and verify index survived") {
+    INFO("phase 2: restart and verify index survived");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -209,7 +215,8 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
 
     constexpr int kDocuments = 50;
 
-    INFO("insert into two collections") {
+    INFO("insert into two collections");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -235,7 +242,8 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection2 WHERE count = 25;", 1);
     }
 
-    INFO("verify both WAL segment files have data") {
+    INFO("verify both WAL segment files have data");
+    {
         // WAL creates per-database directories named by database OID (stable
         // across renames) — see wal_worker_t ctor in services/wal/wal.cpp.
         // Scan every subdirectory under the root for a wal_* segment file.
@@ -256,7 +264,8 @@ TEST_CASE("integration::cpp::test_wal_pool::multiple_collections_routing") {
         REQUIRE(found_wal_segment);
     }
 
-    INFO("restart and verify both collections recovered") {
+    INFO("restart and verify both collections recovered");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -273,7 +282,8 @@ TEST_CASE("integration::cpp::test_wal_pool::update_wal_recovery") {
 
     constexpr int kDocuments = 100;
 
-    INFO("phase 1: insert, update, and verify") {
+    INFO("phase 1: insert, update, and verify");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -294,7 +304,8 @@ TEST_CASE("integration::cpp::test_wal_pool::update_wal_recovery") {
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 0);
     }
 
-    INFO("phase 2: restart and verify WAL replayed UPDATE") {
+    INFO("phase 2: restart and verify WAL replayed UPDATE");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -311,7 +322,8 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
 
     constexpr int kDocuments = 100;
 
-    INFO("phase 1: insert, delete, update via SQL with index") {
+    INFO("phase 1: insert, delete, update via SQL with index");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -380,7 +392,8 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 91);
     }
 
-    INFO("phase 2: restart and verify durability") {
+    INFO("phase 2: restart and verify durability");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -405,7 +418,8 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/constraint_enforce");
     test_clear_directory(config);
 
-    INFO("phase 1: create table with NOT NULL, test enforcement") {
+    INFO("phase 1: create table with NOT NULL, test enforcement");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -463,7 +477,8 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 5);
     }
 
-    INFO("phase 2: restart and verify constraint state persisted") {
+    INFO("phase 2: restart and verify constraint state persisted");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -490,7 +505,8 @@ TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/constant_checkpoint");
     test_clear_directory(config);
 
-    INFO("phase 1: create table, insert 100 constant-value rows, checkpoint") {
+    INFO("phase 1: create table, insert 100 constant-value rows, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -531,7 +547,8 @@ TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
         }
     }
 
-    INFO("phase 2: restart and verify data recovered from checkpoint") {
+    INFO("phase 2: restart and verify data recovered from checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -544,7 +561,8 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_wal_pool/insert_delete_checkpoint");
     test_clear_directory(config);
 
-    INFO("phase 1: insert 100 rows, delete where count < 50, checkpoint") {
+    INFO("phase 1: insert 100 rows, delete where count < 50, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -593,7 +611,8 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
         }
     }
 
-    INFO("phase 2: restart and verify correct rows survive") {
+    INFO("phase 2: restart and verify correct rows survive");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 

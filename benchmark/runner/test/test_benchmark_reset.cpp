@@ -12,9 +12,7 @@
 // run re-loads onto the first run's 3 persisted rows -> 6 rows -> the
 // @expected_rows=3 check fails -> the result CSV's verified column is FAIL.
 // With the reset: the second run starts empty -> 3 rows -> both OK.
-
-#define CATCH_CONFIG_MAIN
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include "benchmark_configuration.hpp"
 #include "benchmark_runner.hpp"

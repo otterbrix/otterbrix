@@ -1,7 +1,10 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
+// actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
+#include <memory>
+
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>

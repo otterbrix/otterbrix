@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
 #include <array>
@@ -90,14 +90,16 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
     auto* dispatcher = inst->dispatcher();
     auto* resource = dispatcher->resource();
 
-    INFO("create database via execute_sql") {
+    INFO("create database via execute_sql");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + lifecycle_database_name + ";");
         REQUIRE(cur->is_success());
         REQUIRE(inst->use_count() == 2u);
     }
 
-    INFO("create collection via execute_plan (catalog wrap idiom)") {
+    INFO("create collection via execute_plan (catalog wrap idiom)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = test_create_collection(dispatcher,
                                           session,
@@ -108,7 +110,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
         REQUIRE(inst->use_count() == 2u);
     }
 
-    INFO("create collection via raw node, reading the planner-stamped oid") {
+    INFO("create collection via raw node, reading the planner-stamped oid");
+    {
         // Keep the create node: execute_plan stamps table_oid() onto it.
         auto create = components::logical_plan::make_node_create_collection(resource,
                                                                             core::relname_t{lifecycle_collection_two},
@@ -129,7 +132,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
         REQUIRE(inst->use_count() == 2u);
     }
 
-    INFO("insert via execute_sql") {
+    INFO("insert via execute_sql");
+    {
         std::stringstream query;
         query << "INSERT INTO " << lifecycle_database_name << "." << lifecycle_collection_one
               << " (name, count) VALUES ";
@@ -143,7 +147,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
         REQUIRE(inst->use_count() == 2u);
     }
 
-    INFO("select via execute_sql") {
+    INFO("select via execute_sql");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -153,7 +158,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
         REQUIRE(inst->use_count() == 2u);
     }
 
-    INFO("dropping one owner leaves one reference") {
+    INFO("dropping one owner leaves one reference");
+    {
         copy.reset();
         REQUIRE(inst->use_count() == 1u);
     }
@@ -396,7 +402,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         return {};
     };
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + eviction_database_name + ";");
@@ -435,7 +442,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         return failure;
     };
 
-    INFO("preload: several row groups per collection, checkpointed") {
+    INFO("preload: several row groups per collection, checkpointed");
+    {
         // Multiple row groups (row group = 1024 rows) per table make each later
         // full scan a long burst of segment pin/unpin calls.
         std::array<std::string, num_collections> failures{};
@@ -463,7 +471,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         }
     }
 
-    INFO("scan storm: 8 client threads, both disk agents busy") {
+    INFO("scan storm: 8 client threads, both disk agents busy");
+    {
         std::array<std::string, num_threads> failures{};
 
         auto work = [&](size_t id) {
@@ -503,7 +512,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         }
     }
 
-    INFO("verify final row counts") {
+    INFO("verify final row counts");
+    {
         constexpr size_t expected = static_cast<size_t>(preload_batches * batch_size) +
                                     static_cast<size_t>((num_iterations + 9) / 10) * batch_size;
         for (size_t id = 0; id < num_collections; ++id) {

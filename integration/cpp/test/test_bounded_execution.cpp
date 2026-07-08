@@ -44,7 +44,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 using namespace components;
 using namespace components::cursor;
@@ -104,7 +104,8 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         expected_total_sum += static_cast<int64_t>(i);
     }
 
-    INFO("GROUP BY over a large multi-batch input folds into #groups-bounded sink state") {
+    INFO("GROUP BY over a large multi-batch input folds into #groups-bounded sink state");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT grp, SUM(val) AS s, COUNT(name) AS c "
@@ -123,7 +124,8 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         }
     }
 
-    INFO("scalar aggregate over a large multi-batch input folds into O(1) running state") {
+    INFO("scalar aggregate over a large multi-batch input folds into O(1) running state");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT SUM(val) AS s, COUNT(name) AS c "

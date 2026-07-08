@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_data.hpp>
@@ -93,7 +93,8 @@ TEST_CASE("integration::cpp::test_raw_join") {
     auto dispatcher = space.dispatcher();
     auto* res = dispatcher->resource();
 
-    INFO("triple JOIN, 4-part qualifiers") {
+    INFO("triple JOIN, 4-part qualifiers");
+    {
         chunks_by_uid_t chunks;
         chunks.emplace("uid_l", [res] { return build_pairs(res, "key", "name", {{1, 11}, {2, 22}, {3, 33}}); });
         chunks.emplace("uid_m", [res] { return build_pairs(res, "key", "linker", {{1, 100}, {2, 200}, {99, 999}}); });
@@ -109,7 +110,8 @@ TEST_CASE("integration::cpp::test_raw_join") {
         REQUIRE(cur->size() == 1);
     }
 
-    INFO("triple JOIN, predicate reaches across — second JOIN refs first table alias") {
+    INFO("triple JOIN, predicate reaches across — second JOIN refs first table alias");
+    {
         chunks_by_uid_t chunks;
         chunks.emplace("uid_a", [res] { return build_pairs(res, "key", "tag", {{10, 1}, {20, 2}, {30, 3}}); });
         chunks.emplace("uid_b", [res] { return build_pairs(res, "key", "linker", {{10, 100}, {20, 200}, {30, 300}}); });
@@ -125,7 +127,8 @@ TEST_CASE("integration::cpp::test_raw_join") {
         REQUIRE(cur->size() == 2);
     }
 
-    INFO("quadruple JOIN") {
+    INFO("quadruple JOIN");
+    {
         chunks_by_uid_t chunks;
         chunks.emplace("uid_a", [res] { return build_pairs(res, "key", "name", {{1, 11}, {2, 22}, {3, 33}}); });
         chunks.emplace("uid_b", [res] { return build_pairs(res, "key", "linker", {{1, 100}, {2, 200}, {3, 300}}); });

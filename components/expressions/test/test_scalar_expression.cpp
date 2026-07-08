@@ -1,5 +1,5 @@
 #include <actor-zeta.hpp>
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/expressions/scalar_expression.hpp>
 
 using namespace components::expressions;

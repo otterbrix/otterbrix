@@ -1,4 +1,5 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/table/base_statistics.hpp>
 #include <components/table/column_data.hpp>
 #include <components/table/column_segment.hpp>
@@ -66,8 +67,8 @@ TEST_CASE("statistics: update from vector") {
         stats.update(vec, 100);
 
         REQUIRE(stats.has_stats());
-        CHECK(stats.min_value().value<double>() == Approx(0.0));
-        CHECK(stats.max_value().value<double>() == Approx(49.5));
+        CHECK(stats.min_value().value<double>() == Catch::Approx(0.0));
+        CHECK(stats.max_value().value<double>() == Catch::Approx(49.5));
         CHECK(stats.null_count() == 0);
     }
 

@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/vector/data_chunk_binary.hpp>
 #include <core/pmr.hpp>

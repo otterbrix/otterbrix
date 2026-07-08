@@ -1,5 +1,4 @@
-#define CATCH_CONFIG_MAIN
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <integration/cpp/otterbrix.hpp>
 
@@ -31,13 +30,15 @@ TEST_CASE("example::sql::base") {
     config.wal.on = false;
     otterbrix::otterbrix_ptr otterbrix;
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         otterbrix = otterbrix::make_otterbrix(config);
         execute_sql(otterbrix, R"_(CREATE DATABASE TestDatabase;)_");
         execute_sql(otterbrix, R"_(CREATE TABLE TestDatabase.TestCollection();)_");
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         std::stringstream query;
         query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
         for (int num = 0; num < 100; ++num) {
@@ -47,7 +48,8 @@ TEST_CASE("example::sql::base") {
         REQUIRE(c->size() == 100);
     }
 
-    INFO("select") {
+    INFO("select");
+    {
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection;");
             REQUIRE(c->size() == 100);
@@ -57,7 +59,8 @@ TEST_CASE("example::sql::base") {
             REQUIRE(c->size() == 9);
         }
     }
-    INFO("select order by") {
+    INFO("select order by");
+    {
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY count;");
             REQUIRE(c->size() == 100);
@@ -90,7 +93,8 @@ TEST_CASE("example::sql::base") {
         }
     }
 
-    INFO("delete") {
+    INFO("delete");
+    {
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection WHERE count > 90;");
             REQUIRE(c->size() == 9);
@@ -105,7 +109,8 @@ TEST_CASE("example::sql::base") {
         }
     }
 
-    INFO("update") {
+    INFO("update");
+    {
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection WHERE count < 20;");
             REQUIRE(c->size() == 20);
@@ -132,7 +137,8 @@ TEST_CASE("example::sql::group_by") {
     config.wal.on = false;
     otterbrix::otterbrix_ptr otterbrix;
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         otterbrix = otterbrix::make_otterbrix(config);
         execute_sql(otterbrix, R"_(CREATE DATABASE TestDatabase;)_");
         execute_sql(otterbrix, R"_(CREATE TABLE TestDatabase.TestCollection();)_");
@@ -146,7 +152,8 @@ TEST_CASE("example::sql::group_by") {
         REQUIRE(c->is_success());
     }
 
-    INFO("group by") {
+    INFO("group by");
+    {
         auto c = execute_sql(otterbrix,
                              R"_(SELECT name, COUNT(count) AS count_, )_"
                              R"_(SUM(count) AS sum_, AVG(count) AS avg_, )_"
@@ -168,7 +175,8 @@ TEST_CASE("example::sql::group_by") {
         }
     }
 
-    INFO("group by with order by") {
+    INFO("group by with order by");
+    {
         auto c = execute_sql(otterbrix,
                              R"_(SELECT name, COUNT(count) AS count_, )_"
                              R"_(SUM(count) AS sum_, AVG(count) AS avg_, )_"
@@ -201,15 +209,17 @@ TEST_CASE("example::sql::invalid_queries") {
     config.wal.on = false;
     auto otterbrix = otterbrix::make_otterbrix(config);
 
-    INFO("not exists database") {
+    INFO("not exists database");
+    {
         auto c = execute_sql(otterbrix, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(c->is_error());
         REQUIRE(c->get_error().type == error_code_t::database_not_exists);
     }
 
-    INFO("create database") { execute_sql(otterbrix, R"_(CREATE DATABASE TestDatabase;)_"); }
+    INFO("create database"); { execute_sql(otterbrix, R"_(CREATE DATABASE TestDatabase;)_"); }
 
-    INFO("not exists database") {
+    INFO("not exists database");
+    {
         auto c = execute_sql(otterbrix, R"_(SELECT * FROM TestDatabase.TestCollection;)_");
         REQUIRE(c->is_error());
         REQUIRE(c->get_error().type == error_code_t::table_not_exists);

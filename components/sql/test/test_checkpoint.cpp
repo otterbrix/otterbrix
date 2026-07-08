@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_checkpoint.hpp>
 #include <components/logical_plan/node_vacuum.hpp>
 #include <components/sql/parser/parser.h>

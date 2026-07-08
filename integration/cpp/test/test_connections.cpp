@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <integration/cpp/connection.hpp>
 
 static const database_name_t database_name = "testdatabase";
@@ -16,7 +16,8 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -27,7 +28,8 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
         }
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         // REQUIRE can behave wierdly with threading, but storing result and checking it later works fine
         std::array<bool, num_threads> results;
 
@@ -60,7 +62,8 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
         }
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
@@ -85,7 +88,8 @@ TEST_CASE("integration::cpp::test_connectors") {
     config.wal.on = false;
     auto otterbrix = otterbrix::make_otterbrix(config);
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         auto* dispatcher = otterbrix->dispatcher();
         {
             auto session = otterbrix::session_id_t();
@@ -97,7 +101,8 @@ TEST_CASE("integration::cpp::test_connectors") {
         }
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         // REQUIRE can behave wierdly with threading, but storing result and checking it later works fine
         std::array<bool, num_threads> results;
 
@@ -134,7 +139,8 @@ TEST_CASE("integration::cpp::test_connectors") {
         }
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = otterbrix->dispatcher()->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");

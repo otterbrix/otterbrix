@@ -1,7 +1,6 @@
 project(test_disk)
 
 set(${PROJECT_NAME}_SOURCES
-    main.cpp
     test_table_storage.cpp
     test_torn_checkpoint.cpp
     test_system_table_bootstrap.cpp
@@ -30,7 +29,7 @@ target_link_libraries(
     absl::int128
     actor-zeta::actor-zeta
     Boost::boost
-    Catch2::Catch2
+    Catch2::Catch2WithMain
     msgpackc-cxx
     spdlog::spdlog
 )

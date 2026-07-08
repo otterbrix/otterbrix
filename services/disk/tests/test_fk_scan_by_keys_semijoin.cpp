@@ -18,7 +18,7 @@
 //     the other keys still match.
 //   * COMPOSITE key: multi-column key-tuples match on the full tuple only.
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <services/disk/agent_disk.hpp>   // services::disk::fk_hash_semijoin
 #include <services/disk/manager_disk.hpp> // services::disk::table_storage_t

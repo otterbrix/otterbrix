@@ -6,14 +6,14 @@ set(${PROJECT_NAME}_SOURCES
         test_assert.cpp
         )
 
-add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
+add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
 
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         otterbrix::log
         Boost::boost
         otterbrix::assert
-        Catch2::Catch2
+        Catch2::Catch2WithMain
 )
 
 include(CTest)

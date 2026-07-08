@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
 
 #include <array>
@@ -58,7 +58,8 @@ TEST_CASE("integration::cpp::table_function::generate_series") {
         dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
     }
 
-    INFO("FROM generate_series(1, 5) — inclusive series of 5 rows") {
+    INFO("FROM generate_series(1, 5) — inclusive series of 5 rows");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM generate_series(1, 5);");
         REQUIRE(cur->is_success());
@@ -71,7 +72,8 @@ TEST_CASE("integration::cpp::table_function::generate_series") {
         }
     }
 
-    INFO("FROM generate_series(1, 10, 2) — stepped series") {
+    INFO("FROM generate_series(1, 10, 2) — stepped series");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM generate_series(1, 10, 2);");
         REQUIRE(cur->is_success());
@@ -82,7 +84,8 @@ TEST_CASE("integration::cpp::table_function::generate_series") {
         }
     }
 
-    INFO("FROM generate_series with empty range yields no rows") {
+    INFO("FROM generate_series with empty range yields no rows");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM generate_series(5, 1);");
         REQUIRE(cur->is_success());
@@ -118,7 +121,8 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
         REQUIRE(series_i >= 0);
     };
 
-    INFO("FROM t, generate_series(1, t.n) — correlated expansion") {
+    INFO("FROM t, generate_series(1, t.n) — correlated expansion");
+    {
         auto session = otterbrix::session_id_t();
         // row id=1,n=2 -> series 1,2 (2 rows); row id=2,n=3 -> series 1,2,3 (3 rows) => 5 rows
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM " + database_name + ".t, generate_series(1, t.n);");
@@ -130,7 +134,8 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
         REQUIRE(collect_rows(*cur, id_i, n_i, series_i) == expected);
     }
 
-    INFO("FROM t JOIN LATERAL generate_series(1, t.n) ON true — explicit inner form") {
+    INFO("FROM t JOIN LATERAL generate_series(1, t.n) ON true — explicit inner form");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT * FROM " + database_name +
@@ -143,7 +148,8 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
         REQUIRE(collect_rows(*cur, id_i, n_i, series_i) == expected);
     }
 
-    INFO("FROM t LEFT JOIN LATERAL generate_series(1, t.n) ON true — outer row kept when empty") {
+    INFO("FROM t LEFT JOIN LATERAL generate_series(1, t.n) ON true — outer row kept when empty");
+    {
         auto session = otterbrix::session_id_t();
         // Add a row whose series is empty (generate_series(1, 0) -> 0 rows). LEFT JOIN
         // must keep that outer row NULL-padded: 5 (from id=1,2) + 1 (id=3 empty) = 6.
@@ -165,7 +171,8 @@ TEST_CASE("integration::cpp::table_function::lateral_generate_series") {
         REQUIRE(collect_rows(*cur, id_i, n_i, series_i) == expected);
     }
 
-    INFO("FROM t, generate_series(t.id, t.n) — multiple correlated args") {
+    INFO("FROM t, generate_series(t.id, t.n) — multiple correlated args");
+    {
         auto session = otterbrix::session_id_t();
         // Table now holds (1,2),(2,3),(3,0). id=1,n=2 -> series 1,2; id=2,n=3 -> series 2,3;
         // id=3,n=0 -> empty (implicit cross drops it) => 4 rows.

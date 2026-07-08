@@ -1,6 +1,6 @@
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
@@ -157,7 +157,8 @@ TEST_CASE("integration::cpp::test_udfs") {
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -173,7 +174,8 @@ TEST_CASE("integration::cpp::test_udfs") {
         }
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         // Each insert needs its own freshly-built plan: the data_chunk is moved
         // into the insert node and consumed at execute time, so re-running the
         // same `ins` would replay against an emptied chunk.
@@ -193,7 +195,8 @@ TEST_CASE("integration::cpp::test_udfs") {
         }
     }
 
-    INFO("create udf") {
+    INFO("create udf");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->register_udf(session, make_concat_func(dispatcher->resource()));
@@ -222,8 +225,10 @@ TEST_CASE("integration::cpp::test_udfs") {
         }
     }
 
-    INFO("use udf") {
-        INFO("single argument") {
+    INFO("use udf");
+    {
+        INFO("single argument");
+        {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                R"_(SELECT count, concat(count_str) AS result )_"
@@ -240,7 +245,8 @@ TEST_CASE("integration::cpp::test_udfs") {
                         std::to_string(kNumInserts - i) + std::to_string(kNumInserts - i));
             }
         }
-        INFO("multiple arguments") {
+        INFO("multiple arguments");
+        {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                R"_(SELECT count, mult(count_double, count) AS result )_"
@@ -257,7 +263,8 @@ TEST_CASE("integration::cpp::test_udfs") {
                 REQUIRE(core::is_equals(chunk.data[1].data<double>()[i], ((d + 0.1) * d) * 2));
             }
         }
-        INFO("multiple arguments with parameter") {
+        INFO("multiple arguments with parameter");
+        {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                R"_(SELECT count, mult(count_double, 42) AS result )_"
@@ -274,7 +281,8 @@ TEST_CASE("integration::cpp::test_udfs") {
                     core::is_equals(chunk.data[1].data<double>()[i], ((static_cast<double>(i + 1) + 0.1) * 42) * 2));
             }
         }
-        INFO("incorrect argument types") {
+        INFO("incorrect argument types");
+        {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                R"_(SELECT count, mult(count, count_double) AS result )_"
@@ -284,7 +292,8 @@ TEST_CASE("integration::cpp::test_udfs") {
             REQUIRE(cur->is_error());
             REQUIRE(cur->get_error().type == core::error_code_t::incorrect_function_argument);
         }
-        INFO("bool function in WHERE clause") {
+        INFO("bool function in WHERE clause");
+        {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                R"_(SELECT count )_"
@@ -300,7 +309,8 @@ TEST_CASE("integration::cpp::test_udfs") {
                 REQUIRE(chunk.data[0].data<int64_t>()[i] % 2 == 0);
             }
         }
-        INFO("int function in WHERE clause with parameter") {
+        INFO("int function in WHERE clause with parameter");
+        {
             size_t expected_result = 0;
             for (size_t i = 0; i < kNumInserts; i++) {
                 if ((i + 1) % 7 <= 2) {
@@ -327,7 +337,8 @@ TEST_CASE("integration::cpp::test_udfs") {
                 }
             }
         }
-        INFO("2 int functions in WHERE clause with parameter") {
+        INFO("2 int functions in WHERE clause with parameter");
+        {
             size_t expected_result = 0;
             for (size_t i = 0; i < kNumInserts; i++) {
                 if ((i + 1) % 7 != (i + 1) % 9) {
@@ -344,7 +355,8 @@ TEST_CASE("integration::cpp::test_udfs") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == expected_result);
         }
-        INFO("function as argument for function in WHERE clause with parameter") {
+        INFO("function as argument for function in WHERE clause with parameter");
+        {
             size_t expected_result = 0;
             for (size_t i = 0; i < kNumInserts; i++) {
                 if ((i + 1) % 7 % 2 == 0) {
@@ -361,7 +373,8 @@ TEST_CASE("integration::cpp::test_udfs") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == expected_result);
         }
-        INFO("function as argument for function in WHERE clause with parameter") {
+        INFO("function as argument for function in WHERE clause with parameter");
+        {
             size_t expected_result = 0;
             for (size_t i = 0; i < kNumInserts; i++) {
                 if ((i + 1) % 7 % 2 == 0) {
@@ -380,7 +393,8 @@ TEST_CASE("integration::cpp::test_udfs") {
         }
     }
 
-    INFO("unregister udf") {
+    INFO("unregister udf");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto result = dispatcher->unregister_udf(session, udf1_name, {types::logical_type::STRING_LITERAL});
@@ -396,7 +410,8 @@ TEST_CASE("integration::cpp::test_udfs") {
         }
     }
 
-    INFO("use udf after udf is deleted") {
+    INFO("use udf after udf is deleted");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,

@@ -23,7 +23,7 @@
 
 #include "test_config.hpp"
 #include <algorithm>
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <functional>
 #include <sstream>
 #include <string>

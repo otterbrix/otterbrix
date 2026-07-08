@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <core/pmr.hpp>
 #include <services/index/disk_hash_table.hpp>
 

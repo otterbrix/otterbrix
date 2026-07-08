@@ -6,6 +6,9 @@
 #include "inline_scan.hpp" // services::disk::detail::inline_scan (shared with agent_disk)
 #include "manager_disk.hpp"
 
+// actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
+#include <memory>
+
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
 #include <array>

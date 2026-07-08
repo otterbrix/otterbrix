@@ -1,6 +1,6 @@
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <services/disk/agent_disk.hpp>
 
 // End-to-end coverage for aggregate-pushdown-to-owning-agent, run over BOTH
@@ -60,7 +60,8 @@ namespace {
         auto* dispatcher = space.dispatcher();
         const std::string table = seed(dispatcher, relkind);
 
-        INFO("SUM/COUNT/MIN/MAX/AVG over the whole table") {
+        INFO("SUM/COUNT/MIN/MAX/AVG over the whole table");
+        {
             services::disk::reset_pushdown_reply_rows();
             auto cur = exec(dispatcher,
                             "SELECT SUM(v) AS s, COUNT(*) AS c_all, COUNT(v) AS c_v, "
@@ -79,7 +80,8 @@ namespace {
             REQUIRE(services::disk::pushdown_reply_rows() > 0); // was-actually-pushed proof
         }
 
-        INFO("scalar aggregates WITH a builtin WHERE (v >= 30 -> rows 30,50,40)") {
+        INFO("scalar aggregates WITH a builtin WHERE (v >= 30 -> rows 30,50,40)");
+        {
             services::disk::reset_pushdown_reply_rows();
             auto cur = exec(dispatcher,
                             "SELECT SUM(v) AS s, COUNT(*) AS c, MIN(v) AS mn, MAX(v) AS mx, AVG(v) AS av "
@@ -96,7 +98,8 @@ namespace {
             REQUIRE(services::disk::pushdown_reply_rows() > 0);
         }
 
-        INFO("empty slice (WHERE matches nothing): SUM/MIN/MAX/AVG NULL, COUNT 0") {
+        INFO("empty slice (WHERE matches nothing): SUM/MIN/MAX/AVG NULL, COUNT 0");
+        {
             auto cur = exec(dispatcher,
                             "SELECT SUM(v) AS s, COUNT(*) AS c_all, COUNT(v) AS c_v, "
                             "MIN(v) AS mn, MAX(v) AS mx, AVG(v) AS av FROM " +
@@ -118,7 +121,8 @@ namespace {
         auto* dispatcher = space.dispatcher();
         const std::string table = seed(dispatcher, relkind);
 
-        INFO("GROUP BY g with SUM/COUNT/MIN/MAX/AVG, ORDER BY g") {
+        INFO("GROUP BY g with SUM/COUNT/MIN/MAX/AVG, ORDER BY g");
+        {
             services::disk::reset_pushdown_reply_rows();
             auto cur = exec(dispatcher,
                             "SELECT g, SUM(v) AS s, COUNT(*) AS c, MIN(v) AS mn, MAX(v) AS mx, AVG(v) AS av "
@@ -147,7 +151,8 @@ namespace {
             REQUIRE(services::disk::pushdown_reply_rows() > 0);
         }
 
-        INFO("GROUP BY g with a builtin WHERE (v >= 20) -> g=1 {20}, g=2 {30,50,40}") {
+        INFO("GROUP BY g with a builtin WHERE (v >= 20) -> g=1 {20}, g=2 {30,50,40}");
+        {
             services::disk::reset_pushdown_reply_rows();
             auto cur = exec(dispatcher,
                             "SELECT g, SUM(v) AS s, COUNT(*) AS c "

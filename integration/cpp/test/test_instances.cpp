@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 TEST_CASE("integration::cpp::test_instances") {
     auto config_works_1 = test_create_config("/tmp/test_instances/1");
@@ -14,7 +14,8 @@ TEST_CASE("integration::cpp::test_instances") {
     test_clear_directory(config_works_2);
     test_clear_directory(config_works_3);
 
-    INFO("unique directories") {
+    INFO("unique directories");
+    {
         test_spaces space_1(config_works_1);
         test_spaces space_2(config_works_2);
         test_spaces space_3(config_works_3);
@@ -34,7 +35,8 @@ TEST_CASE("integration::cpp::test_instances") {
         }
     }
 
-    INFO("directories references deleted properly") {
+    INFO("directories references deleted properly");
+    {
         // basically run the same setup again
         test_spaces space_1(config_works_1);
         test_spaces space_2(config_works_2);

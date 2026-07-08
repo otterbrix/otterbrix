@@ -18,7 +18,7 @@
 
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 TEST_CASE("integration::cpp::column_projection::plain_select") {
     auto config = test_create_config("/tmp/col_proj/plain_select");
@@ -45,7 +45,8 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
                                 "(3, 30, 300, 3000, 30000);");
     }
 
-    INFO("SELECT single column") {
+    INFO("SELECT single column");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide ORDER BY a ASC;");
         REQUIRE(cur->is_success());
@@ -55,7 +56,8 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[2] == 3);
     }
 
-    INFO("SELECT two columns") {
+    INFO("SELECT two columns");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT a, c FROM db.wide ORDER BY a ASC;");
         REQUIRE(cur->is_success());
@@ -64,7 +66,8 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
         REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 100);
     }
 
-    INFO("SELECT middle column") {
+    INFO("SELECT middle column");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT c FROM db.wide ORDER BY c ASC;");
         REQUIRE(cur->is_success());
@@ -74,7 +77,8 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[2] == 300);
     }
 
-    INFO("SELECT * still works") {
+    INFO("SELECT * still works");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT * FROM db.wide ORDER BY a ASC;");
         REQUIRE(cur->is_success());
@@ -109,7 +113,8 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
                                 "(4, 40, 400, 4000, 40000);");
     }
 
-    INFO("WHERE references only SELECT column") {
+    INFO("WHERE references only SELECT column");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE a > 1 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
@@ -117,7 +122,8 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 2);
     }
 
-    INFO("WHERE references NON-SELECT column — must still read it") {
+    INFO("WHERE references NON-SELECT column — must still read it");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE e > 20000 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
@@ -126,7 +132,8 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 4);
     }
 
-    INFO("WHERE references multiple NON-SELECT columns with AND") {
+    INFO("WHERE references multiple NON-SELECT columns with AND");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE b > 15 AND d < 4000 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
@@ -135,7 +142,8 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 3);
     }
 
-    INFO("WHERE references columns via OR") {
+    INFO("WHERE references columns via OR");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.wide WHERE b = 10 OR d = 4000 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
@@ -172,7 +180,8 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
                                 "(5, 'A', 50, 'v');");
     }
 
-    INFO("GROUP BY with SUM on aggregated column") {
+    INFO("GROUP BY with SUM on aggregated column");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s,
@@ -184,7 +193,8 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
         REQUIRE(cur->chunks().front().data[1].data<int64_t>()[1] == 70);
     }
 
-    INFO("GROUP BY with COUNT(*) only — no columns needed beyond key") {
+    INFO("GROUP BY with COUNT(*) only — no columns needed beyond key");
+    {
         auto s = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(s, "SELECT kind, COUNT(*) AS n FROM db.events GROUP BY kind ORDER BY kind ASC;");
@@ -194,7 +204,8 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
         REQUIRE(cur->chunks().front().data[1].data<uint64_t>()[1] == 2);
     }
 
-    INFO("GROUP BY + WHERE on non-select column") {
+    INFO("GROUP BY + WHERE on non-select column");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT kind, COUNT(*) AS n FROM db.events "
@@ -246,7 +257,8 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
                                 "(30, 'Carol', 'LA', 'gold');");
     }
 
-    INFO("inner JOIN with SELECT reading one column from each side") {
+    INFO("inner JOIN with SELECT reading one column from each side");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT c.name, o.amount FROM db.orders o "
@@ -260,7 +272,8 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
         REQUIRE(cur->chunks().front().data[1].data<int64_t>()[4] == 500);
     }
 
-    INFO("inner JOIN + GROUP BY") {
+    INFO("inner JOIN + GROUP BY");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT c.name, SUM(o.amount) AS total FROM db.orders o "
@@ -274,7 +287,8 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
         REQUIRE(cur->chunks().front().data[1].data<int64_t>()[2] == 400);
     }
 
-    INFO("inner JOIN + GROUP BY with WHERE on non-select column (numeric)") {
+    INFO("inner JOIN + GROUP BY with WHERE on non-select column (numeric)");
+    {
         // Exercise projection for a WHERE that touches a column NOT in SELECT;
         // we use a GROUP BY so projection is always on.
         auto s = otterbrix::session_id_t();
@@ -290,7 +304,8 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
         REQUIRE(cur->chunks().front().data[1].data<uint64_t>()[0] == 2);
     }
 
-    INFO("inner JOIN + GROUP BY on joined-side column") {
+    INFO("inner JOIN + GROUP BY on joined-side column");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT c.city, COUNT(*) AS cnt FROM db.orders o "
@@ -350,7 +365,8 @@ TEST_CASE("integration::cpp::column_projection::three_table_join") {
                                 "(10, 1, 100),(11, 1, 200),(12, 2, 300),(13, 3, 400);");
     }
 
-    INFO("three-table chain: count per city across tables") {
+    INFO("three-table chain: count per city across tables");
+    {
         // Exercise projection through a two-level JOIN. Each aggregate level computes
         // its own projection; inner JOINs split by side.
         auto s = otterbrix::session_id_t();
@@ -390,7 +406,8 @@ TEST_CASE("integration::cpp::column_projection::subquery") {
                                 "(1,10,100,1000),(2,20,200,2000),(3,30,300,3000);");
     }
 
-    INFO("subquery reads only needed columns from base table") {
+    INFO("subquery reads only needed columns from base table");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT a FROM (SELECT a, b FROM db.t WHERE a > 1) AS sub "
@@ -425,7 +442,8 @@ TEST_CASE("integration::cpp::column_projection::case_when") {
                                 "('a', 95, 1),('b', 72, 2),('c', 45, 3),('d', 88, 4),('e', 30, 5);");
     }
 
-    INFO("CASE WHEN references column not in SELECT base — must still be read") {
+    INFO("CASE WHEN references column not in SELECT base — must still be read");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT name, CASE WHEN score >= 90 THEN 'A' "
@@ -458,7 +476,8 @@ TEST_CASE("integration::cpp::column_projection::order_by_non_select") {
         dispatcher->execute_sql(s, "INSERT INTO db.t (a, b, c) VALUES (1,30,300),(2,10,100),(3,20,200);");
     }
 
-    INFO("ORDER BY references non-select column") {
+    INFO("ORDER BY references non-select column");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.t ORDER BY b ASC;");
         REQUIRE(cur->is_success());
@@ -493,7 +512,8 @@ TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection"
                                 "(1,10,100,1000),(2,20,200,2000),(3,30,300,3000),(4,40,400,4000);");
     }
 
-    INFO("SELECT with LIMIT applies projection correctly") {
+    INFO("SELECT with LIMIT applies projection correctly");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT a FROM db.t ORDER BY a ASC LIMIT 2;");
         REQUIRE(cur->is_success());

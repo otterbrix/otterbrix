@@ -26,7 +26,7 @@
 // so it does not depend on the unpin() optimization to reproduce the crash.
 // ---------------------------------------------------------------------------
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/table/storage/block_handle.hpp>
 #include <components/table/storage/buffer_handle.hpp>

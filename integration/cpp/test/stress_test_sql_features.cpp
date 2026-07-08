@@ -1,7 +1,7 @@
 #include "test_config.hpp"
 #include "types/operations_helper.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <core/date/date_parse.hpp>
 #include <core/date/timezones.hpp>
@@ -26,7 +26,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup: CREATE DATABASE + empty CREATE TABLE => relkind='g'") {
+    INFO("setup: CREATE DATABASE + empty CREATE TABLE => relkind='g'");
+    {
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
@@ -106,7 +107,8 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
     REQUIRE(elapsed_ms < 60000);
 #endif
 
-    INFO("SELECT * returns all 1000 rows; dynamic schema unions up to 50 columns") {
+    INFO("SELECT * returns all 1000 rows; dynamic schema unions up to 50 columns");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.docs;");
         REQUIRE(cur->is_success());

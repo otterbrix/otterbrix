@@ -7,7 +7,7 @@ add_definitions(-DDEV_MODE)
 
 # Compile the runner sources under test alongside the test TU (the runner is an
 # executable, not a library, so there is nothing to link against). main.cpp is
-# deliberately excluded — Catch provides main via CATCH_CONFIG_MAIN.
+# deliberately excluded — Catch2::Catch2WithMain provides main.
 set(${PROJECT_NAME}_SOURCES
         test_benchmark_reset.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../benchmark_runner.cpp
@@ -27,7 +27,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         cpp_otterbrix
-        Catch2::Catch2
+        Catch2::Catch2WithMain
 )
 
 include(CTest)

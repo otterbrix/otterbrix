@@ -1,4 +1,5 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <components/table/column_definition.hpp>
@@ -217,7 +218,7 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
             auto id_val = result.data[0].value(i);
             auto score_val = result.data[1].value(i);
             REQUIRE(id_val.value<int64_t>() == static_cast<int64_t>(i));
-            REQUIRE(score_val.value<double>() == Approx(static_cast<double>(i) * 1.5));
+            REQUIRE(score_val.value<double>() == Catch::Approx(static_cast<double>(i) * 1.5));
         }
     }
 

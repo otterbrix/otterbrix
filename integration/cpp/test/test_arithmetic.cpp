@@ -1,6 +1,6 @@
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
@@ -30,7 +30,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         columns.emplace_back(type.alias(), type);
     }
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -41,7 +42,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("insert test data") {
+    INFO("insert test data");
+    {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
             dispatcher->resource(),
@@ -62,7 +64,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     // A. SELECT — arithmetic in projection
     // ================================================================
 
-    INFO("A1. binary operator +") {
+    INFO("A1. binary operator +");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count + 10 AS plus )_"
@@ -76,7 +79,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A1. binary operator -") {
+    INFO("A1. binary operator -");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count - 5 AS minus )_"
@@ -90,7 +94,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A1. binary operator *") {
+    INFO("A1. binary operator *");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count * 2 AS doubled )_"
@@ -104,7 +109,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A1. binary operator /") {
+    INFO("A1. binary operator /");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count / 3 AS divided )_"
@@ -118,7 +124,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A1. binary operator %") {
+    INFO("A1. binary operator %");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count % 7 AS remainder )_"
@@ -132,7 +139,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A2. column * constant (DOUBLE result)") {
+    INFO("A2. column * constant (DOUBLE result)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count_double, count_double * 0.13 AS tax )_"
@@ -148,7 +156,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A3. column * column") {
+    INFO("A3. column * column");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count_double, count * count_double AS product )_"
@@ -166,7 +175,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A4. chained arithmetic") {
+    INFO("A4. chained arithmetic");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count * 2 + 10 AS chained )_"
@@ -181,7 +191,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A4. nested parenthesized arithmetic") {
+    INFO("A4. nested parenthesized arithmetic");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, (count + 5) * (count - 5) AS expr )_"
@@ -196,7 +207,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A5. tax scenario (multiple computed columns)") {
+    INFO("A5. tax scenario (multiple computed columns)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count * 0.13 AS tax, count - count * 0.13 AS net )_"
@@ -213,7 +225,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A6. unary minus") {
+    INFO("A6. unary minus");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, -count AS negated )_"
@@ -228,7 +241,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("A7. constants only") {
+    INFO("A7. constants only");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT 2 + 3 AS five, 10 * 5 AS fifty;)_");
         REQUIRE(cur->is_success());
@@ -237,7 +251,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 50);
     }
 
-    INFO("A8. type promotion int * double") {
+    INFO("A8. type promotion int * double");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count * 1.5 AS promoted )_"
@@ -254,7 +269,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     // B. WHERE — arithmetic in filter predicates
     // ================================================================
 
-    INFO("B1. arithmetic expression vs constant") {
+    INFO("B1. arithmetic expression vs constant");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT * FROM TestDatabase.TestCollection )_"
@@ -268,7 +284,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("B2. column * column in WHERE") {
+    INFO("B2. column * column in WHERE");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT * FROM TestDatabase.TestCollection )_"
@@ -285,7 +302,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == expected);
     }
 
-    INFO("B3. arithmetic with AND") {
+    INFO("B3. arithmetic with AND");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT * FROM TestDatabase.TestCollection )_"
@@ -299,7 +317,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("B4. arithmetic on BOTH sides") {
+    INFO("B4. arithmetic on BOTH sides");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT * FROM TestDatabase.TestCollection )_"
@@ -311,7 +330,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == kNumInserts);
     }
 
-    INFO("B5. arithmetic with OR") {
+    INFO("B5. arithmetic with OR");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT * FROM TestDatabase.TestCollection )_"
@@ -324,7 +344,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == 9);
     }
 
-    INFO("B6. nested arithmetic in WHERE") {
+    INFO("B6. nested arithmetic in WHERE");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT * FROM TestDatabase.TestCollection )_"
@@ -343,7 +364,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     // C. Aggregates with arithmetic arguments
     // ================================================================
 
-    INFO("C1. SUM of expression") {
+    INFO("C1. SUM of expression");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT SUM(count * 2) AS val )_"
@@ -354,7 +376,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 10100);
     }
 
-    INFO("C2. SUM of column * column") {
+    INFO("C2. SUM of column * column");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT SUM(count * count_double) AS val )_"
@@ -369,7 +392,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(core::is_equals(cur->chunks().front().data[0].data<double>()[0], expected));
     }
 
-    INFO("C3. AVG of expression") {
+    INFO("C3. AVG of expression");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT AVG(count * 10) AS val )_"
@@ -382,7 +406,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(val == 505);
     }
 
-    INFO("C4. MIN/MAX of expression") {
+    INFO("C4. MIN/MAX of expression");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT MIN(count * 2) AS min_val, MAX(count * 2) AS max_val )_"
@@ -393,7 +418,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 200);
     }
 
-    INFO("C5pre. COUNT(*) without WHERE") {
+    INFO("C5pre. COUNT(*) without WHERE");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT COUNT(*) AS cnt )_"
@@ -403,7 +429,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->chunks().front().data[0].data<uint64_t>()[0] == kNumInserts);
     }
 
-    INFO("C5. COUNT with arithmetic WHERE") {
+    INFO("C5. COUNT with arithmetic WHERE");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT COUNT(*) AS cnt )_"
@@ -419,7 +446,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     // D. GROUP BY + aggregates with arithmetic
     // ================================================================
 
-    INFO("D1. GROUP BY with arithmetic in aggregate arg") {
+    INFO("D1. GROUP BY with arithmetic in aggregate arg");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count_bool, SUM(count * 2) AS total )_"
@@ -432,7 +460,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         // sum of even (2,4,6,...100) * 2 = 2 * 2550 = 5100
     }
 
-    INFO("D2. GROUP BY + arithmetic in WHERE + aggregate on expression") {
+    INFO("D2. GROUP BY + arithmetic in WHERE + aggregate on expression");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count_bool, SUM(count * count_double) AS revenue )_"
@@ -447,7 +476,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     // E. Post-aggregate arithmetic
     // ================================================================
 
-    INFO("E1. arithmetic on single aggregate") {
+    INFO("E1. arithmetic on single aggregate");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT SUM(count) * 2 AS doubled )_"
@@ -458,7 +488,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 10100);
     }
 
-    INFO("E2. arithmetic on multiple aggregates") {
+    INFO("E2. arithmetic on multiple aggregates");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT SUM(count) / COUNT(*) AS manual_avg )_"
@@ -471,7 +502,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(val == 50);
     }
 
-    INFO("E3. complex: aggregate * constant") {
+    INFO("E3. complex: aggregate * constant");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT SUM(count * count_double) * 0.3 AS margin )_"
@@ -487,7 +519,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(std::abs(actual_val - expected_val) < 1.0);
     }
 
-    INFO("E4. GROUP BY + post-aggregate arithmetic") {
+    INFO("E4. GROUP BY + post-aggregate arithmetic");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -503,7 +536,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("E5. interleaved post-aggregate arithmetic columns") {
+    INFO("E5. interleaved post-aggregate arithmetic columns");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count_bool, SUM(count) * 2 AS doubled, )_"
@@ -523,7 +557,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     // F. ORDER BY with arithmetic
     // ================================================================
 
-    INFO("F1. ORDER BY computed expression") {
+    INFO("F1. ORDER BY computed expression");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count )_"
@@ -537,7 +572,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("F2. ORDER BY column not in SELECT (ASC)") {
+    INFO("F2. ORDER BY column not in SELECT (ASC)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count_double, count_double * 0.13 AS tax )_"
@@ -553,7 +589,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("F3. ORDER BY column not in SELECT (DESC) — regression") {
+    INFO("F3. ORDER BY column not in SELECT (DESC) — regression");
+    {
         // Regression: if sort key is unresolved (column dropped by GROUP),
         // rows stay in insertion order instead of DESC. Detects the bug
         // on any platform because DESC differs from insertion order.
@@ -572,7 +609,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         }
     }
 
-    INFO("F4. ORDER BY arithmetic expression DESC") {
+    INFO("F4. ORDER BY arithmetic expression DESC");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count_double )_"
@@ -590,7 +628,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     // G. UPDATE — arithmetic in SET and WHERE
     // ================================================================
 
-    INFO("G1. UPDATE SET with arithmetic") {
+    INFO("G1. UPDATE SET with arithmetic");
+    {
         // First, verify initial state for count <= 10
         {
             auto session = otterbrix::session_id_t();
@@ -636,7 +675,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     // ================================================================
 
     // Use a fresh test case for DELETE to avoid state issues
-    INFO("H1. DELETE with arithmetic WHERE") {
+    INFO("H1. DELETE with arithmetic WHERE");
+    {
         // Count before
         size_t count_before;
         {
@@ -671,7 +711,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     // I. INSERT — arithmetic in VALUES
     // ================================================================
 
-    INFO("I1. INSERT with computed values") {
+    INFO("I1. INSERT with computed values");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(INSERT INTO TestDatabase.TestCollection )_"
@@ -681,7 +722,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
         REQUIRE(cur->size() == 1);
     }
 
-    INFO("I2. INSERT with expressions in multiple VALUES") {
+    INFO("I2. INSERT with expressions in multiple VALUES");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(INSERT INTO TestDatabase.TestCollection )_"
@@ -712,7 +754,8 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         columns.emplace_back(type.alias(), type);
     }
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -727,7 +770,8 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         }
     }
 
-    INFO("insert test data") {
+    INFO("insert test data");
+    {
         // Insert main collection data
         {
             auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
@@ -760,7 +804,8 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         }
     }
 
-    INFO("J1. JOIN with arithmetic in ON") {
+    INFO("J1. JOIN with arithmetic in ON");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -775,7 +820,8 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
         REQUIRE(cur->size() == 3);
     }
 
-    INFO("J2. JOIN with arithmetic on one side") {
+    INFO("J2. JOIN with arithmetic on one side");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT * FROM TestDatabase.TestCollection )_"
@@ -808,7 +854,8 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
         columns.emplace_back(type.alias(), type);
     }
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -819,7 +866,8 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
         }
     }
 
-    INFO("insert test data") {
+    INFO("insert test data");
+    {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
             dispatcher->resource(),
@@ -834,7 +882,8 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
         REQUIRE(cur->size() == kNumInserts);
     }
 
-    INFO("K1. basic HAVING") {
+    INFO("K1. basic HAVING");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count_bool, SUM(count) AS total )_"
@@ -846,7 +895,8 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
         REQUIRE(cur->size() == 2);
     }
 
-    INFO("K2. HAVING with arithmetic") {
+    INFO("K2. HAVING with arithmetic");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count_bool, SUM(count) AS total )_"
@@ -880,7 +930,8 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         columns.emplace_back(type.alias(), type);
     }
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -891,7 +942,8 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         }
     }
 
-    INFO("insert test data") {
+    INFO("insert test data");
+    {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
             dispatcher->resource(),
@@ -906,7 +958,8 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         REQUIRE(cur->size() == kNumInserts);
     }
 
-    INFO("L1. CASE in SELECT with arithmetic in THEN") {
+    INFO("L1. CASE in SELECT with arithmetic in THEN");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -924,7 +977,8 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         }
     }
 
-    INFO("L2. CASE with arithmetic in WHEN condition") {
+    INFO("L2. CASE with arithmetic in WHEN condition");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, )_"
@@ -941,7 +995,8 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
         }
     }
 
-    INFO("L3. CASE with multiple WHEN + arithmetic") {
+    INFO("L3. CASE with multiple WHEN + arithmetic");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, )_"
@@ -988,7 +1043,8 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         columns.emplace_back(type.alias(), type);
     }
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -999,7 +1055,8 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         }
     }
 
-    INFO("insert test data") {
+    INFO("insert test data");
+    {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
             dispatcher->resource(),
@@ -1014,7 +1071,8 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         REQUIRE(cur->size() == kNumInserts);
     }
 
-    INFO("M1. division by zero returns error (PostgreSQL behavior)") {
+    INFO("M1. division by zero returns error (PostgreSQL behavior)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, count / 0 AS bad )_"
@@ -1022,7 +1080,8 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         REQUIRE(cur->is_error());
     }
 
-    INFO("M2. very large multiplication") {
+    INFO("M2. very large multiplication");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count * count * count * count AS big )_"
@@ -1034,7 +1093,8 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 100000000);
     }
 
-    INFO("M3. mixed nested: arithmetic inside aggregate inside arithmetic") {
+    INFO("M3. mixed nested: arithmetic inside aggregate inside arithmetic");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT SUM(count * 2) + MAX(count) AS val )_"
@@ -1058,7 +1118,8 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -1069,7 +1130,8 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
         }
     }
 
-    INFO("insert test data") {
+    INFO("insert test data");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -1083,7 +1145,8 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     // ================================================================
     // E6a. key, post_agg, key, agg
     // ================================================================
-    INFO("E6a. SELECT region, SUM(amount)*2, category, COUNT(*)") {
+    INFO("E6a. SELECT region, SUM(amount)*2, category, COUNT(*)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT region, SUM(amount) * 2 AS doubled, category, COUNT(*) AS cnt )_"
@@ -1120,7 +1183,8 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     // ================================================================
     // E6b. key, agg, post_agg, key
     // ================================================================
-    INFO("E6b. SELECT region, COUNT(*), SUM(amount)+100, category") {
+    INFO("E6b. SELECT region, COUNT(*), SUM(amount)+100, category");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -1171,7 +1235,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
         columns.emplace_back(type.alias(), type);
     }
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -1182,7 +1247,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
         }
     }
 
-    INFO("insert test data") {
+    INFO("insert test data");
+    {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
             dispatcher->resource(),
@@ -1200,7 +1266,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I1. WHERE with constant true
     // ================================================================
-    INFO("I1. WHERE with constant true: 5 = 5") {
+    INFO("I1. WHERE with constant true: 5 = 5");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE 5 = 5;)_");
         REQUIRE(cur->is_success());
@@ -1210,7 +1277,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I2. WHERE with constant false
     // ================================================================
-    INFO("I2. WHERE with constant false: 5 = 7") {
+    INFO("I2. WHERE with constant false: 5 = 7");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE 5 = 7;)_");
         REQUIRE(cur->is_success());
@@ -1220,7 +1288,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I3. WHERE with constant arithmetic + field
     // ================================================================
-    INFO("I3a. sanity: WHERE count > 5 (no arithmetic)") {
+    INFO("I3a. sanity: WHERE count > 5 (no arithmetic)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 5;)_");
@@ -1228,7 +1297,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
         REQUIRE(cur->size() == 95);
     }
 
-    INFO("I3. WHERE count > 2 + 3") {
+    INFO("I3. WHERE count > 2 + 3");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 2 + 3;)_");
@@ -1240,7 +1310,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I4. WHERE with constant arithmetic: multiply
     // ================================================================
-    INFO("I4. WHERE count < 5 * 2") {
+    INFO("I4. WHERE count < 5 * 2");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE count < 5 * 2;)_");
@@ -1252,7 +1323,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I5. WHERE with constant comparison: gt true
     // ================================================================
-    INFO("I5. WHERE 10 > 5 (constant true)") {
+    INFO("I5. WHERE 10 > 5 (constant true)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE 10 > 5;)_");
         REQUIRE(cur->is_success());
@@ -1262,7 +1334,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I6. WHERE with constant comparison: lt false
     // ================================================================
-    INFO("I6. WHERE 3 > 10 (constant false)") {
+    INFO("I6. WHERE 3 > 10 (constant false)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE 3 > 10;)_");
         REQUIRE(cur->is_success());
@@ -1272,7 +1345,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I7. Nested: field compare to arithmetic
     // ================================================================
-    INFO("I7. WHERE count = 10 + 40") {
+    INFO("I7. WHERE count = 10 + 40");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 10 + 40;)_");
@@ -1284,7 +1358,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I8. No-op: non-match expressions unchanged
     // ================================================================
-    INFO("I8. SELECT count + 10 (projection not folded)") {
+    INFO("I8. SELECT count + 10 (projection not folded)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count + 10 AS plus FROM TestDatabase.TestCollection )_"
@@ -1299,7 +1374,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I9. WHERE with AND: constant + field
     // ================================================================
-    INFO("I9. WHERE 5 = 5 AND count > 95") {
+    INFO("I9. WHERE 5 = 5 AND count > 95");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count FROM TestDatabase.TestCollection )_"
@@ -1312,7 +1388,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I10. WHERE with OR: constant false + field
     // ================================================================
-    INFO("I10. WHERE 5 = 7 OR count = 50") {
+    INFO("I10. WHERE 5 = 7 OR count = 50");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count FROM TestDatabase.TestCollection )_"
@@ -1325,7 +1402,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I11. Nested arithmetic in WHERE: (2+3)*10
     // ================================================================
-    INFO("I11. WHERE count = (2 + 3) * 10") {
+    INFO("I11. WHERE count = (2 + 3) * 10");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count FROM TestDatabase.TestCollection )_"
@@ -1338,7 +1416,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I12. Double constants in WHERE
     // ================================================================
-    INFO("I12. WHERE count > 99.5") {
+    INFO("I12. WHERE count > 99.5");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, R"_(SELECT count FROM TestDatabase.TestCollection WHERE count > 99.5;)_");
@@ -1350,7 +1429,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I13. Subtraction in WHERE
     // ================================================================
-    INFO("I13. WHERE count = 100 - 1") {
+    INFO("I13. WHERE count = 100 - 1");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count FROM TestDatabase.TestCollection WHERE count = 100 - 1;)_");
@@ -1362,7 +1442,8 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     // ================================================================
     // I14. Modulo in WHERE
     // ================================================================
-    INFO("I14. WHERE count = 103 % 10") {
+    INFO("I14. WHERE count = 103 % 10");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session,
@@ -1385,7 +1466,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
@@ -1404,7 +1486,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         }
     }
 
-    INFO("insert test data") {
+    INFO("insert test data");
+    {
         // Row 0: 2024-01-01, ts=2024-01-01 00:00:00, t=08:00:00, iv=1 day, tstz=2024-01-01 00:00:00+00
         {
             auto session = otterbrix::session_id_t();
@@ -1449,7 +1532,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N1. DATE + INTERVAL = DATE
     // ================================================================
-    INFO("N1. DATE + INTERVAL '1 day' = DATE") {
+    INFO("N1. DATE + INTERVAL '1 day' = DATE");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d + INTERVAL '1 day' AS result "
@@ -1468,7 +1552,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N2. DATE - INTERVAL = DATE
     // ================================================================
-    INFO("N2. DATE - INTERVAL '7 days' = DATE") {
+    INFO("N2. DATE - INTERVAL '7 days' = DATE");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d - INTERVAL '7 days' AS result "
@@ -1487,7 +1572,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N3. DATE + column INTERVAL = DATE
     // ================================================================
-    INFO("N3. DATE column + INTERVAL column = DATE") {
+    INFO("N3. DATE column + INTERVAL column = DATE");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d + iv AS result "
@@ -1506,7 +1592,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N4. TIMESTAMP + INTERVAL = TIMESTAMP
     // ================================================================
-    INFO("N4. TIMESTAMP + INTERVAL '1 day' = TIMESTAMP") {
+    INFO("N4. TIMESTAMP + INTERVAL '1 day' = TIMESTAMP");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT ts + INTERVAL '1 day' AS result "
@@ -1528,7 +1615,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N5. TIMESTAMP - INTERVAL = TIMESTAMP
     // ================================================================
-    INFO("N5. TIMESTAMP - INTERVAL '1 day' = TIMESTAMP") {
+    INFO("N5. TIMESTAMP - INTERVAL '1 day' = TIMESTAMP");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT ts - INTERVAL '1 day' AS result "
@@ -1550,7 +1638,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N6. TIMESTAMP + column INTERVAL = TIMESTAMP
     // ================================================================
-    INFO("N6. TIMESTAMP column + INTERVAL column = TIMESTAMP") {
+    INFO("N6. TIMESTAMP column + INTERVAL column = TIMESTAMP");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT ts + iv AS result "
@@ -1572,7 +1661,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N7. DATE - DATE = INTERVAL (time component = 0, only days differ)
     // ================================================================
-    INFO("N7. DATE - DATE = INTERVAL (days difference)") {
+    INFO("N7. DATE - DATE = INTERVAL (days difference)");
+    {
         auto session = otterbrix::session_id_t();
         // 2024-03-15 - 2024-01-01 = 74 days
         auto cur = dispatcher->execute_sql(session,
@@ -1591,7 +1681,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N8. INTERVAL + INTERVAL = INTERVAL
     // ================================================================
-    INFO("N8. INTERVAL + INTERVAL = INTERVAL") {
+    INFO("N8. INTERVAL + INTERVAL = INTERVAL");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT iv + INTERVAL '3 days' AS result "
@@ -1610,7 +1701,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N9. INTERVAL - INTERVAL = INTERVAL
     // ================================================================
-    INFO("N9. INTERVAL - INTERVAL = INTERVAL") {
+    INFO("N9. INTERVAL - INTERVAL = INTERVAL");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT iv - INTERVAL '1 day' AS result "
@@ -1629,7 +1721,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N10. DATE + INTERVAL in WHERE predicate
     // ================================================================
-    INFO("N10. WHERE d + INTERVAL '1 day' > DATE '2024-03-15'") {
+    INFO("N10. WHERE d + INTERVAL '1 day' > DATE '2024-03-15'");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d FROM TestDatabase.TestCollection "
@@ -1642,7 +1735,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N11. TIMESTAMP - TIMESTAMP = INTERVAL
     // ================================================================
-    INFO("N11. TIMESTAMP - TIMESTAMP = INTERVAL (microseconds difference)") {
+    INFO("N11. TIMESTAMP - TIMESTAMP = INTERVAL (microseconds difference)");
+    {
         auto session = otterbrix::session_id_t();
         // 2024-03-15 12:30:00 - 2024-01-01 00:00:00
         auto cur = dispatcher->execute_sql(session,
@@ -1664,7 +1758,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N12. INTERVAL * integer literal = INTERVAL
     // ================================================================
-    INFO("N12. INTERVAL column * 3 = INTERVAL") {
+    INFO("N12. INTERVAL column * 3 = INTERVAL");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT iv * 3 AS result "
@@ -1683,7 +1778,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N13. INTERVAL / integer literal = INTERVAL
     // ================================================================
-    INFO("N13. INTERVAL column / 2 = INTERVAL") {
+    INFO("N13. INTERVAL column / 2 = INTERVAL");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT iv / 2 AS result "
@@ -1702,7 +1798,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N14. integer literal * INTERVAL = INTERVAL (commutative)
     // ================================================================
-    INFO("N14. 2 * INTERVAL column = INTERVAL") {
+    INFO("N14. 2 * INTERVAL column = INTERVAL");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT 2 * iv AS result "
@@ -1718,7 +1815,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N15. INTERVAL literal * float = INTERVAL (fractional scaling)
     // ================================================================
-    INFO("N15. INTERVAL '10 days' * 1.5 = INTERVAL '15 days'") {
+    INFO("N15. INTERVAL '10 days' * 1.5 = INTERVAL '15 days'");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT INTERVAL '10 days' * 1.5 AS result "
@@ -1732,7 +1830,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N16. TIME + INTERVAL = TIME (including wrap-around past midnight)
     // ================================================================
-    INFO("N16. TIME + INTERVAL '1 hour' = TIME") {
+    INFO("N16. TIME + INTERVAL '1 hour' = TIME");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT t + INTERVAL '1 hour' AS result "
@@ -1749,7 +1848,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N17. TIME - INTERVAL = TIME
     // ================================================================
-    INFO("N17. TIME - INTERVAL '30 minutes' = TIME") {
+    INFO("N17. TIME - INTERVAL '30 minutes' = TIME");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT t - INTERVAL '30 minutes' AS result "
@@ -1765,7 +1865,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N18. TIME - INTERVAL wrap-around below midnight
     // ================================================================
-    INFO("N18. TIME '08:00:00' - INTERVAL '10 hours' wraps to 22:00:00") {
+    INFO("N18. TIME '08:00:00' - INTERVAL '10 hours' wraps to 22:00:00");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT t - INTERVAL '10 hours' AS result "
@@ -1780,7 +1881,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N19. TIME - TIME = INTERVAL
     // ================================================================
-    INFO("N19. TIME column - TIME '06:00:00' = INTERVAL") {
+    INFO("N19. TIME column - TIME '06:00:00' = INTERVAL");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT t - TIME '06:00:00' AS result "
@@ -1798,7 +1900,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N20. DATE + month-based INTERVAL = DATE
     // ================================================================
-    INFO("N20. DATE + INTERVAL '1 month' = DATE") {
+    INFO("N20. DATE + INTERVAL '1 month' = DATE");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d + INTERVAL '1 month' AS result "
@@ -1814,7 +1917,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N21. Month-end clamping: Jan 31 + 1 month = Feb 29 (2024 is leap)
     // ================================================================
-    INFO("N21. DATE '2024-01-31' + INTERVAL '1 month' clamps to 2024-02-29") {
+    INFO("N21. DATE '2024-01-31' + INTERVAL '1 month' clamps to 2024-02-29");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT DATE '2024-01-31' + INTERVAL '1 month' AS result "
@@ -1828,7 +1932,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N22. TIMESTAMP + month-based INTERVAL = TIMESTAMP
     // ================================================================
-    INFO("N22. TIMESTAMP + INTERVAL '2 months' = TIMESTAMP") {
+    INFO("N22. TIMESTAMP + INTERVAL '2 months' = TIMESTAMP");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT ts + INTERVAL '2 months' AS result "
@@ -1848,7 +1953,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N23. INTERVAL + DATE = DATE (commutative form, interval on left)
     // ================================================================
-    INFO("N23. iv + d = DATE (INTERVAL column + DATE column)") {
+    INFO("N23. iv + d = DATE (INTERVAL column + DATE column)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT iv + d AS result "
@@ -1864,7 +1970,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N24. WHERE with temporal subtraction (exercises scalar subtract path)
     // ================================================================
-    INFO("N24. WHERE ts - INTERVAL '1 day' > TIMESTAMP '2024-01-01 00:00:00'") {
+    INFO("N24. WHERE ts - INTERVAL '1 day' > TIMESTAMP '2024-01-01 00:00:00'");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d FROM TestDatabase.TestCollection "
@@ -1879,7 +1986,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N25. TIMESTAMP_TZ + INTERVAL = TIMESTAMP_TZ
     // ================================================================
-    INFO("N25. TIMESTAMPTZ + INTERVAL '1 day' = TIMESTAMPTZ") {
+    INFO("N25. TIMESTAMPTZ + INTERVAL '1 day' = TIMESTAMPTZ");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT tstz + INTERVAL '1 day' AS result "
@@ -1898,7 +2006,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // ================================================================
     // N26. TIMESTAMP_TZ - TIMESTAMP_TZ = INTERVAL
     // ================================================================
-    INFO("N26. TIMESTAMPTZ - TIMESTAMPTZ = INTERVAL (µs difference)") {
+    INFO("N26. TIMESTAMPTZ - TIMESTAMPTZ = INTERVAL (µs difference)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT tstz - TIMESTAMPTZ '2024-01-01 00:00:00+00:00' AS diff "
@@ -1919,7 +2028,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // N27. CASE WHEN with temporal arithmetic (exercises arithmetic_eval.cpp
     //      resolve_row_value, which evaluates arithmetic branch-by-branch)
     // ================================================================
-    INFO("N27. CASE WHEN with DATE + INTERVAL exercises arithmetic_eval.cpp") {
+    INFO("N27. CASE WHEN with DATE + INTERVAL exercises arithmetic_eval.cpp");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT CASE WHEN d = DATE '2024-01-01' "
@@ -1940,7 +2050,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // N28. GROUP BY with temporal expression in SELECT (exercises
     //      operator_group.cpp post-aggregate resolve lambda)
     // ================================================================
-    INFO("N28. SELECT d + INTERVAL '1 month' ... GROUP BY d exercises operator_group.cpp") {
+    INFO("N28. SELECT d + INTERVAL '1 month' ... GROUP BY d exercises operator_group.cpp");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT d + INTERVAL '1 month' AS bucket, COUNT(*) AS cnt "
@@ -1959,7 +2070,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     // N29. UPDATE SET with temporal arithmetic (exercises
     //      update_expression.cpp apply_binary_update_op)
     // ================================================================
-    INFO("N29. UPDATE SET d = d + INTERVAL '7 days' exercises update_expression.cpp") {
+    INFO("N29. UPDATE SET d = d + INTERVAL '7 days' exercises update_expression.cpp");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,

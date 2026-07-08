@@ -1,7 +1,8 @@
 #include "operations_helper.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/types/physical_value.hpp>
 #include <core/operations_helper.hpp>
+#include <random>
 
 using namespace components::types;
 
@@ -10,7 +11,8 @@ TEST_CASE("components::types::physical_value") {
     std::string_view str1 = "test string";
     std::string_view str2 = "bigger test string but shouldn't be; b < t";
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         values.emplace_back();
         values.emplace_back(false);
         values.emplace_back(true);
@@ -28,7 +30,8 @@ TEST_CASE("components::types::physical_value") {
         values.emplace_back(str2);
     }
 
-    INFO("value getters") {
+    INFO("value getters");
+    {
         REQUIRE(values[0].value<physical_type::NA>() == nullptr);
         REQUIRE(values[1].value<physical_type::BOOL>() == false);
         REQUIRE(values[2].value<physical_type::BOOL>() == true);
@@ -46,7 +49,8 @@ TEST_CASE("components::types::physical_value") {
         REQUIRE(values[14].value<physical_type::STRING>() == str2);
     }
 
-    INFO("sort") {
+    INFO("sort");
+    {
         std::shuffle(values.begin(), values.end(), std::default_random_engine{0});
         std::sort(values.begin(), values.end());
 
@@ -198,7 +202,8 @@ TEST_CASE("components::types::decimal") {
         }
     }
 
-    INFO("int128_t") {
+    INFO("int128_t");
+    {
         static constexpr uint8_t width = 20;
         static constexpr uint8_t scale = 4;
         // verify storage size

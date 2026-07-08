@@ -3,10 +3,10 @@ project(test_c_otterbrix)
 add_definitions(-DDEV_MODE)
 
 set( ${PROJECT_NAME}_SOURCES
-
+        main.cpp
 )
 
-add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
+add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
 
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
@@ -24,7 +24,7 @@ target_link_libraries(
         spdlog::spdlog
         msgpackc-cxx
         #CONAN_PKG::date
-        Catch2::Catch2
+        Catch2::Catch2WithMain
         absl::crc32c
         absl::int128
         benchmark::benchmark

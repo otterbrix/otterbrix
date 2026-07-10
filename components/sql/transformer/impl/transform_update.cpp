@@ -176,7 +176,15 @@ namespace components::sql::transform {
                 key.deduce_side(names);
                 return {new update_expr_get_value_t(std::move(key.field))};
             }
+            default:
+                break;
         }
+        // Returning a bare nullptr here would ship a null child in the update
+        // expression tree and crash (or silently no-op) at execution.
+        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                               std::pmr::string{"unsupported expression in UPDATE SET (function calls, "
+                                                "subqueries and CASE are not supported here)",
+                                                resource_});
         return nullptr;
     }
 

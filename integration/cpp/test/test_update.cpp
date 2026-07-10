@@ -75,3 +75,35 @@ TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
         CHECK(cur->value(0, 0).value<int64_t>() == 9); // @9 = 9
     }
 }
+
+// transform_update_expr's switch fell off for node tags it does not handle
+// (function calls, CASE, subqueries) and returned nullptr WITHOUT setting the
+// transformer error, so a null child shipped in the plan: nested cases
+// segfaulted the executor, a top-level one was silently dropped (success
+// reported, nothing updated).
+TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unsupported_expressions");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE TABLE t.uf (x BIGINT, s TEXT);")->is_success());
+    REQUIRE(exec("INSERT INTO t.uf (x, s) VALUES (9, 'ab');")->is_success());
+
+    CHECK_FALSE(exec("UPDATE t.uf SET s = upper(s);")->is_success());
+    CHECK_FALSE(exec("UPDATE t.uf SET x = x + abs(x);")->is_success());
+    CHECK_FALSE(exec("UPDATE t.uf SET x = CASE WHEN x > 0 THEN 1 ELSE 0 END;")->is_success());
+    {
+        auto cur = exec("SELECT x, s FROM t.uf;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->value(0, 0).value<int64_t>() == 9); // data untouched
+        CHECK(cur->value(1, 0).value<std::string_view>() == "ab");
+    }
+}

@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -105,7 +105,8 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         return plan->type();
     };
 
-    INFO("equi-join (eq, left/right keys) is rewritten to hash_join") {
+    INFO("equi-join (eq, left/right keys) is rewritten to hash_join");
+    {
         CHECK(plan_type(join_type::inner, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
         CHECK(plan_type(join_type::left, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
         CHECK(plan_type(join_type::right, compare_type::eq, side_t::left, side_t::right) == operator_type::hash_join);
@@ -114,7 +115,8 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         CHECK(plan_type(join_type::inner, compare_type::eq, side_t::right, side_t::left) == operator_type::hash_join);
     }
 
-    INFO("non-equi conditions keep the nested-loop join") {
+    INFO("non-equi conditions keep the nested-loop join");
+    {
         // Not an equality comparison.
         CHECK(plan_type(join_type::inner, compare_type::gt, side_t::left, side_t::right) == operator_type::join);
         CHECK(plan_type(join_type::inner, compare_type::ne, side_t::left, side_t::right) == operator_type::join);
@@ -122,11 +124,11 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         CHECK(plan_type(join_type::inner, compare_type::eq, side_t::left, side_t::left) == operator_type::join);
     }
 
-    INFO("cross join is never a hash join") {
-        CHECK(plan_type(join_type::cross, compare_type::eq, side_t::left, side_t::right) == operator_type::join);
-    }
+    INFO("cross join is never a hash join");
+    { CHECK(plan_type(join_type::cross, compare_type::eq, side_t::left, side_t::right) == operator_type::join); }
 
-    INFO("nested-field equi-join (multi-element path) keeps the nested-loop join") {
+    INFO("nested-field equi-join (multi-element path) keeps the nested-loop join");
+    {
         // A path like [custom_type_col, f1] addresses a nested struct field; the hash
         // probe only understands a single top-level column, so this must NOT be rewritten.
         auto lk = make_key(res, "l", side_t::left, 0);
@@ -180,7 +182,8 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
     };
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
 
-    INFO("duplicate keys on both sides — inner/left/right/full") {
+    INFO("duplicate keys on both sides — inner/left/right/full");
+    {
         create("dl");
         create("dr");
         // left k=1 twice, k=2 once; right k=1 twice, k=3 once.
@@ -197,7 +200,8 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
         CHECK(run("SELECT * FROM " + db + ".dl FULL JOIN " + db + ".dr ON dl.k = dr.k;")->size() == 6);
     }
 
-    INFO("NULL keys never match (skipped in build and probe)") {
+    INFO("NULL keys never match (skipped in build and probe)");
+    {
         create("nl");
         create("nr");
         REQUIRE(run("INSERT INTO " + db + ".nl (k, lv) VALUES (1, 10), (NULL, 20);")->is_success());
@@ -211,7 +215,8 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
         CHECK(run("SELECT * FROM " + db + ".nl FULL JOIN " + db + ".nr ON nl.k = nr.k;")->size() == 3);
     }
 
-    INFO("multi-chunk inputs (> 1024 rows force chunk boundaries)") {
+    INFO("multi-chunk inputs (> 1024 rows force chunk boundaries)");
+    {
         create("bl");
         create("br");
         const int n = 2500; // > 2 * DEFAULT_VECTOR_CAPACITY on each side
@@ -234,7 +239,8 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
               static_cast<size_t>(n));
     }
 
-    INFO("string join keys") {
+    INFO("string join keys");
+    {
         create("sl");
         create("sr");
         REQUIRE(run("INSERT INTO " + db + ".sl (s, lv) VALUES ('a', 1), ('b', 2), ('a', 3);")->is_success());
@@ -287,7 +293,8 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
     // [left, right] = [mbl.k, mbl.lv, mbr.k, mbr.rv].
     const int matched = n - shift; // 1250
 
-    INFO("inner: every matched row gathered correctly across build chunks") {
+    INFO("inner: every matched row gathered correctly across build chunks");
+    {
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT * FROM " + mdb + ".mbl INNER JOIN " + mdb +
                                                ".mbr ON mbl.k = mbr.k ORDER BY mbl.k ASC;");
@@ -302,7 +309,8 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
         }
     }
 
-    INFO("left: > 1024 left-only NULL-pad rows mixed with matched, all correct") {
+    INFO("left: > 1024 left-only NULL-pad rows mixed with matched, all correct");
+    {
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT * FROM " + mdb + ".mbl LEFT JOIN " + mdb +
                                                ".mbr ON mbl.k = mbr.k ORDER BY mbl.k ASC;");
@@ -390,24 +398,18 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
         return plan->right()->output()->chunks().front().types()[0].alias();
     };
 
-    INFO("INNER, larger table on the RIGHT → smaller (logical-left) side becomes build") {
-        CHECK(build_side_key_name(join_type::inner, 2, 5, true, false) == "lk");
-    }
-    INFO("INNER, larger table on the LEFT → no swap (right is already the smaller build)") {
-        CHECK(build_side_key_name(join_type::inner, 5, 2, true, false) == "rk");
-    }
-    INFO("INNER, equal row counts → no swap") {
-        CHECK(build_side_key_name(join_type::inner, 4, 4, true, false) == "rk");
-    }
-    INFO("INNER, counts missing (in-memory / no disk agent) → no swap") {
-        CHECK(build_side_key_name(join_type::inner, 2, 5, false, false) == "rk");
-    }
-    INFO("INNER self-join (same table oid) → no swap even though counts would favor it") {
-        CHECK(build_side_key_name(join_type::inner, 2, 5, true, true) == "rk");
-    }
-    INFO("OUTER (left) join is never swapped, even with a larger right table") {
-        CHECK(build_side_key_name(join_type::left, 2, 5, true, false) == "rk");
-    }
+    INFO("INNER, larger table on the RIGHT → smaller (logical-left) side becomes build");
+    { CHECK(build_side_key_name(join_type::inner, 2, 5, true, false) == "lk"); }
+    INFO("INNER, larger table on the LEFT → no swap (right is already the smaller build)");
+    { CHECK(build_side_key_name(join_type::inner, 5, 2, true, false) == "rk"); }
+    INFO("INNER, equal row counts → no swap");
+    { CHECK(build_side_key_name(join_type::inner, 4, 4, true, false) == "rk"); }
+    INFO("INNER, counts missing (in-memory / no disk agent) → no swap");
+    { CHECK(build_side_key_name(join_type::inner, 2, 5, false, false) == "rk"); }
+    INFO("INNER self-join (same table oid) → no swap even though counts would favor it");
+    { CHECK(build_side_key_name(join_type::inner, 2, 5, true, true) == "rk"); }
+    INFO("OUTER (left) join is never swapped, even with a larger right table");
+    { CHECK(build_side_key_name(join_type::left, 2, 5, true, false) == "rk"); }
 }
 
 // ----------------------------------------------------------------------------
@@ -447,7 +449,8 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
         REQUIRE(dispatcher->execute_sql(session, l.str())->is_success());
     }
 
-    INFO("small on LEFT, large on RIGHT → swap fires; SELECT * columns/values stay correct") {
+    INFO("small on LEFT, large on RIGHT → swap fires; SELECT * columns/values stay correct");
+    {
         // logical output columns are [small.k, small.sv, large.k, large.lv].
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT * FROM " + sdb + ".small INNER JOIN " + sdb +
@@ -463,7 +466,8 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
         }
     }
 
-    INFO("SUM over each side after the swap is correct (catches a column inversion)") {
+    INFO("SUM over each side after the swap is correct (catches a column inversion)");
+    {
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT SUM(s.sv) AS ssv, SUM(l.lv) AS slv FROM " + sdb + ".small s "
                                            "INNER JOIN " + sdb + ".large l ON s.k = l.k;");
@@ -483,7 +487,8 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
     // `small` (3 rows) stays the build side: it is smaller than `large` (30), so
     // build-side selection does not swap it out. This is the SSB-load crash shrunk
     // to a deterministic 2-table case.
-    INFO("empty build side (filter matches nothing) → 0 rows, no crash") {
+    INFO("empty build side (filter matches nothing) → 0 rows, no crash");
+    {
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT * FROM " + sdb + ".large INNER JOIN " + sdb +
                                                ".small ON large.k = small.k WHERE small.sv = 99999;");
@@ -491,7 +496,8 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
         REQUIRE(cur->size() == 0);
     }
 
-    INFO("empty build side under GROUP BY + ORDER BY (SSB shape) → 0 groups, no crash") {
+    INFO("empty build side under GROUP BY + ORDER BY (SSB shape) → 0 groups, no crash");
+    {
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT small.k, SUM(large.lv) AS s FROM " + sdb + ".large INNER JOIN " +
                                                sdb + ".small ON large.k = small.k WHERE small.sv = 99999 "
@@ -543,7 +549,8 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
 
     // SELECT * column order = [lo | p | s] = [l_pk, l_sk, l_rev, p_pk, p_cat, s_sk, s_reg].
     // Matches: l_pk=p_pk (all lo rows) then l_sk=s_sk drops the l_sk=30 row -> 4 rows.
-    INFO("3-table comma join returns the correctly joined rows") {
+    INFO("3-table comma join returns the correctly joined rows");
+    {
         auto cur =
             run("SELECT * FROM " + wdb + ".lo, " + wdb + ".p, " + wdb + ".s WHERE l_pk = p_pk AND l_sk = s_sk;");
         REQUIRE(cur->is_success());
@@ -560,7 +567,8 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
 
     // A single-table residual filter (p_cat = 'A') must still apply after promotion:
     // it keeps only the two rev-100/rev-200 rows (both p_pk=1, cat 'A').
-    INFO("residual single-table filter still applies through multi-way promotion") {
+    INFO("residual single-table filter still applies through multi-way promotion");
+    {
         auto cur = run("SELECT * FROM " + wdb + ".lo, " + wdb + ".p, " + wdb +
                        ".s WHERE l_pk = p_pk AND l_sk = s_sk AND p_cat = 'A';");
         REQUIRE(cur->is_success());

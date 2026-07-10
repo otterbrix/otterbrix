@@ -1,6 +1,6 @@
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_update.hpp>
 #include <services/collection/executor.hpp>
 #include <string>
@@ -33,7 +33,8 @@ TEST_CASE("integration::cpp::test_returning::insert") {
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
 
-    INFO("INSERT ... RETURNING * fills DEFAULT columns") {
+    INFO("INSERT ... RETURNING * fills DEFAULT columns");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "INSERT INTO TestDatabase.TestCollection (id, name) VALUES "
@@ -47,7 +48,8 @@ TEST_CASE("integration::cpp::test_returning::insert") {
         REQUIRE(cur->value(2, 0).value<int64_t>() == 7);
     }
 
-    INFO("INSERT ... RETURNING column list, multiple rows") {
+    INFO("INSERT ... RETURNING column list, multiple rows");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "INSERT INTO TestDatabase.TestCollection (id, name, qty) VALUES "
@@ -61,7 +63,8 @@ TEST_CASE("integration::cpp::test_returning::insert") {
         REQUIRE(cur->value(1, 1).value<int64_t>() == 30);
     }
 
-    INFO("INSERT ... RETURNING arithmetic with alias") {
+    INFO("INSERT ... RETURNING arithmetic with alias");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "INSERT INTO TestDatabase.TestCollection (id, name, qty) VALUES "
@@ -72,7 +75,8 @@ TEST_CASE("integration::cpp::test_returning::insert") {
         REQUIRE(cur->value(0, 0).value<int64_t>() == 20);
     }
 
-    INFO("INSERT without RETURNING still reports affected-row count") {
+    INFO("INSERT without RETURNING still reports affected-row count");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "INSERT INTO TestDatabase.TestCollection (id, name, qty) VALUES "
@@ -97,7 +101,8 @@ TEST_CASE("integration::cpp::test_returning::update") {
                                 "(1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 30);");
     }
 
-    INFO("UPDATE ... RETURNING returns the NEW value") {
+    INFO("UPDATE ... RETURNING returns the NEW value");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "UPDATE TestDatabase.TestCollection SET qty = qty + 5 "
@@ -109,7 +114,8 @@ TEST_CASE("integration::cpp::test_returning::update") {
         REQUIRE(cur->value(1, 0).value<int64_t>() == 15);
     }
 
-    INFO("UPDATE ... RETURNING * over multiple rows") {
+    INFO("UPDATE ... RETURNING * over multiple rows");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "UPDATE TestDatabase.TestCollection SET qty = 100 "
@@ -121,7 +127,8 @@ TEST_CASE("integration::cpp::test_returning::update") {
         REQUIRE(cur->value(2, 1).value<int64_t>() == 100);
     }
 
-    INFO("UPDATE ... RETURNING with no matching rows yields no rows") {
+    INFO("UPDATE ... RETURNING with no matching rows yields no rows");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "UPDATE TestDatabase.TestCollection SET qty = 0 "
@@ -146,7 +153,8 @@ TEST_CASE("integration::cpp::test_returning::delete") {
                                 "(1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 30);");
     }
 
-    INFO("DELETE ... RETURNING returns the deleted (old) rows") {
+    INFO("DELETE ... RETURNING returns the deleted (old) rows");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "DELETE FROM TestDatabase.TestCollection WHERE id = 2 RETURNING id, name;");
@@ -157,7 +165,8 @@ TEST_CASE("integration::cpp::test_returning::delete") {
         REQUIRE(cur->value(1, 0).value<std::string_view>() == "Bob");
     }
 
-    INFO("DELETE ... RETURNING * over multiple rows") {
+    INFO("DELETE ... RETURNING * over multiple rows");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id >= 1 RETURNING *;");
@@ -166,7 +175,8 @@ TEST_CASE("integration::cpp::test_returning::delete") {
         REQUIRE(cur->column_count() == 3);
     }
 
-    INFO("DELETE ... RETURNING with no matching rows yields no rows") {
+    INFO("DELETE ... RETURNING with no matching rows yields no rows");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id = 999 RETURNING *;");
@@ -198,7 +208,8 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
         dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.Customers (id bigint, name string);");
     }
 
-    INFO("RETURNING projects target and joined columns; cardinality == deleted rows") {
+    INFO("RETURNING projects target and joined columns; cardinality == deleted rows");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
@@ -239,7 +250,8 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
         }
     }
 
-    INFO("a target row matching multiple USING rows is deleted and returned once") {
+    INFO("a target row matching multiple USING rows is deleted and returned once");
+    {
         // Two customers share id 7, so order 70 joins both. DELETE ... USING is a
         // semi-join: the order must be deleted once and RETURNING must emit one row.
         {
@@ -264,7 +276,8 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
         }
     }
 
-    INFO("RETURNING a joined table.* expands the USING table's columns") {
+    INFO("RETURNING a joined table.* expands the USING table's columns");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
@@ -341,7 +354,8 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
                                 "(10, 1), (11, 99), (12, 99), (13, 7);");
     }
 
-    INFO("a prior USING-delete creates a gap, then a second USING-delete removes the right absolute row") {
+    INFO("a prior USING-delete creates a gap, then a second USING-delete removes the right absolute row");
+    {
         // FIRST USING-delete: scope to order 10 only (customer 1). This removes the
         // HEAD row (absolute row 0), leaving a gap. Survivors {11,12,13} now sit at
         // absolute {1,2,3} while the surviving scan presents them at loop {0,1,2}.
@@ -430,7 +444,8 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
                                 "(10, 1, 100), (11, 2, 200), (12, 3, 300);");
     }
 
-    INFO("RETURNING projects the NEW target value alongside a joined column") {
+    INFO("RETURNING projects the NEW target value alongside a joined column");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "UPDATE TestDatabase.Orders SET total = total + 1 "
@@ -449,7 +464,8 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
         REQUIRE(cur->value(2, 1).value<std::string_view>() == "Bob");
     }
 
-    INFO("a target row matching multiple FROM rows is updated and returned once") {
+    INFO("a target row matching multiple FROM rows is updated and returned once");
+    {
         // Two customers share id 5, so order 50 joins both. UPDATE ... FROM is a
         // semi-join: the row is updated once (total +1, not +2) and returned once.
         {
@@ -476,7 +492,8 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
         }
     }
 
-    INFO("RETURNING a joined table.* expands the FROM table's columns") {
+    INFO("RETURNING a joined table.* expands the FROM table's columns");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "UPDATE TestDatabase.Orders SET total = total + 1 "
@@ -519,7 +536,8 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
                                 "(1, 'Alice', 10), (2, 'Bob', 20), (3, 'Carol', 30);");
     }
 
-    INFO("archive rows moved out of a DELETE ... RETURNING") {
+    INFO("archive rows moved out of a DELETE ... RETURNING");
+    {
         // DELETE the rows and capture them via RETURNING, then re-insert the
         // captured values into the Archive table (an "insert from deleted").
         std::string ins = "INSERT INTO TestDatabase.Archive (id, name, qty) VALUES ";
@@ -560,7 +578,8 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
         }
     }
 
-    INFO("UPDATE ... RETURNING matches a subsequent SELECT") {
+    INFO("UPDATE ... RETURNING matches a subsequent SELECT");
+    {
         int64_t returned_qty = 0;
         {
             auto session = otterbrix::session_id_t();
@@ -583,7 +602,8 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
         }
     }
 
-    INFO("RETURNING value feeds a CTE-based SELECT") {
+    INFO("RETURNING value feeds a CTE-based SELECT");
+    {
         int64_t new_id = 0;
         {
             auto session = otterbrix::session_id_t();
@@ -619,7 +639,8 @@ TEST_CASE("integration::cpp::test_returning::batching") {
     auto* dispatcher = space.dispatcher();
     setup(dispatcher);
 
-    INFO("INSERT ... RETURNING across chunk boundaries") {
+    INFO("INSERT ... RETURNING across chunk boundaries");
+    {
         std::string sql = "INSERT INTO TestDatabase.TestCollection (id, name, qty) VALUES ";
         for (int i = 0; i < kRows; ++i) {
             sql += "(" + std::to_string(i) + ", 'n', " + std::to_string(i) + ")";
@@ -631,7 +652,8 @@ TEST_CASE("integration::cpp::test_returning::batching") {
         REQUIRE(cur->size() == kRows);
     }
 
-    INFO("UPDATE ... RETURNING across chunk boundaries") {
+    INFO("UPDATE ... RETURNING across chunk boundaries");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "UPDATE TestDatabase.TestCollection SET qty = qty + 1 "
@@ -640,7 +662,8 @@ TEST_CASE("integration::cpp::test_returning::batching") {
         REQUIRE(cur->size() == kRows);
     }
 
-    INFO("DELETE ... RETURNING across chunk boundaries") {
+    INFO("DELETE ... RETURNING across chunk boundaries");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE id >= 0 RETURNING id;");
@@ -699,7 +722,8 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
                                 "(10, 1, 100), (11, 99, 110), (12, 99, 120), (13, 7, 130);");
     }
 
-    INFO("a prior delete creates a gap, then an UPDATE ... FROM updates the right absolute row") {
+    INFO("a prior delete creates a gap, then an UPDATE ... FROM updates the right absolute row");
+    {
         // Gap-maker: delete order 10 (absolute row 0). Survivors {11,12,13} now sit
         // at absolute {1,2,3} while the scan presents them at loop {0,1,2}.
         {
@@ -797,7 +821,8 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
         REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
     }
 
-    INFO("UPDATE ... FROM streams the target scan across batches; all rows updated once") {
+    INFO("UPDATE ... FROM streams the target scan across batches; all rows updated once");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "UPDATE TestDatabase.Orders SET total = total + 1 "
@@ -816,7 +841,8 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
         REQUIRE(cur->value(0, 0).value<int64_t>() == 1001);
     }
 
-    INFO("DELETE ... USING streams the target scan across batches; all rows deleted once") {
+    INFO("DELETE ... USING streams the target scan across batches; all rows deleted once");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -877,7 +903,8 @@ TEST_CASE("integration::cpp::test_returning::insert_returning_error_reverts_appe
         REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
     }
 
-    INFO("the table stays fully usable after the failed statement") {
+    INFO("the table stays fully usable after the failed statement");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "INSERT INTO TestDatabase.TestCollection (id, name) VALUES "
@@ -926,7 +953,8 @@ TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_wr
         REQUIRE(cur->value(0, 0).value<int64_t>() == 7);
     }
 
-    INFO("a subsequent valid UPDATE ... RETURNING still works") {
+    INFO("a subsequent valid UPDATE ... RETURNING still works");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "UPDATE TestDatabase.TestCollection SET qty = 9 WHERE id = 1 "

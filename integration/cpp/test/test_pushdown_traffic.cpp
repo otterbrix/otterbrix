@@ -20,7 +20,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <services/disk/agent_disk.hpp>
 #include <sstream>
 

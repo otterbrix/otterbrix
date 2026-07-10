@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -50,7 +50,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
     std::vector<table::column_definition_t> columns_value_defaults;
     std::vector<table::column_definition_t> columns_value_defaults_not_null;
 
-    INFO("set up column definitions") {
+    INFO("set up column definitions");
+    {
         columns_simple.reserve(types.size());
         columns_not_null.reserve(types.size());
         columns_null_defaults.reserve(types.size());
@@ -88,7 +89,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         }
     }
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         auto create_collection = [&](const collection_name_t& collection,
                                      const std::vector<table::column_definition_t>& columns) {
             auto session = otterbrix::session_id_t();
@@ -106,7 +108,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         create_collection(table_collection_name_value_defaults_not_null, columns_value_defaults_not_null);
     }
 
-    INFO("full insert") {
+    INFO("full insert");
+    {
         // is the same for all
         auto full_insert = [&](const collection_name_t& collection) {
             auto chunk = gen_data_chunk(kNumInserts, 0, types, dispatcher->resource());
@@ -130,7 +133,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         full_insert(table_collection_name_value_defaults_not_null);
     }
 
-    INFO("reordered insert") {
+    INFO("reordered insert");
+    {
         // is the same for all
         auto swapped_types = types;
         std::swap(swapped_types[0], swapped_types[1]);
@@ -157,7 +161,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         reordered_insert(table_collection_name_value_defaults_not_null);
     }
 
-    INFO("insert with conversions") {
+    INFO("insert with conversions");
+    {
         // is the same for all
         auto changed_types = types;
         changed_types[0] = types::complex_logical_type{types::logical_type::INTEGER, "count_but_integer"};
@@ -184,7 +189,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         insert_with_conversion(table_collection_name_value_defaults_not_null);
     }
 
-    INFO("partial insert") {
+    INFO("partial insert");
+    {
         // is the same for all
         auto partial_types = types;
         partial_types.erase(partial_types.begin() + 1);
@@ -213,7 +219,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             return dispatcher->execute_sql(session, "SELECT * FROM " + table_database_name + "." + collection + ";");
         };
 
-        INFO("table_collection_name_simple") {
+        INFO("table_collection_name_simple");
+        {
             {
                 auto cur = partial_insert(table_collection_name_simple);
                 REQUIRE(cur->is_success());
@@ -232,7 +239,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 }
             }
         }
-        INFO("table_collection_name_not_null") {
+        INFO("table_collection_name_not_null");
+        {
             {
                 auto cur = partial_insert(table_collection_name_not_null);
                 REQUIRE(cur->is_error());
@@ -247,7 +255,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 }
             }
         }
-        INFO("table_collection_name_null_defaults") {
+        INFO("table_collection_name_null_defaults");
+        {
             {
                 auto cur = partial_insert(table_collection_name_null_defaults);
                 REQUIRE(cur->is_success());
@@ -266,7 +275,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 }
             }
         }
-        INFO("table_collection_name_value_defaults") {
+        INFO("table_collection_name_value_defaults");
+        {
             {
                 auto cur = partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
@@ -288,7 +298,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 }
             }
         }
-        INFO("table_collection_name_value_defaults_not_null") {
+        INFO("table_collection_name_value_defaults_not_null");
+        {
             {
                 auto cur = partial_insert(table_collection_name_value_defaults_not_null);
                 REQUIRE(cur->is_success());
@@ -310,7 +321,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         }
     }
 
-    INFO("partial insert in reverse order") {
+    INFO("partial insert in reverse order");
+    {
         // is the same for all
         auto reversed_partial_types = types;
         reversed_partial_types.erase(reversed_partial_types.begin() + 1);
@@ -340,7 +352,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             return dispatcher->execute_sql(session, "SELECT * FROM " + table_database_name + "." + collection + ";");
         };
 
-        INFO("table_collection_name_simple") {
+        INFO("table_collection_name_simple");
+        {
             {
                 auto cur = reversed_partial_insert(table_collection_name_simple);
                 REQUIRE(cur->is_success());
@@ -359,7 +372,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 }
             }
         }
-        INFO("table_collection_name_not_null") {
+        INFO("table_collection_name_not_null");
+        {
             {
                 auto cur = reversed_partial_insert(table_collection_name_not_null);
                 REQUIRE(cur->is_error());
@@ -374,7 +388,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 }
             }
         }
-        INFO("table_collection_name_null_defaults") {
+        INFO("table_collection_name_null_defaults");
+        {
             {
                 auto cur = reversed_partial_insert(table_collection_name_null_defaults);
                 REQUIRE(cur->is_success());
@@ -393,7 +408,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 }
             }
         }
-        INFO("table_collection_name_value_defaults") {
+        INFO("table_collection_name_value_defaults");
+        {
             {
                 auto cur = reversed_partial_insert(table_collection_name_value_defaults);
                 REQUIRE(cur->is_success());
@@ -413,7 +429,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 }
             }
         }
-        INFO("table_collection_name_value_defaults_not_null") {
+        INFO("table_collection_name_value_defaults_not_null");
+        {
             {
                 auto cur = reversed_partial_insert(table_collection_name_value_defaults_not_null);
                 REQUIRE(cur->is_success());
@@ -435,7 +452,8 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         }
     }
 
-    INFO("invalid key in insert") {
+    INFO("invalid key in insert");
+    {
         // is the same for all
         std::pmr::vector<expressions::key_t> fields(dispatcher->resource());
         fields.reserve(types.size());

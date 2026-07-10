@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 // Departments:  (id, name,          budget)
 //               (1,  'Engineering', 100000)
@@ -103,9 +103,11 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") { setup_subquery_db(dispatcher); }
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
 
-    INFO("scalar subquery in WHERE with equality") {
+    INFO("scalar subquery in WHERE with equality");
+    {
         // Highest-paid employee: Alice (salary 90000)
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -116,7 +118,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
     }
 
-    INFO("scalar subquery in WHERE with greater-than") {
+    INFO("scalar subquery in WHERE with greater-than");
+    {
         // Employees above overall average (65200): Alice, Bob, Grace, Iris, Jack
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -126,7 +129,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 5);
     }
 
-    INFO("scalar subquery in WHERE with less-than against aggregated outer") {
+    INFO("scalar subquery in WHERE with less-than against aggregated outer");
+    {
         // Min budget of high-budget depts (budget > 60000) is Finance's 70000;
         // employees with salary < 70000: Charlie, Diana, Eve, Frank, Henry → 5
         auto session = otterbrix::session_id_t();
@@ -139,7 +143,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 5);
     }
 
-    INFO("IN subquery") {
+    INFO("IN subquery");
+    {
         // High-budget departments (budget > 60000): Engineering(1), Sales(4), Finance(5)
         // Employees in those 3 departments: Alice, Bob, Grace, Henry, Iris, Jack → 6
         auto session = otterbrix::session_id_t();
@@ -152,7 +157,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 6);
     }
 
-    INFO("NOT IN subquery") {
+    INFO("NOT IN subquery");
+    {
         // Low-budget departments: Marketing(2), HR(3)
         // Employees in those departments: Charlie, Diana, Eve, Frank → 4
         auto session = otterbrix::session_id_t();
@@ -165,7 +171,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 4);
     }
 
-    INFO("EXISTS non-correlated subquery — rows found") {
+    INFO("EXISTS non-correlated subquery — rows found");
+    {
         // Subquery finds employees earning > 85000 (Alice = 90000) → EXISTS is true for every outer row
         // All 5 departments are returned
         auto session = otterbrix::session_id_t();
@@ -176,7 +183,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 5);
     }
 
-    INFO("EXISTS non-correlated subquery — no rows found") {
+    INFO("EXISTS non-correlated subquery — no rows found");
+    {
         // Subquery finds no employee earning > 999999 → EXISTS is false for every outer row
         // 0 departments are returned
         auto session = otterbrix::session_id_t();
@@ -188,7 +196,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 0);
     }
 
-    INFO("NOT EXISTS non-correlated subquery — subquery empty") {
+    INFO("NOT EXISTS non-correlated subquery — subquery empty");
+    {
         // Subquery returns no rows → NOT EXISTS is true for every outer row
         // All 5 departments are returned
         auto session = otterbrix::session_id_t();
@@ -202,7 +211,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 
     // TODO: those ones have to be replanned in 'planner' into a join
     /*
-    INFO("EXISTS correlated subquery") {
+    INFO("EXISTS correlated subquery");
+    {
         // Departments that have at least one employee earning > 85000
         // Only Engineering (Alice = 90000) → 1 row
         auto session = otterbrix::session_id_t();
@@ -217,7 +227,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
     }
 
-    INFO("NOT EXISTS correlated subquery") {
+    INFO("NOT EXISTS correlated subquery");
+    {
         // Departments where no employee earns > 50000
         // HR: Eve(45000), Frank(40000) — neither exceeds 50000 → 1 row
         auto session = otterbrix::session_id_t();
@@ -232,7 +243,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->value(0, 0).value<std::string_view>() == "HR");
     }
 
-    INFO("correlated subquery comparing to own-department average") {
+    INFO("correlated subquery comparing to own-department average");
+    {
         // Employees earning above their own department's average: one per department → 5
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -246,7 +258,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     }
     */
 
-    INFO("ANY subquery") {
+    INFO("ANY subquery");
+    {
         // Departments with budget greater than at least one employee salary
         // (budget > ANY salaries) = budget > MIN(salary) = 40000
         // Engineering(100k), Marketing(50k), Sales(80k), Finance(70k) satisfy; HR(30k) does not → 4
@@ -258,7 +271,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 4);
     }
 
-    INFO("ALL subquery") {
+    INFO("ALL subquery");
+    {
         // Departments with budget greater than ALL employee salaries
         // (budget > MAX(salary) = 90000): only Engineering (100000) → 1 row
         auto session = otterbrix::session_id_t();
@@ -270,7 +284,8 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
     }
 
-    INFO("scalar subquery returning NULL (empty result)") {
+    INFO("scalar subquery returning NULL (empty result)");
+    {
         // Subquery for a non-existent dept returns no rows → NULL comparison → 0 matches
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -295,11 +310,13 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") { setup_subquery_db(dispatcher); }
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
 
     // TODO: those have to be replanned into join
     /*
-    INFO("scalar correlated subquery in SELECT list") {
+    INFO("scalar correlated subquery in SELECT list");
+    {
         // For Engineering employees, show their department name via subquery
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -313,7 +330,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         REQUIRE(cur->value(1, 1).value<std::string_view>() == "Engineering");
     }
 
-    INFO("aggregate correlated subquery in SELECT list") {
+    INFO("aggregate correlated subquery in SELECT list");
+    {
         // Show each department's headcount next to the department row
         // Every department has exactly 2 employees
         auto session = otterbrix::session_id_t();
@@ -329,7 +347,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         }
     }
 
-    INFO("subquery in SELECT list returning maximum of outer group") {
+    INFO("subquery in SELECT list returning maximum of outer group");
+    {
         // Each employee row shows the max salary in their department
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -346,7 +365,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     }
     */
 
-    INFO("derived table in FROM (basic)") {
+    INFO("derived table in FROM (basic)");
+    {
         // Select from a derived table that filters high earners
         // salary > 70000: Alice(90k), Bob(80k), Iris(75k), Jack(72k) → 4 rows
         auto session = otterbrix::session_id_t();
@@ -358,7 +378,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         REQUIRE(cur->size() == 4);
     }
 
-    INFO("derived table in FROM with outer WHERE") {
+    INFO("derived table in FROM with outer WHERE");
+    {
         // Derived table produces salary > 60000 rows, outer query restricts to dept 1
         // salary > 60000 AND dept_id = 1: Alice(90k), Bob(80k) → 2 rows
         auto session = otterbrix::session_id_t();
@@ -371,7 +392,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         REQUIRE(cur->size() == 2);
     }
 
-    INFO("double-nested derived tables in FROM") {
+    INFO("double-nested derived tables in FROM");
+    {
         // Inner derived table: salary > 60000 → Alice,Bob,Grace,Henry,Iris,Jack (6 rows)
         // Outer derived table: salary < 80000 → Grace(70k),Henry(65k),Iris(75k),Jack(72k) → 4 rows
         auto session = otterbrix::session_id_t();
@@ -386,7 +408,8 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         REQUIRE(cur->size() == 4);
     }
 
-    INFO("derived table aggregated in FROM") {
+    INFO("derived table aggregated in FROM");
+    {
         // Join the derived per-department stats back to departments
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -416,9 +439,11 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") { setup_subquery_db(dispatcher); }
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
 
-    INFO("subquery as right side of JOIN, filter above department average") {
+    INFO("subquery as right side of JOIN, filter above department average");
+    {
         // One above-average earner per department → 5 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -433,7 +458,8 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
         REQUIRE(cur->size() == 5);
     }
 
-    INFO("subquery in JOIN ON clause — top earner per department") {
+    INFO("subquery in JOIN ON clause — top earner per department");
+    {
         // Each employee joins the max-salary-per-dept subquery and keeps only the match
         // Top earner per dept: Alice(dept1), Charlie(dept2), Eve(dept3), Grace(dept4), Iris(dept5) → 5
         auto session = otterbrix::session_id_t();
@@ -449,7 +475,8 @@ TEST_CASE("integration::cpp::test_subqueries::join") {
         REQUIRE(cur->size() == 5);
     }
 
-    INFO("subquery in JOIN producing multi-column derived table") {
+    INFO("subquery in JOIN producing multi-column derived table");
+    {
         // Join employees to department stats; select employees whose salary is
         // within 5000 of the department average (both above and below)
         // dept1 avg=85000: Alice(90k, diff=5000 ✓), Bob(80k, diff=5000 ✓)
@@ -486,9 +513,11 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") { setup_subquery_db(dispatcher); }
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
 
-    INFO("subquery in HAVING comparing to overall average") {
+    INFO("subquery in HAVING comparing to overall average");
+    {
         // Departments whose average salary exceeds the overall average (65200)
         // dept1=85000✓, dept2=57500✗, dept3=42500✗, dept4=67500✓, dept5=73500✓ → 3
         auto session = otterbrix::session_id_t();
@@ -501,7 +530,8 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
         REQUIRE(cur->size() == 3);
     }
 
-    INFO("subquery in HAVING with MIN") {
+    INFO("subquery in HAVING with MIN");
+    {
         // Departments where the minimum salary exceeds the overall average (65200)
         // dept1 min=80000>65200 ✓, dept2 min=55000 ✗, dept3 min=40000 ✗,
         // dept4 min=65000 ✗, dept5 min=72000>65200 ✓ → 2
@@ -515,7 +545,8 @@ TEST_CASE("integration::cpp::test_subqueries::having") {
         REQUIRE(cur->size() == 2);
     }
 
-    INFO("subquery in HAVING comparing to specific department budget") {
+    INFO("subquery in HAVING comparing to specific department budget");
+    {
         // Departments whose total payroll exceeds the budget of HR (30000)
         // dept1 total=170000>30k ✓, dept2=115000>30k ✓, dept3=85000>30k ✓,
         // dept4=135000>30k ✓, dept5=147000>30k ✓ → all 5
@@ -545,9 +576,11 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") { setup_subquery_db(dispatcher); }
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
 
-    INFO("3-level nested: scalar in scalar in IN") {
+    INFO("3-level nested: scalar in scalar in IN");
+    {
         // Find employees whose salary exceeds the average salary of employees
         // in high-budget departments (budget > 60000).
         // High-budget depts: {1,4,5}; their employees avg: (90k+80k+70k+65k+75k+72k)/6 = 75333
@@ -567,7 +600,8 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
 
     // TODO: those have to be replanned in 'planer'
     /*
-    INFO("3-level nested: EXISTS inside IN inside scalar") {
+    INFO("3-level nested: EXISTS inside IN inside scalar");
+    {
         // Find the maximum salary among employees who work in a department
         // that has at least one peer earning less than the overall average.
         // Overall avg = 65200.
@@ -603,7 +637,8 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
         REQUIRE(cur->value(0, 0).value<std::string_view>() == "Grace");
     }
 
-    INFO("4-level nested: top earner in each of the best departments") {
+    INFO("4-level nested: top earner in each of the best departments");
+    {
         // Find employees whose salary equals the maximum salary within their department,
         // and whose department has a budget above the median (average) budget.
         // Avg budget = 66000; depts above 66000: Engineering(100k), Sales(80k), Finance(70k) → {1,4,5}
@@ -624,7 +659,8 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
     }
     */
 
-    INFO("4-level nested: IN in IN in scalar in scalar") {
+    INFO("4-level nested: IN in IN in scalar in scalar");
+    {
         // Employees in departments whose budget exceeds the average budget
         // of departments that contain above-average earners.
         // Overall avg salary = 65200.
@@ -651,7 +687,8 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
         REQUIRE(cur->size() == 2);
     }
 
-    INFO("5-level nested: scalar chain through both tables") {
+    INFO("5-level nested: scalar chain through both tables");
+    {
         // Find employees who work in the department with the single highest budget
         // among departments whose budget exceeds the average budget of departments
         // that contain at least one above-average earner.
@@ -684,7 +721,8 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
         REQUIRE(cur->size() == 2);
     }
 
-    INFO("5-level nested: second-highest budget department via subquery chain") {
+    INFO("5-level nested: second-highest budget department via subquery chain");
+    {
         // Find employees earning above the average salary in the department
         // with the second-highest budget.
         //
@@ -729,9 +767,11 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") { setup_subquery_db(dispatcher); }
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
 
-    INFO("INSERT SELECT — copy high earners to new table") {
+    INFO("INSERT SELECT — copy high earners to new table");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -755,7 +795,8 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
         }
     }
 
-    INFO("INSERT SELECT with ORDER BY") {
+    INFO("INSERT SELECT with ORDER BY");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -774,7 +815,8 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
         }
     }
 
-    INFO("DELETE WHERE IN subquery") {
+    INFO("DELETE WHERE IN subquery");
+    {
         // Remove employees in the lowest-budget department (HR, budget=30000)
         // HR employees: Eve(5), Frank(6) → 2 rows deleted
         {
@@ -798,7 +840,8 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
         }
     }
 
-    INFO("UPDATE WHERE scalar subquery") {
+    INFO("UPDATE WHERE scalar subquery");
+    {
         // Promote below-average earners in high-budget departments to the dept average
         // High-budget depts: {1,4,5}; below-avg-in-dept in those depts:
         //   dept1: Bob(80k < 85k avg) → update to 85000
@@ -819,7 +862,8 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
         REQUIRE(cur->size() == 2);
     }
 
-    INFO("DELETE WHERE NOT IN subquery") {
+    INFO("DELETE WHERE NOT IN subquery");
+    {
         // Keep only employees in Engineering (highest budget dept)
         // and remove the rest
         {
@@ -862,9 +906,11 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") { setup_subquery_db(dispatcher); }
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
 
-    INFO("simple CTE used in SELECT") {
+    INFO("simple CTE used in SELECT");
+    {
         // CTE filters above-average earners, outer query counts them
         // Above overall avg (65200): Alice, Bob, Grace, Iris, Jack → 5
         auto session = otterbrix::session_id_t();
@@ -880,7 +926,8 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
     }
 
-    INFO("CTE joined with base table") {
+    INFO("CTE joined with base table");
+    {
         // CTE produces per-department stats; join with Departments to show names
         // All 5 departments have stats → 5 rows
         auto session = otterbrix::session_id_t();
@@ -900,7 +947,8 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
     }
 
-    INFO("multiple CTEs chained") {
+    INFO("multiple CTEs chained");
+    {
         // CTE1: above-average earners (salary > 65200): Alice,Bob,Grace,Iris,Jack (5)
         // CTE2: high-budget department ids (budget > 60000): {1,4,5} (3 depts)
         // Final: above_avg employees whose dept is in high_budget_depts:
@@ -923,7 +971,8 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         REQUIRE(cur->size() == 5);
     }
 
-    INFO("CTE used twice in the same query") {
+    INFO("CTE used twice in the same query");
+    {
         // CTE defines top-earner per dept; join it with itself to find departments
         // whose top earner salary equals the overall maximum top-earner salary.
         // top earners: Alice(90k), Charlie(60k), Eve(45k), Grace(70k), Iris(75k)
@@ -943,7 +992,8 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
     }
 
-    INFO("CTE with subquery in its own WHERE clause") {
+    INFO("CTE with subquery in its own WHERE clause");
+    {
         // CTE selects employees earning above the budget of the cheapest department
         // MIN budget = HR = 30000; salary > 30000: all 10 employees
         // Outer query counts per department
@@ -979,9 +1029,11 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") { setup_subquery_db(dispatcher); }
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
 
-    INFO("UNION ALL preserves duplicates") {
+    INFO("UNION ALL preserves duplicates");
+    {
         // Both sides select dept_id=1; UNION ALL keeps all 4 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -997,7 +1049,8 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
         }
     }
 
-    INFO("UNION ALL disjoint sets") {
+    INFO("UNION ALL disjoint sets");
+    {
         // dept_id=1: Alice,Bob. dept_id=2: Charlie,Diana. No overlap → 4 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1008,7 +1061,8 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
         REQUIRE(cur->size() == 4);
     }
 
-    INFO("UNION distinct removes duplicates") {
+    INFO("UNION distinct removes duplicates");
+    {
         // Both sides return dept_ids of high-salary employees:
         // salary >= 80000: Alice(90k,dept1), Bob(80k,dept1) → {1,1}
         // salary >= 70000: Alice, Bob, Grace(70k,dept4), Iris(75k,dept5), Jack(72k,dept5) → {1,1,4,5,5}
@@ -1022,7 +1076,8 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
         REQUIRE(cur->size() == 3);
     }
 
-    INFO("UNION distinct same values on both sides") {
+    INFO("UNION distinct same values on both sides");
+    {
         // dept_id=1 on left, dept_id=1 on right → only one unique value
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1034,7 +1089,8 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
         REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 
-    INFO("UNION ALL three operands") {
+    INFO("UNION ALL three operands");
+    {
         // A UNION ALL B UNION ALL C: dept 1 (2 rows) + dept 2 (2 rows) + dept 3 (2 rows) = 6
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1047,7 +1103,8 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
         REQUIRE(cur->size() == 6);
     }
 
-    INFO("UNION schema mismatch rejected") {
+    INFO("UNION schema mismatch rejected");
+    {
         // Different column counts: error expected
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1070,7 +1127,8 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") {
+    INFO("setup");
+    {
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
@@ -1118,7 +1176,8 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
         }
     }
 
-    INFO("UNION ALL id column") {
+    INFO("UNION ALL id column");
+    {
         // ids from A: {1,2,3}; ids from B: {1,4}; UNION ALL = 5 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1129,7 +1188,8 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
         REQUIRE(cur->size() == 5);
     }
 
-    INFO("UNION ALL with UDT and array columns") {
+    INFO("UNION ALL with UDT and array columns");
+    {
         // All 5 rows: 3 from A + 2 from B
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1140,7 +1200,8 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
         REQUIRE(cur->size() == 5);
     }
 
-    INFO("UNION distinct id column removes duplicates") {
+    INFO("UNION distinct id column removes duplicates");
+    {
         // ids from A: {1,2,3}; ids from B: {1,4}; distinct = {1,2,3,4} = 4
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1151,7 +1212,8 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
         REQUIRE(cur->size() == 4);
     }
 
-    INFO("UNION schema mismatch rejected") {
+    INFO("UNION schema mismatch rejected");
+    {
         // Different column counts — error expected
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1214,9 +1276,11 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup") { setup_recursive_db(dispatcher); }
+    INFO("setup");
+    { setup_recursive_db(dispatcher); }
 
-    INFO("full hierarchy traversal") {
+    INFO("full hierarchy traversal");
+    {
         // Starting from root (manager_id=0), traverse all 5 nodes
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1235,7 +1299,8 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
         REQUIRE(cur->value(0, 4).value<std::string_view>() == "Designer");
     }
 
-    INFO("subtree rooted at VP Eng") {
+    INFO("subtree rooted at VP Eng");
+    {
         // Starting from VP Eng (id=2), traverse only her subtree: VP Eng + Engineer
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -1253,7 +1318,8 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
         REQUIRE(cur->value(0, 1).value<std::string_view>() == "Engineer");
     }
 
-    INFO("hierarchy with depth") {
+    INFO("hierarchy with depth");
+    {
         // Carry depth through recursion: depth 0 at root, +1 each level
         // CEO=0, VP Eng=1, VP Mkt=1, Engineer=2, Designer=2
         auto session = otterbrix::session_id_t();
@@ -1274,7 +1340,8 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
         REQUIRE(cur->value(1, 3).value<int64_t>() == 2); // Engineer
     }
 
-    INFO("filter by depth in outer query") {
+    INFO("filter by depth in outer query");
+    {
         // Only depth-2 employees (Engineer, Designer) via outer WHERE on depth
         auto session = otterbrix::session_id_t();
         auto cur =

@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/log/log.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
@@ -6,6 +6,7 @@
 #include <core/pmr.hpp>
 #include <cstdint>
 #include <cstring>
+#include <random>
 #include <thread>
 
 #if defined(__linux__)
@@ -79,7 +80,8 @@ TEST_CASE("core::b_plus_tree::block_t") {
     path_t testing_directory = "block_test";
     auto resource = core::pmr::otterbrix_resource();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         local_file_system_t fs = local_file_system_t();
         if (directory_exists(fs, testing_directory)) {
             remove_directory(fs, testing_directory);
@@ -91,7 +93,8 @@ TEST_CASE("core::b_plus_tree::block_t") {
         return block_t::index_t(read_unaligned<uint32_t>(data.data));
     };
 
-    INFO("test unique ids") {
+    INFO("test unique ids");
+    {
         local_file_system_t fs = local_file_system_t();
         auto fname = testing_directory;
         fname /= "block_test_file";
@@ -241,7 +244,8 @@ TEST_CASE("core::b_plus_tree::block_t") {
         }
         remove_file(fs, fname);
     }
-    INFO("block: repeated ids") {
+    INFO("block: repeated ids");
+    {
         local_file_system_t fs = local_file_system_t();
         auto fname = testing_directory;
         fname /= "block_test_file";
@@ -345,7 +349,8 @@ TEST_CASE("core::b_plus_tree::block_t") {
         remove_file(fs, fname);
     }
 
-    INFO("block: string keys") {
+    INFO("block: string keys");
+    {
         constexpr size_t test_count = 500;
         constexpr size_t test_length = 255;
         std::vector<std::string> test_data;
@@ -378,7 +383,8 @@ TEST_CASE("core::b_plus_tree::block_t") {
         }
     }
 
-    INFO("deinitialization") {
+    INFO("deinitialization");
+    {
         local_file_system_t fs = local_file_system_t();
         if (directory_exists(fs, testing_directory)) {
             remove_directory(fs, testing_directory);
@@ -390,7 +396,8 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = "segment_tree_test";
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         local_file_system_t fs = local_file_system_t();
         if (directory_exists(fs, testing_directory)) {
             remove_directory(fs, testing_directory);
@@ -398,7 +405,8 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         create_directory(fs, testing_directory);
     }
 
-    INFO("segment_tree: even blocks") {
+    INFO("segment_tree: even blocks");
+    {
         local_file_system_t fs = local_file_system_t();
         auto fname = testing_directory;
         fname /= "segtree_test_file_1";
@@ -553,7 +561,8 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         }
     }
 
-    INFO("segment_tree: uneven blocks") {
+    INFO("segment_tree: uneven blocks");
+    {
         local_file_system_t fs = local_file_system_t();
         auto fname = testing_directory;
         fname /= "segtree_test_file_2";
@@ -680,7 +689,8 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         }
     }
 
-    INFO("segment_tree: duplicates") {
+    INFO("segment_tree: duplicates");
+    {
         uint32_t fake_item_size = 8192;
         size_t duplicate_count = 50;
         size_t key_num = 1000;
@@ -742,7 +752,8 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         resource.deallocate(fake_buffer, fake_item_size);
     }
 
-    INFO("segment_tree: memory overflow") {
+    INFO("segment_tree: memory overflow");
+    {
         limited_resource_t limited_resource(DEFAULT_BLOCK_SIZE * 64);
 
         local_file_system_t fs = local_file_system_t();
@@ -799,7 +810,8 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         resource.deallocate(buffer, dummy_size);
     }
 
-    INFO("string keys") {
+    INFO("string keys");
+    {
         local_file_system_t fs = local_file_system_t();
         auto fname = testing_directory;
         fname /= "segtree_test_file_1";
@@ -854,7 +866,8 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         }
     }
 
-    INFO("deinitialization") {
+    INFO("deinitialization");
+    {
         local_file_system_t fs = local_file_system_t();
         if (directory_exists(fs, testing_directory)) {
             remove_directory(fs, testing_directory);
@@ -866,7 +879,8 @@ TEST_CASE("core::b_plus_tree::b+tree") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = "b+tree_test";
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         local_file_system_t fs = local_file_system_t();
         if (directory_exists(fs, testing_directory)) {
             remove_directory(fs, testing_directory);
@@ -874,7 +888,8 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         create_directory(fs, testing_directory);
     }
 
-    INFO("b+tree: semirandom") {
+    INFO("b+tree: semirandom");
+    {
         local_file_system_t fs = local_file_system_t();
         auto dname = testing_directory;
         dname /= "btree_test";
@@ -988,7 +1003,8 @@ TEST_CASE("core::b_plus_tree::b+tree") {
             resource.deallocate(test_data[i].buffer, test_data[i].size);
         }
     }
-    INFO("b+tree: big item count; random order") {
+    INFO("b+tree: big item count; random order");
+    {
         size_t key_num = 100'000;
         local_file_system_t fs = local_file_system_t();
         auto dname = testing_directory;
@@ -1024,7 +1040,8 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         }
         REQUIRE(tree.size() == 0);
     }
-    INFO("b+tree: multithread access") {
+    INFO("b+tree: multithread access");
+    {
         constexpr size_t num_threads = 4;
         constexpr size_t key_num = 100'000;
         constexpr size_t work_per_thread = key_num / num_threads;
@@ -1144,7 +1161,8 @@ TEST_CASE("core::b_plus_tree::b+tree") {
 
         REQUIRE(tree.size() == 0);
     }
-    INFO("btree: non unique ids") {
+    INFO("btree: non unique ids");
+    {
         uint32_t fake_item_size = 8192;
         size_t duplicate_count = 50;
         size_t key_num = 2000;
@@ -1216,7 +1234,8 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         resource.deallocate(fake_buffer, fake_item_size);
     }
 
-    INFO("btree: string keys") {
+    INFO("btree: string keys");
+    {
         local_file_system_t fs = local_file_system_t();
         auto dname = testing_directory;
         dname /= "btree_test4";
@@ -1271,7 +1290,8 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         }
     }
 
-    INFO("deinitialization") {
+    INFO("deinitialization");
+    {
         local_file_system_t fs = local_file_system_t();
         if (directory_exists(fs, testing_directory)) {
             remove_directory(fs, testing_directory);

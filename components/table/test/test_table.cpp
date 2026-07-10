@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/in_memory_block_manager.hpp>
@@ -325,7 +325,8 @@ TEST_CASE("components::table::data_table") {
 
     auto data_table = std::make_unique<data_table_t>(&resource, block_manager, std::move(columns));
 
-    INFO("Append") {
+    INFO("Append");
+    {
         table_append_state state(&resource);
         REQUIRE_FALSE(data_table->append_lock(state).has_error());
         REQUIRE_FALSE(data_table->initialize_append(state).has_error());
@@ -343,7 +344,8 @@ TEST_CASE("components::table::data_table") {
         }
         data_table->finalize_append(state, transaction_data{0, 0});
     }
-    INFO("Fetch") {
+    INFO("Fetch");
+    {
         column_fetch_state state;
         std::vector<storage_index_t> column_indices;
         column_indices.reserve(data_table->column_count());
@@ -365,7 +367,8 @@ TEST_CASE("components::table::data_table") {
             }
         }
     }
-    INFO("Scan") {
+    INFO("Scan");
+    {
         std::vector<storage_index_t> column_indices;
         column_indices.reserve(data_table->column_count());
         for (size_t i = 0; i < data_table->column_count(); i++) {
@@ -375,7 +378,8 @@ TEST_CASE("components::table::data_table") {
         data_table->initialize_scan(state, column_indices);
         scan_and_check(*data_table, state, base_layout, test_size, [](size_t produced) { return produced; });
     }
-    INFO("Scan with predicates") {
+    INFO("Scan with predicates");
+    {
         std::vector<storage_index_t> column_indices;
         column_indices.reserve(data_table->column_count());
         for (size_t i = 0; i < data_table->column_count(); i++) {
@@ -399,7 +403,8 @@ TEST_CASE("components::table::data_table") {
             return row_range.first + produced;
         });
     }
-    INFO("Delete") {
+    INFO("Delete");
+    {
         vector_t v(&resource, logical_type::BIGINT, test_size / 2);
         for (size_t i = 0; i < test_size; i += 2) {
             v.set_value(i / 2, int64_t(i));
@@ -408,7 +413,8 @@ TEST_CASE("components::table::data_table") {
         auto deleted_count = data_table->delete_rows(*state, v, test_size / 2, 0);
         REQUIRE(deleted_count == test_size / 2);
     }
-    INFO("Scan after delete") {
+    INFO("Scan after delete");
+    {
         std::vector<storage_index_t> column_indices;
         column_indices.reserve(data_table->column_count());
         for (size_t i = 0; i < data_table->column_count(); i++) {
@@ -423,7 +429,8 @@ TEST_CASE("components::table::data_table") {
         });
     }
 
-    INFO("Extension") {
+    INFO("Extension");
+    {
         std::unique_ptr<data_table_t> extended_table;
 
         {

@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/sql/parser/parser.h>
 
 TEST_CASE("components::sql::raw_parser_create") {

@@ -8,7 +8,7 @@
 // group operator, which tags itself operator_type::aggregate) — routing is gated purely on
 // the flag.
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/compute/function.hpp>
 #include <components/expressions/key.hpp>

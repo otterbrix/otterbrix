@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/table/standard_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
@@ -58,7 +58,8 @@ TEST_CASE("components::table::column") {
     fields.emplace_back(logical_type::STRING_LITERAL, "name");
     fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
     complex_logical_type struct_type = complex_logical_type::create_struct("struct", fields, "test_struct");
-    INFO("fixed size") {
+    INFO("fixed size");
+    {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
@@ -132,7 +133,8 @@ TEST_CASE("components::table::column") {
             }
         }
     }
-    INFO("string") {
+    INFO("string");
+    {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
@@ -211,7 +213,8 @@ TEST_CASE("components::table::column") {
             }
         }
     }
-    INFO("array of fixed size") {
+    INFO("array of fixed size");
+    {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
@@ -309,7 +312,8 @@ TEST_CASE("components::table::column") {
             }
         }
     }
-    INFO("array of string") {
+    INFO("array of string");
+    {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
@@ -424,7 +428,8 @@ TEST_CASE("components::table::column") {
             }
         }
     }
-    INFO("list of fixed size") {
+    INFO("list of fixed size");
+    {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
@@ -528,7 +533,8 @@ TEST_CASE("components::table::column") {
             }
         }
     }
-    INFO("list of string") {
+    INFO("list of string");
+    {
         core::filesystem::local_file_system_t fs;
         auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
         auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
@@ -648,7 +654,8 @@ TEST_CASE("components::table::column") {
             }
         }
     }
-    INFO("struct") {
+    INFO("struct");
+    {
         std::vector<test_struct> test_data;
         test_data.reserve(test_size);
         for (size_t i = 0; i < test_size; i++) {

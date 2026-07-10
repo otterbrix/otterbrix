@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include "file_system.hpp"
 #include <components/log/log.hpp>
@@ -21,14 +21,16 @@ static void create_dummy_file(string fname1) {
 }
 
 TEST_CASE("core::file::filesystem") {
-    INFO("initialization") {
+    INFO("initialization");
+    {
         local_file_system_t fs = local_file_system_t();
         if (!directory_exists(fs, testing_directory)) {
             create_directory(fs, testing_directory);
         }
     }
 
-    INFO("operators") {
+    INFO("operators");
+    {
         local_file_system_t fs = local_file_system_t();
         auto dname = testing_directory;
         dname /= "TEST_DIR";
@@ -76,7 +78,8 @@ TEST_CASE("core::file::filesystem") {
 
     constexpr size_t size = 512;
 
-    INFO("write_close_read") {
+    INFO("write_close_read");
+    {
         local_file_system_t fs = local_file_system_t();
         unique_ptr<file_handle_t> handle;
         int64_t test_data[size];
@@ -110,7 +113,8 @@ TEST_CASE("core::file::filesystem") {
         handle.reset();
         remove_file(fs, fname);
     }
-    INFO("write_read without closing") {
+    INFO("write_read without closing");
+    {
         local_file_system_t fs = local_file_system_t();
         unique_ptr<file_handle_t> handle;
         int64_t test_data[size];
@@ -145,7 +149,8 @@ TEST_CASE("core::file::filesystem") {
         remove_file(fs, fname);
     }
 
-    INFO("absolute_paths") {
+    INFO("absolute_paths");
+    {
         local_file_system_t fs;
 
 #ifdef PLATFORM_WINDOWS
@@ -157,7 +162,8 @@ TEST_CASE("core::file::filesystem") {
 #endif
     }
 
-    INFO("deinitialization") {
+    INFO("deinitialization");
+    {
         local_file_system_t fs = local_file_system_t();
         if (directory_exists(fs, testing_directory)) {
             remove_directory(fs, testing_directory);

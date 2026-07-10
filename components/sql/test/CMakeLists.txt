@@ -18,13 +18,13 @@ set(${PROJECT_NAME}_SOURCES
         test_parser_extension.cpp
 )
 
-add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
+add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
 
 target_link_libraries(
     ${PROJECT_NAME} PRIVATE
     otterbrix::sql
     otterbrix::demo_extension
-    Catch2::Catch2
+    Catch2::Catch2WithMain
 )
 
 include(CTest)

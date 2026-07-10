@@ -122,7 +122,7 @@
 //   option-2 guard regresses. The hard per-query deadline guarantees a violation surfaces
 //   as a FAILED query (deadline exceeded) rather than an infinite hang, so CI never wedges.
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/dispatch.hpp>

@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -31,7 +31,8 @@ TEST_CASE("integration::cpp::test_collection") {
         columns.emplace_back(type.alias(), type);
     }
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -42,7 +43,8 @@ TEST_CASE("integration::cpp::test_collection") {
         }
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         {
             auto chunk = gen_data_chunk(50, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
@@ -59,7 +61,8 @@ TEST_CASE("integration::cpp::test_collection") {
         }
     }
 
-    INFO("insert_more") {
+    INFO("insert_more");
+    {
         auto chunk = gen_data_chunk(50, 50, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
             dispatcher->resource(),
@@ -76,7 +79,8 @@ TEST_CASE("integration::cpp::test_collection") {
         }
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
@@ -209,7 +213,8 @@ TEST_CASE("integration::cpp::test_collection") {
             REQUIRE(cur->size() == 3);
         }
     }
-    INFO("cursor") {
+    INFO("cursor");
+    {
         auto session = otterbrix::session_id_t();
         auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
                                                                   core::dbname_t{database_name},
@@ -222,7 +227,8 @@ TEST_CASE("integration::cpp::test_collection") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 100);
     }
-    INFO("find_one") {
+    INFO("find_one");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
@@ -301,7 +307,8 @@ TEST_CASE("integration::cpp::test_collection") {
             REQUIRE(cur->value(0, 0).value<int64_t>() == 99);
         }
     }
-    INFO("drop_collection") {
+    INFO("drop_collection");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto drop = components::sql::transform::maybe_wrap_with_catalog_resolve_table(

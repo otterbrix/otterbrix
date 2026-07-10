@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -74,7 +74,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         columns_right.emplace_back(type.alias(), type);
     }
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name + ";");
@@ -97,7 +98,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         auto chunk = gen_data_chunk(kNumInserts, dispatcher->resource());
         auto ins = WRAP_DML_TARGET(table_database_name,
                                    table_collection_name,
@@ -111,7 +113,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
@@ -166,7 +169,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("group by boolean") {
+    INFO("group by boolean");
+    {
         auto session = otterbrix::session_id_t();
         auto aggregate = logical_plan::make_node_aggregate(dispatcher->resource(),
                                                            core::dbname_t{table_database_name},
@@ -230,7 +234,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         REQUIRE(cur->value(3, 1).value<int64_t>() == 50);
     }
 
-    INFO("insert from select") {
+    INFO("insert from select");
+    {
         auto ins_node = logical_plan::make_node_insert(dispatcher->resource());
         ins_node->append_child(logical_plan::make_node_aggregate(dispatcher->resource(),
                                                                  core::dbname_t{table_database_name},
@@ -245,7 +250,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("delete") {
+    INFO("delete");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
@@ -312,7 +318,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("delete using") {
+    INFO("delete using");
+    {
         // DELETE FROM table_other_collection_name USING table_collection_name:
         // the USING table is a source child sub-plan feeding the RIGHT side of the
         // delete join; the WHERE predicate compares target (left) against source (right).
@@ -349,7 +356,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("update") {
+    INFO("update");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto agg = logical_plan::make_node_aggregate(dispatcher->resource(),
@@ -438,7 +446,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("update array element") {
+    INFO("update array element");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto match = logical_plan::make_node_match(
@@ -492,7 +501,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("update from") {
+    INFO("update from");
+    {
         auto scan_session = otterbrix::session_id_t();
         auto scan_agg = logical_plan::make_node_aggregate(dispatcher->resource(),
                                                           core::dbname_t{table_database_name},
@@ -554,7 +564,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("delete with limit 1") {
+    INFO("delete with limit 1");
+    {
         // table_collection_name has 90 rows at this point, 19 with count==1000
         // Delete 1 row where count == 1000, LIMIT 1
         {
@@ -583,7 +594,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("delete with limit") {
+    INFO("delete with limit");
+    {
         // table_collection_name has 89 rows at this point
         // Delete rows where count == 1000, but limit to 5
         {
@@ -612,7 +624,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("update with limit 1") {
+    INFO("update with limit 1");
+    {
         // Update one row where count == 1000, set count = 2000
         {
             auto session = otterbrix::session_id_t();
@@ -645,7 +658,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("update with limit N") {
+    INFO("update with limit N");
+    {
         // Update up to 5 rows where count == 1000, set count = 3000
         {
             auto session = otterbrix::session_id_t();
@@ -680,7 +694,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         }
     }
 
-    INFO("join with outside data") {
+    INFO("join with outside data");
+    {
         vector::data_chunk_t chunk_left(dispatcher->resource(), types_left, 101);
         vector::data_chunk_t chunk_right(dispatcher->resource(), types_right, 100);
         chunk_left.set_cardinality(101);
@@ -713,7 +728,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 dispatcher->execute_plan(session,
                                          logical_plan::execution_plan_t{dispatcher->resource(), ins_right, nullptr});
         }
-        INFO("right is raw data") {
+        INFO("right is raw data");
+        {
             auto session = otterbrix::session_id_t();
             auto join = logical_plan::make_node_join(dispatcher->resource(),
                                                      core::dbname_t{},
@@ -743,7 +759,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                         "Name " + std::to_string((num + 25) * 2));
             }
         }
-        INFO("left is raw data") {
+        INFO("left is raw data");
+        {
             auto session = otterbrix::session_id_t();
             auto join = logical_plan::make_node_join(dispatcher->resource(),
                                                      core::dbname_t{},
@@ -773,7 +790,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                         "Name " + std::to_string((num + 25) * 2));
             }
         }
-        INFO("both are raw data") {
+        INFO("both are raw data");
+        {
             auto session = otterbrix::session_id_t();
             auto join = logical_plan::make_node_join(dispatcher->resource(),
                                                      core::dbname_t{},
@@ -801,7 +819,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                         "Name " + std::to_string((num + 25) * 2));
             }
         }
-        INFO("both are raw data with complex join expr") {
+        INFO("both are raw data with complex join expr");
+        {
             auto session = otterbrix::session_id_t();
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(core::parameter_id_t(1), types::logical_value_t(dispatcher->resource(), int64_t{75}));
@@ -840,7 +859,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                         "Name " + std::to_string((num + 25) * 2));
             }
         }
-        INFO("join raw data with aggregate") {
+        INFO("join raw data with aggregate");
+        {
             auto session = otterbrix::session_id_t();
             auto aggregate =
                 logical_plan::make_node_aggregate(dispatcher->resource(), core::dbname_t{}, core::relname_t{});
@@ -951,7 +971,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cur->value(5, static_cast<size_t>(num)).value<int64_t>() == (reversed + 25) * 2 * 10);
             }
         }
-        INFO("just raw data") {
+        INFO("just raw data");
+        {
             auto session = otterbrix::session_id_t();
             auto node = logical_plan::make_node_raw_data(dispatcher->resource(), chunk_left);
             auto cur = dispatcher->execute_plan(session,

@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_insert.hpp>

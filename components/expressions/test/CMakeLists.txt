@@ -7,7 +7,7 @@ set(${PROJECT_NAME}_SOURCES
         test_sort_expression.cpp
 )
 
-add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
+add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
 
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
@@ -16,7 +16,7 @@ target_link_libraries(
         absl::int128
         actor-zeta::actor-zeta
         Boost::boost
-        Catch2::Catch2
+        Catch2::Catch2WithMain
 )
 
 include(CTest)

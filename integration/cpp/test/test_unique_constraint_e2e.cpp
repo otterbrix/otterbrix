@@ -1,6 +1,6 @@
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <string>
 
 // End-to-end regression tests for UNIQUE / PRIMARY KEY constraint enforcement.
@@ -30,7 +30,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::unique_existing_row") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup: users(id) with a UNIQUE constraint on id") {
+    INFO("setup: users(id) with a UNIQUE constraint on id");
+    {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.users (id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.users ADD CONSTRAINT uq_users_id UNIQUE (id);")
@@ -38,13 +39,15 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::unique_existing_row") {
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.users (id, name) VALUES (1, 'Alice');")->is_success());
     }
 
-    INFO("distinct key accepted") {
+    INFO("distinct key accepted");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.users (id, name) VALUES (2, 'Bob');");
         INFO("distinct insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE_FALSE(cur->is_error());
     }
 
-    INFO("duplicate key against existing row is rejected") {
+    INFO("duplicate key against existing row is rejected");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.users (id, name) VALUES (1, 'Eve');");
         REQUIRE(cur->is_error());
     }
@@ -58,7 +61,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_existing_ro
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup: parts(id) with a PRIMARY KEY on id") {
+    INFO("setup: parts(id) with a PRIMARY KEY on id");
+    {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.parts (id bigint, label text);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.parts ADD CONSTRAINT pk_parts_id PRIMARY KEY (id);")
@@ -66,13 +70,15 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_existing_ro
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.parts (id, label) VALUES (100, 'gear');")->is_success());
     }
 
-    INFO("distinct primary key accepted") {
+    INFO("distinct primary key accepted");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.parts (id, label) VALUES (200, 'bolt');");
         INFO("distinct insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE_FALSE(cur->is_error());
     }
 
-    INFO("duplicate primary key is rejected") {
+    INFO("duplicate primary key is rejected");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.parts (id, label) VALUES (100, 'nut');");
         REQUIRE(cur->is_error());
     }
@@ -87,19 +93,22 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::within_batch_duplicate"
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup: accounts(id) UNIQUE, no rows yet") {
+    INFO("setup: accounts(id) UNIQUE, no rows yet");
+    {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.accounts (id bigint, owner text);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.accounts ADD CONSTRAINT uq_accounts_id UNIQUE (id);")
                     ->is_success());
     }
 
-    INFO("multi-row VALUES with an internal duplicate is rejected") {
+    INFO("multi-row VALUES with an internal duplicate is rejected");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.accounts (id, owner) VALUES (5, 'a'), (5, 'b');");
         REQUIRE(cur->is_error());
     }
 
-    INFO("multi-row VALUES with all-distinct keys is accepted") {
+    INFO("multi-row VALUES with all-distinct keys is accepted");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.accounts (id, owner) VALUES (6, 'a'), (7, 'b');");
         INFO("distinct multi-row insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE_FALSE(cur->is_error());
@@ -115,7 +124,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_creates_duplicat
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup: seats(id) UNIQUE with rows 1 and 2") {
+    INFO("setup: seats(id) UNIQUE with rows 1 and 2");
+    {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.seats (id bigint, row_no bigint);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.seats ADD CONSTRAINT uq_seats_id UNIQUE (id);")
@@ -123,12 +133,14 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_creates_duplicat
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.seats (id, row_no) VALUES (1, 10), (2, 20);")->is_success());
     }
 
-    INFO("UPDATE that collides id=2 into the existing id=1 is rejected") {
+    INFO("UPDATE that collides id=2 into the existing id=1 is rejected");
+    {
         auto cur = exec(dispatcher, "UPDATE TestDatabase.seats SET id = 1 WHERE id = 2;");
         REQUIRE(cur->is_error());
     }
 
-    INFO("UPDATE to a fresh distinct id is accepted") {
+    INFO("UPDATE to a fresh distinct id is accepted");
+    {
         auto cur = exec(dispatcher, "UPDATE TestDatabase.seats SET id = 3 WHERE id = 2;");
         INFO("distinct update error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE_FALSE(cur->is_error());
@@ -145,7 +157,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicat
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup: tickets(code) UNIQUE with DEFAULT 5") {
+    INFO("setup: tickets(code) UNIQUE with DEFAULT 5");
+    {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.tickets (id bigint, code bigint DEFAULT 5);")
                     ->is_success());
@@ -153,7 +166,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicat
                     ->is_success());
     }
 
-    INFO("first defaulted insert is accepted and stores the default") {
+    INFO("first defaulted insert is accepted and stores the default");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.tickets (id) VALUES (1);");
         INFO("insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE_FALSE(cur->is_error());
@@ -163,17 +177,20 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicat
         REQUIRE(sel->value(0, 0).value<int64_t>() == 5);
     }
 
-    INFO("second insert omitting the column collides with the stored default") {
+    INFO("second insert omitting the column collides with the stored default");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.tickets (id) VALUES (2);");
         REQUIRE(cur->is_error());
     }
 
-    INFO("an explicit value equal to the default collides too") {
+    INFO("an explicit value equal to the default collides too");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.tickets (id, code) VALUES (3, 5);");
         REQUIRE(cur->is_error());
     }
 
-    INFO("an explicit distinct value is still accepted") {
+    INFO("an explicit distinct value is still accepted");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.tickets (id, code) VALUES (4, 6);");
         INFO("distinct insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE_FALSE(cur->is_error());
@@ -186,7 +203,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_within_b
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup: badges(code) UNIQUE with DEFAULT 5, no rows yet") {
+    INFO("setup: badges(code) UNIQUE with DEFAULT 5, no rows yet");
+    {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.badges (id bigint, code bigint DEFAULT 5);")
                     ->is_success());
@@ -194,7 +212,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_within_b
                     ->is_success());
     }
 
-    INFO("one batch omitting the column twice collides within the batch (both store DEFAULT 5)") {
+    INFO("one batch omitting the column twice collides within the batch (both store DEFAULT 5)");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.badges (id) VALUES (1), (2);");
         REQUIRE(cur->is_error());
     }
@@ -209,30 +228,35 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_rejects_nul
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup: parts(id) with a PRIMARY KEY on id") {
+    INFO("setup: parts(id) with a PRIMARY KEY on id");
+    {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.parts (id bigint, label text);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.parts ADD CONSTRAINT pk_parts_id PRIMARY KEY (id);")
                     ->is_success());
     }
 
-    INFO("explicit NULL primary key is rejected") {
+    INFO("explicit NULL primary key is rejected");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.parts (id, label) VALUES (NULL, 'ghost');");
         REQUIRE(cur->is_error());
     }
 
-    INFO("INSERT omitting the PK column is rejected (would store NULL)") {
+    INFO("INSERT omitting the PK column is rejected (would store NULL)");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.parts (label) VALUES ('phantom');");
         REQUIRE(cur->is_error());
     }
 
-    INFO("a non-NULL primary key is still accepted") {
+    INFO("a non-NULL primary key is still accepted");
+    {
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.parts (id, label) VALUES (1, 'gear');");
         INFO("insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE_FALSE(cur->is_error());
     }
 
-    INFO("no NULL-keyed rows leaked into the table") {
+    INFO("no NULL-keyed rows leaked into the table");
+    {
         auto cur = exec(dispatcher, "SELECT COUNT(label) AS c FROM TestDatabase.parts;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
@@ -271,14 +295,16 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_ac
         }
     }
 
-    INFO("setup: big(id) UNIQUE, empty") {
+    INFO("setup: big(id) UNIQUE, empty");
+    {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.big (id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.big ADD CONSTRAINT uq_big_id UNIQUE (id);")
                     ->is_success());
     }
 
-    INFO("one >1024-row insert (NULLs interspersed, non-NULLs all distinct) is accepted") {
+    INFO("one >1024-row insert (NULLs interspersed, non-NULLs all distinct) is accepted");
+    {
         auto cur = seed_rows(dispatcher, "TestDatabase.big", "id, name", kRows, [&](unsigned i) {
             std::stringstream s;
             if (id_is_null(i)) {
@@ -301,7 +327,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_ac
         REQUIRE(keyed->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(expected_non_null));
     }
 
-    INFO("a duplicate of a HIGH existing key (beyond the first packed chunk) is rejected") {
+    INFO("a duplicate of a HIGH existing key (beyond the first packed chunk) is rejected");
+    {
         // 2001 is odd => it was inserted; a second copy collides against it.
         auto cur = exec(dispatcher, "INSERT INTO TestDatabase.big (id, name) VALUES (2001, 'dup');");
         REQUIRE(cur->is_error());

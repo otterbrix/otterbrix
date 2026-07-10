@@ -1,5 +1,5 @@
 #include <atomic>
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <charconv>
 #include <components/index/logical_value_binary_codec.hpp>
 #include <core/pmr.hpp>

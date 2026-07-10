@@ -5,12 +5,14 @@
 #include <actor-zeta/spawn.hpp>
 // clang-format on
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/tests/generaty.hpp>
+#include <core/config.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <filesystem>
@@ -21,8 +23,6 @@
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_contract.hpp>
 #include <services/wal/wal_sync_mode.hpp>
-#include <chrono>
-#include <core/config.hpp>
 #include <thread>
 
 using namespace services::wal;

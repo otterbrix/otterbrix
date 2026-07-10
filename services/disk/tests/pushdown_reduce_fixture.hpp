@@ -6,7 +6,10 @@
 // dir, with a synchronous `invoke<>` send helper and the `drive_reduce` helper
 // that runs a pushed_aggregate_spec_t reduce and returns its finalized chunks.
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
+
+// actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
+#include <memory>
 
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_oids.hpp>

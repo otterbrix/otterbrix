@@ -22,7 +22,7 @@ class OtterbrixConan(ConanFile):
             self.requires("pybind11/2.13.6@")
             self.requires("utf8proc/2.9.0")
             self.requires("tabulate/1.5")
-        self.requires("catch2/2.13.7@")
+        self.requires("catch2/3.15.1@")
         self.requires("abseil/20260107.1")
         self.requires("benchmark/1.6.1@")
         self.requires("zlib/1.3.1@")

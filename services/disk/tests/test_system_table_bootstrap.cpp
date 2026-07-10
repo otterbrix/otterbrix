@@ -1,4 +1,7 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
+
+// actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
+#include <memory>
 
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -153,7 +156,10 @@ TEST_CASE("services::disk::sysboot::bootstrap_is_idempotent") {
         fx.manager->bootstrap_system_tables_sync();
     }
     REQUIRE(std::filesystem::file_size(pg_class_otbx) == first_size);
-    REQUIRE(std::filesystem::last_write_time(pg_class_otbx) == first_mtime);
+    // Extra parens keep Catch2 from stringifying file_time_type on failure: Apple's
+    // filesystem clock uses an __int128 rep, which Catch2's chrono StringMaker
+    // cannot stream (ostream has no __int128 overload) and macOS builds break.
+    REQUIRE((std::filesystem::last_write_time(pg_class_otbx) == first_mtime));
 
     cleanup_boot_dir();
 }

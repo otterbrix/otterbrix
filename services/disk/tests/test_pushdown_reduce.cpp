@@ -18,7 +18,7 @@
 #include "pushdown_reduce_fixture.hpp"
 #include <components/compute/tests/pushdown_sum_uid.hpp>
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>

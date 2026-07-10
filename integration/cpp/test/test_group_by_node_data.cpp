@@ -1,5 +1,6 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -157,7 +158,7 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
         auto key = chunk.get_value<int32_t>(0, row);
         REQUIRE((key == 1 || key == 2));
         REQUIRE(chunk.get_value<uint64_t>(1, row) == 1);
-        REQUIRE(chunk.get_value<double>(2, row) == Approx(key == 1 ? 100.5 : 201.0));
+        REQUIRE(chunk.get_value<double>(2, row) == Catch::Approx(key == 1 ? 100.5 : 201.0));
         seen_campaign[key - 1] = true;
     }
     REQUIRE(seen_campaign[0]);

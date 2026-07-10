@@ -1,6 +1,6 @@
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <demo_extension.hpp>
 
@@ -15,7 +15,8 @@ TEST_CASE("integration::cpp::parser_extension_demo") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("without the extension, DEMO is rejected") {
+    INFO("without the extension, DEMO is rejected");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DEMO 1 + 20");
         REQUIRE_FALSE(cur->is_success());
@@ -23,7 +24,8 @@ TEST_CASE("integration::cpp::parser_extension_demo") {
 
     REQUIRE_FALSE(dispatcher->add_parser_extension(make_demo_extension()).has_error());
 
-    INFO("with the extension registered, DEMO is OK") {
+    INFO("with the extension registered, DEMO is OK");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DEMO 1 + 20");
         REQUIRE(cur->is_success());
@@ -31,7 +33,8 @@ TEST_CASE("integration::cpp::parser_extension_demo") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 21);
     }
 
-    INFO("precedence") {
+    INFO("precedence");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DEMO 2 + 3 * 4");
         REQUIRE(cur->is_success());
@@ -56,13 +59,15 @@ TEST_CASE("integration::cpp::parser_extension_is_per_instance") {
     REQUIRE_FALSE(space_a.dispatcher()->add_parser_extension(make_demo_extension()).has_error());
 
     auto session = otterbrix::session_id_t();
-    INFO("instance A (registered) correctly runs DEMO") {
+    INFO("instance A (registered) correctly runs DEMO");
+    {
         auto cur = space_a.dispatcher()->execute_sql(session, "DEMO 1 + 20");
         REQUIRE(cur->is_success());
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 21);
     }
 
-    INFO("instance B (no extension) rejects") {
+    INFO("instance B (no extension) rejects");
+    {
         auto cur = space_b.dispatcher()->execute_sql(session, "DEMO 1 + 20");
         REQUIRE_FALSE(cur->is_success());
     }

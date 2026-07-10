@@ -1,5 +1,5 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <variant>
 
 using namespace components;
@@ -25,7 +25,8 @@ TEST_CASE("integration::cpp::test_join") {
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         auto session = otterbrix::session_id_t();
         {
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
@@ -54,7 +55,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("inner join") {
+    INFO("inner join");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -77,7 +79,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("left outer join") {
+    INFO("left outer join");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -117,7 +120,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("right outer join") {
+    INFO("right outer join");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -147,7 +151,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("full outer join") {
+    INFO("full outer join");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -194,7 +199,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("cross join") {
+    INFO("cross join");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -206,7 +212,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("inner join ON true") {
+    INFO("inner join ON true");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -218,7 +225,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("left join ON true") {
+    INFO("left join ON true");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -230,7 +238,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("two join predicates") {
+    INFO("two join predicates");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -244,7 +253,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("two join predicates, with const") {
+    INFO("two join predicates, with const");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -259,7 +269,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("self join ") {
+    INFO("self join ");
+    {
         auto session = otterbrix::session_id_t();
         {
             std::stringstream query;
@@ -274,7 +285,8 @@ TEST_CASE("integration::cpp::test_join") {
         }
     }
 
-    INFO("inner join + group by + aggregates + order + limit") {
+    INFO("inner join + group by + aggregates + order + limit");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT c1.name, COUNT(c2.value) AS cnt, AVG(c2.key) AS avg_key "
@@ -288,7 +300,8 @@ TEST_CASE("integration::cpp::test_join") {
         REQUIRE(cur->size() == 10);
     }
 
-    INFO("triple inner join with shared-name keys in both joins") {
+    INFO("triple inner join with shared-name keys in both joins");
+    {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE TABLE " + database_name + ".col_mid();");
         dispatcher->execute_sql(session, "CREATE TABLE " + database_name + ".col_end();");
@@ -325,7 +338,8 @@ TEST_CASE("integration::cpp::test_join") {
         REQUIRE(cur->size() == 3);
     }
 
-    INFO("triple inner join — aliases") {
+    INFO("triple inner join — aliases");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT camp.name, ord.extra "
@@ -339,7 +353,8 @@ TEST_CASE("integration::cpp::test_join") {
         REQUIRE(cur->size() == 3);
     }
 
-    INFO("triple inner join — second JOIN references first table") {
+    INFO("triple inner join — second JOIN references first table");
+    {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE TABLE " + database_name + ".col_aux();");
         {

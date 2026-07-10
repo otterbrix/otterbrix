@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>

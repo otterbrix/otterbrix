@@ -1,6 +1,7 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/vector/vector.hpp>
+#include <random>
 
 TEST_CASE("components::vector::vector") {
     auto resource = core::pmr::otterbrix_resource();
@@ -31,7 +32,8 @@ TEST_CASE("components::vector::vector") {
     components::types::complex_logical_type struct_type =
         components::types::complex_logical_type::create_struct("struct", fields, "test_struct");
 
-    INFO("sixed size") {
+    INFO("sixed size");
+    {
         components::vector::vector_t v(&resource, components::types::logical_type::UBIGINT, test_size);
         for (size_t i = 0; i < test_size; i++) {
             v.set_value(i, uint64_t(i));
@@ -42,7 +44,8 @@ TEST_CASE("components::vector::vector") {
             REQUIRE(v.get_value<uint64_t>(i) == i);
         }
     }
-    INFO("string") {
+    INFO("string");
+    {
         components::vector::vector_t v(&resource, components::types::logical_type::STRING_LITERAL, test_size);
         for (size_t i = 0; i < test_size; i++) {
             std::string value{"long_string_with_index_" + std::to_string(i)};
@@ -55,7 +58,8 @@ TEST_CASE("components::vector::vector") {
             REQUIRE(result == std::string{"long_string_with_index_" + std::to_string(i)});
         }
     }
-    INFO("array of fixed size") {
+    INFO("array of fixed size");
+    {
         components::vector::vector_t v(
             &resource,
             components::types::complex_logical_type::create_array(components::types::logical_type::UBIGINT, array_size),
@@ -78,7 +82,8 @@ TEST_CASE("components::vector::vector") {
             }
         }
     }
-    INFO("array of string") {
+    INFO("array of string");
+    {
         components::vector::vector_t v(
             &resource,
             components::types::complex_logical_type::create_array(components::types::logical_type::STRING_LITERAL,
@@ -109,7 +114,8 @@ TEST_CASE("components::vector::vector") {
             }
         }
     }
-    INFO("list of fixed size") {
+    INFO("list of fixed size");
+    {
         components::vector::vector_t v(
             &resource,
             components::types::complex_logical_type::create_list(components::types::logical_type::UBIGINT),
@@ -133,7 +139,8 @@ TEST_CASE("components::vector::vector") {
             }
         }
     }
-    INFO("list of string") {
+    INFO("list of string");
+    {
         components::vector::vector_t v(
             &resource,
             components::types::complex_logical_type::create_list(components::types::logical_type::STRING_LITERAL),
@@ -164,7 +171,8 @@ TEST_CASE("components::vector::vector") {
             }
         }
     }
-    INFO("struct") {
+    INFO("struct");
+    {
         std::vector<test_struct> test_data;
         test_data.reserve(test_size);
         for (size_t i = 0; i < test_size; i++) {
@@ -222,7 +230,8 @@ TEST_CASE("components::vector::vector") {
             }
         }
     }
-    INFO("dictionary") {
+    INFO("dictionary");
+    {
         constexpr size_t string_count = 16;
 
         std::vector<size_t> indices;
@@ -256,7 +265,8 @@ TEST_CASE("components::vector::vector") {
             REQUIRE(dictionary.get_value<std::string_view>(i) == string_array.get_value<std::string_view>(indices[i]));
         }
     }
-    INFO("union") {
+    INFO("union");
+    {
         std::pmr::vector<components::types::complex_logical_type> union_fields(&resource);
         union_fields.emplace_back(components::types::logical_type::BOOLEAN, "bool");
         union_fields.emplace_back(components::types::logical_type::INTEGER, "int");
@@ -330,7 +340,8 @@ TEST_CASE("components::vector::nested_null_access") {
     constexpr size_t rows = 16;
     constexpr size_t arr_len = 4;
 
-    INFO("array element nulls") {
+    INFO("array element nulls");
+    {
         components::vector::vector_t v(&resource,
                                        types::complex_logical_type::create_array(types::logical_type::UBIGINT, arr_len),
                                        rows);
@@ -371,7 +382,8 @@ TEST_CASE("components::vector::nested_null_access") {
         }
     }
 
-    INFO("list element nulls") {
+    INFO("list element nulls");
+    {
         components::vector::vector_t v(&resource,
                                        types::complex_logical_type::create_list(types::logical_type::UBIGINT),
                                        rows);

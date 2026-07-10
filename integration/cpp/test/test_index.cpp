@@ -17,7 +17,7 @@
 #include <services/collection/context_storage.hpp>
 
 #include <array>
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -208,13 +208,15 @@ TEST_CASE("integration::cpp::test_index::base") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
         FILL_COLLECTION();
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         CHECK_FIND_ALL();
         do {
             auto session = otterbrix::session_id_t();
@@ -253,7 +255,8 @@ TEST_CASE("integration::cpp::test_index::drop") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
         CREATE_INDEX("scount", "count_str");
@@ -262,7 +265,8 @@ TEST_CASE("integration::cpp::test_index::drop") {
         usleep(1000000); //todo: wait
     }
 
-    INFO("drop indexes") {
+    INFO("drop indexes");
+    {
         CHECK_EXISTS_INDEX("ncount", true);
         CHECK_EXISTS_INDEX("scount", true);
         CHECK_EXISTS_INDEX("dcount", true);
@@ -303,7 +307,8 @@ TEST_CASE("integration::cpp::test_index::index already exist") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
         CREATE_INDEX("scount", "count_str");
@@ -311,22 +316,26 @@ TEST_CASE("integration::cpp::test_index::index already exist") {
         FILL_COLLECTION();
     }
 
-    INFO("add existed ncount index") {
+    INFO("add existed ncount index");
+    {
         CREATE_EXISTED_INDEX("ncount", "count");
         CREATE_EXISTED_INDEX("ncount", "count");
     }
 
-    INFO("add existed scount index") {
+    INFO("add existed scount index");
+    {
         CREATE_INDEX("scount", "count_str");
         CREATE_INDEX("scount", "count_str");
     }
 
-    INFO("add existed dcount index") {
+    INFO("add existed dcount index");
+    {
         CREATE_INDEX("dcount", "count_double");
         CREATE_INDEX("dcount", "count_double");
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         CHECK_FIND_ALL();
         CHECK_EXISTS_INDEX("ncount", true);
         CHECK_EXISTS_INDEX("scount", true);
@@ -340,7 +349,8 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
         CREATE_INDEX("dcount", "count_double");
@@ -348,13 +358,15 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
         FILL_COLLECTION();
     }
 
-    INFO("check indexes") {
+    INFO("check indexes");
+    {
         CHECK_EXISTS_INDEX("ncount", true);
         CHECK_EXISTS_INDEX("dcount", true);
         CHECK_EXISTS_INDEX("scount", true);
     }
 
-    INFO("find") {
+    INFO("find");
+    {
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);
         CHECK_FIND_COUNT(compare_type::gt, side_t::left, 10, 90);
         CHECK_FIND_COUNT(compare_type::lt, side_t::left, 10, 9);
@@ -372,18 +384,21 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         INIT_COLLECTION();
         CREATE_INDEX("ncount", "count");
         FILL_COLLECTION();
     }
 
-    INFO("verify initial state via index") {
+    INFO("verify initial state via index");
+    {
         // count > 50 should match rows 51..100 → 50 rows
         CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 50);
     }
 
-    INFO("delete rows where count > 90") {
+    INFO("delete rows where count > 90");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto del = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
@@ -410,12 +425,14 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
         }
     }
 
-    INFO("verify index after delete") {
+    INFO("verify index after delete");
+    {
         // count > 50 should now match rows 51..90 → 40 rows
         CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 40);
     }
 
-    INFO("update row where count == 50 to count = 999") {
+    INFO("update row where count == 50 to count = 999");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto match = components::logical_plan::make_node_match(
@@ -445,7 +462,8 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
         }
     }
 
-    INFO("verify index after update") {
+    INFO("verify index after update");
+    {
         // count == 50 should now return 0 rows (was updated to 999)
         CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 50), 0);
         // count == 999 should return 1 row
@@ -582,7 +600,8 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
         test_create_config("/tmp/otterbrix/integration/test_index/checkpoint_repopulate_persists_bitcask_keylog");
     test_clear_directory(config);
 
-    INFO("phase 1: disk hash index, bulk load, CHECKPOINT, bitcask keylog on disk") {
+    INFO("phase 1: disk hash index, bulk load, CHECKPOINT, bitcask keylog on disk");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -632,7 +651,8 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 500;", 1);
     }
 
-    INFO("phase 2: restart — persisted bitcask keylog, index-path lookups exact") {
+    INFO("phase 2: restart — persisted bitcask keylog, index-path lookups exact");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -860,7 +880,8 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         }
     };
 
-    INFO("trailing drop_index_t folds all N delete leaves into one operator_drop_index_t") {
+    INFO("trailing drop_index_t folds all N delete leaves into one operator_drop_index_t");
+    {
         auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
         append_delete_leaves(seq);
         auto di = lp::make_node_drop(res, lp::drop_target_kind::index);
@@ -883,7 +904,8 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         CHECK(count_ops_of_type(plan, ops::operator_type::remove) == 0u);
     }
 
-    INFO("control: same delete leaves with NO trailing drop_index_t stay N standalone operators") {
+    INFO("control: same delete leaves with NO trailing drop_index_t stay N standalone operators");
+    {
         // Without the drop_index_t marker the leaves fall through to the generic
         // left-child chain and each catalog-delete node_delete_t lowers to its own
         // operator_delete (catalog branch). This is the un-folded baseline the

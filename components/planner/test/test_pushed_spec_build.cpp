@@ -10,7 +10,7 @@
 //       aggregate) is REJECTED (build returns false => the coordinator aggregate stands), never
 //       silently mis-encoded.
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/compute/function.hpp>
 #include <components/compute/tests/pushdown_sum_uid.hpp>

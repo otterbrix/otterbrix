@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/pmr.hpp>
@@ -9,17 +9,20 @@ using namespace core::pmr;
 
 TEST_CASE("components::cursor::construction") {
     auto resource = core::pmr::otterbrix_resource();
-    INFO("empty cursor") {
+    INFO("empty cursor");
+    {
         auto cursor = components::cursor::make_cursor(&resource);
         REQUIRE(cursor->is_success());
         REQUIRE_FALSE(cursor->is_error());
     }
-    INFO("successful operation cursor") {
+    INFO("successful operation cursor");
+    {
         auto cursor = components::cursor::make_cursor(&resource, core::error_t::no_error());
         REQUIRE(cursor->is_success());
         REQUIRE_FALSE(cursor->is_error());
     }
-    INFO("error cursor") {
+    INFO("error cursor");
+    {
         std::pmr::string description = {"error description", &resource};
         auto cursor =
             components::cursor::make_cursor(&resource, core::error_t(core::error_code_t::other_error, description));

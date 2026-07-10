@@ -1,6 +1,6 @@
 #include "arrow/arrow_converter.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/vector/arrow/arrow_appender.hpp>
 #include <components/vector/arrow/arrow_converter.hpp>

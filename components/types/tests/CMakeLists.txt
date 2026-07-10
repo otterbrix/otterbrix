@@ -7,14 +7,14 @@ set( ${PROJECT_NAME}_SOURCES
         test_type_switch.cpp
 )
 
-add_executable(${PROJECT_NAME} main.cpp ${${PROJECT_NAME}_SOURCES})
+add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
 
 target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         otterbrix::log
         otterbrix::file
         otterbrix::types
-        Catch2::Catch2
+        Catch2::Catch2WithMain
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

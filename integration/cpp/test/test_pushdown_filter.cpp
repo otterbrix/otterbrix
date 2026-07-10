@@ -2,7 +2,7 @@
 // build a plan, optimize it, then
 // check the shape of the resulting node tree
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>

@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <limits>
 #include <string>
@@ -77,7 +78,8 @@ TEST_CASE("integration::cpp::params::bind_each_type") {
         test_create_collection(dispatcher, session, "paramdb", "alltypes");
     }
 
-    INFO("bind Int64 / UInt64 / Double / Str / Bool via $N") {
+    INFO("bind Int64 / UInt64 / Double / Str / Bool via $N");
+    {
         {
             auto session = otterbrix::session_id_t();
             params_t params{
@@ -112,7 +114,7 @@ TEST_CASE("integration::cpp::params::bind_each_type") {
 
             REQUIRE(cur->value(i_col, 0).value<int64_t>() == -42);
             REQUIRE(cur->value(u_col, 0).value<uint64_t>() == 7);
-            REQUIRE(cur->value(d_col, 0).value<double>() == Approx(3.5));
+            REQUIRE(cur->value(d_col, 0).value<double>() == Catch::Approx(3.5));
             const auto s_cell = cur->value(s_col, 0);
             REQUIRE(s_cell.value<std::string_view>() == "hello");
             REQUIRE(cur->value(b_col, 0).value<bool>() == true);
@@ -134,7 +136,8 @@ TEST_CASE("integration::cpp::params::uint64_max") {
         test_create_collection(dispatcher, session, "paramdb", "u");
     }
 
-    INFO("UInt64 max round-trips through a schema-free column") {
+    INFO("UInt64 max round-trips through a schema-free column");
+    {
         {
             auto session = otterbrix::session_id_t();
             params_t params{
@@ -171,7 +174,8 @@ TEST_CASE("integration::cpp::params::placeholders") {
         test_create_collection(dispatcher, session, "paramdb", "place");
     }
 
-    INFO("repeated placeholder bound once fills both columns") {
+    INFO("repeated placeholder bound once fills both columns");
+    {
         {
             auto session = otterbrix::session_id_t();
             params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(99)}}};
@@ -194,7 +198,8 @@ TEST_CASE("integration::cpp::params::placeholders") {
         }
     }
 
-    INFO("multiple params in INSERT") {
+    INFO("multiple params in INSERT");
+    {
         {
             auto session = otterbrix::session_id_t();
             params_t params{
@@ -241,7 +246,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
         REQUIRE(cur->size() == 3);
     }
 
-    INFO("SELECT ... WHERE count > $1") {
+    INFO("SELECT ... WHERE count > $1");
+    {
         auto session = otterbrix::session_id_t();
         params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(15)}}};
         auto cur = dispatcher->execute_sql_with_params(session, "SELECT * FROM ParamDb.Rows WHERE count > $1;", params);
@@ -249,7 +255,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
         REQUIRE(cur->size() == 2);
     }
 
-    INFO("SELECT ... WHERE count > $1 AND name = $2") {
+    INFO("SELECT ... WHERE count > $1 AND name = $2");
+    {
         auto session = otterbrix::session_id_t();
         params_t params{
             {1, types::logical_value_t{resource, static_cast<int64_t>(15)}},
@@ -266,7 +273,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
         REQUIRE(name_cell.value<std::string_view>() == "c");
     }
 
-    INFO("SELECT ... WHERE flag = $1 (bool param)") {
+    INFO("SELECT ... WHERE flag = $1 (bool param)");
+    {
         auto session = otterbrix::session_id_t();
         params_t params{{1, types::logical_value_t{resource, true}}};
         auto cur = dispatcher->execute_sql_with_params(session, "SELECT * FROM ParamDb.Rows WHERE flag = $1;", params);
@@ -274,7 +282,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
         REQUIRE(cur->size() == 2);
     }
 
-    INFO("UPDATE ... SET count = $1 WHERE name = $2") {
+    INFO("UPDATE ... SET count = $1 WHERE name = $2");
+    {
         {
             auto session = otterbrix::session_id_t();
             params_t params{
@@ -297,7 +306,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
         }
     }
 
-    INFO("DELETE ... WHERE count = $1") {
+    INFO("DELETE ... WHERE count = $1");
+    {
         {
             auto session = otterbrix::session_id_t();
             params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(20)}}};
@@ -329,7 +339,8 @@ TEST_CASE("integration::cpp::params::validation_errors") {
         test_create_collection(dispatcher, session, "paramdb", "val");
     }
 
-    INFO("missing param: query has $2, only $1 bound") {
+    INFO("missing param: query has $2, only $1 bound");
+    {
         auto session = otterbrix::session_id_t();
         params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(1)}}};
         auto cur =
@@ -338,7 +349,8 @@ TEST_CASE("integration::cpp::params::validation_errors") {
         REQUIRE_FALSE(cur->get_error().what.empty());
     }
 
-    INFO("unknown param index: bind $99 for a single-placeholder query") {
+    INFO("unknown param index: bind $99 for a single-placeholder query");
+    {
         auto session = otterbrix::session_id_t();
         params_t params{{99, types::logical_value_t{resource, static_cast<int64_t>(1)}}};
         auto cur = dispatcher->execute_sql_with_params(session, "INSERT INTO ParamDb.Val (id) VALUES ($1);", params);
@@ -346,7 +358,8 @@ TEST_CASE("integration::cpp::params::validation_errors") {
         REQUIRE_FALSE(cur->get_error().what.empty());
     }
 
-    INFO("zero param index is rejected") {
+    INFO("zero param index is rejected");
+    {
         auto session = otterbrix::session_id_t();
         params_t params{{0, types::logical_value_t{resource, static_cast<int64_t>(1)}}};
         auto cur = dispatcher->execute_sql_with_params(session, "INSERT INTO ParamDb.Val (id) VALUES ($1);", params);
@@ -539,7 +552,8 @@ TEST_CASE("integration::cpp::params::error_code_contracts") {
     auto space = make_space("error_code_contracts");
     auto* dispatcher = space.dispatcher();
 
-    INFO("CREATE DATABASE twice -> database_already_exists") {
+    INFO("CREATE DATABASE twice -> database_already_exists");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CREATE DATABASE ErrDb;");
@@ -554,7 +568,8 @@ TEST_CASE("integration::cpp::params::error_code_contracts") {
         }
     }
 
-    INFO("DROP nonexistent database -> database_not_exists") {
+    INFO("DROP nonexistent database -> database_not_exists");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DROP DATABASE NoSuchDb;");
         REQUIRE(cur->is_error());
@@ -562,7 +577,8 @@ TEST_CASE("integration::cpp::params::error_code_contracts") {
         REQUIRE_FALSE(cur->get_error().what.empty());
     }
 
-    INFO("SELECT from nonexistent table -> table_not_exists") {
+    INFO("SELECT from nonexistent table -> table_not_exists");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM ErrDb.NoSuchTable;");
         REQUIRE(cur->is_error());

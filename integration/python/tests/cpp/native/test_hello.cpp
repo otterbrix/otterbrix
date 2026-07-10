@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <native/python_conversion.hpp>
 #include <otterbrix_wrapper/pyexpression.hpp>
 #include <pybind11/embed.h>

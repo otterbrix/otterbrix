@@ -1,5 +1,6 @@
 #include "test_config.hpp"
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
@@ -173,7 +174,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
@@ -189,7 +191,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
         }
     }
 
-    INFO("insert") {
+    INFO("insert");
+    {
         auto chunk = gen_data_chunk(N, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
             dispatcher->resource(),
@@ -203,7 +206,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
         REQUIRE(cur->size() == N);
     }
 
-    INFO("register UDFs") {
+    INFO("register UDFs");
+    {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())));
         REQUIRE(dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
@@ -211,7 +215,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
         REQUIRE(dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
     }
 
-    INFO("WHERE with row UDF (boolean predicate)") {
+    INFO("WHERE with row UDF (boolean predicate)");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count FROM TestDatabase.TestCollection )_"
@@ -224,7 +229,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
         }
     }
 
-    INFO("WHERE with row UDF in comparison") {
+    INFO("WHERE with row UDF in comparison");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count FROM TestDatabase.TestCollection )_"
@@ -237,7 +243,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
         }
     }
 
-    INFO("WHERE with vector UDF in comparison") {
+    INFO("WHERE with vector UDF in comparison");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count FROM TestDatabase.TestCollection )_"
@@ -250,7 +257,8 @@ TEST_CASE("integration::cpp::test_batch_where") {
         }
     }
 
-    INFO("WHERE with combined UDF predicates") {
+    INFO("WHERE with combined UDF predicates");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count FROM TestDatabase.TestCollection )_"
@@ -263,14 +271,16 @@ TEST_CASE("integration::cpp::test_batch_where") {
         }
     }
 
-    INFO("WHERE TRUE keeps every row") {
+    INFO("WHERE TRUE keeps every row");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT count FROM TestDatabase.TestCollection WHERE TRUE;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == N);
     }
 
-    INFO("WHERE FALSE drops every row") {
+    INFO("WHERE FALSE drops every row");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT count FROM TestDatabase.TestCollection WHERE FALSE;");
         REQUIRE(cur->is_success());
@@ -289,7 +299,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
@@ -305,7 +316,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         }
     }
 
-    INFO("insert: two batches so each count appears twice") {
+    INFO("insert: two batches so each count appears twice");
+    {
         for (int batch = 0; batch < 2; batch++) {
             auto chunk = gen_data_chunk(N, dispatcher->resource());
             auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
@@ -326,14 +338,16 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         }
     }
 
-    INFO("register UDFs") {
+    INFO("register UDFs");
+    {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
         REQUIRE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())));
         REQUIRE(dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
     }
 
-    INFO("GROUP BY with compute SUM") {
+    INFO("GROUP BY with compute SUM");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, SUM(count + 0) AS s )_"
@@ -350,7 +364,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         }
     }
 
-    INFO("GROUP BY with compute COUNT") {
+    INFO("GROUP BY with compute COUNT");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, COUNT(count_str) AS c )_"
@@ -366,7 +381,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         }
     }
 
-    INFO("GROUP BY with sum_squares") {
+    INFO("GROUP BY with sum_squares");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, sum_squares(count) AS ss )_"
@@ -383,7 +399,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         }
     }
 
-    INFO("GROUP BY with HAVING") {
+    INFO("GROUP BY with HAVING");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, SUM(count + 0) AS s )_"
@@ -401,7 +418,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         }
     }
 
-    INFO("GROUP BY + WHERE with UDF filter") {
+    INFO("GROUP BY + WHERE with UDF filter");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, SUM(count + 0) AS s )_"
@@ -419,7 +437,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         }
     }
 
-    INFO("Aggregate without GROUP BY") {
+    INFO("Aggregate without GROUP BY");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT SUM(count + 0) AS s )_"
@@ -429,7 +448,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 2550); // over all 100 rows: 2*(1+2+...+50) = 2550
     }
 
-    INFO("COUNT(*) without GROUP BY") {
+    INFO("COUNT(*) without GROUP BY");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT COUNT(count_str) AS c )_"
@@ -439,7 +459,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == N * 2); // same as COUNT(*)
     }
 
-    INFO("GROUP BY with arithmetic in aggregate") {
+    INFO("GROUP BY with arithmetic in aggregate");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, SUM(count * 2 + 1) AS s )_"
@@ -456,7 +477,8 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         }
     }
 
-    INFO("DISTINCT aggregate") {
+    INFO("DISTINCT aggregate");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT COUNT(DISTINCT count_bool) AS c )_"
@@ -478,7 +500,8 @@ TEST_CASE("integration::cpp::test_batch_join") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         auto session = otterbrix::session_id_t();
         dispatcher->execute_sql(session, "CREATE DATABASE " + std::string(database_name) + ";");
         dispatcher->execute_sql(session,
@@ -489,7 +512,8 @@ TEST_CASE("integration::cpp::test_batch_join") {
                                     "();");
     }
 
-    INFO("insert data") {
+    INFO("insert data");
+    {
         auto session = otterbrix::session_id_t();
 
         // left: id 1..20, category 0..5, val = id * 10
@@ -525,14 +549,16 @@ TEST_CASE("integration::cpp::test_batch_join") {
         }
     }
 
-    INFO("register UDFs") {
+    INFO("register UDFs");
+    {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
         REQUIRE(dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
         REQUIRE(dispatcher->register_udf(session, make_call_counter_func(dispatcher->resource())));
     }
 
-    INFO("join with UDF batch predicate in ON clause") {
+    INFO("join with UDF batch predicate in ON clause");
+    {
         // val > 100 = id > 10 = ids 11..20 = 10 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -548,7 +574,8 @@ TEST_CASE("integration::cpp::test_batch_join") {
         }
     }
 
-    INFO("join + WHERE with UDF batch predicate") {
+    INFO("join + WHERE with UDF batch predicate");
+    {
         // val > 150 = id > 15 = ids 16..20 = 5 rows
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -564,7 +591,8 @@ TEST_CASE("integration::cpp::test_batch_join") {
         }
     }
 
-    INFO("join + GROUP BY + sum_squares (compute batch aggregate)") {
+    INFO("join + GROUP BY + sum_squares (compute batch aggregate)");
+    {
         static const double expected_ss[] = {75000.0, 41400.0, 48600.0, 56600.0, 65400.0};
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -582,7 +610,8 @@ TEST_CASE("integration::cpp::test_batch_join") {
         }
     }
 
-    INFO("join + GROUP BY + call_counter (verify batch call semantics)") {
+    INFO("join + GROUP BY + call_counter (verify batch call semantics)");
+    {
         consume_calls = 0;
         merge_calls = 0;
         finalize_calls = 0;
@@ -622,7 +651,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
 
     auto types = gen_data_chunk(0, dispatcher->resource()).types();
 
-    INFO("initialization") {
+    INFO("initialization");
+    {
         {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
@@ -638,7 +668,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
         }
     }
 
-    INFO("single row") {
+    INFO("single row");
+    {
         auto chunk = gen_data_chunk(1, dispatcher->resource());
         auto ins = components::sql::transform::maybe_wrap_with_catalog_resolve_table(
             dispatcher->resource(),
@@ -652,7 +683,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
         REQUIRE(cur->size() == 1);
     }
 
-    INFO("aggregate on single row") {
+    INFO("aggregate on single row");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT SUM(count + 0) AS s, COUNT(count_str) AS c )_"
@@ -663,7 +695,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
         REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 1);
     }
 
-    INFO("GROUP BY on single row") {
+    INFO("GROUP BY on single row");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT count, SUM(count + 0) AS s )_"
@@ -676,7 +709,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
         REQUIRE(cur->chunks().front().data[1].data<int64_t>()[0] == 1);
     }
 
-    INFO("WHERE that filters everything") {
+    INFO("WHERE that filters everything");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            R"_(SELECT * FROM TestDatabase.TestCollection )_"
@@ -685,7 +719,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
         REQUIRE(cur->size() == 0);
     }
 
-    INFO("GROUP BY with HAVING that filters everything") {
+    INFO("GROUP BY with HAVING that filters everything");
+    {
         // SUM(count + 0) forces compute path
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -697,7 +732,8 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
         REQUIRE(cur->size() == 0);
     }
 
-    INFO("multiple aggregates in single query") {
+    INFO("multiple aggregates in single query");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             session,
@@ -744,14 +780,16 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         REQUIRE(cur->size() == row_count);
     }
 
-    INFO("SELECT * returns every row across chunk boundaries") {
+    INFO("SELECT * returns every row across chunk boundaries");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == row_count);
     }
 
-    INFO("COUNT aggregates across chunk boundaries") {
+    INFO("COUNT aggregates across chunk boundaries");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
@@ -759,14 +797,16 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         REQUIRE(cur->value(0, 0).value<uint64_t>() == row_count);
     }
 
-    INFO("WHERE filter preserving all rows") {
+    INFO("WHERE filter preserving all rows");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT count FROM TestDatabase.TestCollection WHERE count >= 0;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == row_count);
     }
 
-    INFO("WHERE filter that crosses the first chunk boundary") {
+    INFO("WHERE filter that crosses the first chunk boundary");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, "SELECT count FROM TestDatabase.TestCollection WHERE count >= 1000;");
@@ -774,7 +814,8 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         REQUIRE(cur->size() == (row_count > 1000 ? row_count - 1000 : 0));
     }
 
-    INFO("ORDER BY + LIMIT pulls the smallest rows regardless of chunking") {
+    INFO("ORDER BY + LIMIT pulls the smallest rows regardless of chunking");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT count FROM TestDatabase.TestCollection "
@@ -786,7 +827,8 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         }
     }
 
-    INFO("SUM aggregates across chunk boundaries") {
+    INFO("SUM aggregates across chunk boundaries");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT SUM(count + 0) AS s FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
@@ -795,7 +837,8 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         REQUIRE(cur->value(0, 0).value<int64_t>() == expected);
     }
 
-    INFO("ORDER BY without LIMIT emits sorted output across chunk boundaries") {
+    INFO("ORDER BY without LIMIT emits sorted output across chunk boundaries");
+    {
         auto session = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(session, "SELECT count FROM TestDatabase.TestCollection ORDER BY count ASC;");
@@ -808,7 +851,8 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         }
     }
 
-    INFO("GROUP BY with many groups splits across chunks") {
+    INFO("GROUP BY with many groups splits across chunks");
+    {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT count, COUNT(name) AS cnt FROM TestDatabase.TestCollection "
@@ -821,7 +865,8 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         }
     }
 
-    INFO("DELETE across chunk boundaries removes every matching row") {
+    INFO("DELETE across chunk boundaries removes every matching row");
+    {
         auto session = otterbrix::session_id_t();
         auto del = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count >= 1000;");
         REQUIRE(del->is_success());

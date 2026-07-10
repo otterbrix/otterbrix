@@ -1,4 +1,5 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/compute/function.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -667,7 +668,7 @@ TEST_CASE("optimizer::scalar_fold_double") {
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<double>() == Approx(4.0));
+    REQUIRE(params->parameter(new_id).value<double>() == Catch::Approx(4.0));
 }
 
 // ================================================================
@@ -693,7 +694,7 @@ TEST_CASE("optimizer::scalar_fold_mixed_types") {
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<double>() == Approx(7.5));
+    REQUIRE(params->parameter(new_id).value<double>() == Catch::Approx(7.5));
 }
 
 // ================================================================

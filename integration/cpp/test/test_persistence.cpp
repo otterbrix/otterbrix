@@ -1,6 +1,6 @@
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <filesystem>
 #include <set>
@@ -23,7 +23,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_mixed_batch");
     test_clear_directory(config);
 
-    INFO("phase 1: insert two batches (no checkpoint)") {
+    INFO("phase 1: insert two batches (no checkpoint)");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -70,7 +71,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
     }
 
-    INFO("phase 2: restart — all 100 rows from WAL") {
+    INFO("phase 2: restart — all 100 rows from WAL");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -88,7 +90,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_multi_type") {
 
     constexpr int kDocuments = 50;
 
-    INFO("phase 1: create table with multiple types, insert") {
+    INFO("phase 1: create table with multiple types, insert");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -121,7 +124,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_multi_type") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kDocuments);
     }
 
-    INFO("phase 2: restart and verify all types recovered from WAL") {
+    INFO("phase 2: restart and verify all types recovered from WAL");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -140,7 +144,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_not_null");
     test_clear_directory(config);
 
-    INFO("phase 1: create table with NOT NULL, insert valid data") {
+    INFO("phase 1: create table with NOT NULL, insert valid data");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -170,7 +175,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
     }
 
-    INFO("phase 2: restart and verify data + NOT NULL constraint enforced") {
+    INFO("phase 2: restart and verify data + NOT NULL constraint enforced");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -208,7 +214,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_dml_cycle");
     test_clear_directory(config);
 
-    INFO("phase 1: insert, delete, update (no checkpoint)") {
+    INFO("phase 1: insert, delete, update (no checkpoint)");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -263,7 +270,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 0);
     }
 
-    INFO("phase 2: restart and verify full DML cycle survived WAL recovery") {
+    INFO("phase 2: restart and verify full DML cycle survived WAL recovery");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -285,7 +293,8 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/default_application");
     test_clear_directory(config);
 
-    INFO("verify DEFAULT values are applied during INSERT within a single session") {
+    INFO("verify DEFAULT values are applied during INSERT within a single session");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -354,7 +363,8 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/partial_insert_wal");
     test_clear_directory(config);
 
-    INFO("phase 1: insert with consistent partial columns (only name)") {
+    INFO("phase 1: insert with consistent partial columns (only name)");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -390,7 +400,8 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
     }
 
-    INFO("phase 2: restart — WAL replay with the full post-default chunk") {
+    INFO("phase 2: restart — WAL replay with the full post-default chunk");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -411,7 +422,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_not_null_default");
     test_clear_directory(config);
 
-    INFO("phase 1: create table with NOT NULL + DEFAULT, test enforcement + defaults") {
+    INFO("phase 1: create table with NOT NULL + DEFAULT, test enforcement + defaults");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -454,7 +466,8 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
     }
 
-    INFO("phase 2: restart and verify NOT NULL + DEFAULT constraints") {
+    INFO("phase 2: restart and verify NOT NULL + DEFAULT constraints");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -491,7 +504,8 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/partial_two_cols_wal");
     test_clear_directory(config);
 
-    INFO("phase 1: insert providing 2 of 3 columns (consistent partial)") {
+    INFO("phase 1: insert providing 2 of 3 columns (consistent partial)");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -524,7 +538,8 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 3);
     }
 
-    INFO("phase 2: restart — 2-column WAL records replayed consistently") {
+    INFO("phase 2: restart — 2-column WAL records replayed consistently");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -555,7 +570,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_schema_growth_wal");
     test_clear_directory(config);
 
-    INFO("phase 1: computing table, two INSERTs growing the schema, WAL ON") {
+    INFO("phase 1: computing table, two INSERTs growing the schema, WAL ON");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -604,7 +620,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 100;", 1);
     }
 
-    INFO("phase 2: restart — PHYSICAL_ADD_COLUMN replay reconstructs the grown schema") {
+    INFO("phase 2: restart — PHYSICAL_ADD_COLUMN replay reconstructs the grown schema");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -633,7 +650,8 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/double_restart");
     test_clear_directory(config);
 
-    INFO("phase 1: create table, insert first 50 rows") {
+    INFO("phase 1: create table, insert first 50 rows");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -665,7 +683,8 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
     }
 
-    INFO("phase 2: first restart, verify, insert 50 more rows") {
+    INFO("phase 2: first restart, verify, insert 50 more rows");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -690,7 +709,8 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
     }
 
-    INFO("phase 3: second restart, verify all 100 rows accumulated") {
+    INFO("phase 3: second restart, verify all 100 rows accumulated");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -710,7 +730,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_basic");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table, insert 50 rows, checkpoint") {
+    INFO("phase 1: create DISK table, insert 50 rows, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -750,7 +771,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
         }
     }
 
-    INFO("phase 2: restart and verify 50 rows loaded from table.otbx") {
+    INFO("phase 2: restart and verify 50 rows loaded from table.otbx");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -765,7 +787,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_update");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table, insert, update, delete, checkpoint") {
+    INFO("phase 1: create DISK table, insert, update, delete, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -824,7 +847,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
         }
     }
 
-    INFO("phase 2: restart and verify DML changes survived checkpoint") {
+    INFO("phase 2: restart and verify DML changes survived checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -841,7 +865,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_plus_wal");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table, insert 50, checkpoint, insert 50 more (no second checkpoint)") {
+    INFO("phase 1: create DISK table, insert 50, checkpoint, insert 50 more (no second checkpoint)");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -894,7 +919,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
     }
 
-    INFO("phase 2: restart — 50 from table.otbx + 50 from WAL") {
+    INFO("phase 2: restart — 50 from table.otbx + 50 from WAL");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -914,7 +940,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_partial_insert");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table with 3 cols, partial INSERT, checkpoint") {
+    INFO("phase 1: create DISK table with 3 cols, partial INSERT, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -966,7 +993,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
         }
     }
 
-    INFO("phase 2: restart and verify partial inserts survived") {
+    INFO("phase 2: restart and verify partial inserts survived");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -983,7 +1011,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_not_null_default");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table with NOT NULL + DEFAULT, test enforcement") {
+    INFO("phase 1: create DISK table with NOT NULL + DEFAULT, test enforcement");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1041,7 +1070,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
         }
     }
 
-    INFO("phase 2: restart and verify constraints + defaults persisted") {
+    INFO("phase 2: restart and verify constraints + defaults persisted");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1056,7 +1086,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_wal_only");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table, insert 50 rows, NO checkpoint") {
+    INFO("phase 1: create DISK table, insert 50 rows, NO checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1089,7 +1120,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
         // No CHECKPOINT — all data in WAL only
     }
 
-    INFO("phase 2: restart — verify WAL recovery for DISK table") {
+    INFO("phase 2: restart — verify WAL recovery for DISK table");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1104,7 +1136,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_double_restart");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table, insert 50 rows, checkpoint") {
+    INFO("phase 1: create DISK table, insert 50 rows, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1140,7 +1173,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
         }
     }
 
-    INFO("phase 2: first restart, verify, insert 50 more, checkpoint") {
+    INFO("phase 2: first restart, verify, insert 50 more, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1167,7 +1201,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
         }
     }
 
-    INFO("phase 3: second restart, verify all 100 rows") {
+    INFO("phase 3: second restart, verify all 100 rows");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1183,7 +1218,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_dml_cycle");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table, INSERT 100, DELETE 10, UPDATE 1, checkpoint") {
+    INFO("phase 1: create DISK table, INSERT 100, DELETE 10, UPDATE 1, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1243,7 +1279,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
         }
     }
 
-    INFO("phase 2: restart and verify final state") {
+    INFO("phase 2: restart and verify final state");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1260,7 +1297,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_drop_table");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table, insert, checkpoint, DROP TABLE, checkpoint") {
+    INFO("phase 1: create DISK table, insert, checkpoint, DROP TABLE, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1309,7 +1347,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
         }
     }
 
-    INFO("phase 2: restart — table must be gone, re-create must succeed") {
+    INFO("phase 2: restart — table must be gone, re-create must succeed");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1480,7 +1519,8 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
     auto* dispatcher = space.dispatcher();
 
     std::set<std::filesystem::path> baseline_files;
-    INFO("setup: DISK table with rows, checkpointed so its payload file exists") {
+    INFO("setup: DISK table with rows, checkpointed so its payload file exists");
+    {
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
@@ -1522,7 +1562,8 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
     }
     REQUIRE_FALSE(victim_files.empty());
 
-    INFO("BEGIN; DROP TABLE; same-session SELECT fails to resolve; ROLLBACK — one shared session") {
+    INFO("BEGIN; DROP TABLE; same-session SELECT fails to resolve; ROLLBACK — one shared session");
+    {
         auto session = otterbrix::session_id_t();
         auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
         REQUIRE(begin_cur->is_success());
@@ -1539,12 +1580,14 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
         REQUIRE(rollback_cur->is_success());
     }
 
-    INFO("after ROLLBACK: a fresh session sees the table alive with all rows") {
+    INFO("after ROLLBACK: a fresh session sees the table alive with all rows");
+    {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.DropVictim;", 3);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.DropVictim WHERE count = 20;", 1);
     }
 
-    INFO("after ROLLBACK: the storage payload file was never dropped") {
+    INFO("after ROLLBACK: the storage payload file was never dropped");
+    {
         // The deferred drop_storage only runs at COMMIT; an aborted DROP must
         // leave the DropVictim payload file intact (and the catalog files too).
         auto after_rollback_files = scan_otbx_files(config.disk.path);
@@ -1557,7 +1600,8 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
         }
     }
 
-    INFO("BEGIN; DROP TABLE; COMMIT — the deferred drop runs at commit time") {
+    INFO("BEGIN; DROP TABLE; COMMIT — the deferred drop runs at commit time");
+    {
         auto session = otterbrix::session_id_t();
         auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
         REQUIRE(begin_cur->is_success());
@@ -1569,7 +1613,8 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
         REQUIRE(commit_cur->is_success());
     }
 
-    INFO("after COMMIT: the table is gone and its storage payload file is removed") {
+    INFO("after COMMIT: the table is gone and its storage payload file is removed");
+    {
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.DropVictim;");
@@ -1592,7 +1637,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_add_column");
     test_clear_directory(config);
 
-    INFO("phase 1: create DISK table, insert, checkpoint, ADD COLUMN, insert, checkpoint") {
+    INFO("phase 1: create DISK table, insert, checkpoint, ADD COLUMN, insert, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1652,7 +1698,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
         }
     }
 
-    INFO("phase 2: restart — schema change and new rows must survive") {
+    INFO("phase 2: restart — schema change and new rows must survive");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1706,7 +1753,8 @@ TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_in
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_keeps_committed_deletes");
     test_clear_directory(config);
 
-    INFO("phase 1: WAL-backed table, INSERT 100, DELETE 50, CHECKPOINT") {
+    INFO("phase 1: WAL-backed table, INSERT 100, DELETE 50, CHECKPOINT");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1751,7 +1799,8 @@ TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_in
         }
     }
 
-    INFO("phase 2: REOPEN — committed deletes MUST stay deleted (no resurrection)") {
+    INFO("phase 2: REOPEN — committed deletes MUST stay deleted (no resurrection)");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1771,7 +1820,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
         test_create_config("/tmp/otterbrix/integration/test_persistence/disk_index_mixed_ops_checkpoint_restart");
     test_clear_directory(config);
 
-    INFO("phase 1: create disk table + index, apply mixed DML, checkpoint") {
+    INFO("phase 1: create disk table + index, apply mixed DML, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1834,7 +1884,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
         }
     }
 
-    INFO("phase 2: restart and verify index-backed predicates remain correct") {
+    INFO("phase 2: restart and verify index-backed predicates remain correct");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1853,7 +1904,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_chec
     const std::string long_a(220, 'a');
     const std::string long_b(220, 'b');
 
-    INFO("phase 1: insert long keys and checkpoint") {
+    INFO("phase 1: insert long keys and checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1891,7 +1943,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_chec
         }
     }
 
-    INFO("phase 2: restart and verify long-key lookup") {
+    INFO("phase 2: restart and verify long-key lookup");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1905,7 +1958,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_index_massive_checkpoint_cycle");
     test_clear_directory(config);
 
-    INFO("phase 1: many batches with periodic checkpoint") {
+    INFO("phase 1: many batches with periodic checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1953,7 +2007,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 999;", 1);
     }
 
-    INFO("phase 2: restart and verify all data present") {
+    INFO("phase 2: restart and verify all data present");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -1972,7 +2027,8 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
         "/tmp/otterbrix/integration/test_persistence/index_recovery_phase4_catalog_driven_bootstrap");
     test_clear_directory(config);
 
-    INFO("phase 1: create users(id, email) + email index, insert 10 rows, dtor checkpoint") {
+    INFO("phase 1: create users(id, email) + email index, insert 10 rows, dtor checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -2013,7 +2069,8 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'missing@x';", 0);
     }
 
-    INFO("phase 2: restart — bootstrap rewires the email index from pg_index") {
+    INFO("phase 2: restart — bootstrap rewires the email index from pg_index");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -2077,7 +2134,8 @@ TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/set_timezone_survives_restart");
     test_clear_directory(config);
 
-    INFO("phase 1: SET TIMEZONE, then create + populate a table") {
+    INFO("phase 1: SET TIMEZONE, then create + populate a table");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -2111,7 +2169,8 @@ TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
     }
 
-    INFO("phase 2: restart — persistence recovered cleanly, SET TIMEZONE still works") {
+    INFO("phase 2: restart — persistence recovered cleanly, SET TIMEZONE still works");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -2149,7 +2208,8 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
         test_create_config("/tmp/otterbrix/integration/test_persistence/indexed_table_compact_survives_restart");
     test_clear_directory(config);
 
-    INFO("phase 1: disk table + index, insert, delete >30%, commit, checkpoint") {
+    INFO("phase 1: disk table + index, insert, delete >30%, commit, checkpoint");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -2209,7 +2269,8 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
         }
     }
 
-    INFO("phase 2: restart — bootstrap repopulate keeps index-path queries exact") {
+    INFO("phase 2: restart — bootstrap repopulate keeps index-path queries exact");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -2242,7 +2303,8 @@ TEST_CASE("integration::cpp::test_persistence::reopen_in_memory_reinsert_visible
     config.wal.on = false;
     test_clear_directory(config);
 
-    INFO("phase 1: create IN_MEMORY table + insert 100 rows") {
+    INFO("phase 1: create IN_MEMORY table + insert 100 rows");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
@@ -2271,7 +2333,8 @@ TEST_CASE("integration::cpp::test_persistence::reopen_in_memory_reinsert_visible
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
     }
 
-    INFO("phase 2: reopen, re-run setup + re-insert, the fresh rows must be visible") {
+    INFO("phase 2: reopen, re-run setup + re-insert, the fresh rows must be visible");
+    {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 

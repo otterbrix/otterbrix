@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/in_memory_block_manager.hpp>
 #include <components/table/storage/metadata_manager.hpp>

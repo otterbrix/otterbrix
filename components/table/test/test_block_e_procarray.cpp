@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <memory_resource>

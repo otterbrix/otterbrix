@@ -1,4 +1,4 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/table/column_state.hpp>
 #include <components/types/logical_value.hpp>

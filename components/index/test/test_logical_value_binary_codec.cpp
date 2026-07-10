@@ -1,4 +1,5 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/index/logical_value_binary_codec.hpp>
 #include <core/date/date_types.hpp>
@@ -97,7 +98,7 @@ TEST_CASE("logical_value_binary_codec: read_logical_value_as_view") {
         size_t pos = 0;
         auto pv = read_logical_value_as_view(encoded.data(), encoded.size(), pos);
         REQUIRE(pv.type() == physical_type::DOUBLE);
-        REQUIRE(pv.value<physical_type::DOUBLE>() == Approx(3.5));
+        REQUIRE(pv.value<physical_type::DOUBLE>() == Catch::Approx(3.5));
         REQUIRE(pos == encoded.size());
     }
 

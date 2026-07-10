@@ -1,4 +1,5 @@
-#include <catch2/catch.hpp>
+#include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/metadata_manager.hpp>
@@ -251,7 +252,7 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
                 REQUIRE(*name_val.value<std::string*>() == expected_name);
                 // DOUBLE
                 auto score_val = chunk.data[2].value(i);
-                REQUIRE(score_val.value<double>() == Approx(static_cast<double>(row) * 1.5));
+                REQUIRE(score_val.value<double>() == Catch::Approx(static_cast<double>(row) * 1.5));
             }
             scanned += chunk.size();
         });
@@ -730,7 +731,7 @@ TEST_CASE("checkpoint_load: DOUBLE column — constant compression") {
         uint64_t scanned = 0;
         loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                REQUIRE(chunk.data[0].get_value<double>(i) == Approx(CONSTANT_DOUBLE));
+                REQUIRE(chunk.data[0].get_value<double>(i) == Catch::Approx(CONSTANT_DOUBLE));
             }
             scanned += chunk.size();
         });

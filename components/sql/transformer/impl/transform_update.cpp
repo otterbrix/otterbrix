@@ -121,6 +121,36 @@ namespace components::sql::transform {
                                 return nullptr;
                             }
                         }
+                        // The calculate executor evaluates unary operators on its LEFT
+                        // operand, but a prefix operator parses with the operand on the
+                        // right; binary operators dereference both operands. Enforce
+                        // arity here — a missing operand used to reach the executor as
+                        // a null child and crash it.
+                        const bool is_unary = type == update_expr_type::sqr_root ||
+                                              type == update_expr_type::cube_root ||
+                                              type == update_expr_type::factorial ||
+                                              type == update_expr_type::abs || type == update_expr_type::NOT;
+                        if (is_unary) {
+                            if (!res->left() && res->right()) {
+                                res->left() = std::move(res->right());
+                                res->right() = nullptr;
+                            }
+                            if (!res->left() || res->right()) {
+                                error_ = core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{"operator '" + op +
+                                                         "' takes exactly one operand in UPDATE SET expression",
+                                                     resource_});
+                                return nullptr;
+                            }
+                        } else if (!res->left() || !res->right()) {
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"operator '" + op +
+                                                     "' requires two operands in UPDATE SET expression",
+                                                 resource_});
+                            return nullptr;
+                        }
                         return res;
                     }
                     default:

@@ -42,3 +42,36 @@ TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
         CHECK(cur->value(0, 0).value<int64_t>() == 18);
     }
 }
+
+// A prefix unary operator (-x, @ x, ~x) parses with a null lexpr; the update
+// executor dereferences its LEFT operand unconditionally and evaluates unary
+// ops on it, so these used to segfault at execution (and even well-formed
+// prefix spellings had the operand in the wrong slot). Unary operators route
+// the operand to the left slot; binary ones require both operands.
+TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unary_operand_arity");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE TABLE t.ua (x BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO t.ua (x) VALUES (9);")->is_success());
+
+    // '-' has no unary form in update_expr_type: clean error, not a null-deref.
+    CHECK_FALSE(exec("UPDATE t.ua SET x = -x;")->is_success());
+    CHECK_FALSE(exec("UPDATE t.ua SET x = +x;")->is_success());
+    // Genuinely unary operators work in prefix form.
+    REQUIRE(exec("UPDATE t.ua SET x = @ x;")->is_success());
+    {
+        auto cur = exec("SELECT x FROM t.ua;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->value(0, 0).value<int64_t>() == 9); // @9 = 9
+    }
+}

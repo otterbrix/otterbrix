@@ -107,3 +107,34 @@ TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
         CHECK(cur->value(1, 0).value<std::string_view>() == "ab");
     }
 }
+
+// UPDATE SET column = NULL hit the T_A_Const default arm: assert(false) in
+// Debug, an UNINITIALIZED parameter id in Release (garbage lookup, segfault).
+// The executor also had no NA cast kernel, so an NA-typed constant vector
+// crashed cast_vector; nulls are now written directly.
+TEST_CASE("integration::cpp::test_update::set_null") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_null");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE TABLE t.un (x BIGINT, y BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO t.un (x, y) VALUES (9, 1), (10, 2);")->is_success());
+
+    REQUIRE(exec("UPDATE t.un SET x = NULL WHERE y = 1;")->is_success());
+    {
+        auto cur = exec("SELECT x FROM t.un ORDER BY y;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->value(0, 0).is_null());
+        CHECK(cur->value(0, 1).value<int64_t>() == 10); // other row untouched
+    }
+    // Nested-element NULL writes have no NA cast kernel: clean transform error.
+    CHECK_FALSE(exec("UPDATE t.un SET x[1] = NULL;")->is_success());
+}

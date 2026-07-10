@@ -41,8 +41,17 @@ namespace components::sql::transform {
                         id = params->add_parameter(types::logical_value_t(resource_, float_value));
                         break;
                     }
-                    default:
-                        assert(false);
+                    default: {
+                        // NULL and any other literal kind (get_value maps T_Null to an
+                        // NA value; the old assert left `id` uninitialized in Release).
+                        auto res = get_value(resource_, node);
+                        if (res.has_error()) {
+                            error_ = res.error();
+                            return nullptr;
+                        }
+                        id = params->add_parameter(std::move(res.value()));
+                        break;
+                    }
                 }
                 return {new update_expr_get_const_value_t(id)};
             }
@@ -220,6 +229,15 @@ namespace components::sql::transform {
                     updates.emplace_back(new update_expr_set_t(expressions::key_t{resource_, res->name, side_t::left}));
                     updates.back()->left() = transform_update_expr(res->val, names, plan->parameters.get());
                 } else {
+                    // The set executor nulls whole columns for a NULL literal but has
+                    // no NA cast kernel for element writes — reject those here.
+                    if (nodeTag(res->val) == T_A_Const &&
+                        nodeTag(&pg_ptr_cast<A_Const>(res->val)->val) == T_Null) {
+                        error_ = core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"setting a nested element to NULL is not supported", resource_});
+                        return nullptr;
+                    }
                     std::pmr::vector<std::pmr::string> path{resource_};
                     path.emplace_back(std::pmr::string{res->name, resource_});
                     for (const auto& val : res->indirection->lst) {

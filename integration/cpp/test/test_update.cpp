@@ -1,0 +1,44 @@
+#include "test_config.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+#include <components/types/logical_value.hpp>
+
+// UPDATE SET used to dispatch operators by their FIRST character: '?' matched
+// no case and left a null expression that the executor dereferenced (segfault
+// in Release), '->' silently lowered to numeric subtraction, '!=' to
+// factorial. Unknown operators must error; arithmetic keeps working, including
+// operators that merely share a first character with a rejected one.
+TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_update/set_unknown_operators");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE TABLE t.u (x BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO t.u (x) VALUES (9);")->is_success());
+
+    CHECK_FALSE(exec("UPDATE t.u SET x = x ? 3;")->is_success());  // was a null-deref segfault
+    CHECK_FALSE(exec("UPDATE t.u SET x = x -> 3;")->is_success()); // was silent subtraction
+    CHECK_FALSE(exec("UPDATE t.u SET x = x != 3;")->is_success()); // was factorial
+    {
+        auto cur = exec("SELECT x FROM t.u;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->value(0, 0).value<int64_t>() == 9); // untouched by the rejects
+    }
+
+    REQUIRE(exec("UPDATE t.u SET x = x + 1;")->is_success());  // 10
+    REQUIRE(exec("UPDATE t.u SET x = x # 3;")->is_success());  // 10 XOR 3 = 9
+    REQUIRE(exec("UPDATE t.u SET x = x << 1;")->is_success()); // 18
+    {
+        auto cur = exec("SELECT x FROM t.u;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->value(0, 0).value<int64_t>() == 18);
+    }
+}

@@ -63,73 +63,71 @@ namespace components::sql::transform {
                 auto expr = pg_ptr_cast<A_Expr>(node);
                 switch (expr->kind) {
                     case AEXPR_OP: {
-                        update_expr_ptr res;
                         auto t = pg_ptr_cast<ResTarget>(expr->name->lst.front().data);
-                        //sqr_root,
-                        //cube_root,
-                        //// bitwise:
-                        //AND,
-                        //OR,
-                        //XOR,
-                        //NOT,
-                        switch (*t->name) {
-                            case '+':
-                                res = new update_expr_calculate_t(update_expr_type::add);
-                                break;
-                            case '-':
-                                res = new update_expr_calculate_t(update_expr_type::sub);
-                                break;
-                            case '*':
-                                res = new update_expr_calculate_t(update_expr_type::mult);
-                                break;
-                            case '/':
-                                res = new update_expr_calculate_t(update_expr_type::div);
-                                break;
-                            case '%':
-                                res = new update_expr_calculate_t(update_expr_type::mod);
-                                break;
-                            case '^':
-                                res = new update_expr_calculate_t(update_expr_type::exp);
-                                break;
-                            case '!':
-                                res = new update_expr_calculate_t(update_expr_type::factorial);
-                                break;
-                            case '@':
-                                res = new update_expr_calculate_t(update_expr_type::abs);
-                                break;
-                            case '<':
-                                res = new update_expr_calculate_t(update_expr_type::shift_left);
-                                break;
-                            case '>':
-                                res = new update_expr_calculate_t(update_expr_type::shift_right);
-                                break;
-                            case '~':
-                                res = new update_expr_calculate_t(update_expr_type::NOT);
-                                break;
-                            case '&':
-                                res = new update_expr_calculate_t(update_expr_type::AND);
-                                break;
-                            case '#':
-                                res = new update_expr_calculate_t(update_expr_type::XOR);
-                                break;
-                            case '|': {
-                                if (*std::next(t->name) == '/') {
-                                    res = new update_expr_calculate_t(update_expr_type::sqr_root);
-                                } else if (*std::next(t->name) == '|') {
-                                    res = new update_expr_calculate_t(update_expr_type::cube_root);
-                                } else {
-                                    res = new update_expr_calculate_t(update_expr_type::OR);
-                                }
-                                break;
+                        // Dispatch on the FULL operator name: a prefix match would
+                        // swallow multi-char operators that merely share a first
+                        // character with an arithmetic one (e.g. jsonb '->', '#>').
+                        const std::string op{t->name};
+                        update_expr_type type;
+                        if (op == "+") {
+                            type = update_expr_type::add;
+                        } else if (op == "-") {
+                            type = update_expr_type::sub;
+                        } else if (op == "*") {
+                            type = update_expr_type::mult;
+                        } else if (op == "/") {
+                            type = update_expr_type::div;
+                        } else if (op == "%") {
+                            type = update_expr_type::mod;
+                        } else if (op == "^") {
+                            type = update_expr_type::exp;
+                        } else if (op == "!") {
+                            type = update_expr_type::factorial;
+                        } else if (op == "@") {
+                            type = update_expr_type::abs;
+                        } else if (op == "<<") {
+                            type = update_expr_type::shift_left;
+                        } else if (op == ">>") {
+                            type = update_expr_type::shift_right;
+                        } else if (op == "~") {
+                            type = update_expr_type::NOT;
+                        } else if (op == "&") {
+                            type = update_expr_type::AND;
+                        } else if (op == "|") {
+                            type = update_expr_type::OR;
+                        } else if (op == "#") {
+                            type = update_expr_type::XOR;
+                        } else if (op == "|/") {
+                            type = update_expr_type::sqr_root;
+                        } else if (op == "||/") {
+                            type = update_expr_type::cube_root;
+                        } else {
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"unsupported operator '" + op + "' in UPDATE SET expression",
+                                                 resource_});
+                            return nullptr;
+                        }
+                        update_expr_ptr res{new update_expr_calculate_t(type)};
+                        if (expr->lexpr) {
+                            res->left() = transform_update_expr(expr->lexpr, names, params);
+                            if (has_error()) {
+                                return nullptr;
                             }
                         }
-                        assert(res);
-                        res->left() = transform_update_expr(expr->lexpr, names, params);
-                        res->right() = transform_update_expr(expr->rexpr, names, params);
+                        if (expr->rexpr) {
+                            res->right() = transform_update_expr(expr->rexpr, names, params);
+                            if (has_error()) {
+                                return nullptr;
+                            }
+                        }
                         return res;
                     }
                     default:
-                        assert(false);
+                        error_ = core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"unsupported expression kind in UPDATE SET expression", resource_});
+                        return nullptr;
                 }
             }
             case T_A_Indirection: {
@@ -196,6 +194,9 @@ namespace components::sql::transform {
                     }
                     updates.emplace_back(new update_expr_set_t(expressions::key_t{std::move(path), side_t::left}));
                     updates.back()->left() = transform_update_expr(res->val, names, plan->parameters.get());
+                }
+                if (has_error()) {
+                    return nullptr;
                 }
             }
         }

@@ -15,6 +15,17 @@ namespace components::logical_plan {
         core::parameter_id_t id;
     };
 
+    // EXPLAIN mode for the whole plan. `plan` renders the physical plan without executing;
+    // `analyze` executes with per-operator instrumentation and renders the annotated plan.
+    // Set by the transformer's T_ExplainStmt case; read by the executor. Scalar enum, so it
+    // copies trivially (no pmr re-anchor).
+    enum class explain_type
+    {
+        none,
+        plan,
+        analyze
+    };
+
     struct execution_plan_t {
         // default is null_memory_resource to make it non-usable, but also be able to send over actor-zeta
         explicit execution_plan_t(std::pmr::memory_resource* resource);
@@ -32,6 +43,10 @@ namespace components::logical_plan {
 
         // hold various parameters for the whole execution_plan_t, including subquery mapping
         parameter_node_ptr parameters;
+
+        // EXPLAIN / EXPLAIN ANALYZE mode (none for a normal query). Only the main (top-level)
+        // plan carries it; flattened sub-queries are built fresh and stay `none`.
+        explain_type explain{explain_type::none};
     };
 
 } // namespace components::logical_plan

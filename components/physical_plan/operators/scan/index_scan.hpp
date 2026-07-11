@@ -20,7 +20,6 @@ namespace components::operators {
                    components::logical_plan::index_type preferred_index_type,
                    logical_plan::limit_t limit);
 
-        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const expressions::key_t& key() const { return key_; }
         const types::logical_value_t& value() const { return value_; }
         expressions::compare_type compare_type() const { return compare_type_; }
@@ -62,6 +61,8 @@ namespace components::operators {
         }
 
     private:
+        void explain_impl(const explain_sink& s) const override { explain_begin(s, table_oid_); s.end(); }
+
         // Windowing core: run the one-shot index search (txn-aware visibility), store the matched
         // ids in row_ids_vec_, and compute the OFFSET/LIMIT window [pos_=start_, end_). If there is
         // no index service or the search matched nothing, leaves an empty window.

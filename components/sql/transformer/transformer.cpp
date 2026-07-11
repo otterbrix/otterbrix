@@ -99,6 +99,9 @@ namespace components::sql::transform {
             case T_DeleteStmt:
                 log_node = transform_delete(pg_cast<DeleteStmt>(node), plan);
                 break;
+            case T_ExplainStmt:
+                log_node = transform_explain(pg_cast<ExplainStmt>(node), plan);
+                break;
             case T_IndexStmt:
                 // TODO: CREATE INDEX needs the parent table resolved — pull
                 // (dbname, relname) out of IndexStmt.relation and wrap.
@@ -177,6 +180,43 @@ namespace components::sql::transform {
         }
 
         return log_node;
+    }
+
+    logical_plan::node_ptr transformer::transform_explain(ExplainStmt& node,
+                                                          logical_plan::execution_plan_t* plan) {
+        // EXPLAIN ANALYZE is signalled by an "analyze" DefElem in the options list. No style/format
+        // option is read from SQL — output formatting is a host C++ concern (executor's explain_render_).
+        bool is_analyze = false;
+        if (node.options) {
+            for (auto data : node.options->lst) {
+                auto* def = pg_ptr_cast<DefElem>(data.data);
+                if (def && def->defname && std::string_view{def->defname} == "analyze") {
+                    is_analyze = true;
+                    break;
+                }
+            }
+        }
+        // Only read/DML inner statements are supported — the renderer walks the physical plan the
+        // transformer already lowers for these; DDL/other inners are rejected.
+        if (!node.query) {
+            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                   std::pmr::string{"EXPLAIN requires a statement", resource_});
+            return nullptr;
+        }
+        switch (node.query->type) {
+            case T_SelectStmt:
+            case T_InsertStmt:
+            case T_UpdateStmt:
+            case T_DeleteStmt:
+                break;
+            default:
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"EXPLAIN of this statement is not supported", resource_});
+                return nullptr;
+        }
+        plan->explain = is_analyze ? logical_plan::explain_type::analyze : logical_plan::explain_type::plan;
+        // Lower the inner statement normally so sub_queries.back() stays the real query node.
+        return transform(*node.query, plan);
     }
 
     bool transformer::has_error() const noexcept { return error_.contains_error(); }

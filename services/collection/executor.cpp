@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/context/execution_context.hpp>
@@ -87,6 +88,7 @@ namespace services::collection::executor {
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<executor_t, &executor_t::execute_plan_full>,
             actor_zeta::msg_id<executor_t, &executor_t::register_udf>,
+            actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>,
             actor_zeta::msg_id<executor_t, &executor_t::poke_msg>,
         };
 
@@ -183,6 +185,10 @@ namespace services::collection::executor {
                 co_await actor_zeta::dispatch(this, &executor_t::register_udf, msg);
                 break;
             }
+            case actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>: {
+                co_await actor_zeta::dispatch(this, &executor_t::set_explain_renderer, msg);
+                break;
+            }
             case actor_zeta::msg_id<executor_t, &executor_t::poke_msg>: {
                 co_await actor_zeta::dispatch(this, &executor_t::poke_msg, msg);
                 break;
@@ -264,10 +270,41 @@ namespace services::collection::executor {
 
         node->set_as_root();
 
+        // === EXPLAIN / EXPLAIN ANALYZE ===
+        // Stable handle to the physical root before traverse_plan_ moves `node`: operator left_/
+        // right_ are frozen after create_plan, so explain_root walks the exact instances the
+        // pipeline drives (and, for ANALYZE, the counters they accumulate). Snapshot oid->name now,
+        // BEFORE context_storage is moved into traverse_plan_ below.
+        components::operators::operator_ptr explain_root =
+            plan.explain != components::logical_plan::explain_type::none ? node : nullptr;
+        explain_name_map_t explain_names{resource()};
+        if (explain_root) {
+            // Pre-move name pass: drive explain(sink) with the collector while context_storage is
+            // still alive (it is moved into traverse_plan_ below).
+            explain_name_collector nc{context_storage, explain_names};
+            explain_root->explain(nc.sink());
+        }
+        if (plan.explain == components::logical_plan::explain_type::plan) {
+            // Plan-only EXPLAIN: build + render the physical tree WITHOUT executing.
+            explain_ir_builder b{resource(), explain_names};
+            explain_root->explain(b.sink());
+            co_return execute_result_t{explain_render_(resource(), b.release(), false)};
+        }
+
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
         plan_data.limit = limit;
+        plan_data.analyze = (plan.explain == components::logical_plan::explain_type::analyze);
 
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data, lowest_active_start_time);
+
+        // EXPLAIN ANALYZE: the query just ran with instrumentation; substitute the rendered plan
+        // for the data cursor (only on success — an error stays an error cursor so the tail aborts).
+        // The pipeline left the counters on explain_root's instances; build the IR post-exec now.
+        if (plan.explain == components::logical_plan::explain_type::analyze && result.cursor->is_success()) {
+            explain_ir_builder b{resource(), explain_names};
+            explain_root->explain(b.sink());
+            result.cursor = explain_render_(resource(), b.release(), true);
+        }
 
         // Raw pipeline result. Three cases, distinguished by the vector state
         // and resolved by execute_plan_full's accumulate/commit tail:
@@ -555,8 +592,14 @@ namespace services::collection::executor {
             original_type == node_type::create_index_t || original_type == node_type::drop_t ||
             original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
             original_type == node_type::create_matview_t;
-        const bool needs_dml_txn = original_type == node_type::insert_t || original_type == node_type::update_t ||
-                                   original_type == node_type::delete_t;
+        // Plan-only EXPLAIN of DML must be a true no-op: gate needs_dml_txn so the statement flows
+        // through the read-only releases_resolve_txn path (like a SELECT) instead of running an
+        // empty commit pipeline (WAL marker + ProcArray barrier for a zero-change txn). EXPLAIN
+        // ANALYZE keeps needs_dml_txn true → commits normally.
+        const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
+        const bool needs_dml_txn = !is_plan_only_explain &&
+                                   (original_type == node_type::insert_t || original_type == node_type::update_t ||
+                                    original_type == node_type::delete_t);
         // SET TIMEZONE and VACUUM are append/delete-shaped catalog writers that
         // are neither DDL nor DML but still produce committable pg_catalog
         // ranges (SET TIMEZONE → pg_settings append; VACUUM → pg_computed_column
@@ -1823,6 +1866,15 @@ namespace services::collection::executor {
         co_return std::make_unique<function_result_t>(std::move(res));
     }
 
+    executor_t::unique_future<bool> executor_t::set_explain_renderer(explain_render_fn fn) {
+        // Store the host-supplied renderer in THIS executor's own copy (a POD fn-pointer, no shared
+        // state). A null fn keeps the current renderer (never clears to a null callable).
+        if (fn != nullptr) {
+            explain_render_ = fn;
+        }
+        co_return true;
+    }
+
     plan_t executor_t::traverse_plan_(components::operators::operator_ptr&& plan,
                                       const components::logical_plan::storage_parameters& parameters,
                                       services::context_storage_t&& context_storage) {
@@ -1862,6 +1914,9 @@ namespace services::collection::executor {
             chain.push_back(op);
         }
         std::reverse(chain.begin(), chain.end());
+
+        // EXPLAIN ANALYZE flag for this invocation (zero clock sampling when off).
+        const bool analyze = ctx->analyze;
 
         // Everything below the bottom-most NOT-yet-executed operator is a materialized
         // sub-plan: traverse_plan_ splits a join's build AND probe sides into their own
@@ -1905,6 +1960,18 @@ namespace services::collection::executor {
         const bool sourceless_sink_root = start == 0 && chain.front()->role() != ops::pipeline_role::source;
         const std::size_t op_start = sourceless_sink_root ? 1 : ((start == 0) ? 1 : start);
 
+        // EXPLAIN ANALYZE loops: bump ONLY the ops this invocation drives — chain.front() when it
+        // owns the source / sourceless bottom (start==0), plus chain[op_start..). Not chain[0..start-1]
+        // (already-materialized boundary + its drained source), or a single-pass join shows loops=2.
+        if (analyze) {
+            if (start == 0) {
+                chain.front()->bump_analyze_loop();
+            }
+            for (std::size_t i = op_start; i < chain.size(); ++i) {
+                chain[i]->bump_analyze_loop();
+            }
+        }
+
         // A producing sourceless bottom (recursive_cte) whose ancestors are REAL query
         // operators (sort/select/match) must stream its rows UP through them. The
         // discriminator is "not all-sink": if EVERY op on the chain is a sink it is an
@@ -1932,11 +1999,20 @@ namespace services::collection::executor {
             stage.push_back(std::move(batch));
             for (std::size_t i = op_start; i < chain.size(); ++i) {
                 ops::chunks_vector_t produced{resource()};
+                const auto t0 =
+                    analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 for (auto& in : stage) {
                     auto err = chain[i]->push(ctx, std::move(in), produced);
                     if (err.contains_error()) {
                         return err;
                     }
+                }
+                if (analyze) {
+                    uint64_t rows = 0;
+                    for (const auto& c : produced) {
+                        rows += c.size();
+                    }
+                    chain[i]->record_analyze(rows, std::chrono::steady_clock::now() - t0);
                 }
                 stage = std::move(produced);
             }
@@ -2020,6 +2096,8 @@ namespace services::collection::executor {
         } else if (start == 0) {
             ops::operator_t* source = chain.front();
             while (true) {
+                const auto t0 =
+                    analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 auto next = co_await source->source_next(ctx);
                 if (next.has_error()) {
                     co_return next.convert_error<ops::chunks_vector_t>();
@@ -2028,6 +2106,10 @@ namespace services::collection::executor {
                 if (batch.data.empty()) {
                     break; // 0-column drain sentinel (a schema'd 0-row batch is real input, e.g.
                            // the empty-guard a scalar aggregate needs to emit COUNT=0)
+                }
+                if (analyze) {
+                    // source emits a single data_chunk_t per fetch (not a chunks_vector_t).
+                    source->record_analyze(batch.size(), std::chrono::steady_clock::now() - t0);
                 }
                 auto err = pump_one(std::move(batch));
                 if (err.contains_error()) {
@@ -2061,20 +2143,37 @@ namespace services::collection::executor {
         // since i < j is processed first). Streaming operators finalize to a no-op.
         for (std::size_t i = op_start; i < chain.size(); ++i) {
             ops::chunks_vector_t fin{resource()};
+            const auto t0 = analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             auto err = chain[i]->finalize(ctx, fin);
             if (err.contains_error()) {
                 co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+            }
+            if (analyze) {
+                uint64_t rows = 0;
+                for (const auto& c : fin) {
+                    rows += c.size();
+                }
+                chain[i]->record_analyze(rows, std::chrono::steady_clock::now() - t0);
             }
             for (auto& c : fin) {
                 ops::chunks_vector_t stage{resource()};
                 stage.push_back(std::move(c));
                 for (std::size_t j = i + 1; j < chain.size(); ++j) {
                     ops::chunks_vector_t produced{resource()};
+                    const auto tj =
+                        analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                     for (auto& in : stage) {
                         auto e = chain[j]->push(ctx, std::move(in), produced);
                         if (e.contains_error()) {
                             co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(e));
                         }
+                    }
+                    if (analyze) {
+                        uint64_t rows = 0;
+                        for (const auto& pc : produced) {
+                            rows += pc.size();
+                        }
+                        chain[j]->record_analyze(rows, std::chrono::steady_clock::now() - tj);
                     }
                     stage = std::move(produced);
                 }
@@ -2111,9 +2210,19 @@ namespace services::collection::executor {
             if (!op->needs_async_finalize()) {
                 continue;
             }
+            const auto t0 = analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             co_await op->await_async_and_resume(ctx);
             if (op->has_error()) {
                 co_return core::result_wrapper_t<ops::chunks_vector_t>(op->get_error());
+            }
+            if (analyze) {
+                uint64_t rows = 0;
+                if (op->output()) {
+                    for (const auto& c : op->output()->chunks()) {
+                        rows += c.size();
+                    }
+                }
+                op->record_analyze(rows, std::chrono::steady_clock::now() - t0);
             }
         }
 
@@ -2268,6 +2377,8 @@ namespace services::collection::executor {
             // run a child sub-plan through this SAME streaming executor reaches us
             // via ctx->runner->run_subplan (intra-actor; see subplan_runner_t).
             pipeline_context.runner = this;
+            // EXPLAIN ANALYZE: enable per-operator instrumentation in execute_pipeline.
+            pipeline_context.analyze = plan_data.analyze;
 
             // Prepare the operator tree (connects children in aggregation, etc.)
             plan->prepare();

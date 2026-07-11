@@ -23,7 +23,6 @@ namespace components::operators {
                       logical_plan::limit_t limit,
                       std::vector<size_t> projected_cols = {});
 
-        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const logical_plan::limit_t& limit() const { return limit_; }
         // Storage-chunk column indices the scan projects (empty ⇒ all columns), so a downstream
         // group/select sees the SAME projected column layout it expects.
@@ -60,6 +59,8 @@ namespace components::operators {
         }
 
     private:
+        void explain_impl(const explain_sink& s) const override { explain_begin(s, table_oid_); s.end(); }
+
         // Projected empty chunk (drained sentinel) carrying the table schema, so a downstream OUTER
         // join can NULL-pad and a scalar aggregate can emit COUNT=0.
         vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);

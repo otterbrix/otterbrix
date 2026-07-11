@@ -25,8 +25,6 @@ namespace components::operators {
                            std::vector<size_t> projected_cols,
                            pushed_aggregate_spec_t spec);
 
-        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
-
         // role()==source drives the streaming push/finalize pipeline. The FIRST
         // source_next call lowers the WHERE (a storage_types await only when a real
         // predicate needs typing), sends ONE storage_reduce, and stashes the reply;
@@ -57,6 +55,8 @@ namespace components::operators {
         [[nodiscard]] pushed_aggregate_spec_t open_spec();
 
     private:
+        void explain_impl(const explain_sink& s) const override { explain_begin(s, table_oid_); s.end(); }
+
         components::catalog::oid_t table_oid_;
         expressions::compare_expression_ptr expression_;
         std::vector<size_t> projected_cols_;

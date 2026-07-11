@@ -111,6 +111,9 @@ namespace services::dispatcher {
         unique_future<bool> unregister_udf(components::session::session_id_t session,
                                            std::string function_name,
                                            std::pmr::vector<components::types::complex_logical_type> inputs);
+        // Fan the host-supplied EXPLAIN renderer out to every executor (each keeps its own POD
+        // fn-pointer copy — no shared state, Rule 10). Pool-admin op, like register_udf.
+        unique_future<bool> set_explain_renderer(services::collection::explain_render_fn fn);
 
         // ===== txn-state mailbox service =====
         // The ONLY way any other actor (executors, the txn operators running
@@ -167,6 +170,7 @@ namespace services::dispatcher {
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::register_udf,
                                                             &manager_dispatcher_t::unregister_udf,
+                                                            &manager_dispatcher_t::set_explain_renderer,
                                                             &manager_dispatcher_t::txn_begin_session_msg,
                                                             &manager_dispatcher_t::txn_mark_explicit_msg,
                                                             &manager_dispatcher_t::txn_commit_drain_msg,

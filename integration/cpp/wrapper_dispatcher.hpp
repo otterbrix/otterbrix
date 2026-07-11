@@ -68,6 +68,10 @@ namespace otterbrix {
         auto add_parser_extension(components::sql::parser::parser_extension_t extension)
             -> core::result_wrapper_t<const components::sql::parser::parser_extension_t*>;
 
+        // Install a host EXPLAIN renderer for standard `EXPLAIN` / `EXPLAIN ANALYZE` output (fanned
+        // out to every executor). No SQL change — the same EXPLAIN yields the new renderer's output.
+        auto set_explain_renderer(services::collection::explain_render_fn fn) -> bool;
+
     private:
         std::pmr::memory_resource* resource_;
         services::dispatcher::manager_dispatcher_t* manager_dispatcher_;

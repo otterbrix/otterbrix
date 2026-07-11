@@ -88,6 +88,10 @@ namespace components::sql::transform {
         // return nullptr (see impl).
         logical_plan::node_ptr transform_transaction(TransactionStmt& node);
         logical_plan::node_ptr transform_set_timezone(VariableSetStmt& node);
+        // EXPLAIN / EXPLAIN ANALYZE: read the `analyze` option, restrict the inner to
+        // SELECT/INSERT/UPDATE/DELETE, stamp plan->explain, and lower the inner so sub_queries.back()
+        // stays the real query node. Output formatting is a host concern (executor's explain_render_).
+        logical_plan::node_ptr transform_explain(ExplainStmt& node, logical_plan::execution_plan_t* plan);
 
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key

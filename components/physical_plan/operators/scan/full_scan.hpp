@@ -31,7 +31,6 @@ namespace components::operators {
                   logical_plan::limit_t limit,
                   std::vector<size_t> projected_cols = {});
 
-        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const expressions::compare_expression_ptr& expression() const { return expression_; }
         const logical_plan::limit_t& limit() const { return limit_; }
         const std::vector<size_t>& projected_cols() const noexcept { return projected_cols_; }
@@ -70,6 +69,8 @@ namespace components::operators {
         }
 
     private:
+        void explain_impl(const explain_sink& s) const override { explain_begin(s, table_oid_); s.end(); }
+
         // Projected empty chunk (drained / short-circuit sentinel) carrying the table schema, so a
         // downstream OUTER join can NULL-pad and a scalar aggregate can emit COUNT=0.
         vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);

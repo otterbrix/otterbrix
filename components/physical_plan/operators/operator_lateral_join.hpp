@@ -50,6 +50,19 @@ namespace components::operators {
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
     private:
+        // EXPLAIN: outer_/inner_ are PRIVATE sub-plan roots (left()==right()==nullptr) — recurse into
+        // them here, else the walk would render this as a childless leaf.
+        void explain_impl(const explain_sink& s) const override {
+            explain_begin(s, catalog::INVALID_OID);
+            if (outer_) {
+                outer_->explain(s);
+            }
+            if (inner_) {
+                inner_->explain(s);
+            }
+            s.end();
+        }
+
         actor_zeta::unique_future<core::error_t> drive_(pipeline::context_t* ctx);
         static void reset_subtree(const operator_ptr& op);
 

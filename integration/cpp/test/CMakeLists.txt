@@ -7,6 +7,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_collection.cpp
         test_collection_logical_plan.cpp
         test_collection_sql.cpp
+        test_explain.cpp
         test_index.cpp
         test_insert.cpp
         test_wal_pool.cpp

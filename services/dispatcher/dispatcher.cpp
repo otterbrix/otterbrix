@@ -50,6 +50,7 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::execute_plan>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_udf>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_udf>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_explain_renderer>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_begin_session_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_mark_explicit_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_commit_drain_msg>,
@@ -271,6 +272,10 @@ namespace services::dispatcher {
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_udf>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::unregister_udf, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_explain_renderer>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::set_explain_renderer, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_begin_session_msg>: {
@@ -560,6 +565,32 @@ namespace services::dispatcher {
 
         auto* ru = static_cast<components::operators::operator_register_udf_t*>(op.get());
         co_return ru->success();
+    }
+
+    manager_dispatcher_t::unique_future<bool>
+    manager_dispatcher_t::set_explain_renderer(services::collection::explain_render_fn fn) {
+        // Pool-admin fan-out (like register_udf): send the POD fn-pointer to every executor; each
+        // stores its OWN copy (no shared mutable state). Two-phase: send-all, then await-all so no
+        // ack is dropped.
+        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
+        ack_futures.reserve(executor_addresses_.size());
+        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[i],
+                                                                  &collection::executor::executor_t::set_explain_renderer,
+                                                                  fn);
+            if (needs_sched && executors_[i]) {
+                scheduler_->enqueue(executors_[i].get());
+            }
+            ack_futures.push_back(std::move(fut));
+        }
+        bool ok = true;
+        for (auto& fut : ack_futures) {
+            auto res = co_await std::move(fut);
+            if (!res) {
+                ok = false;
+            }
+        }
+        co_return ok;
     }
 
     manager_dispatcher_t::unique_future<bool>

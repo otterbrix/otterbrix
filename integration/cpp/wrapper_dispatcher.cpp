@@ -62,6 +62,14 @@ namespace otterbrix {
         return wait_future(future);
     }
 
+    auto wrapper_dispatcher_t::set_explain_renderer(services::collection::explain_render_fn fn) -> bool {
+        auto [_, future] =
+            actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+                                        &services::dispatcher::manager_dispatcher_t::set_explain_renderer,
+                                        fn);
+        return wait_future(future);
+    }
+
     auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
                                               const std::string& function_name,
                                               const std::pmr::vector<components::types::complex_logical_type>& inputs)

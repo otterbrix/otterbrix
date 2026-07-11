@@ -57,6 +57,19 @@ namespace components::operators {
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
     private:
+        // EXPLAIN: anchor_/recursive_ are PRIVATE sub-plan roots (left()==nullptr) — recurse into them
+        // here, else the walk would render this as a childless leaf.
+        void explain_impl(const explain_sink& s) const override {
+            explain_begin(s, catalog::INVALID_OID);
+            if (anchor_) {
+                anchor_->explain(s);
+            }
+            if (recursive_) {
+                recursive_->explain(s);
+            }
+            s.end();
+        }
+
         // The current recursive-CTE working set: the rows the LAST iteration produced.
         // operator_cte_scan_t holds a raw pointer into this field (working_set_slot());
         // the fixpoint repoints it each pass. Owned here (intrusive_ptr) — run_subplan

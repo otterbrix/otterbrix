@@ -20,6 +20,7 @@
 #include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
+#include <services/collection/explain/explain_renderer.hpp>
 #include <stack>
 #include <string>
 
@@ -124,6 +125,9 @@ namespace services::collection::executor {
         const components::logical_plan::storage_parameters* parameters;
         services::context_storage_t context_storage_;
         components::logical_plan::limit_t limit;
+        // EXPLAIN ANALYZE: propagates to pipeline_context.analyze in execute_sub_plan_ so
+        // execute_pipeline records per-operator stats. Set by execute_plan.
+        bool analyze{false};
 
         explicit plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
                         const components::logical_plan::storage_parameters* parameters,
@@ -208,6 +212,10 @@ namespace services::collection::executor {
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
 
+        // Replace this executor's EXPLAIN output renderer (host customization; fanned out from the
+        // dispatcher). A POD fn-pointer stored per-executor — no shared mutable state (Rule 10).
+        unique_future<bool> set_explain_renderer(explain_render_fn fn);
+
         // No-op poke target for the dispatcher's lost-wakeup watchdog (see
         // executor.cpp for the rationale).
         unique_future<void> poke_msg();
@@ -221,8 +229,10 @@ namespace services::collection::executor {
         [[nodiscard]] unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
 
-        using dispatch_traits = actor_zeta::
-            dispatch_traits<&executor_t::execute_plan_full, &executor_t::register_udf, &executor_t::poke_msg>;
+        using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan_full,
+                                                            &executor_t::register_udf,
+                                                            &executor_t::set_explain_renderer,
+                                                            &executor_t::poke_msg>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
@@ -306,6 +316,10 @@ namespace services::collection::executor {
         // execute_pipeline pump forces an incremental async flush. 0 = disabled
         // (the mid-pump gate never fires).
         uint64_t dml_flush_row_threshold_{0};
+        // EXPLAIN renderer: the active output formatter (default built-in postgres). Replaced
+        // per-executor via the set_explain_renderer mailbox handler (fan-out from the dispatcher).
+        // A POD fn-pointer — each executor holds its OWN copy, no shared mutable state (Rule 10).
+        explain_render_fn explain_render_{&render_postgres};
     };
 
     using executor_ptr = std::unique_ptr<executor_t, actor_zeta::pmr::deleter_t>;

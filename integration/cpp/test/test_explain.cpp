@@ -1,6 +1,6 @@
 #include "test_config.hpp"
 
-#include <catch2/catch.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 #include <components/cursor/cursor.hpp>
 #include <components/types/types.hpp>
@@ -95,7 +95,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
                     ->is_success());
     }
 
-    INFO("EXPLAIN SELECT: single QUERY PLAN column, scans the table") {
+    INFO("EXPLAIN SELECT: single QUERY PLAN column, scans the table"); {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
@@ -105,7 +105,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         REQUIRE(contains(plan_text(cur), "orders"));
     }
 
-    INFO("EXPLAIN SELECT with JOIN renders both scanned relations") {
+    INFO("EXPLAIN SELECT with JOIN renders both scanned relations"); {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s, "EXPLAIN SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust = c.id;");
@@ -115,7 +115,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         REQUIRE(contains(t, "customer"));
     }
 
-    INFO("EXPLAIN ANALYZE reports actual per-operator stats") {
+    INFO("EXPLAIN ANALYZE reports actual per-operator stats"); {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s, "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust = c.id;");
@@ -126,7 +126,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         REQUIRE(contains(t, "loops="));
     }
 
-    INFO("plan-only EXPLAIN INSERT does NOT change the table") {
+    INFO("plan-only EXPLAIN INSERT does NOT change the table"); {
         {
             auto s = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(s, "EXPLAIN INSERT INTO TestDatabase.orders (id, cust) VALUES (99, 99);")
@@ -140,7 +140,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         }
     }
 
-    INFO("EXPLAIN ANALYZE INSERT executes and commits (PostgreSQL-compatible)") {
+    INFO("EXPLAIN ANALYZE INSERT executes and commits (PostgreSQL-compatible)"); {
         {
             auto s = otterbrix::session_id_t();
             REQUIRE(dispatcher
@@ -156,13 +156,13 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         }
     }
 
-    INFO("EXPLAIN of an unsupported (DDL) inner statement is rejected") {
+    INFO("EXPLAIN of an unsupported (DDL) inner statement is rejected"); {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN CREATE TABLE TestDatabase.foo(x int);");
         REQUIRE(cur->is_error());
     }
 
-    INFO("host customization: set_explain_renderer swaps output, SQL unchanged") {
+    INFO("host customization: set_explain_renderer swaps output, SQL unchanged"); {
         // Register the fake at slot 0 — the default slot a plain EXPLAIN (render_id == 0) selects.
         REQUIRE(dispatcher->set_explain_renderer(0, &fake_render));
         auto s = otterbrix::session_id_t();
@@ -198,7 +198,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
     REQUIRE(dispatcher->set_explain_renderer(1, &fake_render));
     REQUIRE(dispatcher->set_explain_renderer(2, &fake_render_2));
 
-    INFO("per-query selection: id 1 -> fake, id 0 -> postgres default") {
+    INFO("per-query selection: id 1 -> fake, id 0 -> postgres default"); {
         {
             auto s = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 1);
@@ -215,7 +215,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         }
     }
 
-    INFO("per-query, NOT global: interleaved ids each pick their own renderer") {
+    INFO("per-query, NOT global: interleaved ids each pick their own renderer"); {
         auto s1 = otterbrix::session_id_t();
         auto c1 = dispatcher->execute_sql(s1, "EXPLAIN SELECT * FROM TestDatabase.orders;", 1);
         auto s0 = otterbrix::session_id_t();
@@ -224,7 +224,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         REQUIRE_FALSE(contains(plan_text(c0), "FAKE-RENDERER"));
     }
 
-    INFO("multiple renderers registered simultaneously: id 1 and id 2 are distinct") {
+    INFO("multiple renderers registered simultaneously: id 1 and id 2 are distinct"); {
         auto s1 = otterbrix::session_id_t();
         auto c1 = dispatcher->execute_sql(s1, "EXPLAIN SELECT * FROM TestDatabase.orders;", 1);
         auto s2 = otterbrix::session_id_t();
@@ -239,7 +239,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         REQUIRE_FALSE(contains(t2, "FAKE-RENDERER"));
     }
 
-    INFO("out-of-range id resolves to the built-in default (a default, not a fallback branch)") {
+    INFO("out-of-range id resolves to the built-in default (a default, not a fallback branch)"); {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 999);
         REQUIRE(cur->is_success());
@@ -248,7 +248,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         REQUIRE_FALSE(contains(t, "FAKE-RENDERER"));
     }
 
-    INFO("EXPLAIN ANALYZE via a custom renderer sees analyze == true") {
+    INFO("EXPLAIN ANALYZE via a custom renderer sees analyze == true"); {
         REQUIRE(dispatcher->set_explain_renderer(3, &fake_render_analyze));
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders;", 3);
@@ -256,7 +256,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         REQUIRE(contains(plan_text(cur), "FAKE-ANALYZE-ON"));
     }
 
-    INFO("registration fan-out reaches every pooled executor") {
+    INFO("registration fan-out reaches every pooled executor"); {
         // The pool has 4 executors; a session hashes to one. Sweep enough sessions that a single
         // set_explain_renderer(1, ...) registration must have reached whichever executor each hits.
         for (int i = 0; i < 12; ++i) {

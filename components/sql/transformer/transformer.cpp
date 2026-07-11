@@ -185,7 +185,8 @@ namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_explain(ExplainStmt& node,
                                                           logical_plan::execution_plan_t* plan) {
         // EXPLAIN ANALYZE is signalled by an "analyze" DefElem in the options list. No style/format
-        // option is read from SQL — output formatting is a host C++ concern (executor's explain_render_).
+        // option is read from SQL — output formatting is a host C++ concern (the executor's renderer
+        // registry, selected per-query by execution_plan_t::explain_render_id).
         bool is_analyze = false;
         if (node.options) {
             for (auto data : node.options->lst) {

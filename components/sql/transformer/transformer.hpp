@@ -90,7 +90,8 @@ namespace components::sql::transform {
         logical_plan::node_ptr transform_set_timezone(VariableSetStmt& node);
         // EXPLAIN / EXPLAIN ANALYZE: read the `analyze` option, restrict the inner to
         // SELECT/INSERT/UPDATE/DELETE, stamp plan->explain, and lower the inner so sub_queries.back()
-        // stays the real query node. Output formatting is a host concern (executor's explain_render_).
+        // stays the real query node. Output formatting is a host concern (the executor's renderer
+        // registry, selected per-query by execution_plan_t::explain_render_id).
         logical_plan::node_ptr transform_explain(ExplainStmt& node, logical_plan::execution_plan_t* plan);
 
     private:

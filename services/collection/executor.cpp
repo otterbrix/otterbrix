@@ -171,8 +171,10 @@ namespace services::collection::executor {
         , index_address_(std::move(index_address))
         , log_(log)
         , function_registry_(resource)
-        , dml_flush_row_threshold_(dml_flush_row_threshold) {
+        , dml_flush_row_threshold_(dml_flush_row_threshold)
+        , explain_renderers_(resource) {
         register_default_functions(function_registry_);
+        explain_renderers_.push_back(&render_postgres); // slot 0 = built-in default renderer
     }
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -288,7 +290,13 @@ namespace services::collection::executor {
             // Plan-only EXPLAIN: build + render the physical tree WITHOUT executing.
             explain_ir_builder b{resource(), explain_names};
             explain_root->explain(b.sink());
-            co_return execute_result_t{explain_render_(resource(), b.release(), false)};
+            const auto render = resolve_explain_renderer_(plan.explain_render_id);
+            if (plan.explain_render_id != 0 && render == &render_postgres) {
+                trace(log_,
+                      "executor::explain: render_id {} not registered on this executor — using default postgres",
+                      plan.explain_render_id);
+            }
+            co_return execute_result_t{render(resource(), b.release(), false)};
         }
 
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
@@ -303,7 +311,13 @@ namespace services::collection::executor {
         if (plan.explain == components::logical_plan::explain_type::analyze && result.cursor->is_success()) {
             explain_ir_builder b{resource(), explain_names};
             explain_root->explain(b.sink());
-            result.cursor = explain_render_(resource(), b.release(), true);
+            const auto render = resolve_explain_renderer_(plan.explain_render_id);
+            if (plan.explain_render_id != 0 && render == &render_postgres) {
+                trace(log_,
+                      "executor::explain: render_id {} not registered on this executor — using default postgres",
+                      plan.explain_render_id);
+            }
+            result.cursor = render(resource(), b.release(), true);
         }
 
         // Raw pipeline result. Three cases, distinguished by the vector state
@@ -1866,11 +1880,18 @@ namespace services::collection::executor {
         co_return std::make_unique<function_result_t>(std::move(res));
     }
 
-    executor_t::unique_future<bool> executor_t::set_explain_renderer(explain_render_fn fn) {
-        // Store the host-supplied renderer in THIS executor's own copy (a POD fn-pointer, no shared
-        // state). A null fn keeps the current renderer (never clears to a null callable).
+    executor_t::unique_future<bool> executor_t::set_explain_renderer(uint32_t id, explain_render_fn fn) {
+        // Register the host-supplied renderer into THIS executor's own registry at slot `id` (a POD
+        // fn-pointer, no shared state). A null fn is ignored — never land a null callable in a slot.
+        // Grow with the default renderer so any skipped slot resolves to the built-in postgres.
         if (fn != nullptr) {
-            explain_render_ = fn;
+            // size_t arithmetic: `id + 1` in uint32 would wrap to 0 at UINT32_MAX and shrink the
+            // vector, turning the store below into an out-of-bounds write. Widen so the target size
+            // is exact (an absurd id merely fails to allocate, never corrupts).
+            if (explain_renderers_.size() <= id) {
+                explain_renderers_.resize(static_cast<std::size_t>(id) + 1, &render_postgres);
+            }
+            explain_renderers_[id] = fn;
         }
         co_return true;
     }

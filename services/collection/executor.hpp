@@ -212,9 +212,10 @@ namespace services::collection::executor {
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
 
-        // Replace this executor's EXPLAIN output renderer (host customization; fanned out from the
-        // dispatcher). A POD fn-pointer stored per-executor — no shared mutable state (Rule 10).
-        unique_future<bool> set_explain_renderer(explain_render_fn fn);
+        // Register a host EXPLAIN renderer into this executor's registry at slot `id` (host
+        // customization; fanned out from the dispatcher). POD fn-pointers stored per-executor — no
+        // shared mutable state (Rule 10). Registration is rare; per-query selection is a local index.
+        unique_future<bool> set_explain_renderer(uint32_t id, explain_render_fn fn);
 
         // No-op poke target for the dispatcher's lost-wakeup watchdog (see
         // executor.cpp for the rationale).
@@ -316,10 +317,19 @@ namespace services::collection::executor {
         // execute_pipeline pump forces an incremental async flush. 0 = disabled
         // (the mid-pump gate never fires).
         uint64_t dml_flush_row_threshold_{0};
-        // EXPLAIN renderer: the active output formatter (default built-in postgres). Replaced
-        // per-executor via the set_explain_renderer mailbox handler (fan-out from the dispatcher).
-        // A POD fn-pointer — each executor holds its OWN copy, no shared mutable state (Rule 10).
-        explain_render_fn explain_render_{&render_postgres};
+        // EXPLAIN renderer registry: per-query selectable formatters, indexed by
+        // execution_plan_t::explain_render_id. Slot 0 (built-in postgres) is seeded in the ctor
+        // body — a container member can't brace-default a keyed slot. Registered via
+        // set_explain_renderer; no shared mutable state (Rule 10), no locks (Rule 12), POD
+        // fn-pointers (Rule 14); pinned to `resource` in the ctor init-list.
+        std::pmr::vector<explain_render_fn> explain_renderers_;
+
+        // Resolve the per-query renderer by slot `id`; an out-of-range or null slot yields the
+        // DEFAULT (slot 0 = built-in postgres), not a fallback branch.
+        [[nodiscard]] explain_render_fn resolve_explain_renderer_(uint32_t id) const noexcept {
+            return (id < explain_renderers_.size() && explain_renderers_[id]) ? explain_renderers_[id]
+                                                                              : &render_postgres;
+        }
     };
 
     using executor_ptr = std::unique_ptr<executor_t, actor_zeta::pmr::deleter_t>;

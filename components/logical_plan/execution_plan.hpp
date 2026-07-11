@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "node.hpp"
 #include "param_storage.hpp"
 
@@ -47,6 +49,11 @@ namespace components::logical_plan {
         // EXPLAIN / EXPLAIN ANALYZE mode (none for a normal query). Only the main (top-level)
         // plan carries it; flattened sub-queries are built fresh and stay `none`.
         explain_type explain{explain_type::none};
+
+        // Host-selected EXPLAIN renderer slot: an index into the executor's renderer registry
+        // (see set_explain_renderer). 0 = the built-in postgres renderer (default). Set only from
+        // the host C++ API, never SQL; rides the plan by value into the executor like `explain`.
+        uint32_t explain_render_id{0};
     };
 
 } // namespace components::logical_plan

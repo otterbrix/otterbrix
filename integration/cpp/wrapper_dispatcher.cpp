@@ -62,10 +62,13 @@ namespace otterbrix {
         return wait_future(future);
     }
 
-    auto wrapper_dispatcher_t::set_explain_renderer(services::collection::explain_render_fn fn) -> bool {
+    auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn) -> bool {
+        // Host→dispatcher half of the renderer send; the dispatcher→executor fan-out lives in
+        // dispatcher.cpp — keep the two send sites in step.
         auto [_, future] =
             actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                         &services::dispatcher::manager_dispatcher_t::set_explain_renderer,
+                                        id,
                                         fn);
         return wait_future(future);
     }
@@ -97,7 +100,8 @@ namespace otterbrix {
     }
 
     cursor_t_ptr wrapper_dispatcher_t::execute_sql(const components::session::session_id_t& session,
-                                                   const std::string& query) {
+                                                   const std::string& query,
+                                                   uint32_t render_id) {
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
@@ -121,7 +125,11 @@ namespace otterbrix {
             result.has_error()) {
             return make_cursor(resource(), result.error());
         } else {
-            return execute_plan(session, std::move(result.value()));
+            // Stamp the host-selected EXPLAIN renderer slot onto the plan before send; it rides the
+            // plan by value into the executor (inert for a non-EXPLAIN plan; 0 = postgres default).
+            auto plan = std::move(result.value());
+            plan.explain_render_id = render_id;
+            return execute_plan(session, std::move(plan));
         }
     }
 

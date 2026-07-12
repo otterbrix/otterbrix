@@ -15,6 +15,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_unique_constraint_operator.cpp
         test_create_index_backfill_batched.cpp
         test_correctness_bugs.cpp
+        test_jsonb_support.cpp
         test_production_scenarios.cpp
         test_join.cpp
         test_join_raw.cpp

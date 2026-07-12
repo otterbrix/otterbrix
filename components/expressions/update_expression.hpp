@@ -4,6 +4,7 @@
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <core/result_wrapper.hpp>
 #include <optional>
 
 #include "key.hpp"
@@ -50,12 +51,15 @@ namespace components::expressions {
         // Non-set nodes: populate output_vec_; return empty vector.
         // Set nodes: write computed values into `to`; return per-row modification flags
         //            (true = value actually changed for that row).
-        std::pmr::vector<bool> execute(std::pmr::memory_resource* resource,
-                                       vector::data_chunk_t& to,
-                                       const vector::data_chunk_t& from,
-                                       uint64_t count,
-                                       const logical_plan::storage_parameters* parameters,
-                                       core::date::timezone_offset_t session_tz);
+        // On failure (e.g. a bitwise/shift on a non-integer column) returns the
+        // error via result_wrapper_t (never throws).
+        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<bool>>
+        execute(std::pmr::memory_resource* resource,
+                vector::data_chunk_t& to,
+                const vector::data_chunk_t& from,
+                uint64_t count,
+                const logical_plan::storage_parameters* parameters,
+                core::date::timezone_offset_t session_tz);
 
         update_expr_type type() const noexcept;
         update_expr_ptr& left();
@@ -67,12 +71,13 @@ namespace components::expressions {
         const vector::vector_t* output_vec() const noexcept;
 
     protected:
-        virtual std::pmr::vector<bool> execute_impl(std::pmr::memory_resource* resource,
-                                                    vector::data_chunk_t& to,
-                                                    const vector::data_chunk_t& from,
-                                                    uint64_t count,
-                                                    const logical_plan::storage_parameters* parameters,
-                                                    core::date::timezone_offset_t session_tz) = 0;
+        virtual core::result_wrapper_t<std::pmr::vector<bool>>
+        execute_impl(std::pmr::memory_resource* resource,
+                     vector::data_chunk_t& to,
+                     const vector::data_chunk_t& from,
+                     uint64_t count,
+                     const logical_plan::storage_parameters* parameters,
+                     core::date::timezone_offset_t session_tz) = 0;
 
         update_expr_type type_;
         update_expr_ptr left_;
@@ -93,12 +98,13 @@ namespace components::expressions {
         bool operator==(const update_expr_set_t& rhs) const;
 
     protected:
-        std::pmr::vector<bool> execute_impl(std::pmr::memory_resource* resource,
-                                            vector::data_chunk_t& to,
-                                            const vector::data_chunk_t& from,
-                                            uint64_t count,
-                                            const logical_plan::storage_parameters* parameters,
-                                            core::date::timezone_offset_t session_tz) override;
+        core::result_wrapper_t<std::pmr::vector<bool>>
+        execute_impl(std::pmr::memory_resource* resource,
+                     vector::data_chunk_t& to,
+                     const vector::data_chunk_t& from,
+                     uint64_t count,
+                     const logical_plan::storage_parameters* parameters,
+                     core::date::timezone_offset_t session_tz) override;
 
     private:
         key_t key_;
@@ -116,12 +122,13 @@ namespace components::expressions {
         bool operator==(const update_expr_get_value_t& rhs) const;
 
     protected:
-        std::pmr::vector<bool> execute_impl(std::pmr::memory_resource* resource,
-                                            vector::data_chunk_t& to,
-                                            const vector::data_chunk_t& from,
-                                            uint64_t count,
-                                            const logical_plan::storage_parameters* parameters,
-                                            core::date::timezone_offset_t session_tz) override;
+        core::result_wrapper_t<std::pmr::vector<bool>>
+        execute_impl(std::pmr::memory_resource* resource,
+                     vector::data_chunk_t& to,
+                     const vector::data_chunk_t& from,
+                     uint64_t count,
+                     const logical_plan::storage_parameters* parameters,
+                     core::date::timezone_offset_t session_tz) override;
 
     private:
         key_t key_;
@@ -138,12 +145,13 @@ namespace components::expressions {
         bool operator==(const update_expr_get_const_value_t& rhs) const;
 
     protected:
-        std::pmr::vector<bool> execute_impl(std::pmr::memory_resource* resource,
-                                            vector::data_chunk_t& to,
-                                            const vector::data_chunk_t& from,
-                                            uint64_t count,
-                                            const logical_plan::storage_parameters* parameters,
-                                            core::date::timezone_offset_t session_tz) override;
+        core::result_wrapper_t<std::pmr::vector<bool>>
+        execute_impl(std::pmr::memory_resource* resource,
+                     vector::data_chunk_t& to,
+                     const vector::data_chunk_t& from,
+                     uint64_t count,
+                     const logical_plan::storage_parameters* parameters,
+                     core::date::timezone_offset_t session_tz) override;
 
     private:
         core::parameter_id_t id_;
@@ -158,12 +166,13 @@ namespace components::expressions {
         bool operator==(const update_expr_calculate_t& rhs) const;
 
     protected:
-        std::pmr::vector<bool> execute_impl(std::pmr::memory_resource* resource,
-                                            vector::data_chunk_t& to,
-                                            const vector::data_chunk_t& from,
-                                            uint64_t count,
-                                            const logical_plan::storage_parameters* parameters,
-                                            core::date::timezone_offset_t session_tz) override;
+        core::result_wrapper_t<std::pmr::vector<bool>>
+        execute_impl(std::pmr::memory_resource* resource,
+                     vector::data_chunk_t& to,
+                     const vector::data_chunk_t& from,
+                     uint64_t count,
+                     const logical_plan::storage_parameters* parameters,
+                     core::date::timezone_offset_t session_tz) override;
     };
 
     using update_expr_calculate_ptr = boost::intrusive_ptr<update_expr_calculate_t>;

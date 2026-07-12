@@ -11,17 +11,24 @@ namespace components::expressions {
     update_expr_t::update_expr_t(update_expr_type type)
         : type_(type) {}
 
-    std::pmr::vector<bool> update_expr_t::execute(std::pmr::memory_resource* resource,
-                                                  vector::data_chunk_t& to,
-                                                  const vector::data_chunk_t& from,
-                                                  uint64_t count,
-                                                  const logical_plan::storage_parameters* parameters,
-                                                  core::date::timezone_offset_t session_tz) {
+    core::result_wrapper_t<std::pmr::vector<bool>>
+    update_expr_t::execute(std::pmr::memory_resource* resource,
+                           vector::data_chunk_t& to,
+                           const vector::data_chunk_t& from,
+                           uint64_t count,
+                           const logical_plan::storage_parameters* parameters,
+                           core::date::timezone_offset_t session_tz) {
         if (left_) {
-            left_->execute(resource, to, from, count, parameters, session_tz);
+            auto left_res = left_->execute(resource, to, from, count, parameters, session_tz);
+            if (left_res.has_error()) {
+                return left_res;
+            }
         }
         if (right_) {
-            right_->execute(resource, to, from, count, parameters, session_tz);
+            auto right_res = right_->execute(resource, to, from, count, parameters, session_tz);
+            if (right_res.has_error()) {
+                return right_res;
+            }
         }
         return execute_impl(resource, to, from, count, parameters, session_tz);
     }
@@ -92,12 +99,13 @@ namespace components::expressions {
         return left_ == rhs.left_ && key_ == rhs.key_;
     }
 
-    std::pmr::vector<bool> update_expr_set_t::execute_impl(std::pmr::memory_resource* resource,
-                                                           vector::data_chunk_t& to,
-                                                           const vector::data_chunk_t&,
-                                                           uint64_t count,
-                                                           const logical_plan::storage_parameters*,
-                                                           core::date::timezone_offset_t) {
+    core::result_wrapper_t<std::pmr::vector<bool>>
+    update_expr_set_t::execute_impl(std::pmr::memory_resource* resource,
+                                    vector::data_chunk_t& to,
+                                    const vector::data_chunk_t&,
+                                    uint64_t count,
+                                    const logical_plan::storage_parameters*,
+                                    core::date::timezone_offset_t) {
         std::pmr::vector<bool> modified(count, false, resource);
         if (!left_ || count == 0) {
             return modified;
@@ -255,12 +263,13 @@ namespace components::expressions {
         return left_ == rhs.left_ && key_ == rhs.key_ && key_.side() == rhs.key_.side();
     }
 
-    std::pmr::vector<bool> update_expr_get_value_t::execute_impl(std::pmr::memory_resource* resource,
-                                                                 vector::data_chunk_t& to,
-                                                                 const vector::data_chunk_t& from,
-                                                                 uint64_t,
-                                                                 const logical_plan::storage_parameters*,
-                                                                 core::date::timezone_offset_t) {
+    core::result_wrapper_t<std::pmr::vector<bool>>
+    update_expr_get_value_t::execute_impl(std::pmr::memory_resource* resource,
+                                          vector::data_chunk_t& to,
+                                          const vector::data_chunk_t& from,
+                                          uint64_t,
+                                          const logical_plan::storage_parameters*,
+                                          core::date::timezone_offset_t) {
         auto side = key_.side();
         assert(side != side_t::undefined && "validation must resolve side before execution");
         if (side == side_t::right) {
@@ -283,7 +292,7 @@ namespace components::expressions {
         return id_ == rhs.id_;
     }
 
-    std::pmr::vector<bool>
+    core::result_wrapper_t<std::pmr::vector<bool>>
     update_expr_get_const_value_t::execute_impl(std::pmr::memory_resource* resource,
                                                 vector::data_chunk_t&,
                                                 const vector::data_chunk_t&,
@@ -360,26 +369,45 @@ namespace components::expressions {
         }
     } // anonymous namespace
 
-    std::pmr::vector<bool> update_expr_calculate_t::execute_impl(std::pmr::memory_resource* resource,
-                                                                 vector::data_chunk_t&,
-                                                                 const vector::data_chunk_t&,
-                                                                 uint64_t count,
-                                                                 const logical_plan::storage_parameters*,
-                                                                 core::date::timezone_offset_t) {
+    core::result_wrapper_t<std::pmr::vector<bool>>
+    update_expr_calculate_t::execute_impl(std::pmr::memory_resource* resource,
+                                          vector::data_chunk_t&,
+                                          const vector::data_chunk_t&,
+                                          uint64_t count,
+                                          const logical_plan::storage_parameters*,
+                                          core::date::timezone_offset_t) {
         uint64_t vec_count = count > 0 ? count : 1;
         auto* left_vec = left_->output_vec();
 
+        // A non-integer physical type: strings and floating-point. Bitwise/shift
+        // kernels only support integers, and unary arithmetic kernels do not
+        // support strings. Reject these here (was: a Release-erased assert that
+        // let the kernel leave the destination unwritten, silently zeroing data).
+        auto is_non_integer = [](types::physical_type pt) {
+            return pt == types::physical_type::STRING || pt == types::physical_type::FLOAT ||
+                   pt == types::physical_type::DOUBLE;
+        };
+
         if (auto unary_op = to_unary_vec_op(type_)) {
+            if (types::is_string(left_vec->type().type())) {
+                return core::error_t{
+                    core::error_code_t::physical_plan_error,
+                    std::pmr::string{"unary arithmetic is not supported for string columns", resource}};
+            }
             owned_output_.emplace(vector_ops::apply_unary_vector_op(resource, *unary_op, *left_vec, vec_count));
         } else if (auto arith_op = to_arith_op(type_)) {
             owned_output_.emplace(
                 compute_binary_arithmetic(resource, *arith_op, *left_vec, *right_->output_vec(), vec_count));
         } else {
-            owned_output_.emplace(vector_ops::apply_binary_vector_op(resource,
-                                                                     to_binary_vec_op(type_),
-                                                                     *left_vec,
-                                                                     *right_->output_vec(),
-                                                                     vec_count));
+            auto* right_vec = right_->output_vec();
+            if (is_non_integer(left_vec->type().to_physical_type()) ||
+                is_non_integer(right_vec->type().to_physical_type())) {
+                return core::error_t{
+                    core::error_code_t::physical_plan_error,
+                    std::pmr::string{"bitwise/shift operations are unsupported for non-integer types", resource}};
+            }
+            owned_output_.emplace(
+                vector_ops::apply_binary_vector_op(resource, to_binary_vec_op(type_), *left_vec, *right_vec, vec_count));
         }
 
         output_vec_ = &owned_output_.value();

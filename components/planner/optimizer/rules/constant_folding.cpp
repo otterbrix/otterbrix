@@ -232,6 +232,25 @@ namespace components::planner::optimizer {
             }
             try_fold_compare(*comp, parameters);
             simplify_union(comp);
+            // NOT over a fully folded single child folds to the complementary
+            // constant: NOT(all_false) scans everything, NOT(all_true) is the
+            // short-circuited empty scan. Only the single-child form folds —
+            // multi-child union_not means NOT(child1 AND child2 ...) and keeps
+            // its children. Without this, `WHERE NOT (1=2)` survived folding
+            // into filter construction, whose all_false / key-shape guards
+            // were Release-erased asserts.
+            if (comp->type() == compare_type::union_not && comp->children().size() == 1 &&
+                comp->children().front()->group() == expression_group::compare) {
+                const auto child_type =
+                    static_cast<const compare_expression_t*>(comp->children().front().get())->type();
+                if (child_type == compare_type::all_false) {
+                    comp->set_type(compare_type::all_true);
+                    comp->children().clear();
+                } else if (child_type == compare_type::all_true) {
+                    comp->set_type(compare_type::all_false);
+                    comp->children().clear();
+                }
+            }
             if (comp->type() == compare_type::union_and || comp->type() == compare_type::union_or) {
                 const auto neutral =
                     (comp->type() == compare_type::union_and) ? compare_type::all_true : compare_type::all_false;

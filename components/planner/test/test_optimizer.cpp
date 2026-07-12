@@ -1344,3 +1344,42 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     // The group{SUM} pipeline stage is left untouched by the promotion.
     REQUIRE(agg->children()[2]->type() == node_type::group_t);
 }
+
+// ================================================================
+// NOT folding: union_not over a fully folded single child must fold
+// to the complementary constant. Without this, `WHERE NOT (1=2)`
+// survived folding and reached filter construction, whose all_false /
+// key-shape guards were Release-erased asserts (crash / bad variant
+// access), and `WHERE NOT (1=1)` produced a spurious error.
+// ================================================================
+TEST_CASE("optimizer::not_fold_all_false_child") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(int64_t(1));
+    auto id1 = params->add_parameter(int64_t(2));
+
+    auto comp = make_compare_union_expression(&resource, compare_type::union_not);
+    comp->append_child(make_compare_expression(&resource, compare_type::eq, id0, id1));
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get());
+
+    auto* c = static_cast<compare_expression_t*>(comp.get());
+    REQUIRE(c->type() == compare_type::all_true);
+    REQUIRE(c->children().empty());
+}
+
+TEST_CASE("optimizer::not_fold_all_true_child") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(int64_t(1));
+    auto id1 = params->add_parameter(int64_t(1));
+
+    auto comp = make_compare_union_expression(&resource, compare_type::union_not);
+    comp->append_child(make_compare_expression(&resource, compare_type::eq, id0, id1));
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get());
+
+    auto* c = static_cast<compare_expression_t*>(comp.get());
+    REQUIRE(c->type() == compare_type::all_false);
+    REQUIRE(c->children().empty());
+}

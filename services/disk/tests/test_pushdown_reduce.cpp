@@ -35,6 +35,12 @@
 #include <map>
 #include <vector>
 
+// storage_append gained a catalog-defaults parameter (a one-row chunk whose
+// column aliases carry the column names); these fixture tests exercise raw
+// appends with no INSERT node, so they pass no defaults.
+static std::unique_ptr<components::vector::data_chunk_t> no_defaults() { return nullptr; }
+
+
 using namespace services::disk;
 using namespace pushdown_reduce_test;
 using pushdown_test::sum_uid;
@@ -113,7 +119,7 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
     components::execution_context_t append_ctx{session_id_t{}, txn, {}};
     append_ctx.table_oid = table_oid;
     auto appended =
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, batch_rows(&fx.resource, 1, {{10}, {20}, {30}}));
+        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, batch_rows(&fx.resource, 1, {{10}, {20}, {30}}), no_defaults());
     REQUIRE_FALSE(appended.has_error());
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), txn);
@@ -178,7 +184,7 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     auto appended = fx.invoke(&manager_disk_t::storage_append,
                               append_ctx,
                               table_oid,
-                              batch_rows(&fx.resource, 2, {{1, 10}, {1, 20}, {2, 30}, {2, 5}}));
+                              batch_rows(&fx.resource, 2, {{1, 10}, {1, 20}, {2, 30}, {2, 5}}), no_defaults());
     REQUIRE_FALSE(appended.has_error());
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/0, /*val_col=*/1), txn);

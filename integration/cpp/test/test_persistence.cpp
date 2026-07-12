@@ -359,6 +359,62 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
     }
 }
 
+TEST_CASE("integration::cpp::test_persistence::default_application_survives_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/default_after_restart");
+    test_clear_directory(config);
+
+    INFO("phase 1: create a table with DEFAULTs, insert one defaulted row");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session,
+                                        "CREATE TABLE TestDatabase.TestCollection "
+                                        "(name string, status string DEFAULT 'active', count bigint DEFAULT 0);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection (name) VALUES ('alice');");
+            REQUIRE(cur->is_success());
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 1);
+    }
+
+    INFO("phase 2: after restart, replayed rows keep defaults AND new inserts still apply them");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // The replayed row kept its default (WAL records post-expansion chunks).
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 1);
+
+        // A fresh INSERT after restart must apply defaults too. This used to
+        // silently store NULL: the storage-level column defs rebuilt on restart
+        // (WAL-replay synthesis / adopt_schema / .otbx load) carried no
+        // default_value_, and the agent-side fill consulted only those.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection (name) VALUES ('bob');");
+            REQUIRE(cur->is_success());
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 2);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 2);
+    }
+}
+
 TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_recovery") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/partial_insert_wal");
     test_clear_directory(config);

@@ -233,10 +233,16 @@ namespace services::disk {
 
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
         // table-layer append chain reaches operator_insert as a value.
+        // column_defaults: catalog-sourced (pg_attribute.attdefspec) DEFAULTs of the
+        // target table as a one-row chunk — column aliases carry the column names,
+        // row 0 the decoded (un-cast) values; nullptr when the table has none. Used
+        // as the fill fallback for omitted columns when the storage-level column defs
+        // carry no default (they never do after a restart).
         actor_zeta::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       std::pmr::vector<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::data_chunk_t> data,
+                       std::unique_ptr<components::vector::data_chunk_t> column_defaults);
 
         // Reply wraps (updated, appended) so a write_conflict / out_of_memory from the
         // table-layer MVCC update reaches operator_update / fk_cascade as a value.

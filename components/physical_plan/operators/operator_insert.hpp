@@ -4,6 +4,8 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
 
+#include <memory>
+
 namespace components::operators {
 
     class operator_insert final : public read_write_operator_t {
@@ -13,10 +15,18 @@ namespace components::operators {
         // the appended segment back from storage (so DB-applied DEFAULTs and
         // generated columns are present) and projects these columns into its
         // output instead of an empty result chunk.
+        // `column_defaults` carries the catalog-decoded DEFAULT values of the
+        // target table as a one-row chunk: one column per default, the column
+        // name in the type alias, row 0 the decoded value (nullptr when the
+        // table has none). Built by create_plan_insert from
+        // node_insert_t::column_defaults() and forwarded to storage_append so
+        // the agent-side fill of omitted columns works even when the
+        // storage-level column defs lost their defaults (restart).
         operator_insert(std::pmr::memory_resource* resource,
                         log_t log,
                         catalog::oid_t table_oid,
-                        std::pmr::vector<select_column_t> returning);
+                        std::pmr::vector<select_column_t> returning,
+                        std::unique_ptr<vector::data_chunk_t> column_defaults = nullptr);
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
@@ -47,6 +57,7 @@ namespace components::operators {
     private:
         catalog::oid_t table_oid_;
         std::pmr::vector<select_column_t> returning_;
+        std::unique_ptr<vector::data_chunk_t> column_defaults_;
         // Cross-flush accumulators for the incremental drive. RETURNING rows are
         // projected into returning_accum_ as each slice is read back; when the
         // statement has no RETURNING, affected_rows_ tallies the appended count.

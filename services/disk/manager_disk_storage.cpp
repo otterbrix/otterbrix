@@ -455,7 +455,8 @@ namespace services::disk {
     manager_disk_t::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
     manager_disk_t::storage_append(execution_context_t ctx,
                                    catalog::oid_t table_oid,
-                                   std::pmr::vector<components::vector::data_chunk_t> data) {
+                                   std::pmr::vector<components::vector::data_chunk_t> data,
+                                   std::unique_ptr<components::vector::data_chunk_t> column_defaults) {
         // The full preprocessing pipeline (schema adoption/growth, column
         // expansion, NOT NULL, dedup, type promotion) and the canonical write live
         // in the agent twin, so every same-oid access is serialized by the agent's
@@ -480,11 +481,21 @@ namespace services::disk {
                 continue;
             }
             auto one = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
+            // One inner send per chunk, so each carries its own copy of the
+            // (one-row) defaults; the member must survive for the next chunk.
+            std::unique_ptr<components::vector::data_chunk_t> defaults_copy;
+            if (column_defaults) {
+                defaults_copy = std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                                   column_defaults->types(),
+                                                                                   column_defaults->size());
+                column_defaults->copy(*defaults_copy, 0);
+            }
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                   &agent_disk_t::storage_append_inner,
                                                                   ctx,
                                                                   table_oid,
-                                                                  std::move(one));
+                                                                  std::move(one),
+                                                                  std::move(defaults_copy));
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

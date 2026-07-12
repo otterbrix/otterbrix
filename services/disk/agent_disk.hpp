@@ -216,7 +216,8 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append_inner(execution_context_t ctx,
                              components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::vector::data_chunk_t> data);
+                             std::unique_ptr<components::vector::data_chunk_t> data,
+                             std::unique_ptr<components::vector::data_chunk_t> column_defaults);
 
         // storage_publish_commits_inner — MVCC visibility flip. Iterates
         //   `ranges` and calls commit_append per range against owned twins;

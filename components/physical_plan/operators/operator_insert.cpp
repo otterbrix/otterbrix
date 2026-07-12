@@ -14,10 +14,12 @@ namespace components::operators {
     operator_insert::operator_insert(std::pmr::memory_resource* resource,
                                      log_t log,
                                      catalog::oid_t table_oid,
-                                     std::pmr::vector<select_column_t> returning)
+                                     std::pmr::vector<select_column_t> returning,
+                                     std::unique_ptr<vector::data_chunk_t> column_defaults)
         : read_write_operator_t(resource, log, operator_type::insert)
         , table_oid_(table_oid)
-        , returning_(std::move(returning)) {}
+        , returning_(std::move(returning))
+        , column_defaults_(std::move(column_defaults)) {}
 
     core::error_t
     operator_insert::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
@@ -129,11 +131,18 @@ namespace components::operators {
                 // storage_append — WAL-FIRST canonical append (batched, handles
                 // schema adoption + _id dedup). The reply carries any
                 // write_conflict / out_of_memory as a value.
+                // The flush lambda can run multiple times (mid-pump flushes), so
+                // send a copy of the defaults each round — never move the member
+                // out, or later rounds would append with no defaults at all.
+                auto defaults_copy = column_defaults_
+                                         ? std::make_unique<data_chunk_t>(copy_of(*column_defaults_))
+                                         : nullptr;
                 auto [_a, af] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::storage_append,
                                                  exec_ctx,
                                                  table_oid_,
-                                                 std::move(append_data));
+                                                 std::move(append_data),
+                                                 std::move(defaults_copy));
                 auto append_result = co_await std::move(af);
                 if (append_result.has_error()) {
                     co_return dml_detail::flush_outcome_t{append_result.error()};

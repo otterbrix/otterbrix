@@ -24,6 +24,12 @@
 #include <utility>
 #include <vector>
 
+// storage_append gained a catalog-defaults parameter (a one-row chunk whose
+// column aliases carry the column names); these fixture tests exercise raw
+// appends with no INSERT node, so they pass no defaults.
+static std::unique_ptr<components::vector::data_chunk_t> no_defaults() { return nullptr; }
+
+
 using namespace services::disk;
 namespace catalog = components::catalog;
 using namespace components::catalog;
@@ -225,7 +231,7 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                    {},
                                                    table_oid};
         auto append_r =
-            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)), no_defaults());
         REQUIRE_FALSE(append_r.has_error());
         auto [start, count] = append_r.value();
         REQUIRE(count == nrows);

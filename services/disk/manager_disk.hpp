@@ -678,7 +678,8 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       std::pmr::vector<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::data_chunk_t> data,
+                       std::unique_ptr<components::vector::data_chunk_t> column_defaults);
 
         // Updates every chunk in order; row_ids[i] are the storage row-ids for data[i]
         // (the two vectors are positionally aligned and must have equal length). Returns

@@ -24,6 +24,12 @@
 #include <thread>
 #include <unistd.h>
 
+// storage_append gained a catalog-defaults parameter (a one-row chunk whose
+// column aliases carry the column names); these fixture tests exercise raw
+// appends with no INSERT node, so they pass no defaults.
+static std::unique_ptr<components::vector::data_chunk_t> no_defaults() { return nullptr; }
+
+
 // DDL roundtrip tests. Each test creates catalog objects via the build_create_*_writes
 // helpers and verifies that resolve_* methods see the written rows correctly.
 
@@ -613,7 +619,7 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
                                                    components::table::transaction_data{0, 0},
                                                    {},
                                                    table_oid};
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)), no_defaults());
     }
 
     // Verify storage now has 3 columns (post-#96).
@@ -766,7 +772,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         auto append_r = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
                                   table_oid,
-                                  to_batch(&fx.resource, std::move(chunk)));
+                                  to_batch(&fx.resource, std::move(chunk)), no_defaults());
         REQUIRE_FALSE(append_r.has_error());
         auto [start, count] = append_r.value();
         REQUIRE(count == 1);
@@ -790,7 +796,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         fx.invoke(&manager_disk_t::storage_append,
                   append_ctx(table_oid),
                   table_oid,
-                  to_batch(&fx.resource, std::move(chunk)));
+                  to_batch(&fx.resource, std::move(chunk)), no_defaults());
     }
 
     {
@@ -832,7 +838,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         fx.invoke(&manager_disk_t::storage_append,
                   append_ctx(table_oid),
                   table_oid,
-                  to_batch(&fx.resource, std::move(chunk)));
+                  to_batch(&fx.resource, std::move(chunk)), no_defaults());
     }
 
     {
@@ -897,7 +903,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         chunk->set_value(0, 0, kval);
         chunk->set_value(1, 0, std::int64_t{kval * 10});
         components::execution_context_t append_ctx{session_id_t{}, components::table::transaction_data{0, 0}, {}, oid};
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
+        fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)), no_defaults());
     };
 
     // Create + populate the N targets and the survivor.

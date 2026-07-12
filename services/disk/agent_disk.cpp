@@ -483,7 +483,8 @@ namespace services::disk {
     agent_disk_t::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
     agent_disk_t::storage_append_inner(execution_context_t ctx,
                                        components::catalog::oid_t table_oid,
-                                       std::unique_ptr<components::vector::data_chunk_t> data) {
+                                       std::unique_ptr<components::vector::data_chunk_t> data,
+                                       std::unique_ptr<components::vector::data_chunk_t> column_defaults) {
         const auto txn = ctx.txn;
         const auto session_tz = ctx.session_tz;
         auto it = storages_.find(table_oid);
@@ -601,10 +602,41 @@ namespace services::disk {
                     found = true;
                 }
                 if (!found) {
+                    // Fallback source: the catalog-decoded (pg_attribute.attdefspec)
+                    // defaults stamped on the INSERT node — a one-row chunk whose
+                    // column aliases carry the column names. Storage-level defaults do
+                    // not survive a restart (WAL-replay schema synthesis, adopt_schema
+                    // and .otbx load all drop default_value_), so without this the
+                    // first INSERT after a restart silently stored NULL into defaulted
+                    // columns. Computing tables are excluded: their per-type variant
+                    // columns must stay NULL for absent variants.
+                    const uint64_t defaults_count = column_defaults ? column_defaults->column_count() : 0;
+                    uint64_t default_col = defaults_count;
+                    if (defaults_count > 0 && !is_computed_table && !table_columns[t].has_default_value()) {
+                        // Guarded alias scan, like the input-column match above:
+                        // column_index() asserts on a miss, and a miss is the common case.
+                        for (uint64_t col = 0; col < defaults_count; col++) {
+                            if (column_defaults->data[col].type().has_alias() &&
+                                column_defaults->data[col].type().alias() == table_columns[t].name() &&
+                                !column_defaults->is_null(col, 0)) {
+                                default_col = col;
+                                break;
+                            }
+                        }
+                    }
                     if (table_columns[t].has_default_value()) {
                         expanded_data.emplace_back(resource(), full_types[t], data->size());
                         for (uint64_t row = 0; row < data->size(); row++) {
                             expanded_data.back().set_value(row, table_columns[t].default_value());
+                        }
+                    } else if (default_col < defaults_count) {
+                        expanded_data.emplace_back(resource(), full_types[t], data->size());
+                        auto catalog_default = column_defaults->value(default_col, 0);
+                        auto filled = catalog_default.type() != full_types[t]
+                                          ? catalog_default.cast_as(full_types[t], session_tz)
+                                          : std::move(catalog_default);
+                        for (uint64_t row = 0; row < data->size(); row++) {
+                            expanded_data.back().set_value(row, filled);
                         }
                     } else {
                         expanded_data.emplace_back(resource(), full_types[t], data->size());

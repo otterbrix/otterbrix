@@ -1074,7 +1074,11 @@ namespace services::dispatcher {
                     }
                     return result;
                 } else {
-                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
+                    std::pmr::string msg{"collection does not exist: ", resource};
+                    msg.append(node->dbname().begin(), node->dbname().end());
+                    msg += '.';
+                    msg.append(node->relname().begin(), node->relname().end());
+                    return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                 }
             } else {
                 assert(node->expressions().size() == 1);
@@ -1595,10 +1599,15 @@ namespace services::dispatcher {
                         // so callers (and tests) get the right error code.
                         if (impl::ns_oid_for_dbname(idx, std::string_view(agg_dbname_s)) ==
                             components::catalog::INVALID_OID) {
-                            return core::error_t(core::error_code_t::database_not_exists,
-                                                 std::pmr::string{"", resource});
+                            std::pmr::string msg{"database does not exist: ", resource};
+                            msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
+                            return core::error_t(core::error_code_t::database_not_exists, std::move(msg));
                         }
-                        return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
+                        std::pmr::string msg{"collection does not exist: ", resource};
+                        msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
+                        msg += '.';
+                        msg.append(agg_relname_s.begin(), agg_relname_s.end());
+                        return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                     }
                 }
                 if (table_schema.empty() && incoming_schema.empty()) {
@@ -2499,7 +2508,9 @@ namespace services::dispatcher {
                 auto* insert_node = reinterpret_cast<node_insert_t*>(node);
                 const auto* tbl_ins = impl::tbl_md_for_oid(idx, insert_node->table_oid());
                 if (!tbl_ins) {
-                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
+                    // node_insert_t carries only the (unresolved) table oid, no names.
+                    return core::error_t(core::error_code_t::table_not_exists,
+                                         std::pmr::string{"INSERT target collection does not exist", resource});
                 }
 
                 auto incoming_schema = validate_schema(resource, idx, node->children().front().get(), parameters);
@@ -2825,7 +2836,9 @@ namespace services::dispatcher {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
                 const auto* tbl_idx = impl::tbl_md_for_oid(idx, idx_node->table_oid());
                 if (!tbl_idx) {
-                    return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{"", resource});
+                    // node_create_index_t carries only the index name, no table names.
+                    return core::error_t(core::error_code_t::table_not_exists,
+                                         std::pmr::string{"CREATE INDEX target collection does not exist", resource});
                 }
 
                 named_schema table_schema{resource};

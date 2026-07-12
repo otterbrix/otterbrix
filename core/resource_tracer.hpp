@@ -27,7 +27,12 @@ public:
             for (const auto& [address, info] : live_) {
                 std::cerr << "[resource_tracer]   leaked " << info.bytes << " byte(s) at "
                           << reinterpret_cast<void*>(address) << " (alignment " << info.alignment << ")" << std::endl;
+                // Reclaim the still-live block so LSan/ASAN sees no leak at process
+                // exit — mirrors synchronized_pool_resource::release() (a13 behaviour).
+                // The [resource_tracer] report above preserves the diagnostic.
+                upstream_->deallocate(reinterpret_cast<void*>(address), info.bytes, info.alignment);
             }
+            live_.clear();
         }
     }
 

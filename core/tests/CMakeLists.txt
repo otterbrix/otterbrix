@@ -6,6 +6,7 @@ set(${PROJECT_NAME}_SOURCES
         test_buffer.cpp
         test_scalar.cpp
         test_uvector.cpp
+        test_resource_tracer.cpp
         )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

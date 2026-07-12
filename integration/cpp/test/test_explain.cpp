@@ -156,6 +156,35 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         }
     }
 
+    INFO("EXPLAIN (ANALYZE false/off/0) is plan-only — the inner DML must NOT execute"); {
+        // Regression: an `ANALYZE <false-ish>` arg was misread as ANALYZE=true and ran the INSERT.
+        for (const char* q :
+             {"EXPLAIN (ANALYZE false) INSERT INTO TestDatabase.orders (id, cust) VALUES (77, 77);",
+              "EXPLAIN (ANALYZE off) INSERT INTO TestDatabase.orders (id, cust) VALUES (66, 66);",
+              "EXPLAIN (ANALYZE 0) INSERT INTO TestDatabase.orders (id, cust) VALUES (55, 55);"}) {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(s, q)->is_success());
+        }
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 4); // still 4 — no plan-only form executed
+    }
+
+    INFO("EXPLAIN (ANALYZE true) DOES execute the inner DML (positive control)"); {
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(
+                            s, "EXPLAIN (ANALYZE true) INSERT INTO TestDatabase.orders (id, cust) VALUES (88, 88);")
+                        ->is_success());
+        }
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5); // now 5 — ANALYZE true ran the insert
+    }
+
     INFO("EXPLAIN of an unsupported (DDL) inner statement is rejected"); {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN CREATE TABLE TestDatabase.foo(x int);");
@@ -265,5 +294,62 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
             REQUIRE(cur->is_success());
             REQUIRE(contains(plan_text(cur), "FAKE-RENDERER"));
         }
+    }
+}
+
+TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
+    auto config = test_create_config("/tmp/test_explain/renderer_registration_edges");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.orders(id int, cust int);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20);")->is_success());
+    }
+
+    INFO("out-of-range registration id is rejected, not an unbounded allocation"); {
+        // A bogus huge id must return false (bounded) — never resize the per-executor registry to
+        // gigabytes of fill (which, with exceptions disabled, would abort the process).
+        REQUIRE_FALSE(dispatcher->set_explain_renderer(4000000000u, &fake_render));
+    }
+
+    INFO("a null renderer is rejected (reported failure, not silent success)"); {
+        REQUIRE_FALSE(dispatcher->set_explain_renderer(5, nullptr));
+    }
+
+    INFO("out-of-range render_id resolves to slot 0 — the host's default, not the built-in"); {
+        // Host overwrites the default slot 0 with its own renderer; an out-of-range query id must
+        // resolve to THAT slot-0 default (not the hardcoded built-in postgres).
+        REQUIRE(dispatcher->set_explain_renderer(0, &fake_render_2)); // slot 0 = FAKE-SPARK
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 999);
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "FAKE-SPARK"));   // host's slot-0 default
+        REQUIRE_FALSE(contains(t, "orders")); // NOT the built-in postgres plan
+    }
+
+    INFO("execute_sql_with_params honors render_id (previously dropped)"); {
+        // slot 1 = FAKE-RENDERER; slot 0 was overwritten to FAKE-SPARK above. No bound parameters are
+        // needed — the point is that this entry point stamps render_id like execute_sql does.
+        REQUIRE(dispatcher->set_explain_renderer(1, &fake_render));
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql_with_params(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", {}, 1);
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "FAKE-RENDERER"));  // render_id 1 honored (slot 1)
+        REQUIRE_FALSE(contains(t, "FAKE-SPARK")); // not the slot-0 default
     }
 }

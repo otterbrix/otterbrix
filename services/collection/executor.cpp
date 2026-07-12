@@ -291,9 +291,9 @@ namespace services::collection::executor {
             explain_ir_builder b{resource(), explain_names};
             explain_root->explain(b.sink());
             const auto render = resolve_explain_renderer_(plan.explain_render_id);
-            if (plan.explain_render_id != 0 && render == &render_postgres) {
+            if (plan.explain_render_id != 0 && !explain_slot_registered_(plan.explain_render_id)) {
                 trace(log_,
-                      "executor::explain: render_id {} not registered on this executor — using default postgres",
+                      "executor::explain: render_id {} not registered on this executor — using default (slot 0)",
                       plan.explain_render_id);
             }
             co_return execute_result_t{render(resource(), b.release(), false)};
@@ -312,9 +312,9 @@ namespace services::collection::executor {
             explain_ir_builder b{resource(), explain_names};
             explain_root->explain(b.sink());
             const auto render = resolve_explain_renderer_(plan.explain_render_id);
-            if (plan.explain_render_id != 0 && render == &render_postgres) {
+            if (plan.explain_render_id != 0 && !explain_slot_registered_(plan.explain_render_id)) {
                 trace(log_,
-                      "executor::explain: render_id {} not registered on this executor — using default postgres",
+                      "executor::explain: render_id {} not registered on this executor — using default (slot 0)",
                       plan.explain_render_id);
             }
             result.cursor = render(resource(), b.release(), true);
@@ -1882,17 +1882,17 @@ namespace services::collection::executor {
 
     executor_t::unique_future<bool> executor_t::set_explain_renderer(uint32_t id, explain_render_fn fn) {
         // Register the host-supplied renderer into THIS executor's own registry at slot `id` (a POD
-        // fn-pointer, no shared state). A null fn is ignored — never land a null callable in a slot.
-        // Grow with the default renderer so any skipped slot resolves to the built-in postgres.
-        if (fn != nullptr) {
-            // size_t arithmetic: `id + 1` in uint32 would wrap to 0 at UINT32_MAX and shrink the
-            // vector, turning the store below into an out-of-bounds write. Widen so the target size
-            // is exact (an absurd id merely fails to allocate, never corrupts).
-            if (explain_renderers_.size() <= id) {
-                explain_renderers_.resize(static_cast<std::size_t>(id) + 1, &render_postgres);
-            }
-            explain_renderers_[id] = fn;
+        // fn-pointer, no shared state). Reject a null renderer or an out-of-range id with `false` —
+        // never report success while installing nothing, and never grow the registry unboundedly on a
+        // huge host id (that would allocate gigabytes and, with exceptions disabled, abort the process).
+        if (fn == nullptr || id >= kExplainRendererSlotLimit) {
+            co_return false;
         }
+        // Grow with the default renderer so any skipped slot resolves to the built-in postgres.
+        if (explain_renderers_.size() <= id) {
+            explain_renderers_.resize(static_cast<std::size_t>(id) + 1, &render_postgres);
+        }
+        explain_renderers_[id] = fn;
         co_return true;
     }
 

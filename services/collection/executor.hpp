@@ -317,6 +317,11 @@ namespace services::collection::executor {
         // execute_pipeline pump forces an incremental async flush. 0 = disabled
         // (the mid-pump gate never fires).
         uint64_t dml_flush_row_threshold_{0};
+        // Upper bound on registerable EXPLAIN renderer slots. The registry is a small dense set of
+        // host renderers, so a larger id is a caller error and is rejected (see set_explain_renderer)
+        // rather than reserved — this bounds the vector so a bogus host id can never trigger an
+        // unbounded allocation / bad_alloc abort.
+        static constexpr uint32_t kExplainRendererSlotLimit = 1024;
         // EXPLAIN renderer registry: per-query selectable formatters, indexed by
         // execution_plan_t::explain_render_id. Slot 0 (built-in postgres) is seeded in the ctor
         // body — a container member can't brace-default a keyed slot. Registered via
@@ -324,11 +329,18 @@ namespace services::collection::executor {
         // fn-pointers (Rule 14); pinned to `resource` in the ctor init-list.
         std::pmr::vector<explain_render_fn> explain_renderers_;
 
-        // Resolve the per-query renderer by slot `id`; an out-of-range or null slot yields the
-        // DEFAULT (slot 0 = built-in postgres), not a fallback branch.
+        // True when `id` names a real registered renderer (in range and non-null).
+        [[nodiscard]] bool explain_slot_registered_(uint32_t id) const noexcept {
+            return id < explain_renderers_.size() && explain_renderers_[id] != nullptr;
+        }
+
+        // Resolve the per-query renderer by slot `id`. An unregistered id yields the DEFAULT — slot 0
+        // (built-in postgres unless a host overwrote it) — a default value, not a fallback branch.
         [[nodiscard]] explain_render_fn resolve_explain_renderer_(uint32_t id) const noexcept {
-            return (id < explain_renderers_.size() && explain_renderers_[id]) ? explain_renderers_[id]
-                                                                              : &render_postgres;
+            if (explain_slot_registered_(id)) {
+                return explain_renderers_[id];
+            }
+            return explain_renderers_.empty() ? &render_postgres : explain_renderers_[0];
         }
     };
 

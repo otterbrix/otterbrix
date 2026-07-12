@@ -192,7 +192,21 @@ namespace components::sql::transform {
             for (auto data : node.options->lst) {
                 auto* def = pg_ptr_cast<DefElem>(data.data);
                 if (def && def->defname && std::string_view{def->defname} == "analyze") {
-                    is_analyze = true;
+                    // ANALYZE carries an optional boolean (PostgreSQL defGetBoolean semantics): a
+                    // missing arg is the bare `EXPLAIN ANALYZE` (enabled), an integer is nonzero-is-true,
+                    // and a string is true/on/1 vs false/off/0. `EXPLAIN (ANALYZE false)` MUST stay
+                    // plan-only so the inner DML is never executed.
+                    if (def->arg == nullptr) {
+                        is_analyze = true;
+                    } else if (nodeTag(def->arg) == T_Integer) {
+                        is_analyze = intVal(def->arg) != 0;
+                    } else if (nodeTag(def->arg) == T_String) {
+                        const std::string_view v{strVal(def->arg)};
+                        is_analyze = !(v == "false" || v == "off" || v == "0" || v == "no" || v == "f" ||
+                                       v == "n");
+                    } else {
+                        is_analyze = true;
+                    }
                     break;
                 }
             }

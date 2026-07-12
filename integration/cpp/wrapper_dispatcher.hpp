@@ -64,8 +64,8 @@ namespace otterbrix {
             -> components::cursor::cursor_t_ptr;
         auto execute_sql_with_params(const session_id_t& session,
                                      const std::string& query,
-                                     const std::vector<std::pair<size_t, components::types::logical_value_t>>& params)
-            -> components::cursor::cursor_t_ptr;
+                                     const std::vector<std::pair<size_t, components::types::logical_value_t>>& params,
+                                     uint32_t render_id = 0) -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
 
         auto add_parser_extension(components::sql::parser::parser_extension_t extension)

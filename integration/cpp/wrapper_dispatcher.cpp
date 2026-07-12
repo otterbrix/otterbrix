@@ -136,7 +136,8 @@ namespace otterbrix {
     cursor_t_ptr wrapper_dispatcher_t::execute_sql_with_params(
         const components::session::session_id_t& session,
         const std::string& query,
-        const std::vector<std::pair<size_t, components::types::logical_value_t>>& params) {
+        const std::vector<std::pair<size_t, components::types::logical_value_t>>& params,
+        uint32_t render_id) {
         using namespace components::sql::transform;
 
         trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
@@ -172,6 +173,8 @@ namespace otterbrix {
             return make_cursor(resource(), finalized.error());
         }
         auto& plan = std::move(finalized).value();
+        // Stamp the host-selected EXPLAIN renderer slot (mirrors execute_sql); inert for non-EXPLAIN.
+        plan.explain_render_id = render_id;
         return execute_plan(session, std::move(plan));
     }
 

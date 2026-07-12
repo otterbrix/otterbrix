@@ -742,7 +742,17 @@ namespace components::types {
         }
     }
 
-    const std::vector<logical_value_t>& logical_value_t::children() const { return *vec_ptr(); }
+    const std::vector<logical_value_t>& logical_value_t::children() const {
+        // A NULL value carries no payload: data_ is zero, so dereferencing
+        // vec_ptr() is UB. NULL rows are ordinary result data — reading a
+        // nullable nested column via children() must be safe and yield "no
+        // elements", with is_null() staying the semantic null check.
+        static const std::vector<logical_value_t> empty;
+        if (is_null()) {
+            return empty;
+        }
+        return *vec_ptr();
+    }
 
     logical_value_t logical_value_t::create_struct(std::pmr::memory_resource* r,
                                                    const complex_logical_type& type,

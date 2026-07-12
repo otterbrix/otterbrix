@@ -569,3 +569,94 @@ TEST_CASE("integration::list_array::full_list_update") {
         REQUIRE(v.children()[2].value<int32_t>() == 300);
     }
 }
+TEST_CASE("integration::list_array::null_array_value_reads_safely") {
+    auto config = test_create_config("/tmp/test_list_array/null_array_value");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.arr (id bigint, v int[3]);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.arr (id, v) VALUES (1, ARRAY[7,8,9]);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.arr (id, v) VALUES (2, NULL);")->is_success());
+
+    INFO("a NULL array row is readable through the children() idiom");
+    {
+        auto cur = exec(dispatcher, "SELECT id, v FROM TestDatabase.arr ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        auto full = cur->value(1, 0);
+        REQUIRE_FALSE(full.is_null());
+        REQUIRE(full.children().size() == 3);
+        REQUIRE(full.children()[0].value<int32_t>() == 7);
+        // Regression: children() on the NULL value dereferenced the null
+        // payload pointer and crashed the process.
+        auto null_value = cur->value(1, 1);
+        REQUIRE(null_value.is_null());
+        CHECK(null_value.children().empty());
+    }
+}
+
+// Automates the SQL battery from the logical_value_t::children() fix: with a
+// NULL array row present, every one of these read/scan/aggregate/DML statements
+// must complete cleanly (the engine's own call sites already guard is_null()),
+// and a NULL row's value read through the children() idiom must be empty rather
+// than crashing the process.
+TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
+    auto config = test_create_config("/tmp/test_list_array/null_array_sql_ops");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.a (id bigint, v int[3]);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (1, ARRAY[7,8,9]);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (2, NULL);")->is_success());
+
+    auto ok = [&](const std::string& sql) {
+        INFO(sql);
+        return exec(dispatcher, sql);
+    };
+
+    SECTION("reads and scans over the NULL array row") {
+        {
+            auto cur = ok("SELECT v FROM db.a;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2); // both rows returned, incl. the NULL one
+        }
+        {
+            auto cur = ok("SELECT v[1] FROM db.a;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+        }
+        {
+            auto cur = ok("SELECT id FROM db.a WHERE v = ARRAY[7,8,9];");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1); // only the non-NULL row matches
+        }
+        // NB: `WHERE v = v` (whole-array self-comparison) is intentionally not
+        // covered here — array = array is not a supported filter shape and is a
+        // separate concern from the children() NULL fix.
+        REQUIRE(ok("SELECT id FROM db.a ORDER BY v;")->is_success());
+        REQUIRE(ok("SELECT v, COUNT(*) FROM db.a GROUP BY v;")->is_success());
+        REQUIRE(ok("SELECT DISTINCT v FROM db.a;")->is_success());
+    }
+
+    SECTION("DML touching the NULL array row") {
+        REQUIRE(ok("UPDATE db.a SET v[1] = 5 WHERE id = 1;")->is_success());
+        REQUIRE(ok("UPDATE db.a SET v = ARRAY[1,2,3] WHERE id = 2;")->is_success());
+        {
+            auto cur = ok("INSERT INTO db.a (id, v) VALUES (3, NULL) RETURNING v;");
+            REQUIRE(cur->is_success());
+            // RETURNING a NULL array must read back safely through children().
+            REQUIRE(cur->size() == 1);
+            auto returned = cur->value(0, 0);
+            REQUIRE(returned.is_null());
+            CHECK(returned.children().empty());
+        }
+    }
+}

@@ -1,7 +1,9 @@
 #include "operations_helper.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/types/logical_value.hpp>
 #include <components/types/physical_value.hpp>
 #include <core/operations_helper.hpp>
+#include <memory_resource>
 #include <random>
 
 using namespace components::types;
@@ -241,4 +243,20 @@ TEST_CASE("components::types::decimal") {
             check_arithmetics.operator()<int128_t, int64_t>(-502, width, scale, "-50.2000");
         }
     }
+}
+TEST_CASE("components::types::logical_value::null_children_safe") {
+    // Regression: children() on a NULL (NA-typed) value dereferenced the null
+    // payload pointer. NULL nested values are ordinary result-set data, so
+    // reading them through the children() idiom must be safe.
+    auto* resource = std::pmr::get_default_resource();
+    logical_value_t null_value(resource, complex_logical_type{logical_type::NA});
+    REQUIRE(null_value.is_null());
+    CHECK(null_value.children().empty());
+    // A non-null nested value keeps returning its real elements.
+    auto list = logical_value_t::create_list(
+        resource,
+        complex_logical_type{logical_type::BIGINT},
+        {logical_value_t(resource, int64_t{1}), logical_value_t(resource, int64_t{2})});
+    REQUIRE_FALSE(list.is_null());
+    CHECK(list.children().size() == 2);
 }

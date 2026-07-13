@@ -5,6 +5,10 @@
 #include <components/context/subplan_runner.hpp>
 #include <components/vector/data_chunk.hpp>
 
+#include <string>
+#include <unordered_set>
+#include <vector>
+
 namespace components::operators {
 
     // Upper bound on fixpoint iterations: a clean error instead of an unbounded hang if
@@ -12,8 +16,9 @@ namespace components::operators {
     // Generous so legitimate deep hierarchies are never clipped.
     static constexpr std::size_t kMaxRecursionDepth = 10000;
 
-    operator_recursive_cte_t::operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log)
-        : read_only_operator_t(resource, std::move(log), operator_type::recursive_cte) {}
+    operator_recursive_cte_t::operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log, bool union_all)
+        : read_only_operator_t(resource, std::move(log), operator_type::recursive_cte)
+        , union_all_(union_all) {}
 
     void operator_recursive_cte_t::reset_recursive_subtree(const operator_ptr& op) {
         if (!op) {
@@ -53,8 +58,43 @@ namespace components::operators {
 
         chunks_vector_t result(res);
 
-        // 1. Anchor (the non-recursive UNION-ALL term). Seed both `result` and the
-        //    working set with its rows. run_subplan returns COPIES, so they are ours to own.
+        // For UNION (DISTINCT): a row is emitted (into `result` AND the next working set) only the first
+        // time it is seen across the ENTIRE accumulated result — PostgreSQL recursive-UNION semantics, and
+        // the termination guard for cyclic graphs (a revisited node produces no new working-set rows). For
+        // UNION ALL every row passes and `seen` stays unused.
+        std::unordered_set<std::string> seen;
+        auto emit_rows = [&](const vector::data_chunk_t& chunk, chunks_vector_t& ws_target) {
+            if (chunk.size() == 0) {
+                return;
+            }
+            if (union_all_) {
+                result.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
+                ws_target.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
+                return;
+            }
+            std::vector<size_t> keep;
+            keep.reserve(chunk.size());
+            for (size_t r = 0; r < chunk.size(); ++r) {
+                if (seen.insert(vector::row_identity_key(chunk, r)).second) {
+                    keep.push_back(r);
+                }
+            }
+            if (keep.empty()) {
+                return;
+            }
+            vector::data_chunk_t filtered(res, chunk.types(), keep.size());
+            filtered.set_cardinality(keep.size());
+            for (size_t out_r = 0; out_r < keep.size(); ++out_r) {
+                for (size_t col = 0; col < chunk.column_count(); ++col) {
+                    filtered.set_value(col, out_r, chunk.value(col, keep[out_r]));
+                }
+            }
+            result.emplace_back(filtered.partial_copy(res, 0, filtered.size()));
+            ws_target.emplace_back(std::move(filtered));
+        };
+
+        // 1. Anchor (the non-recursive term). Seed both `result` and the working set with its rows
+        //    (de-duplicated for UNION). run_subplan returns COPIES, so they are ours to own.
         {
             auto anchor_res = co_await ctx->runner->run_subplan(anchor_, ctx);
             if (anchor_res.has_error()) {
@@ -62,19 +102,16 @@ namespace components::operators {
             }
             chunks_vector_t seed(res);
             for (auto& chunk : anchor_res.value()) {
-                if (chunk.size() > 0) {
-                    result.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
-                    seed.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
-                }
+                emit_rows(chunk, seed);
             }
             working_set_ = make_operator_data(res, std::move(seed));
         }
 
         // 2. Fixpoint: each pass re-runs the recursive term over the CURRENT working set
-        //    (the rows the previous pass produced), appends its output to `result` (UNION
-        //    ALL — no dedup), and repoints the working set to that fresh output. Terminate
-        //    when a pass yields no rows. The recursion-depth guard prevents an unbounded
-        //    hang on cyclic data.
+        //    (the rows the previous pass produced), appends its output to `result` (all rows for
+        //    UNION ALL; only rows not yet seen for UNION), and repoints the working set to that
+        //    fresh output. Terminate when a pass yields no NEW rows. The recursion-depth guard
+        //    still bounds a pathological UNION ALL that never converges.
         if (recursive_) {
             std::size_t depth = 0;
             while (working_set_ && working_set_->size() > 0) {
@@ -92,10 +129,7 @@ namespace components::operators {
 
                 chunks_vector_t next(res);
                 for (auto& chunk : step.value()) {
-                    if (chunk.size() > 0) {
-                        result.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
-                        next.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
-                    }
+                    emit_rows(chunk, next);
                 }
                 if (next.empty()) {
                     break;

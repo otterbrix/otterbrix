@@ -1548,3 +1548,60 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
         REQUIRE(cur->is_error());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tier-1: a recursive CTE with UNION (DISTINCT) was driven as UNION ALL — the
+// `all` flag was dropped at plan-gen, so duplicate rows were emitted and cyclic
+// graphs ran to the recursion-depth cap. Now UNION de-duplicates the working
+// set + result against every emitted row.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
+    auto config = test_create_config("/tmp/test_subqueries/recursive_cte_union_distinct");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.edges (src bigint, dst bigint);")->is_success());
+    }
+    {
+        // Diamond DAG: 1->2, 1->3, 2->4, 3->4. Node 4 is reachable by TWO paths.
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.edges (src, dst) VALUES (1,2),(1,3),(2,4),(3,4);")
+                    ->is_success());
+    }
+
+    INFO("recursive UNION de-duplicates the diamond node reachable by two paths");
+    {
+        // reachable-from-1 = {1,2,3,4}; UNION collapses the two paths to 4 -> 4 rows.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "WITH RECURSIVE reach AS ("
+                                           "  SELECT 1 AS node "
+                                           "  UNION "
+                                           "  SELECT e.dst FROM TestDatabase.edges e JOIN reach r ON e.src = r.node"
+                                           ") SELECT node FROM reach;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4); // was 5 (node 4 twice) under the UNION-ALL-only driver
+    }
+
+    INFO("the same shape as UNION ALL keeps both paths (control)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "WITH RECURSIVE reach AS ("
+                                           "  SELECT 1 AS node "
+                                           "  UNION ALL "
+                                           "  SELECT e.dst FROM TestDatabase.edges e JOIN reach r ON e.src = r.node"
+                                           ") SELECT node FROM reach;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5); // node 4 reached via both 2 and 3
+    }
+}

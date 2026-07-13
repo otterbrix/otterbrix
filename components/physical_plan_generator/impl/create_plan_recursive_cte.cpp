@@ -14,8 +14,11 @@ namespace services::planner::impl {
                               const components::logical_plan::storage_parameters* params) {
         const auto* cte_node = static_cast<const components::logical_plan::node_recursive_cte_t*>(node.get());
 
-        auto op = boost::intrusive_ptr(
-            new components::operators::operator_recursive_cte_t(context.resource, context.log.clone()));
+        // cte_node->all() carries UNION ALL (true) vs UNION/DISTINCT (false), set by the transformer
+        // from the recursive term's set-op. UNION de-duplicates in the fixpoint driver.
+        auto op = boost::intrusive_ptr(new components::operators::operator_recursive_cte_t(context.resource,
+                                                                                          context.log.clone(),
+                                                                                          cte_node->all()));
 
         // Build anchor using the original context (no cte_working_sets entry needed).
         auto anchor_op = create_plan(context, function_registry, cte_node->children()[0], limit, params);

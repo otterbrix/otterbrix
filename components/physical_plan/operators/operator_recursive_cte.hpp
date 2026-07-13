@@ -35,7 +35,10 @@ namespace components::operators {
     // a bare sourceless-sink root. await_async_and_resume reaches the drive_fixpoint_ core.
     class operator_recursive_cte_t final : public read_only_operator_t {
     public:
-        operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log);
+        // union_all: true for UNION ALL (append every produced row); false for UNION (DISTINCT) —
+        // de-duplicate the working set and result against every row emitted so far (PostgreSQL
+        // recursive-UNION semantics; also the termination guard for cyclic graphs).
+        operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log, bool union_all);
 
         // Sourceless async-finalize sink: see the class note. left()==nullptr (anchor_/
         // recursive_ are private members), so the executor admits this as a
@@ -77,6 +80,7 @@ namespace components::operators {
         operator_data_ptr working_set_;
         operator_ptr anchor_{nullptr};
         operator_ptr recursive_{nullptr};
+        const bool union_all_; // false => UNION (DISTINCT): de-duplicate against all emitted rows
 
         // Run the anchor + fixpoint loop through ctx->runner->run_subplan. Shared core
         // for the (sole) await_async_and_resume entry point. Returns an error_t.

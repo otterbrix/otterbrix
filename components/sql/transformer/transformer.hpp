@@ -65,6 +65,10 @@ namespace components::sql::transform {
                                                 const core::dbname_t& db,
                                                 const core::relname_t& rel,
                                                 logical_plan::execution_plan_t* plan);
+        // Register a statement's WITH (CTE) definitions into cte_queries_ / recursive_cte_queries_ so the
+        // body can reference them. Shared by SELECT (simple + UNION) and DML (DELETE/UPDATE/INSERT). A
+        // data-modifying CTE (ctequery not a SELECT) is rejected cleanly (deferred). No-op on null.
+        void register_with_ctes(WithClause* with_clause);
         logical_plan::node_ptr transform_update(UpdateStmt& node, logical_plan::execution_plan_t* plan);
         logical_plan::node_ptr transform_insert(InsertStmt& node, logical_plan::execution_plan_t* plan);
         logical_plan::node_ptr transform_delete(DeleteStmt& node, logical_plan::execution_plan_t* plan);

@@ -7,6 +7,12 @@ using namespace components::expressions;
 
 namespace components::sql::transform {
     logical_plan::node_ptr transformer::transform_delete(DeleteStmt& node, logical_plan::execution_plan_t* plan) {
+        // A leading WITH must be registered before the body so `DELETE ... WHERE id IN (SELECT ... FROM cte)`
+        // resolves the CTE instead of falling through to a (wrong / nonexistent) base table.
+        register_with_ctes(node.withClause);
+        if (has_error()) {
+            return nullptr;
+        }
         // Only the bare `DELETE FROM t` (no WHERE, no USING) short-circuits to a
         // delete-all. A USING clause with no WHERE is a cross-join filter (delete
         // every target row that joins a source row), so it must go through the join

@@ -440,6 +440,27 @@ namespace components::sql::transform {
         return agg;
     }
 
+    void transformer::register_with_ctes(WithClause* with_clause) {
+        if (!with_clause) {
+            return;
+        }
+        for (const auto& item : with_clause->ctes->lst) {
+            auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
+            if (nodeTag(cte->ctequery) != T_SelectStmt) {
+                // WITH x AS (DELETE/UPDATE/INSERT ... RETURNING ...) — a data-modifying CTE. Deferred:
+                // reject cleanly instead of a bad SelectStmt cast.
+                error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                       std::pmr::string{"data-modifying WITH (CTE) is not supported", resource_});
+                return;
+            }
+            if (with_clause->recursive) {
+                recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+            } else {
+                cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+            }
+        }
+    }
+
     logical_plan::node_ptr transformer::build_limit_node(SelectStmt& node,
                                                          const core::dbname_t& db,
                                                          const core::relname_t& rel,
@@ -533,18 +554,9 @@ namespace components::sql::transform {
             // gram.y attaches withClause / sortClause / limitCount / limitOffset / distinctClause to THIS
             // compound node (not to larg/rarg). The old early-return dropped all of them silently.
             // WITH must be registered BEFORE the arms so both can see the CTEs.
-            if (node.withClause) {
-                if (node.withClause->recursive) {
-                    for (const auto& item : node.withClause->ctes->lst) {
-                        auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
-                        recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
-                    }
-                } else {
-                    for (const auto& item : node.withClause->ctes->lst) {
-                        auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
-                        cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
-                    }
-                }
+            register_with_ctes(node.withClause);
+            if (has_error()) {
+                return nullptr;
             }
             auto left = transform_select(*node.larg, plan);
             auto right = transform_select(*node.rarg, plan);
@@ -608,18 +620,9 @@ namespace components::sql::transform {
                     resource_});
             return nullptr;
         }
-        if (node.withClause) {
-            if (node.withClause->recursive) {
-                for (const auto& item : node.withClause->ctes->lst) {
-                    auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
-                    recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
-                }
-            } else {
-                for (const auto& item : node.withClause->ctes->lst) {
-                    auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
-                    cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
-                }
-            }
+        register_with_ctes(node.withClause);
+        if (has_error()) {
+            return nullptr;
         }
         logical_plan::node_aggregate_ptr agg = nullptr;
         name_collection_t names;

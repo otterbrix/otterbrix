@@ -1605,3 +1605,53 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
         REQUIRE(cur->size() == 5); // node 4 reached via both 2 and 3
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tier-1: a leading WITH (CTE) on a DML statement was dropped — only the SELECT
+// transformer registered withClause, so `FROM cte` in a DELETE/UPDATE/INSERT
+// fell through to a base-table lookup (silent-wrong or error). Now the DML
+// transformers register the WITH first.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
+    auto config = test_create_config("/tmp/test_subqueries/with_before_dml");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        return dispatcher->execute_sql(s, sql);
+    };
+
+    exec("CREATE DATABASE TestDatabase;");
+    REQUIRE(exec("CREATE TABLE TestDatabase.staging (id bigint, flag bigint);")->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.staging (id, flag) VALUES (1,1),(2,0),(3,1);")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.t (id bigint);")->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.t (id) VALUES (1),(2),(3),(4);")->is_success());
+
+    INFO("WITH before DELETE: the CTE feeds the DELETE predicate (was dropped)");
+    {
+        // c = staged, flagged ids {1,3}; delete t rows whose id is in c -> t left with {2,4}.
+        REQUIRE(exec("WITH c AS (SELECT id FROM TestDatabase.staging WHERE flag = 1) "
+                     "DELETE FROM TestDatabase.t WHERE id IN (SELECT id FROM c);")
+                    ->is_success());
+        auto cur = exec("SELECT id FROM TestDatabase.t ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 4);
+    }
+
+    INFO("WITH before INSERT ... SELECT: the CTE feeds the inserted rows");
+    {
+        REQUIRE(exec("CREATE TABLE TestDatabase.dst (id bigint);")->is_success());
+        REQUIRE(exec("WITH c AS (SELECT id FROM TestDatabase.staging WHERE flag = 1) "
+                     "INSERT INTO TestDatabase.dst (id) SELECT id FROM c;")
+                    ->is_success());
+        auto cur = exec("SELECT COUNT(*) FROM TestDatabase.dst;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2); // ids {1,3}
+    }
+}

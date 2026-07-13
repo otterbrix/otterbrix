@@ -71,6 +71,12 @@ namespace services::dispatcher {
             actor_zeta::mailbox::message_ptr pending_msg{};
             actor_zeta::behavior_t behavior{};
             uint32_t stale_ticks{0};
+            // Consecutive watchdog poke rounds this slot stayed stale (reset when
+            // its await completes). Routine staleness is normal for any executor
+            // operation past ~2ms; a slot surviving hundreds of poke rounds is a
+            // genuine stall and escalates the (otherwise trace-level) watchdog
+            // log to a warning.
+            uint32_t poke_rounds{0};
         };
 
         manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log);

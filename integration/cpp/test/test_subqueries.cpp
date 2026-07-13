@@ -1360,3 +1360,67 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
         REQUIRE(cur->value(0, 1).value<std::string_view>() == "Designer");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tier-0: previously assert(false) (Release UB) for unsupported SubLink forms.
+// Now: EXPR bare boolean predicate is supported (PostgreSQL semantics); every
+// other unsupported form returns a clean sql_parse_error instead of crashing,
+// including when nested under AND/OR/NOT (which previously null-deref'd).
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") {
+    auto config = test_create_config("/tmp/test_subqueries/tier0_unsupported_sublink_forms");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.flags (id bigint, ok boolean);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.flags (id, ok) VALUES (1, true), (2, false);")
+                    ->is_success());
+    }
+
+    INFO("EXPR bare boolean predicate WHERE (SELECT flag) is supported (was assert(false))");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 1);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10); // sub-query is true -> all employees pass
+    }
+
+    INFO("EXPR bare boolean predicate that is false selects no rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 2);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0); // sub-query is false -> no rows
+    }
+
+    INFO("ARRAY(SELECT ...) as a predicate is a clean error, not a crash (was assert(false) UB)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "SELECT name FROM TestDatabase.Employees WHERE ARRAY(SELECT id FROM TestDatabase.Departments);");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("unsupported sub-query form nested under AND is a clean error, not a null-deref crash");
+    {
+        // Previously: transform_sublink_expr returned a null intrusive_ptr and the AND append lambda
+        // dereferenced child_expr->group() before the top-level has_error() guard was reached.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT name FROM TestDatabase.Employees "
+                                           "WHERE salary > 0 AND ARRAY(SELECT id FROM TestDatabase.Departments);");
+        REQUIRE(cur->is_error());
+    }
+}

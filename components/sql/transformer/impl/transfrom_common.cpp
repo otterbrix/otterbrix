@@ -372,6 +372,12 @@ namespace components::sql::transform {
                                              resource_});
                         return;
                     }
+                    // A child transform may have failed (e.g. an unsupported sub-query form returns nullptr
+                    // + sets error_). Only the top-level WHERE path guards has_error(); guard here too, or
+                    // the child_expr->group() below null-derefs before that guard is reached.
+                    if (has_error() || !child_expr) {
+                        return;
+                    }
                     if (expr->group() == child_expr->group()) {
                         auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(child_expr);
                         if (expr->type() == comp_expr->type()) {
@@ -604,6 +610,11 @@ namespace components::sql::transform {
                         std::pmr::string{"Unsupported expression: unknown expr type in transform_a_expr", resource_});
                     return nullptr;
                 }
+                // A child transform may have failed (unsupported sub-query form → nullptr + error_);
+                // guard before right->group() null-derefs.
+                if (has_error() || !right) {
+                    return nullptr;
+                }
                 auto expr = make_compare_union_expression(resource_, compare_type::union_not);
                 if (expr->group() == right->group()) {
                     auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(right);
@@ -741,18 +752,34 @@ namespace components::sql::transform {
                 expr->make_unfoldable();
                 return expr;
             }
+            case EXPR_SUBLINK: {
+                // Scalar sub-query as a bare boolean predicate: `WHERE (SELECT flag ...)`. PostgreSQL
+                // supports this; it is EXISTS-shaped. Compact the sub-query to its single scalar value and
+                // compare it against true. (>1 row errors inside compact_to_single_value, as PostgreSQL does.)
+                auto param_true = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
+                auto param_result =
+                    plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                // Transform before appending so nested sub_queries/sub_query_results come first.
+                auto sub_node = transform(*node->subselect, plan);
+                plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_result);
+                plan->sub_queries.emplace_back(std::move(sub_node));
+                auto expr = make_compare_expression(resource_, compare_type::eq, param_true, param_result);
+                expr->make_unfoldable();
+                return expr;
+            }
             case ROWCOMPARE_SUBLINK:
-                break;
-            case EXPR_SUBLINK:
-                break;
             case ARRAY_SUBLINK:
-                break;
             case CTE_SUBLINK:
-                break;
             case INITPLAN_FUNC_SUBLINK:
                 break;
         }
-        assert(false);
+        // Unsupported / parser-unreachable sub-query form. An internal error, NOT assert(false) (a Release
+        // no-op → falls off the end → UB). In this fork the grammar never emits NOT_EXISTS/ROWCOMPARE/
+        // CTE/INITPLAN_FUNC (NOT EXISTS is AEXPR_NOT+EXISTS; WITH rides withClause); ARRAY(SELECT ...) as a
+        // predicate is meaningless (array != bool) and target-list ARRAY is a separate deferred feature.
+        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                               std::pmr::string{"unsupported sub-query form", resource_});
+        return nullptr;
     }
 
     expression_ptr transformer::transform_a_expr_func(FuncCall* node,

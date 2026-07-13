@@ -39,20 +39,26 @@ namespace components::operators {
 
     namespace {
         // Applies all update expressions to out_chunk[0..match_count) and
-        // records the modified rows in the modified_ list.
-        void apply_updates(std::pmr::memory_resource* resource,
-                           const std::pmr::vector<expressions::update_expr_ptr>& updates,
-                           vector::data_chunk_t& out_chunk,
-                           const vector::data_chunk_t& from_chunk,
-                           uint64_t match_count,
-                           const logical_plan::storage_parameters& parameters,
-                           core::date::timezone_offset_t session_tz,
-                           operators::operator_write_data_ptr& modified) {
+        // records the modified rows in the modified_ list. Returns an error (and
+        // leaves the row data untouched) if an update expression cannot be
+        // evaluated — e.g. a bitwise/shift on a non-integer column.
+        [[nodiscard]] core::error_t apply_updates(std::pmr::memory_resource* resource,
+                                                  const std::pmr::vector<expressions::update_expr_ptr>& updates,
+                                                  vector::data_chunk_t& out_chunk,
+                                                  const vector::data_chunk_t& from_chunk,
+                                                  uint64_t match_count,
+                                                  const logical_plan::storage_parameters& parameters,
+                                                  core::date::timezone_offset_t session_tz,
+                                                  operators::operator_write_data_ptr& modified) {
             std::pmr::vector<bool> any_modified(match_count, false, resource);
             for (const auto& expr : updates) {
                 auto row_flags = expr->execute(resource, out_chunk, from_chunk, match_count, &parameters, session_tz);
+                if (row_flags.has_error()) {
+                    return row_flags.error();
+                }
+                const auto& flags = row_flags.value();
                 for (uint64_t i = 0; i < match_count; i++) {
-                    if (i < row_flags.size() && row_flags[i]) {
+                    if (i < flags.size() && flags[i]) {
                         any_modified[i] = true;
                     }
                 }
@@ -62,6 +68,7 @@ namespace components::operators {
                     modified->append(i);
                 }
             }
+            return core::error_t::no_error();
         }
     } // anonymous namespace
 
@@ -133,14 +140,20 @@ namespace components::operators {
         out_chunk.copy(old_chunk, 0);
         index_old_chunks_.emplace_back(std::move(old_chunk));
 
-        apply_updates(resource,
-                      updates_,
-                      out_chunk,
-                      out_chunk,
-                      index,
-                      pipeline_context->parameters,
-                      pipeline_context->session_tz,
-                      modified_);
+        // apply_updates reports unsupported operations (e.g. bitwise/shift on a
+        // non-integer column) through the pipeline error channel so the statement
+        // fails cleanly and the row data stays untouched.
+        if (auto err = apply_updates(resource,
+                                     updates_,
+                                     out_chunk,
+                                     out_chunk,
+                                     index,
+                                     pipeline_context->parameters,
+                                     pipeline_context->session_tz,
+                                     modified_);
+            err.contains_error()) {
+            return err;
+        }
         output_->append_chunk(std::move(out_chunk));
         return core::error_t::no_error();
     }
@@ -239,14 +252,17 @@ namespace components::operators {
         out_chunk.copy(old_chunk, 0);
         index_old_chunks_.emplace_back(std::move(old_chunk));
 
-        apply_updates(resource,
-                      updates_,
-                      out_chunk,
-                      right_chunk,
-                      index,
-                      pipeline_context->parameters,
-                      pipeline_context->session_tz,
-                      modified_);
+        if (auto err = apply_updates(resource,
+                                     updates_,
+                                     out_chunk,
+                                     right_chunk,
+                                     index,
+                                     pipeline_context->parameters,
+                                     pipeline_context->session_tz,
+                                     modified_);
+            err.contains_error()) {
+            return err;
+        }
         output_->append_chunk(std::move(out_chunk));
         // Keep the matched FROM rows aligned with the updated rows so RETURNING can
         // project joined (right-side) columns.

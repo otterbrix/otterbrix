@@ -10,7 +10,11 @@
 
 namespace components::logical_plan {
 
-    using subquery_compacter = core::result_wrapper_t<types::logical_value_t> (*)(const vector::data_chunk_t& data);
+    // Compacts a sub-query result (ALL its cursor chunks) into a bound parameter value. Spanning every
+    // chunk — not just the first — is what keeps an IN-list / scalar sub-query from being truncated at
+    // DEFAULT_VECTOR_CAPACITY (1024) or to a single UNION-ALL branch.
+    using subquery_compacter =
+        core::result_wrapper_t<types::logical_value_t> (*)(const std::pmr::vector<vector::data_chunk_t>& chunks);
 
     struct id_result_mapping {
         subquery_compacter compacter = nullptr;

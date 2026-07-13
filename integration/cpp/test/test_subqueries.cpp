@@ -1482,3 +1482,69 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
         REQUIRE(cur->size() == 4);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tier-1: a sub-query result was compacted from cursor->chunks().front() only,
+// so an IN-list past DEFAULT_VECTOR_CAPACITY (1024) — or a multi-branch
+// UNION ALL that keeps each branch as its own chunk — was silently truncated.
+// Now the compacters span every chunk (PostgreSQL: IN (SELECT ...) is an
+// unbounded semi-join).
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
+    auto config = test_create_config("/tmp/test_subqueries/in_subquery_spans_all_chunks");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.big (id bigint);")->is_success());
+    }
+    {
+        // 1100 ids (1..1100) — more than one 1024-row chunk.
+        std::string ins = "INSERT INTO TestDatabase.big (id) VALUES ";
+        for (int i = 1; i <= 1100; ++i) {
+            ins += "(" + std::to_string(i) + ")";
+            ins += (i < 1100) ? "," : ";";
+        }
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, ins)->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.probe (v bigint);")->is_success());
+    }
+    {
+        // v = 1050 lives ONLY in the tail past the first 1024-row chunk.
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.probe (v) VALUES (1050);")->is_success());
+    }
+
+    INFO("IN sub-query returning >1024 rows is not truncated at the first chunk");
+    {
+        // v=1050 matches only if the IN-list includes ids past 1024 (was: truncated to 1..1024 -> 0).
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "SELECT COUNT(*) FROM TestDatabase.probe WHERE v IN (SELECT id FROM TestDatabase.big);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+    }
+
+    INFO("scalar sub-query with 2 rows split across chunks still errors (not chunk-0's value)");
+    {
+        // A UNION ALL keeps each branch as its own chunk; a scalar `=` sub-query must see BOTH rows and
+        // error (">1 row"), not silently take the first chunk's single value.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT v FROM TestDatabase.probe WHERE v = "
+                                           "(SELECT id FROM TestDatabase.big WHERE id = 1 "
+                                           " UNION ALL SELECT id FROM TestDatabase.big WHERE id = 2);");
+        REQUIRE(cur->is_error());
+    }
+}

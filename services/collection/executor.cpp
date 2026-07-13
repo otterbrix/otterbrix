@@ -470,7 +470,7 @@ namespace services::collection::executor {
                   sub_result.cursor->is_success(),
                   sub_result.cursor->size(),
                   sub_result.cursor->column_count());
-            auto compacted = mapping.compacter(sub_result.cursor->chunks().front());
+            auto compacted = mapping.compacter(sub_result.cursor->chunks());
             trace(log_,
                   "DBG subq[{}] compacted has_error={} is_null={}",
                   i,

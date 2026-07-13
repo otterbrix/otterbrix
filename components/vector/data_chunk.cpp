@@ -461,55 +461,107 @@ namespace components::vector {
         }
     }
 
-    core::result_wrapper_t<types::logical_value_t> compact_to_bool_value(const data_chunk_t& data) {
-        return types::logical_value_t{data.resource(), !data.empty()};
-    }
-
-    core::result_wrapper_t<types::logical_value_t> compact_to_single_value(const data_chunk_t& data) {
-        if (data.column_count() == 1 && data.size() == 1) {
-            return data.value(0, 0);
-        }
-        // No extractable value cell → SQL NULL, not an error. This covers a
-        // scalar sub-query that returned zero rows AND the degenerate
-        // zero-column result an ungrouped aggregate emits when its input was
-        // filtered out (e.g. SELECT MAX(x) ... WHERE <no match> → one row, no
-        // column). Yielding an untyped NA null matches the value
-        // get_parameter() returns for an unbound id, so `x = (NULL scalar
-        // subquery)` compares against NULL and selects nothing. Only a genuine
-        // shape violation (>1 row, or >1 column) falls through to the error.
-        if (data.empty() || data.column_count() == 0) {
-            return types::logical_value_t{data.resource(), nullptr};
-        }
-        return core::error_t(core::error_code_t::conversion_failure,
-                             std::pmr::string{"could not convert data_chunk_t to a single value", data.resource()});
-    }
-
-    core::result_wrapper_t<types::logical_value_t> compact_to_array_value(const data_chunk_t& data) {
-        if (!data.empty() && data.column_count() == 1) {
-            std::vector<types::logical_value_t> array;
-            array.reserve(data.size());
-            for (size_t i = 0; i < data.size(); ++i) {
-                array.emplace_back(data.value(0, i));
+    core::result_wrapper_t<types::logical_value_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks) {
+        // EXISTS: true iff ANY chunk carries a row (a multi-chunk / multi-branch result must not be
+        // judged empty from chunk 0 alone).
+        bool any = false;
+        for (const auto& c : chunks) {
+            if (!c.empty()) {
+                any = true;
+                break;
             }
-            return types::logical_value_t::create_array(data.resource(), data.data[0].type(), array);
-        } else {
-            return core::error_t(core::error_code_t::conversion_failure,
-                                 std::pmr::string{"could not convert data_chunk_t to a array value", data.resource()});
         }
+        return types::logical_value_t{chunks.front().resource(), any};
     }
 
-    core::result_wrapper_t<types::logical_value_t> compact_to_row_value(const data_chunk_t& data) {
-        if (data.size() == 1) {
-            std::vector<types::logical_value_t> fields;
-            fields.reserve(data.column_count());
-            for (size_t i = 0; i < data.column_count(); ++i) {
-                fields.emplace_back(data.value(i, 0));
+    core::result_wrapper_t<types::logical_value_t>
+    compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks) {
+        // Count rows across ALL chunks — a scalar sub-query returning 2 rows may split across chunks, and
+        // that must still error (">1 row"), not silently take chunk 0's single cell.
+        size_t total_rows = 0;
+        size_t cols = 0;
+        for (const auto& c : chunks) {
+            total_rows += c.size();
+            if (c.column_count() > cols) {
+                cols = c.column_count();
             }
-            return types::logical_value_t::create_struct(data.resource(), "", fields);
-        } else {
-            return core::error_t(core::error_code_t::conversion_failure,
-                                 std::pmr::string{"could not convert data_chunk_t to a row value", data.resource()});
         }
+        if (cols == 1 && total_rows == 1) {
+            for (const auto& c : chunks) {
+                if (c.size() == 1) {
+                    return c.value(0, 0);
+                }
+            }
+        }
+        // No extractable value cell → SQL NULL, not an error. This covers a scalar sub-query that returned
+        // zero rows AND the degenerate zero-column result an ungrouped aggregate emits when its input was
+        // filtered out (e.g. SELECT MAX(x) ... WHERE <no match> → one row, no column). Yielding an untyped
+        // NA null matches the value get_parameter() returns for an unbound id, so `x = (NULL scalar
+        // subquery)` compares against NULL and selects nothing. Only a genuine shape violation (>1 row, or
+        // >1 column) falls through to the error.
+        if (total_rows == 0 || cols == 0) {
+            return types::logical_value_t{chunks.front().resource(), nullptr};
+        }
+        return core::error_t(
+            core::error_code_t::conversion_failure,
+            std::pmr::string{"could not convert data_chunk_t to a single value", chunks.front().resource()});
+    }
+
+    core::result_wrapper_t<types::logical_value_t>
+    compact_to_array_value(const std::pmr::vector<data_chunk_t>& chunks) {
+        // IN / ANY / ALL list: gather EVERY row of EVERY chunk (unbounded — PostgreSQL treats
+        // `x IN (SELECT ...)` as a semi-join with no fixed row cap), not just chunk 0's ≤1024.
+        size_t total_rows = 0;
+        for (const auto& c : chunks) {
+            total_rows += c.size();
+        }
+        if (total_rows == 0) {
+            return core::error_t(
+                core::error_code_t::conversion_failure,
+                std::pmr::string{"could not convert data_chunk_t to a array value", chunks.front().resource()});
+        }
+        std::vector<types::logical_value_t> array;
+        array.reserve(total_rows);
+        const data_chunk_t* typed = nullptr; // first non-empty chunk — carries the element type
+        for (const auto& c : chunks) {
+            if (c.empty()) {
+                continue;
+            }
+            if (c.column_count() != 1) {
+                return core::error_t(
+                    core::error_code_t::conversion_failure,
+                    std::pmr::string{"could not convert data_chunk_t to a array value", chunks.front().resource()});
+            }
+            if (typed == nullptr) {
+                typed = &c;
+            }
+            for (size_t i = 0; i < c.size(); ++i) {
+                array.emplace_back(c.value(0, i));
+            }
+        }
+        return types::logical_value_t::create_array(chunks.front().resource(), typed->data[0].type(), array);
+    }
+
+    core::result_wrapper_t<types::logical_value_t> compact_to_row_value(const std::pmr::vector<data_chunk_t>& chunks) {
+        size_t total_rows = 0;
+        for (const auto& c : chunks) {
+            total_rows += c.size();
+        }
+        if (total_rows == 1) {
+            for (const auto& c : chunks) {
+                if (c.size() == 1) {
+                    std::vector<types::logical_value_t> fields;
+                    fields.reserve(c.column_count());
+                    for (size_t i = 0; i < c.column_count(); ++i) {
+                        fields.emplace_back(c.value(i, 0));
+                    }
+                    return types::logical_value_t::create_struct(c.resource(), "", fields);
+                }
+            }
+        }
+        return core::error_t(
+            core::error_code_t::conversion_failure,
+            std::pmr::string{"could not convert data_chunk_t to a row value", chunks.front().resource()});
     }
 
 } // namespace components::vector

@@ -1424,3 +1424,61 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
         REQUIRE(cur->is_error());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tier-1: a compound (UNION) SELECT silently dropped its trailing ORDER BY /
+// LIMIT / OFFSET (gram.y attaches them to the SETOP node, and the transformer
+// early-returned the bare union before lowering them). Now they are applied.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
+    auto config = test_create_config("/tmp/test_subqueries/union_order_by_limit");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    INFO("UNION ALL with ORDER BY DESC + LIMIT keeps only the top-N in order");
+    {
+        // dept1 ids {1,2}, dept2 ids {3,4}; UNION ALL = {1,2,3,4}; ORDER BY id DESC = {4,3,2,1}; LIMIT 2 = {4,3}
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT id FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION ALL "
+                                           "SELECT id FROM TestDatabase.Employees WHERE dept_id = 2 "
+                                           "ORDER BY id DESC LIMIT 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // was 4 (all rows) before the fix
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
+    }
+
+    INFO("UNION ALL with ORDER BY ASC + LIMIT + OFFSET skips correctly");
+    {
+        // {1,2,3,4} ORDER BY id ASC OFFSET 1 LIMIT 2 = {2,3}
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT id FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION ALL "
+                                           "SELECT id FROM TestDatabase.Employees WHERE dept_id = 2 "
+                                           "ORDER BY id LIMIT 2 OFFSET 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
+    }
+
+    INFO("bare UNION ALL (no tail clauses) still returns all rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT id FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION ALL "
+                                           "SELECT id FROM TestDatabase.Employees WHERE dept_id = 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+    }
+}

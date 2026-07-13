@@ -337,7 +337,12 @@ namespace services::planner::impl {
                     select_op = create_plan_select(context, child, params);
                     break;
                 default:
-                    child_op = create_plan(context, function_registry, child, limit, params);
+                    // A non-scan source (e.g. a UNION under ORDER BY/LIMIT): when a sort is present the
+                    // source MUST be unlimited (scan_limit == unlimit) so the sort sees every row and
+                    // applies limit/offset itself — otherwise create_plan_union pushes the outer limit
+                    // into each arm and the limit/offset is applied twice (wrong OFFSET results). Mirrors
+                    // the match branch above.
+                    child_op = create_plan(context, function_registry, child, scan_limit, params);
                     break;
             }
         }

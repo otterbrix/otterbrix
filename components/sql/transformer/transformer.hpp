@@ -58,6 +58,13 @@ namespace components::sql::transform {
         logical_plan::node_ptr transform_create_table(CreateStmt& node);
         logical_plan::node_ptr transform_drop(DropStmt& node);
         logical_plan::node_ptr transform_select(SelectStmt& node, logical_plan::execution_plan_t* plan);
+        // Build a node_limit from node.limitCount/limitOffset (nullptr when neither is present). A
+        // ParamRef bound limit/offset is registered in deferred_limits_ (resolved later like the simple
+        // SELECT path). Shared by the simple-select and the UNION tail-clause lowering.
+        logical_plan::node_ptr build_limit_node(SelectStmt& node,
+                                                const core::dbname_t& db,
+                                                const core::relname_t& rel,
+                                                logical_plan::execution_plan_t* plan);
         logical_plan::node_ptr transform_update(UpdateStmt& node, logical_plan::execution_plan_t* plan);
         logical_plan::node_ptr transform_insert(InsertStmt& node, logical_plan::execution_plan_t* plan);
         logical_plan::node_ptr transform_delete(DeleteStmt& node, logical_plan::execution_plan_t* plan);

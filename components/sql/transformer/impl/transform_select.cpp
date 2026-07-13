@@ -440,6 +440,87 @@ namespace components::sql::transform {
         return agg;
     }
 
+    logical_plan::node_ptr transformer::build_limit_node(SelectStmt& node,
+                                                         const core::dbname_t& db,
+                                                         const core::relname_t& rel,
+                                                         logical_plan::execution_plan_t* plan) {
+        if (!node.limitCount && !node.limitOffset) {
+            return nullptr;
+        }
+        int64_t limit_val = logical_plan::limit_t::unlimit().limit();
+        int64_t offset_val = 0;
+        std::optional<core::parameter_id_t> limit_param;
+        std::optional<core::parameter_id_t> offset_param;
+
+        if (node.limitCount) {
+            switch (nodeTag(node.limitCount)) {
+                case T_A_Const: {
+                    auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
+                    switch (nodeTag(value)) {
+                        case T_Null:
+                            break; // LIMIT ALL — keep unlimit_
+                        case T_Integer:
+                            limit_val = intVal(value);
+                            break;
+                        default:
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                                 resource_});
+                            return nullptr;
+                    }
+                    break;
+                }
+                case T_ParamRef:
+                    limit_param = add_param_value(node.limitCount, plan->parameters.get());
+                    break;
+                default:
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"Unknown node type in limit clause: " +
+                                                                node_tag_to_string(nodeTag(node.limitCount)),
+                                                            resource_});
+                    return nullptr;
+            }
+        }
+
+        if (node.limitOffset) {
+            switch (nodeTag(node.limitOffset)) {
+                case T_A_Const: {
+                    auto* value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
+                    switch (nodeTag(value)) {
+                        case T_Null:
+                            break; // OFFSET NULL — treat as 0
+                        case T_Integer:
+                            offset_val = intVal(value);
+                            break;
+                        default:
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"Forbidden expression in offset clause: allowed only OFFSET <integer>",
+                                                 resource_});
+                            return nullptr;
+                    }
+                    break;
+                }
+                case T_ParamRef:
+                    offset_param = add_param_value(node.limitOffset, plan->parameters.get());
+                    break;
+                default:
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"Unknown node type in offset clause: " +
+                                                                node_tag_to_string(nodeTag(node.limitOffset)),
+                                                            resource_});
+                    return nullptr;
+            }
+        }
+
+        auto limit_node = logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t(limit_val, offset_val));
+        if (limit_param || offset_param) {
+            deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
+        }
+        return limit_node;
+    }
+
     logical_plan::node_ptr transformer::transform_select(SelectStmt& node, logical_plan::execution_plan_t* plan) {
         // Set operations (UNION / INTERSECT / EXCEPT) are not yet wired
         // through the transformer. For a SETOP_* node, node.targetList is
@@ -449,12 +530,75 @@ namespace components::sql::transform {
         // dynamic_schema_union sits on this path; lldb pinned the crash to
         // node.targetList->lst at line 137 here.
         if (node.op == SETOP_UNION) {
+            // gram.y attaches withClause / sortClause / limitCount / limitOffset / distinctClause to THIS
+            // compound node (not to larg/rarg). The old early-return dropped all of them silently.
+            // WITH must be registered BEFORE the arms so both can see the CTEs.
+            if (node.withClause) {
+                if (node.withClause->recursive) {
+                    for (const auto& item : node.withClause->ctes->lst) {
+                        auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
+                        recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+                    }
+                } else {
+                    for (const auto& item : node.withClause->ctes->lst) {
+                        auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
+                        cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+                    }
+                }
+            }
             auto left = transform_select(*node.larg, plan);
             auto right = transform_select(*node.rarg, plan);
             if (has_error()) {
                 return nullptr;
             }
-            return logical_plan::make_node_union(resource_, std::move(left), std::move(right), node.all);
+            logical_plan::node_ptr union_node =
+                logical_plan::make_node_union(resource_, std::move(left), std::move(right), node.all);
+
+            const bool has_sort = node.sortClause && !node.sortClause->lst.empty();
+            const bool has_distinct = node.distinctClause && !node.distinctClause->lst.empty();
+            if (!has_sort && !node.limitCount && !node.limitOffset && !has_distinct) {
+                return union_node; // bare union — no tail clauses to apply
+            }
+
+            // Wrap the union in an aggregate so the existing sort / limit / distinct children apply:
+            // create_plan_aggregate lowers a non-scan source through its default child_op branch
+            // (union -> sort -> limit / distinct).
+            auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+            agg->append_child(std::move(union_node));
+            if (has_distinct) {
+                agg->set_distinct(true);
+            }
+            if (has_sort) {
+                // Union output columns resolve by NAME at validation, so an empty name scope is fine.
+                name_collection_t union_names;
+                std::vector<expression_ptr> sort_exprs;
+                sort_exprs.reserve(node.sortClause->lst.size());
+                for (auto sort_it : node.sortClause->lst) {
+                    auto sortby = pg_ptr_cast<SortBy>(sort_it.data);
+                    bool is_desc = sortby->sortby_dir == SORTBY_DESC;
+                    column_ref_t field(resource_);
+                    if (nodeTag(sortby->node) == T_ColumnRef) {
+                        field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), union_names);
+                    } else if (nodeTag(sortby->node) == T_A_Indirection) {
+                        field = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), union_names);
+                    } else {
+                        error_ = core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"ORDER BY over UNION supports only column references", resource_});
+                        return nullptr;
+                    }
+                    sort_exprs.emplace_back(
+                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
+                }
+                agg->append_child(
+                    logical_plan::make_node_sort(resource_, core::dbname_t{}, core::relname_t{}, sort_exprs));
+            }
+            if (auto limit_node = build_limit_node(node, core::dbname_t{}, core::relname_t{}, plan)) {
+                agg->append_child(std::move(limit_node));
+            } else if (has_error()) {
+                return nullptr;
+            }
+            return agg;
         }
         if (node.op != SETOP_NONE || node.targetList == nullptr) {
             error_ = core::error_t(
@@ -1052,84 +1196,11 @@ namespace components::sql::transform {
         }
 
         // limit / offset
-        if (node.limitCount || node.limitOffset) {
-            int64_t limit_val = logical_plan::limit_t::unlimit().limit();
-            int64_t offset_val = 0;
-            std::optional<core::parameter_id_t> limit_param;
-            std::optional<core::parameter_id_t> offset_param;
-
-            if (node.limitCount) {
-                switch (nodeTag(node.limitCount)) {
-                    case T_A_Const: {
-                        auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
-                        switch (nodeTag(value)) {
-                            case T_Null:
-                                break; // LIMIT ALL — keep unlimit_
-                            case T_Integer:
-                                limit_val = intVal(value);
-                                break;
-                            default:
-                                error_ = core::error_t(
-                                    core::error_code_t::sql_parse_error,
-                                    std::pmr::string{
-                                        "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
-                                        resource_});
-                                return nullptr;
-                        }
-                        break;
-                    }
-                    case T_ParamRef:
-                        limit_param = add_param_value(node.limitCount, plan->parameters.get());
-                        break;
-                    default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"Unknown node type in limit clause: " +
-                                                                    node_tag_to_string(nodeTag(node.limitCount)),
-                                                                resource_});
-                        return nullptr;
-                }
-            }
-
-            if (node.limitOffset) {
-                switch (nodeTag(node.limitOffset)) {
-                    case T_A_Const: {
-                        auto* value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
-                        switch (nodeTag(value)) {
-                            case T_Null:
-                                break; // OFFSET NULL — treat as 0
-                            case T_Integer:
-                                offset_val = intVal(value);
-                                break;
-                            default:
-                                error_ = core::error_t(
-                                    core::error_code_t::sql_parse_error,
-                                    std::pmr::string{
-                                        "Forbidden expression in offset clause: allowed only OFFSET <integer>",
-                                        resource_});
-                                return nullptr;
-                        }
-                        break;
-                    }
-                    case T_ParamRef:
-                        offset_param = add_param_value(node.limitOffset, plan->parameters.get());
-                        break;
-                    default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"Unknown node type in offset clause: " +
-                                                                    node_tag_to_string(nodeTag(node.limitOffset)),
-                                                                resource_});
-                        return nullptr;
-                }
-            }
-
-            auto limit_node = logical_plan::make_node_limit(resource_,
-                                                            core::dbname_t{agg->dbname()},
-                                                            core::relname_t{agg->relname()},
-                                                            logical_plan::limit_t(limit_val, offset_val));
-            if (limit_param || offset_param) {
-                deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
-            }
+        if (auto limit_node =
+                build_limit_node(node, core::dbname_t{agg->dbname()}, core::relname_t{agg->relname()}, plan)) {
             agg->append_child(std::move(limit_node));
+        } else if (has_error()) {
+            return nullptr;
         }
 
         return agg;

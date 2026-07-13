@@ -125,6 +125,16 @@ namespace components::expressions {
 
     expression_ptr& as_expr(param_storage& param) { return std::get<expression_ptr>(param); }
 
+    bool is_parameter(const param_storage& param) noexcept {
+        return std::holds_alternative<core::parameter_id_t>(param);
+    }
+
+    const core::parameter_id_t& as_parameter(const param_storage& param) {
+        return std::get<core::parameter_id_t>(param);
+    }
+
+    core::parameter_id_t& as_parameter(param_storage& param) { return std::get<core::parameter_id_t>(param); }
+
     compare_type get_compare_type(const std::string& key) {
         if (key.empty()) {
             return compare_type::invalid;

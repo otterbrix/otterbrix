@@ -4700,3 +4700,87 @@ TEST_CASE("integration::cpp::test_sql_features::values_leading_null_column_promo
         REQUIRE(cur->value(0, 0).value<uint64_t>() == 2);
     }
 }
+
+// WHERE with a constant (parameter-free) predicate: the folded child
+// (all_true/all_false) used to survive inside union_not all the way to filter
+// construction, whose all_false / key-shape guards were Release-erased asserts.
+// `NOT (1=2)` crashed the process (bad variant access) and `NOT (1=1)` returned
+// a spurious "empty NOT filter" error instead of an empty result. A constant
+// predicate must resolve to "all rows" (true) or "no rows" (false), and must go
+// on doing so when it is buried inside a nested boolean tree, carries constant
+// arithmetic, or is AND/OR-combined with real column predicates.
+//
+// Table: three rows, (x, y) = (1,10), (2,20), (3,30).
+TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
+    auto config = test_create_config("/tmp/test_sql_features/constant_predicate");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.t (x bigint, y bigint);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.t (x, y) VALUES (1, 10), (2, 20), (3, 30);")
+                    ->is_success());
+    }
+
+    // Runs `SELECT x FROM db.t WHERE <where>` and returns the row count; the
+    // query must always succeed (never crash, never spuriously error).
+    auto rows = [&](const char* where) -> std::size_t {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, std::string{"SELECT x FROM db.t WHERE "} + where + ";");
+        REQUIRE(cur->is_success());
+        return cur->size();
+    };
+
+    SECTION("a bare constant predicate collapses to all rows / no rows") {
+        REQUIRE(rows("1 = 1") == 3);       // always true
+        REQUIRE(rows("1 = 2") == 0);       // always false
+        REQUIRE(rows("1 + 1 = 2") == 3);   // constant arithmetic, true
+        REQUIRE(rows("10 - 5 = 4") == 0);  // constant arithmetic, false
+        REQUIRE(rows("NOT (1 = 2)") == 3); // NOT false -> true (was: crash)
+        REQUIRE(rows("NOT (1 = 1)") == 0); // NOT true  -> false (was: spurious error)
+        REQUIRE(rows("NOT (2 * 3 = 6)") == 0);  // NOT true
+        REQUIRE(rows("NOT (10 / 2 = 5)") == 0); // NOT true
+    }
+
+    SECTION("constant predicates nested inside boolean trees") {
+        REQUIRE(rows("(1 = 1) AND (2 = 2)") == 3); // true  AND true
+        REQUIRE(rows("(1 = 1) OR (2 = 3)") == 3);  // true  OR  false
+        REQUIRE(rows("(1 = 2) AND (3 = 3)") == 0); // false AND true
+        REQUIRE(rows("(1 = 2) OR (3 = 4)") == 0);  // false OR  false
+        REQUIRE(rows("NOT ((1 = 1) AND (2 = 2))") == 0); // NOT true
+        REQUIRE(rows("NOT ((1 = 2) OR (3 = 3))") == 0);  // NOT true
+        REQUIRE(rows("NOT ((1 = 2) AND (3 = 3))") == 3); // NOT false
+        // NB: double negation `NOT (NOT (1 = 1))` is deliberately absent — it is
+        // mis-folded to a single NOT (returns 0 rows instead of 3), a separate
+        // bug from the constant-folding path this test pins.
+    }
+
+    SECTION("a constant folded together with real column predicates") {
+        REQUIRE(rows("NOT (1 = 2) AND x >= 2") == 2);                 // true  AND x>=2 -> {2,3}
+        REQUIRE(rows("1 = 1 OR x = 999") == 3);                       // true  OR  ...  -> all
+        REQUIRE(rows("NOT (1 = 1) OR (x = 2 AND y = 20)") == 1);      // false OR  {2}
+        REQUIRE(rows("NOT ((1 = 2) OR (5 = 6)) AND y > 15") == 2);    // true  AND y>15 -> {2,3}
+        REQUIRE(rows("x = 1 AND 1 = 1 AND y = 10") == 1);            // {1}
+        REQUIRE(rows("1 = 2 OR x = 3 OR 2 = 2") == 3);              // ... OR true -> all
+        REQUIRE(rows("(x = 1 OR 1 = 1) AND x < 3") == 2);            // (true) AND x<3 -> {1,2}
+    }
+
+    SECTION("NOT over ordinary column predicates still works") {
+        REQUIRE(rows("NOT (x = 1)") == 2);              // {2,3}
+        REQUIRE(rows("NOT (x = 1 AND y = 10)") == 2);   // exclude {1} -> {2,3}
+        REQUIRE(rows("NOT (x = 2 OR x = 3)") == 1);     // {1}
+        REQUIRE(rows("NOT (x >= 2) AND y < 100") == 1); // {1}
+        REQUIRE(rows("x = 2 OR NOT (1 = 1)") == 1);     // {2} OR false
+    }
+}

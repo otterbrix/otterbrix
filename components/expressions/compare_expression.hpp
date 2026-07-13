@@ -82,4 +82,11 @@ namespace components::expressions {
     const expression_ptr& as_expr(const param_storage& param);
     expression_ptr& as_expr(param_storage& param);
 
+    // Same encapsulation for the parameter-id alternative of `param_storage`.
+    // as_parameter must be guarded by is_parameter (it delegates to std::get,
+    // which throws on a mismatched alternative).
+    bool is_parameter(const param_storage& param) noexcept;
+    const core::parameter_id_t& as_parameter(const param_storage& param);
+    core::parameter_id_t& as_parameter(param_storage& param);
+
 } // namespace components::expressions

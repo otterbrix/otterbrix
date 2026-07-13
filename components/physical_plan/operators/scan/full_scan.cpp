@@ -1,5 +1,6 @@
 #include "full_scan.hpp"
 
+#include <components/expressions/compare_expression.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
@@ -14,7 +15,12 @@ namespace components::operators {
             return std::unique_ptr<table::table_filter_t>{};
         }
         if (expression->type() == expressions::compare_type::all_false) {
-            assert(false && "all_false should be short-circuited in source_next");
+            // Callers short-circuit all_false before filter construction
+            // (source_next / pushed_reduce_scan). If one ever does not, fail
+            // with an error instead of the previous Release-erased assert
+            // falling through into the switch below.
+            return core::error_t{core::error_code_t::physical_plan_error,
+                                 std::pmr::string{"all_false predicate reached filter construction", resource}};
         }
         switch (expression->type()) {
             case expressions::compare_type::union_and: {
@@ -133,9 +139,16 @@ namespace components::operators {
                     std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices)));
             }
             default: {
-                assert(std::holds_alternative<expressions::key_t>(expression->left()));
-                const auto& path = std::get<expressions::key_t>(expression->left()).path();
-                auto id = std::get<core::parameter_id_t>(expression->right());
+                // Guarded std::get: with the asserts erased in Release, a
+                // non-key left or non-parameter right operand reached the
+                // std::get below as a bad variant access.
+                if (!expressions::is_key(expression->left()) || !expressions::is_parameter(expression->right())) {
+                    return core::error_t{
+                        core::error_code_t::physical_plan_error,
+                        std::pmr::string{"unexpected operand shape in expression to filter conversion", resource}};
+                }
+                const auto& path = expressions::as_key(expression->left()).path();
+                auto id = expressions::as_parameter(expression->right());
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 auto it = parameters->parameters.find(id);
                 if (it == parameters->parameters.end()) {

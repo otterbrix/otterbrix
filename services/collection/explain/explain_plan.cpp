@@ -51,11 +51,21 @@ namespace services::collection {
         // relation ONLY for a scan (oid != INVALID_OID); a non-scan node keeps relation empty, else
         // renderer_postgres would append " on t0" to every join/aggregate/insert/etc.
         if (oid != components::catalog::INVALID_OID) {
-            auto it = names_.find(oid);
-            if (it != names_.end()) {
-                n.relation = it->second; // copy-assign keeps n.relation's allocator (mr_) — POCCA=false
+            if (cs_ != nullptr) {
+                // Plan-only path: the catalog is still alive, so resolve the scan name straight from
+                // it (byte-identical to explain_name_collector, which this path then skips).
+                if (const auto* md = cs_->table_metadata_for(oid)) {
+                    n.relation = make_pmr_string(md->name, mr_);
+                } else {
+                    n.relation = make_pmr_string("t" + std::to_string(oid), mr_);
+                }
             } else {
-                n.relation = make_pmr_string("t" + std::to_string(oid), mr_);
+                auto it = names_.find(oid);
+                if (it != names_.end()) {
+                    n.relation = it->second; // copy-assign keeps n.relation's allocator (mr_) — POCCA=false
+                } else {
+                    n.relation = make_pmr_string("t" + std::to_string(oid), mr_);
+                }
             }
         }
         stack_.push_back(std::move(n));

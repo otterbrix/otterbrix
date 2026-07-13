@@ -72,9 +72,16 @@ namespace services::collection {
     // a filled node; end pops it into its parent's children, or into root_ when the stack empties.
     class explain_ir_builder {
     public:
-        explain_ir_builder(std::pmr::memory_resource* mr, const explain_name_map_t& names)
+        // `cs` (optional): when non-null the builder resolves scan oid->name straight from the LIVE
+        // catalog (the plan-only EXPLAIN path, where context_storage is still alive), so the separate
+        // pre-move name-collector walk is skipped. When null, names come from the pre-collected `names`
+        // map (the ANALYZE path builds AFTER context_storage is moved).
+        explain_ir_builder(std::pmr::memory_resource* mr,
+                           const explain_name_map_t& names,
+                           const context_storage_t* cs = nullptr)
             : mr_(mr)
             , names_(names)
+            , cs_(cs)
             , stack_(mr)
             , root_(mr) {}
         components::operators::explain_sink sink() noexcept { return {&node_cb, &end_cb, this}; }
@@ -97,6 +104,7 @@ namespace services::collection {
 
         std::pmr::memory_resource* mr_;
         const explain_name_map_t& names_;
+        const context_storage_t* cs_;
         std::pmr::vector<explain_plan_node> stack_;
         explain_plan_node root_;
     };

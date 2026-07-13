@@ -21,8 +21,8 @@ namespace services::collection {
         // so nothing silently blanks out and there is no fallback branch (Rule 6). The
         // proven-unreachable ops (they never sit on an EXPLAINed SELECT/DML spine) share
         // one grouped "?" arm whose label is never actually emitted.
-        std::string pg_label(const explain_plan_node& n) {
-            std::string label;
+        std::pmr::string pg_label(std::pmr::memory_resource* mr, const explain_plan_node& n) {
+            std::pmr::string label(mr);
             switch (n.type) {
                 case ops::operator_type::full_scan:
                 case ops::operator_type::transfer_scan:
@@ -133,13 +133,15 @@ namespace services::collection {
         }
 
         // PG-faithful per-loop stats; loops==0 -> "(never executed)" (also avoids divide-by-zero).
-        std::string analyze_suffix(const explain_plan_node& n) {
+        std::pmr::string analyze_suffix(std::pmr::memory_resource* mr, const explain_plan_node& n) {
             if (n.loops == 0) {
-                return "  (never executed)";
+                return std::pmr::string("  (never executed)", mr);
             }
             const double ms =
                 std::chrono::duration<double, std::milli>(n.time).count() / static_cast<double>(n.loops);
-            const unsigned long long rows_per = static_cast<unsigned long long>(n.rows / n.loops);
+            // PG rounds actual per-loop rows to nearest (rint); integer round-half-up avoids float drift.
+            // loops>=1 here (loops==0 returned "(never executed)" above), so n.loops/2 < n.loops.
+            const unsigned long long rows_per = static_cast<unsigned long long>((n.rows + n.loops / 2) / n.loops);
             char buf[160];
             std::snprintf(buf,
                           sizeof(buf),
@@ -147,30 +149,34 @@ namespace services::collection {
                           ms,
                           rows_per,
                           static_cast<unsigned long long>(n.loops));
-            return std::string(buf);
+            return std::pmr::string(buf, mr);
         }
 
-        void render_node(const explain_plan_node& n, int depth, bool analyze, std::vector<std::string>& lines) {
-            std::string line;
+        void render_node(std::pmr::memory_resource* mr,
+                         const explain_plan_node& n,
+                         int depth,
+                         bool analyze,
+                         std::pmr::vector<std::pmr::string>& lines) {
+            std::pmr::string line(mr);
             if (depth > 0) {
                 line.assign(static_cast<size_t>(depth) * 2, ' ');
                 line += "->  ";
             }
-            line += pg_label(n);
+            line += pg_label(mr, n);
             if (analyze) {
-                line += analyze_suffix(n);
+                line += analyze_suffix(mr, n);
             }
             lines.push_back(std::move(line));
             for (const auto& c : n.children) {
-                render_node(c, depth + 1, analyze, lines);
+                render_node(mr, c, depth + 1, analyze, lines);
             }
         }
     } // namespace
 
     components::cursor::cursor_t_ptr
     render_postgres(std::pmr::memory_resource* mr, const explain_plan_node& root, bool analyze) {
-        std::vector<std::string> lines;
-        render_node(root, 0, analyze, lines);
+        std::pmr::vector<std::pmr::string> lines(mr);
+        render_node(mr, root, 0, analyze, lines);
 
         std::pmr::vector<components::types::complex_logical_type> types(mr);
         types.emplace_back(components::types::logical_type::STRING_LITERAL, "QUERY PLAN");

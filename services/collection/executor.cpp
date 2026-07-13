@@ -115,6 +115,27 @@ namespace services::collection::executor {
     } // namespace
 
     namespace {
+        // EXPLAIN ANALYZE row tally: sum row counts across a chunk vector.
+        inline uint64_t count_rows(const components::operators::chunks_vector_t& chunks) noexcept {
+            uint64_t rows = 0;
+            for (const auto& c : chunks) {
+                rows += c.size();
+            }
+            return rows;
+        }
+
+        // EXPLAIN ANALYZE stopwatch: samples steady_clock only when `on` (zero cost off the ANALYZE
+        // path). elapsed() is read only under an `if (analyze)` guard at each call site, which also
+        // keeps count_rows off the normal (non-analyze) hot path.
+        struct analyze_scope {
+            std::chrono::steady_clock::time_point t0;
+            explicit analyze_scope(bool on) noexcept
+                : t0(on ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}) {}
+            [[nodiscard]] std::chrono::nanoseconds elapsed() const noexcept {
+                return std::chrono::steady_clock::now() - t0;
+            }
+        };
+
         // Build-side selection: collect the resolved child table oids of
         // every INNER hash join in the optimized plan tree. execute_plan_full
         // fetches each oid's live row count so create_plan_join can put the
@@ -280,44 +301,33 @@ namespace services::collection::executor {
         components::operators::operator_ptr explain_root =
             plan.explain != components::logical_plan::explain_type::none ? node : nullptr;
         explain_name_map_t explain_names{resource()};
-        if (explain_root) {
-            // Pre-move name pass: drive explain(sink) with the collector while context_storage is
-            // still alive (it is moved into traverse_plan_ below).
+        const bool explain_analyze = plan.explain == components::logical_plan::explain_type::analyze;
+        if (explain_root && explain_analyze) {
+            // ANALYZE builds the IR AFTER context_storage is moved into traverse_plan_ below, so it must
+            // snapshot oid->name now while the catalog is still alive. Plan-only skips this pass — its
+            // single builder walk resolves scan names straight from the still-live catalog (see below).
             explain_name_collector nc{context_storage, explain_names};
             explain_root->explain(nc.sink());
         }
         if (plan.explain == components::logical_plan::explain_type::plan) {
-            // Plan-only EXPLAIN: build + render the physical tree WITHOUT executing.
-            explain_ir_builder b{resource(), explain_names};
-            explain_root->explain(b.sink());
-            const auto render = resolve_explain_renderer_(plan.explain_render_id);
-            if (plan.explain_render_id != 0 && !explain_slot_registered_(plan.explain_render_id)) {
-                trace(log_,
-                      "executor::explain: render_id {} not registered on this executor — using default (slot 0)",
-                      plan.explain_render_id);
-            }
-            co_return execute_result_t{render(resource(), b.release(), false)};
+            // Plan-only EXPLAIN: build + render the physical tree WITHOUT executing. context_storage is
+            // still alive here, so the builder resolves scan names from the live catalog (no collector).
+            co_return execute_result_t{
+                render_explain_(explain_root, explain_names, &context_storage, plan.explain_render_id, false)};
         }
 
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
         plan_data.limit = limit;
-        plan_data.analyze = (plan.explain == components::logical_plan::explain_type::analyze);
+        plan_data.analyze = explain_analyze;
 
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data, lowest_active_start_time);
 
         // EXPLAIN ANALYZE: the query just ran with instrumentation; substitute the rendered plan
         // for the data cursor (only on success — an error stays an error cursor so the tail aborts).
         // The pipeline left the counters on explain_root's instances; build the IR post-exec now.
-        if (plan.explain == components::logical_plan::explain_type::analyze && result.cursor->is_success()) {
-            explain_ir_builder b{resource(), explain_names};
-            explain_root->explain(b.sink());
-            const auto render = resolve_explain_renderer_(plan.explain_render_id);
-            if (plan.explain_render_id != 0 && !explain_slot_registered_(plan.explain_render_id)) {
-                trace(log_,
-                      "executor::explain: render_id {} not registered on this executor — using default (slot 0)",
-                      plan.explain_render_id);
-            }
-            result.cursor = render(resource(), b.release(), true);
+        // context_storage is gone (moved above), so pass nullptr — the builder reads the snapshot.
+        if (explain_analyze && result.cursor->is_success()) {
+            result.cursor = render_explain_(explain_root, explain_names, nullptr, plan.explain_render_id, true);
         }
 
         // Raw pipeline result. Three cases, distinguished by the vector state
@@ -337,6 +347,25 @@ namespace services::collection::executor {
                                    std::move(result.created_storage_oids),
                                    std::move(result.created_indexes),
                                    result.commit_id};
+    }
+
+    components::cursor::cursor_t_ptr
+    executor_t::render_explain_(const components::operators::operator_ptr& explain_root,
+                                const explain_name_map_t& names,
+                                const services::context_storage_t* cs,
+                                uint32_t render_id,
+                                bool analyze) {
+        // cs != nullptr (plan-only): resolve scan names from the live catalog. cs == nullptr (ANALYZE,
+        // after context_storage was moved): read the pre-collected `names` snapshot.
+        explain_ir_builder b{resource(), names, cs};
+        explain_root->explain(b.sink());
+        const auto render = resolve_explain_renderer_(render_id);
+        if (render_id != 0 && !explain_slot_registered_(render_id)) {
+            trace(log_,
+                  "executor::explain: render_id {} not registered on this executor — using default (slot 0)",
+                  render_id);
+        }
+        return render(resource(), b.release(), analyze);
     }
 
     executor_t::unique_future<execute_result_t>
@@ -367,7 +396,13 @@ namespace services::collection::executor {
         // bound as a parameter the later sub-queries / the main query reference
         // by id. Sharing the node is why execute_plan copies (not drains) the
         // parameters: each binding must survive into the next plan.
-        for (std::size_t i = 0; i + 1 < plan.sub_queries.size(); ++i) {
+        //
+        // Plan-only EXPLAIN evaluates nothing (PostgreSQL: plain EXPLAIN does not run sub-plans) and
+        // renders from plan SHAPE alone, so skip this loop and leave the sub-query params NA. EXPLAIN
+        // ANALYZE and normal execution still run it. (A DML-in-sub-query under a plan-only EXPLAIN is
+        // thus not diagnosed — it executes nothing anyway.)
+        const bool run_sub_queries = plan.explain != components::logical_plan::explain_type::plan;
+        for (std::size_t i = 0; run_sub_queries && i + 1 < plan.sub_queries.size(); ++i) {
             auto* sub_root = services::catalog_resolve::effective_root_node(plan.sub_queries[i].get());
             const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
             // SQL standard: a sub-query is a query expression — never DML/DDL.
@@ -2020,8 +2055,7 @@ namespace services::collection::executor {
             stage.push_back(std::move(batch));
             for (std::size_t i = op_start; i < chain.size(); ++i) {
                 ops::chunks_vector_t produced{resource()};
-                const auto t0 =
-                    analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                const analyze_scope scope{analyze};
                 for (auto& in : stage) {
                     auto err = chain[i]->push(ctx, std::move(in), produced);
                     if (err.contains_error()) {
@@ -2029,11 +2063,7 @@ namespace services::collection::executor {
                     }
                 }
                 if (analyze) {
-                    uint64_t rows = 0;
-                    for (const auto& c : produced) {
-                        rows += c.size();
-                    }
-                    chain[i]->record_analyze(rows, std::chrono::steady_clock::now() - t0);
+                    chain[i]->record_analyze(count_rows(produced), scope.elapsed());
                 }
                 stage = std::move(produced);
             }
@@ -2076,11 +2106,20 @@ namespace services::collection::executor {
             // not a push-fed finalize.) Drive it here, deepest-first — exactly the
             // commit the executor's bottom-up async-finalize pass drives — so the
             // FLUSH/async-finalize passes below operate only on the ANCESTORS.
+            const analyze_scope front_scope{analyze};
             if (chain.front()->needs_async_finalize()) {
                 co_await chain.front()->await_async_and_resume(ctx);
                 if (chain.front()->has_error()) {
                     co_return core::result_wrapper_t<ops::chunks_vector_t>(chain.front()->get_error());
                 }
+            }
+            // EXPLAIN ANALYZE: the producing bottom (e.g. a recursive_cte fixpoint) is driven ONLY here
+            // — never via a push()/finalize record site — so without this its plan line would read
+            // rows=0 / actual time=0.000ms regardless of what it produced. Time only the production.
+            if (analyze) {
+                chain.front()->record_analyze(
+                    chain.front()->output() ? count_rows(chain.front()->output()->chunks()) : 0,
+                    front_scope.elapsed());
             }
             // Stream any rows the bottom PRODUCED (recursive_cte's fixpoint output_) UP
             // through the ancestors chain[1..] (e.g. sort -> select, or match -> sort ->
@@ -2117,8 +2156,7 @@ namespace services::collection::executor {
         } else if (start == 0) {
             ops::operator_t* source = chain.front();
             while (true) {
-                const auto t0 =
-                    analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                const analyze_scope scope{analyze};
                 auto next = co_await source->source_next(ctx);
                 if (next.has_error()) {
                     co_return next.convert_error<ops::chunks_vector_t>();
@@ -2130,7 +2168,7 @@ namespace services::collection::executor {
                 }
                 if (analyze) {
                     // source emits a single data_chunk_t per fetch (not a chunks_vector_t).
-                    source->record_analyze(batch.size(), std::chrono::steady_clock::now() - t0);
+                    source->record_analyze(batch.size(), scope.elapsed());
                 }
                 auto err = pump_one(std::move(batch));
                 if (err.contains_error()) {
@@ -2164,25 +2202,20 @@ namespace services::collection::executor {
         // since i < j is processed first). Streaming operators finalize to a no-op.
         for (std::size_t i = op_start; i < chain.size(); ++i) {
             ops::chunks_vector_t fin{resource()};
-            const auto t0 = analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            const analyze_scope scope{analyze};
             auto err = chain[i]->finalize(ctx, fin);
             if (err.contains_error()) {
                 co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
             }
             if (analyze) {
-                uint64_t rows = 0;
-                for (const auto& c : fin) {
-                    rows += c.size();
-                }
-                chain[i]->record_analyze(rows, std::chrono::steady_clock::now() - t0);
+                chain[i]->record_analyze(count_rows(fin), scope.elapsed());
             }
             for (auto& c : fin) {
                 ops::chunks_vector_t stage{resource()};
                 stage.push_back(std::move(c));
                 for (std::size_t j = i + 1; j < chain.size(); ++j) {
                     ops::chunks_vector_t produced{resource()};
-                    const auto tj =
-                        analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                    const analyze_scope scope{analyze};
                     for (auto& in : stage) {
                         auto e = chain[j]->push(ctx, std::move(in), produced);
                         if (e.contains_error()) {
@@ -2190,11 +2223,7 @@ namespace services::collection::executor {
                         }
                     }
                     if (analyze) {
-                        uint64_t rows = 0;
-                        for (const auto& pc : produced) {
-                            rows += pc.size();
-                        }
-                        chain[j]->record_analyze(rows, std::chrono::steady_clock::now() - tj);
+                        chain[j]->record_analyze(count_rows(produced), scope.elapsed());
                     }
                     stage = std::move(produced);
                 }
@@ -2231,19 +2260,13 @@ namespace services::collection::executor {
             if (!op->needs_async_finalize()) {
                 continue;
             }
-            const auto t0 = analyze ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            const analyze_scope scope{analyze};
             co_await op->await_async_and_resume(ctx);
             if (op->has_error()) {
                 co_return core::result_wrapper_t<ops::chunks_vector_t>(op->get_error());
             }
             if (analyze) {
-                uint64_t rows = 0;
-                if (op->output()) {
-                    for (const auto& c : op->output()->chunks()) {
-                        rows += c.size();
-                    }
-                }
-                op->record_analyze(rows, std::chrono::steady_clock::now() - t0);
+                op->record_analyze(op->output() ? count_rows(op->output()->chunks()) : 0, scope.elapsed());
             }
         }
 

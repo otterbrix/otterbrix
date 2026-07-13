@@ -185,6 +185,16 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         REQUIRE(cur->value(0, 0).value<int64_t>() == 5); // now 5 — ANALYZE true ran the insert
     }
 
+    INFO("plan-only EXPLAIN does NOT execute an uncorrelated sub-query"); {
+        // The scalar sub-query returns 2 rows (customer); if plan-only EXPLAIN ran it, compaction to a
+        // single value would error. Plan-only must skip sub-query execution and still render the plan.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "EXPLAIN SELECT * FROM TestDatabase.orders WHERE id = (SELECT id FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        REQUIRE(contains(plan_text(cur), "orders"));
+    }
+
     INFO("EXPLAIN of an unsupported (DDL) inner statement is rejected"); {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN CREATE TABLE TestDatabase.foo(x int);");
@@ -351,5 +361,81 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "FAKE-RENDERER"));  // render_id 1 honored (slot 1)
         REQUIRE_FALSE(contains(t, "FAKE-SPARK")); // not the slot-0 default
+    }
+}
+
+TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
+    auto config = test_create_config("/tmp/test_explain/analyze_recursive_cte_rows");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.org(id int, name string, manager_id int);")
+                    ->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(s,
+                                  "INSERT INTO TestDatabase.org (id, name, manager_id) VALUES "
+                                  "(1,'CEO',0),(2,'VP Eng',1),(3,'VP Mkt',1),(4,'Engineer',2),(5,'Designer',3);")
+                    ->is_success());
+    }
+
+    INFO("EXPLAIN ANALYZE records the recursive-CTE producer's rows (regression: was rows=0)"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "EXPLAIN ANALYZE WITH RECURSIVE hierarchy AS ("
+            "  SELECT id, name FROM TestDatabase.org WHERE manager_id = 0 "
+            "  UNION ALL "
+            "  SELECT e.id, e.name FROM TestDatabase.org e JOIN hierarchy h ON e.manager_id = h.id"
+            ") SELECT name FROM hierarchy;");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "Recursive Union"));
+        // Isolate the Recursive Union line: before the fix it read "(actual time=0.000ms rows=0 loops=1)"
+        // because the producing bottom's record_analyze was never called.
+        const auto pos = t.find("Recursive Union");
+        const auto eol = t.find('\n', pos);
+        const std::string ru_line = t.substr(pos, eol - pos);
+        REQUIRE_FALSE(contains(ru_line, "rows=0")); // now reports the actual produced row count
+    }
+}
+
+TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
+    // Round-to-nearest per-loop rows (PostgreSQL rint), computed by render_postgres directly. Uses a
+    // monotonic arena over new_delete_resource — never std::pmr::get_default_resource() (Rule 14).
+    std::pmr::monotonic_buffer_resource pool{std::pmr::new_delete_resource()};
+    auto* mr = &pool;
+
+    INFO("5 rows / 3 loops rounds to 2 (truncation gave 1)"); {
+        services::collection::explain_plan_node node(mr);
+        node.type = components::operators::operator_type::full_scan; // renders "Seq Scan"
+        node.rows = 5;
+        node.loops = 3;
+        node.time = std::chrono::nanoseconds(3'000'000);
+        auto cur = services::collection::render_postgres(mr, node, /*analyze=*/true);
+        REQUIRE(cur->is_success());
+        REQUIRE(contains(plan_text(cur), "rows=2"));
+    }
+
+    INFO("2 rows / 3 loops rounds to 1 (truncation gave 0)"); {
+        services::collection::explain_plan_node node(mr);
+        node.type = components::operators::operator_type::full_scan;
+        node.rows = 2;
+        node.loops = 3;
+        node.time = std::chrono::nanoseconds(1'000'000);
+        auto cur = services::collection::render_postgres(mr, node, true);
+        REQUIRE(cur->is_success());
+        REQUIRE(contains(plan_text(cur), "rows=1"));
     }
 }

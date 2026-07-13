@@ -342,6 +342,17 @@ namespace services::collection::executor {
             }
             return explain_renderers_.empty() ? &render_postgres : explain_renderers_[0];
         }
+
+        // Build the EXPLAIN IR from `explain_root`, resolve the per-query renderer (render_id: slot 0
+        // default + unregistered-id trace), and render. `cs` non-null resolves scan names from the live
+        // catalog (plan-only path); null reads the pre-collected `names` (ANALYZE, post context-move).
+        // Shared by the plan-only and ANALYZE branches of execute_plan.
+        [[nodiscard]] components::cursor::cursor_t_ptr
+        render_explain_(const components::operators::operator_ptr& explain_root,
+                        const explain_name_map_t& names,
+                        const services::context_storage_t* cs,
+                        uint32_t render_id,
+                        bool analyze);
     };
 
     using executor_ptr = std::unique_ptr<executor_t, actor_zeta::pmr::deleter_t>;

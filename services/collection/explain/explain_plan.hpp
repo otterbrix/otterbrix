@@ -26,10 +26,17 @@ namespace services::collection {
         std::chrono::nanoseconds time{std::chrono::nanoseconds::zero()};
         uint64_t loops{0};
         std::pmr::vector<explain_plan_node> children; // in explain(sink) recursion order
+        // PostgreSQL-style InitPlans: each flattened sub-query's captured IR, hung on the MAIN root only
+        // (PG attaches InitPlans at the topmost node of the query level; otterbrix runs all flattened
+        // sub-queries top-level, so they are siblings here). subplan_returns is the `$M` (the sub-query's
+        // parameter_id_t) carried on each captured sub-plan's own root node.
+        std::pmr::vector<explain_plan_node> subplans;
+        uint32_t subplan_returns{0};
 
         explicit explain_plan_node(std::pmr::memory_resource* mr)
             : relation(mr)
-            , children(mr) {}
+            , children(mr)
+            , subplans(mr) {}
         explain_plan_node(const explain_plan_node&) = delete;            // a COPY re-anchors to
         explain_plan_node& operator=(const explain_plan_node&) = delete; // get_default_resource() (Rule 14)
         explain_plan_node(explain_plan_node&&) = default;

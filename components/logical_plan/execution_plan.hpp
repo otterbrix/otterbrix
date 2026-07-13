@@ -50,6 +50,11 @@ namespace components::logical_plan {
         // plan carries it; flattened sub-queries are built fresh and stay `none`.
         explain_type explain{explain_type::none};
 
+        // EXPLAIN ANALYZE only: set by the executor's sub-query loop on each flattened sub-plan so it
+        // instruments + BUILDS its IR (returned via execute_result_t::captured_explain_ir) while KEEPING
+        // its data cursor for the loop's compaction. The main plan never sets it. Scalar → copies trivially.
+        bool explain_capture_ir{false};
+
         // Host-selected EXPLAIN renderer slot: an index into the executor's renderer registry
         // (see set_explain_renderer). 0 = the built-in postgres renderer (default). Set only from
         // the host C++ API, never SQL; rides the plan by value into the executor like `explain`.

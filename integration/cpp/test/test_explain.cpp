@@ -211,6 +211,94 @@ TEST_CASE("integration::cpp::test_explain::sql") {
     }
 }
 
+TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
+    auto config = test_create_config("/tmp/test_explain/inline_subquery_initplan");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.orders(id int, cust int);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.customer(id int, name string);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10);")
+                    ->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.customer (id, name) VALUES (10,'a'),(20,'b');")
+                    ->is_success());
+    }
+
+    INFO("EXPLAIN ANALYZE: scalar WHERE sub-query renders an InitPlan with the sub-scan + stats"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE cust = (SELECT max(id) FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "InitPlan 1 (returns $")); // PostgreSQL-style InitPlan header + param slot
+        REQUIRE(contains(t, "customer"));              // the sub-query's scanned relation
+        REQUIRE(contains(t, "actual time"));           // ANALYZE stats present (main + sub tree)
+    }
+
+    INFO("EXPLAIN ANALYZE: IN (SELECT ...) renders an InitPlan"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE cust IN (SELECT id FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
+        REQUIRE(contains(t, "customer"));
+    }
+
+    INFO("EXPLAIN ANALYZE: two sub-queries render two globally-numbered InitPlans"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders "
+                                           "WHERE cust = (SELECT max(id) FROM TestDatabase.customer) "
+                                           "AND id = (SELECT min(id) FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
+        REQUIRE(contains(t, "InitPlan 2 (returns $")); // global numbering, second sub-query
+    }
+
+    INFO("EXPLAIN ANALYZE: nested sub-query — both InitPlans present (all flattened top-level)"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE cust IN "
+            "(SELECT id FROM TestDatabase.customer WHERE id = (SELECT max(id) FROM TestDatabase.customer));");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
+        REQUIRE(contains(t, "InitPlan 2 (returns $")); // nested sub-query is a sibling InitPlan, not dropped
+    }
+
+    INFO("plain EXPLAIN (not ANALYZE) renders NO InitPlan (sub-queries not run)"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "EXPLAIN SELECT * FROM TestDatabase.orders WHERE cust = (SELECT max(id) FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "orders"));
+        REQUIRE_FALSE(contains(t, "InitPlan")); // #6: plain EXPLAIN skips sub-query execution
+    }
+}
+
 TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
     auto config = test_create_config("/tmp/test_explain/per_query_renderer");
     test_clear_directory(config);

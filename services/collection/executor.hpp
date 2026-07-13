@@ -9,6 +9,7 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <optional>
 #include <set>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -112,6 +113,13 @@ namespace services::collection::executor {
         // pg_settings; the dispatcher refreshes its default_tz_cat_ from it.
         // The ONLY post-execute signal the dispatcher consumes besides cursor.
         std::string applied_timezone{};
+        // EXPLAIN ANALYZE only: when a sub-plan ran with explain_capture_ir, its
+        // built IR rides back here (data cursor left intact). The main execute_plan
+        // hangs each captured sub-plan on the main IR root as an InitPlan. Move-only
+        // (explain_plan_node deletes copy) → execute_result_t is move-only, which is
+        // safe: nothing copies it, the mailbox moves it. Appended LAST so every
+        // aggregate-init brace that sets a prefix of members stays valid.
+        std::optional<explain_plan_node> captured_explain_ir{};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -192,11 +200,16 @@ namespace services::collection::executor {
         // Operator-pipeline run over an already-rewritten plan. INTERNAL:
         // called only from execute_plan_full (directly, via co_await — never
         // through the mailbox). The txn lifecycle is owned by the caller.
+        // captured_subplans (EXPLAIN ANALYZE main plan): flattened sub-query IRs, moved in from
+        // execute_plan_full's loop buffer, hung on the main IR root as InitPlans. Passed BY VALUE
+        // (moved) — a pmr member cannot be defaulted (would re-anchor to get_default_resource(),
+        // Rule 14), so callers with no sub-queries pass an empty vector built on resource().
         unique_future<execute_result_t> execute_plan(components::session::session_id_t session,
                                                      components::logical_plan::execution_plan_t plan,
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn,
-                                                     uint64_t lowest_active_start_time);
+                                                     uint64_t lowest_active_start_time,
+                                                     std::pmr::vector<explain_plan_node> captured_subplans);
 
         // THE per-query entry point (the dispatcher's only execute send).
         // Runs the full pipeline on an unrewritten logical_plan: session
@@ -347,12 +360,15 @@ namespace services::collection::executor {
         // default + unregistered-id trace), and render. `cs` non-null resolves scan names from the live
         // catalog (plan-only path); null reads the pre-collected `names` (ANALYZE, post context-move).
         // Shared by the plan-only and ANALYZE branches of execute_plan.
+        // captured_subplans: flattened sub-query IRs to hang on the built root as InitPlans (EXPLAIN
+        // ANALYZE main plan); empty for plan-only / sub-plan captures. Moved in (consumed).
         [[nodiscard]] components::cursor::cursor_t_ptr
         render_explain_(const components::operators::operator_ptr& explain_root,
                         const explain_name_map_t& names,
                         const services::context_storage_t* cs,
                         uint32_t render_id,
-                        bool analyze);
+                        bool analyze,
+                        std::pmr::vector<explain_plan_node> captured_subplans);
     };
 
     using executor_ptr = std::unique_ptr<executor_t, actor_zeta::pmr::deleter_t>;

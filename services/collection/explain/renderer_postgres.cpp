@@ -156,7 +156,8 @@ namespace services::collection {
                          const explain_plan_node& n,
                          int depth,
                          bool analyze,
-                         std::pmr::vector<std::pmr::string>& lines) {
+                         std::pmr::vector<std::pmr::string>& lines,
+                         int& initplan_no) {
             std::pmr::string line(mr);
             if (depth > 0) {
                 line.assign(static_cast<size_t>(depth) * 2, ' ');
@@ -168,7 +169,20 @@ namespace services::collection {
             }
             lines.push_back(std::move(line));
             for (const auto& c : n.children) {
-                render_node(mr, c, depth + 1, analyze, lines);
+                render_node(mr, c, depth + 1, analyze, lines, initplan_no);
+            }
+            // PostgreSQL-style InitPlans: each flattened sub-query hangs on the node that holds it (here,
+            // always the root — see explain_plan.hpp). `InitPlan k` is numbered globally across the whole
+            // query (PG numbering is global, not per-node); `$M` is the returned parameter slot.
+            for (const auto& sp : n.subplans) {
+                ++initplan_no;
+                std::pmr::string hdr(mr);
+                hdr.assign(static_cast<size_t>(depth + 1) * 2, ' ');
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "InitPlan %d (returns $%u)", initplan_no, sp.subplan_returns);
+                hdr += buf;
+                lines.push_back(std::move(hdr));
+                render_node(mr, sp, depth + 2, analyze, lines, initplan_no);
             }
         }
     } // namespace
@@ -176,7 +190,8 @@ namespace services::collection {
     components::cursor::cursor_t_ptr
     render_postgres(std::pmr::memory_resource* mr, const explain_plan_node& root, bool analyze) {
         std::pmr::vector<std::pmr::string> lines(mr);
-        render_node(mr, root, 0, analyze, lines);
+        int initplan_no = 0;
+        render_node(mr, root, 0, analyze, lines, initplan_no);
 
         std::pmr::vector<components::types::complex_logical_type> types(mr);
         types.emplace_back(components::types::logical_type::STRING_LITERAL, "QUERY PLAN");

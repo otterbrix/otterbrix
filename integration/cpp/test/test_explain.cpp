@@ -264,6 +264,41 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
         REQUIRE(contains(t, "customer"));
     }
 
+    // The attach-at-root placement is operator-INDEPENDENT: the flattened sub-query's param lands on a
+    // scan / match / aggregate / join, but the InitPlan renders at the root regardless. These three cover
+    // the carriers that motivated the rewrite (EXISTS->match, HAVING->aggregate, JOIN-ON->join).
+    INFO("EXPLAIN ANALYZE: EXISTS (...) renders an InitPlan (carrier: operator_match)"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders WHERE EXISTS (SELECT id FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
+        REQUIRE(contains(t, "customer"));
+    }
+
+    INFO("EXPLAIN ANALYZE: HAVING sub-query renders an InitPlan (carrier: operator_group / aggregate)"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "EXPLAIN ANALYZE SELECT cust, count(*) FROM TestDatabase.orders "
+                                           "GROUP BY cust HAVING count(*) > (SELECT min(id) FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
+        REQUIRE(contains(t, "customer"));
+    }
+
+    INFO("EXPLAIN ANALYZE: JOIN-ON sub-query renders an InitPlan (carrier: operator_join)"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s,
+            "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c "
+            "ON o.cust = c.id AND c.id = (SELECT max(id) FROM TestDatabase.customer);");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
+    }
+
     INFO("EXPLAIN ANALYZE: two sub-queries render two globally-numbered InitPlans"); {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,

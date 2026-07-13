@@ -1481,6 +1481,22 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
     }
+
+    INFO("WITH on a compound UNION is visible to the arms (was dropped with the tail clauses)");
+    {
+        // The CTE `e` is referenced by the first UNION arm; register_with_ctes must run before the arms.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "WITH e AS (SELECT id FROM TestDatabase.Employees WHERE dept_id = 1) "
+                                           "SELECT id FROM e "
+                                           "UNION ALL "
+                                           "SELECT id FROM TestDatabase.Employees WHERE dept_id = 2 "
+                                           "ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4); // {1,2} from the CTE arm + {3,4}
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 3).value<int64_t>() == 4);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1653,5 +1669,25 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
         auto cur = exec("SELECT COUNT(*) FROM TestDatabase.dst;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->value(0, 0).value<int64_t>() == 2); // ids {1,3}
+    }
+
+    INFO("WITH before UPDATE: the CTE feeds the UPDATE predicate");
+    {
+        REQUIRE(exec("CREATE TABLE TestDatabase.u (id bigint);")->is_success());
+        REQUIRE(exec("INSERT INTO TestDatabase.u (id) VALUES (1),(2),(3);")->is_success());
+        // c = {1,3}; rows of u with id in c become 99 -> u = {99, 2, 99}.
+        REQUIRE(exec("WITH c AS (SELECT id FROM TestDatabase.staging WHERE flag = 1) "
+                     "UPDATE TestDatabase.u SET id = 99 WHERE id IN (SELECT id FROM c);")
+                    ->is_success());
+        auto cur = exec("SELECT COUNT(*) FROM TestDatabase.u WHERE id = 99;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+
+    INFO("a data-modifying CTE (WITH x AS (DELETE ...)) is rejected cleanly, not a bad cast");
+    {
+        // Deferred feature: register_with_ctes errors instead of casting a DeleteStmt ctequery to SelectStmt.
+        auto cur = exec("WITH c AS (DELETE FROM TestDatabase.u RETURNING id) SELECT id FROM c;");
+        REQUIRE(cur->is_error());
     }
 }

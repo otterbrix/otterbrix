@@ -1,5 +1,6 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/function_expression.hpp>
+#include <components/expressions/jsonb_path.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/sql/transformer/transformer.hpp>
@@ -944,43 +945,13 @@ namespace components::sql::transform {
         if (has_error()) {
             return false;
         }
-        auto push_segment = [&](const std::string& s) {
-            // trim surrounding spaces (PG-style '{a, b}')
-            size_t b = s.find_first_not_of(' ');
-            size_t e = s.find_last_not_of(' ');
-            if (b == std::string::npos) {
-                return;
-            }
-            std::string trimmed = s.substr(b, e - b + 1);
-            segments.emplace_back(std::pmr::string{trimmed.c_str(), resource_});
-        };
         if (jsonb_op_takes_path(op)) {
             // '#>' / '#>>' / '#-' : a whole path. Accept PG array '{a,b}' or dotted 'a.b'.
-            std::string path = key_str;
-            if (path.size() >= 2 && path.front() == '{' && path.back() == '}') {
-                path = path.substr(1, path.size() - 2);
-                size_t start = 0;
-                while (true) {
-                    size_t comma = path.find(',', start);
-                    push_segment(path.substr(start, comma - start));
-                    if (comma == std::string::npos) {
-                        break;
-                    }
-                    start = comma + 1;
-                }
-            } else {
-                size_t start = 0;
-                while (true) {
-                    size_t dot = path.find('.', start);
-                    push_segment(path.substr(start, dot - start));
-                    if (dot == std::string::npos) {
-                        break;
-                    }
-                    start = dot + 1;
-                }
+            for (auto& seg : jsonb_path::split_operand(key_str, resource_)) {
+                segments.emplace_back(std::move(seg));
             }
         } else {
-            // '->' / '->>' : a single key.
+            // '->' / '->>' : a single key, taken verbatim (no splitting).
             segments.emplace_back(std::pmr::string{key_str.c_str(), resource_});
         }
         return true;
@@ -1010,14 +981,7 @@ namespace components::sql::transform {
                 core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{"empty jsonb path", resource_});
             return false;
         }
-        std::pmr::string joined(resource_);
-        for (size_t i = 0; i < segments.size(); ++i) {
-            if (i != 0) {
-                joined += "/";
-            }
-            joined += segments[i];
-        }
-        out_key = expressions::key_t(resource_, std::move(joined), side);
+        out_key = expressions::key_t(resource_, jsonb_path::flatten(segments, resource_), side);
         if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() && names.right_alias.empty()) {
             out_key.set_side(expressions::side_t::left);
         }
@@ -1037,30 +1001,9 @@ namespace components::sql::transform {
                                                     resource_});
             return false;
         }
-        std::pmr::vector<std::pmr::string> segments(resource_);
-        expressions::side_t side = expressions::side_t::undefined;
-        if (!collect_jsonb_path(node, names, segments, side)) {
-            return false;
-        }
-        if (segments.empty()) {
-            error_ =
-                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{"empty jsonb path", resource_});
-            return false;
-        }
-        std::pmr::string joined(resource_);
-        for (size_t i = 0; i < segments.size(); ++i) {
-            if (i != 0) {
-                joined += "/";
-            }
-            joined += segments[i];
-        }
-        out_key = expressions::key_t(resource_, std::move(joined), side);
-        // Single-table queries leave side undefined; pin to left so the value
-        // getter can read it (mirrors transform_a_expr_func).
-        if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() && names.right_alias.empty()) {
-            out_key.set_side(expressions::side_t::left);
-        }
-        return true;
+        // The only difference from a prefix key is the scalar-vs-table guard above;
+        // the flattening itself is identical, so share it.
+        return resolve_jsonb_prefix_key(node, names, out_key);
     }
 
     expression_ptr transformer::transform_jsonb_exists(A_Expr* node,
@@ -1130,13 +1073,9 @@ namespace components::sql::transform {
             use_side = expressions::side_t::left;
         }
         auto build_exists = [&](const std::pmr::string& k) -> compare_expression_ptr {
-            std::pmr::string joined(resource_);
-            for (const auto& seg : prefix) {
-                joined += seg;
-                joined += "/";
-            }
-            joined += k;
-            expressions::key_t key(resource_, std::move(joined), use_side);
+            std::pmr::vector<std::pmr::string> segments(prefix);
+            segments.emplace_back(k);
+            expressions::key_t key(resource_, jsonb_path::flatten(segments, resource_), use_side);
             auto dummy = params->add_parameter(
                 types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
             return make_compare_expression(params->parameters().resource(), compare_type::is_not_null, key, dummy);

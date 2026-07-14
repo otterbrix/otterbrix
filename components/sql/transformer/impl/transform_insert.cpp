@@ -1,6 +1,7 @@
 #include <algorithm>
 
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/jsonb_path.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/transformer.hpp>
@@ -299,11 +300,25 @@ namespace components::sql::transform {
             if (target->indirection->lst.empty()) {
                 key_translation.emplace_back(resource_, target->name);
             } else {
-                auto key = expressions::key_t{
-                    std::pmr::vector<std::pmr::string>{{std::pmr::string{target->name, resource_},
-                                                        pmrStrVal(target->indirection->lst.back().data, resource_)},
-                                                       resource_}};
-                key_translation.emplace_back(std::move(key));
+                // Dotted / subscripted target such as `a.b.c` or `arr[0]`: flatten
+                // the WHOLE path — the base name plus EVERY indirection element —
+                // into one computing-table column name, through the shared codec so
+                // the write side agrees byte-for-byte with the read side. Keeping
+                // every interior segment fixes the old two-element build that stored
+                // `a.b.c` as "a/c" (dropping the middle); rendering a subscript with
+                // indices_to_str fixes the crash where an A_Indices node was
+                // dereferenced as a string (`arr[0]` -> "arr/0", not a null deref).
+                std::pmr::vector<std::pmr::string> segments(resource_);
+                segments.emplace_back(std::pmr::string{target->name, resource_});
+                for (const auto& part : target->indirection->lst) {
+                    Node* p = pg_ptr_cast<Node>(part.data);
+                    if (nodeTag(p) == T_A_Indices) {
+                        segments.emplace_back(indices_to_str(resource_, pg_ptr_cast<A_Indices>(p)));
+                    } else {
+                        segments.emplace_back(pmrStrVal(p, resource_));
+                    }
+                }
+                key_translation.emplace_back(resource_, jsonb_path::flatten(segments, resource_));
             }
         }
         // RETURNING projection (references the target table's columns). Parsed

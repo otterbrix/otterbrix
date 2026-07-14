@@ -31,12 +31,15 @@
 //   INSERT INTO t (a.b, x) VALUES (NULL, 'z');          -- NULL literal in a dotted target [C3]
 //   SELECT CASE WHEN t #>> 'a.b' = 10 THEN 1 ELSE 0 END -- only when the leaf has a NULL row;
 //     FROM t;                                           --   reproduces on plain columns too (general 3VL bug)
-// And this one escapes as an uncaught C++ exception rather than a cursor error:
-//   INSERT INTO t (id, arr[0]) VALUES (1, 1);           -- "basic_string: construction from null is not valid" [C4]
 //
 // FIXED (were crashes/wrong results, now pinned as correct below):
 //   [A] get_str_value hardening — a cast key is transparent, a NULL key is a clean
 //       error, and neither `t -> (1::bool)` nor `t ->> NULL` crashes any more.
+//   [B] one path<->column codec (components/expressions/jsonb_path.hpp) — the split
+//       (operand -> segments) and join (segments -> "a/b" name) live in one place,
+//       shared by navigation, existence and the INSERT flattener.
+//   [G] INSERT target flattening keeps every segment (a.b.c -> "a/b/c") and renders
+//       a subscript target (arr[0] -> "arr/0") instead of crashing on it.
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -681,29 +684,57 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_nav_in_arithmetic_is_g
     CHECK(i64(plain, "v", 0) == 2);
 }
 
-// An INSERT target three or more segments deep silently loses its middle
-// segments: only the first and last survive. The value is stored — under a path
-// nobody asked for — and the path that was written is then unreadable.
-TEST_CASE("integration::cpp::test_jsonb_support::bug_deep_path_insert_drops_middle_segments") {
+// [G] An INSERT target of arbitrary depth flattens to the full slash-joined
+// column name — every interior segment is kept, and the path written is the path
+// read back. The write side and the read side share one codec, so any depth and
+// either spelling (dotted or pg-array) round-trip.
+TEST_CASE("integration::cpp::test_jsonb_support::deep_path_insert_keeps_all_segments") {
     auto config = make_test_config("/tmp/test_jsonb_matrix/depth");
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.d ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.d (id, a.b.c) VALUES (1, 111);")->is_success());
-    REQUIRE(exec(d, "INSERT INTO jp.d (id, p.q.r.s) VALUES (2, 222);")->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.d (id, p.q.r.s.t) VALUES (2, 222);")->is_success());
 
     auto cur = exec(d, "SELECT * FROM jp.d ORDER BY id;");
     REQUIRE(cur->is_success());
-    // correct: {"id", "a/b/c", "p/q/r/s"}
-    CHECK(aliases(cur) == std::set<std::string>{"id", "a/c", "p/s"});
-    CHECK(i64(cur, "a/c", 0) == 111); // the value landed under the truncated path
-    CHECK(i64(cur, "p/s", 1) == 222); // two segments dropped here
+    CHECK(aliases(cur) == std::set<std::string>{"id", "a/b/c", "p/q/r/s/t"});
+    CHECK(i64(cur, "a/b/c", 0) == 111);
+    CHECK(i64(cur, "p/q/r/s/t", 1) == 222);
 
-    // consequence: the path that was inserted cannot be read back
-    CHECK_FALSE(exec(d, "SELECT d #>> 'a.b.c' AS v FROM jp.d;")->is_success());   // correct: 111
-    CHECK_FALSE(exec(d, "SELECT d #>> '{a,b,c}' AS v FROM jp.d;")->is_success()); // correct: 111
-    CHECK(exec(d, "SELECT d #>> 'a.c' AS v FROM jp.d;")->is_success());           // the path nobody wrote
+    // the exact path that was written reads back, both spellings, both operators
+    CHECK(i64(exec(d, "SELECT d #>> 'a.b.c' AS v FROM jp.d WHERE id = 1;"), "v", 0) == 111);
+    CHECK(i64(exec(d, "SELECT d #>> '{a,b,c}' AS v FROM jp.d WHERE id = 1;"), "v", 0) == 111);
+    CHECK(i64(exec(d, "SELECT d #>> 'p.q.r.s.t' AS v FROM jp.d WHERE id = 2;"), "v", 0) == 222);
+    // the truncated path nobody wrote is (correctly) absent now
+    CHECK_FALSE(exec(d, "SELECT d #>> 'a.c' AS v FROM jp.d;")->is_success());
+
+    // partial expansion through the deep path
+    auto expand = exec(d, "SELECT d -> 'a' -> 'b' FROM jp.d WHERE id = 1;");
+    REQUIRE(expand->is_success());
+    CHECK(aliases(expand) == std::set<std::string>{"c"});
+    CHECK(i64(expand, "c", 0) == 111);
+}
+
+// [G] A subscript target such as arr[0] flattens like any other segment
+// (arr[0] -> "arr/0") instead of dereferencing the A_Indices node as a string,
+// which used to throw an uncaught std::exception.
+TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
+    auto config = make_test_config("/tmp/test_jsonb_matrix/subscript");
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE jp.d ();")->is_success());
+
+    REQUIRE(exec(d, "INSERT INTO jp.d (id, arr[0], arr[1]) VALUES (1, 7, 8);")->is_success());
+    auto cur = exec(d, "SELECT * FROM jp.d ORDER BY id;");
+    REQUIRE(cur->is_success());
+    CHECK(aliases(cur) == std::set<std::string>{"id", "arr/0", "arr/1"});
+    CHECK(i64(cur, "arr/0", 0) == 7);
+    CHECK(i64(cur, "arr/1", 0) == 8);
+    // and it reads back through the path spelling
+    CHECK(i64(exec(d, "SELECT d #>> 'arr.0' AS v FROM jp.d;"), "v", 0) == 7);
 }
 
 // `- '{key}'` (the postgres text-array form of key deletion) is silently ignored:
@@ -759,10 +790,18 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_zero_match_expand_drops_the
     CHECK(dotted->column_count() == 0);
 }
 
-// The '/' that joins path segments internally is not reserved, so a top-level key
-// spelled with a slash and a nested path are the SAME column: "a/b" and a.b
-// collide. Either spelling reads back both rows.
-TEST_CASE("integration::cpp::test_jsonb_support::bug_path_separator_collides_with_a_literal_key") {
+// LIMITATION of the flattened representation (documented, not a fix target here).
+// A computing-table column name and a nested path share one namespace, and the
+// path separator '/' is a legal identifier character, so the nested path a.b and a
+// column whose literal name is "a/b" are the same storage column "a/b" — a value
+// written one way is visible the other way. Making them distinct (postgres keeps
+// the jsonb key "a/b" separate from a nested a->b) would require percent-escaping
+// EVERY column identifier on read and write system-wide — including regular tables
+// and DDL, well outside jsonb — so we do not do it here. The one codec that owns
+// the mapping (jsonb_path.hpp) documents the same reservation. This case pins the
+// behavior so a future escaping change is a deliberate, visible flip rather than a
+// silent one.
+TEST_CASE("integration::cpp::test_jsonb_support::flattened_name_and_nested_path_share_storage") {
     auto config = make_test_config("/tmp/test_jsonb_matrix/sep");
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -773,7 +812,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_path_separator_collides_wit
 
     auto star = exec(d, "SELECT * FROM jp.s ORDER BY id;");
     REQUIRE(star->is_success());
-    // correct: two distinct columns — the nested path a.b, and the flat key "a/b"
+    // one shared column "a/b", not two
     CHECK(aliases(star) == std::set<std::string>{"id", "a/b"});
 
     // both spellings address that one column, so each sees the other's row

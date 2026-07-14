@@ -476,6 +476,15 @@ namespace components::table {
                     return matched.value() ? filter_match_t::yes : filter_match_t::no;
                 }
                 // Works for both constant_filter_t and set_membership_filter_t.
+
+                // A NULL on the CONSTANT side is UNKNOWN for every row, exactly as a NULL column
+                // value is: `WHERE x > NULL` selects nothing, and must not be flipped in by NOT.
+                // This is decided before the column is even read.
+                if (const auto* const_filter = dynamic_cast<const constant_filter_t*>(filter);
+                    const_filter && const_filter->constant.is_null()) {
+                    return filter_match_t::unknown;
+                }
+
                 const auto& indices = table_filter_table_indices(filter);
                 column_data_t* column = &get_column(indices.front());
                 for (size_t i = 1; i < indices.size(); i++) {
@@ -485,7 +494,20 @@ namespace components::table {
                     }
                     column = static_cast<struct_column_data_t*>(column)->sub_columns[indices[i]].get();
                 }
-                return column->check_predicate(row_id, filter, error);
+                auto match = column->check_predicate(row_id, filter, error);
+
+                // `x IN (1, NULL)`: a hit is TRUE, but a miss is UNKNOWN rather than FALSE, because
+                // the NULL element might have been the match.
+                if (match == filter_match_t::no) {
+                    if (const auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
+                        for (const auto& v : set->values) {
+                            if (v.is_null()) {
+                                return filter_match_t::unknown;
+                            }
+                        }
+                    }
+                }
+                return match;
             }
         }
     }

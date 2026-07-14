@@ -18,6 +18,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_create_index_backfill_batched.cpp
         test_correctness_bugs.cpp
         test_multi_database_isolation.cpp
+        test_index_null_correctness.cpp
         test_dispatcher_watchdog_log.cpp
         test_null_three_valued_logic.cpp
         test_production_scenarios.cpp

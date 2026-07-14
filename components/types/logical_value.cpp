@@ -746,6 +746,23 @@ namespace components::types {
     bool logical_value_t::operator!=(const logical_value_t& rhs) const { return !(*this == rhs); }
 
     bool logical_value_t::operator<(const logical_value_t& rhs) const {
+        // A NULL carries logical_type::NA, not the column's type, so the type-directed switch below
+        // cannot order it: it would fall to `default: return false` for an NA on the left, and for
+        // an NA on the RIGHT it would read the NA's payload as if it were the left type — which
+        // dereferences a null pointer for STRING/LIST/STRUCT/MAP.
+        //
+        // Worse, returning false in both directions makes a NULL "equivalent" to every value while
+        // the values stay ordered among themselves (less(NA,5) and less(5,NA) are both false, yet
+        // less(5,7) is true). Equivalence is then not transitive, so this is not a strict weak
+        // ordering, and every std::sort / std::map / b-tree keyed on it is undefined behaviour.
+        //
+        // Order NULLs LAST, matching the ORDER BY convention already used by sort.cpp, so the
+        // engine has one NULL-ordering rule rather than two.
+        const bool lhs_null = is_null();
+        const bool rhs_null = rhs.is_null();
+        if (lhs_null || rhs_null) {
+            return !lhs_null && rhs_null; // value < NULL; NULL < anything is false
+        }
         // Array/list ordering is length-aware: compare element-wise, a shorter array that is a prefix sorts
         // first (lexicographic). Handled before the size-inclusive type assert so different-length arrays
         // do not trip it.

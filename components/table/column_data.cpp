@@ -71,6 +71,12 @@ namespace components::table {
             filter.filter_type == expressions::compare_type::lte) {
             auto& constant_filter = filter.cast<constant_filter_t>();
             const auto& constant = constant_filter.constant;
+            // A NULL constant makes the comparison UNKNOWN for every row (`WHERE x > NULL` selects
+            // nothing). Ordering a NULL against min/max would be meaningless, so do not prune on it;
+            // the per-row evaluator resolves it to UNKNOWN and excludes the rows.
+            if (constant.is_null()) {
+                return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+            }
             const auto& min = statistics_.min_value();
             const auto& max = statistics_.max_value();
             switch (filter.filter_type) {
@@ -153,6 +159,10 @@ namespace components::table {
             filter.filter_type == expressions::compare_type::lte) {
             auto& constant_filter = filter.cast<constant_filter_t>();
             const auto& constant = constant_filter.constant;
+            // See check_zonemap: a NULL constant is UNKNOWN for every row, never a prunable bound.
+            if (constant.is_null()) {
+                return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+            }
             const auto& min = seg_stats.min_value();
             const auto& max = seg_stats.max_value();
             switch (filter.filter_type) {

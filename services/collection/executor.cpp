@@ -311,15 +311,26 @@ namespace services::collection::executor {
             explain_root->explain(nc.sink());
         }
         if (plan.explain == components::logical_plan::explain_type::plan) {
-            // Plan-only EXPLAIN: build + render the physical tree WITHOUT executing. context_storage is
-            // still alive here, so the builder resolves scan names from the live catalog (no collector).
-            // No sub-queries ran (plain EXPLAIN skips them), so no InitPlans to attach — empty buffer.
+            // Plan-only EXPLAIN: build the physical tree's IR WITHOUT executing. context_storage is still
+            // alive, so the builder resolves scan names from the live catalog (no collector).
+            if (plan.explain_capture_ir) {
+                // A flattened sub-query captured for the main query's InitPlan section: return its IR
+                // (structure only, no ANALYZE stats). No render, no execution — the cursor is unused by
+                // the caller (it reads captured_explain_ir) but must be a success cursor.
+                explain_ir_builder b{resource(), explain_names, &context_storage};
+                explain_root->explain(b.sink());
+                execute_result_t out{make_cursor(resource())};
+                out.captured_explain_ir = b.release();
+                co_return std::move(out);
+            }
+            // Main plan: render the tree, hanging each flattened sub-query's captured IR as an InitPlan
+            // (structure only) — like PostgreSQL's plain EXPLAIN.
             co_return execute_result_t{render_explain_(explain_root,
                                                        explain_names,
                                                        &context_storage,
                                                        plan.explain_render_id,
                                                        false,
-                                                       std::pmr::vector<explain_plan_node>{resource()})};
+                                                       std::move(captured_subplans))};
         }
 
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
@@ -429,16 +440,17 @@ namespace services::collection::executor {
         // by id. Sharing the node is why execute_plan copies (not drains) the
         // parameters: each binding must survive into the next plan.
         //
-        // Plan-only EXPLAIN evaluates nothing (PostgreSQL: plain EXPLAIN does not run sub-plans) and
-        // renders from plan SHAPE alone, so skip this loop and leave the sub-query params NA. EXPLAIN
-        // ANALYZE and normal execution still run it. (A DML-in-sub-query under a plan-only EXPLAIN is
-        // thus not diagnosed — it executes nothing anyway.)
+        // Plan-only EXPLAIN does not EXECUTE the sub-queries (PostgreSQL: plain EXPLAIN runs no sub-plans),
+        // but it still BUILDS each one's physical plan and captures its IR so the output shows the InitPlan
+        // structure — exactly like PostgreSQL's plain EXPLAIN. EXPLAIN ANALYZE captures the executed IR
+        // (with per-operator stats); normal execution captures nothing. Both EXPLAIN modes hang the captured
+        // IRs on the main IR root as InitPlans (PG-faithful attach-at-root — otterbrix runs/plans them all
+        // top-level).
         const bool run_sub_queries = plan.explain != components::logical_plan::explain_type::plan;
-        // EXPLAIN ANALYZE only: each flattened sub-plan builds + returns its IR here; we hang them all on
-        // the main IR root as InitPlans (PG-faithful attach-at-root — otterbrix runs them all top-level).
+        const bool plan_only = plan.explain == components::logical_plan::explain_type::plan;
         const bool capture_ir = plan.explain == components::logical_plan::explain_type::analyze;
         std::pmr::vector<explain_plan_node> captured_subplans{resource()};
-        for (std::size_t i = 0; run_sub_queries && i + 1 < plan.sub_queries.size(); ++i) {
+        for (std::size_t i = 0; (run_sub_queries || plan_only) && i + 1 < plan.sub_queries.size(); ++i) {
             auto* sub_root = services::catalog_resolve::effective_root_node(plan.sub_queries[i].get());
             const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
             // SQL standard: a sub-query is a query expression — never DML/DDL.
@@ -449,7 +461,11 @@ namespace services::collection::executor {
                                   std::pmr::string{"DML statement is not allowed in a sub-query", resource()}})};
             }
             components::logical_plan::execution_plan_t sub_plan{resource(), plan.sub_queries[i], plan.parameters};
-            if (capture_ir) {
+            if (plan_only) {
+                // Build the sub-query's physical plan + IR, NO execution (returned via captured_explain_ir).
+                sub_plan.explain = components::logical_plan::explain_type::plan;
+                sub_plan.explain_capture_ir = true;
+            } else if (capture_ir) {
                 // Instrument the sub-plan and make it BUILD its IR (kept alongside the data cursor).
                 sub_plan.explain = components::logical_plan::explain_type::analyze;
                 sub_plan.explain_capture_ir = true;
@@ -459,10 +475,14 @@ namespace services::collection::executor {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
             const auto& mapping = plan.sub_query_results[i];
-            if (capture_ir && sub_result.captured_explain_ir.has_value()) {
+            if ((capture_ir || plan_only) && sub_result.captured_explain_ir.has_value()) {
                 // Stamp the sub-plan's returned param slot ($M) and buffer it for the main-root attach.
                 sub_result.captured_explain_ir->subplan_returns = static_cast<uint32_t>(mapping.id);
                 captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
+            }
+            if (plan_only) {
+                // Plan-only: the IR is captured; there is no data cursor to compact or param to bind.
+                continue;
             }
             trace(log_,
                   "DBG subq[{}] cursor success={} size={} cols={}",

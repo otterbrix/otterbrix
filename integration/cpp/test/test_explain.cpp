@@ -323,14 +323,19 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
         REQUIRE(contains(t, "InitPlan 2 (returns $")); // nested sub-query is a sibling InitPlan, not dropped
     }
 
-    INFO("plain EXPLAIN (not ANALYZE) renders NO InitPlan (sub-queries not run)"); {
+    INFO("plain EXPLAIN (not ANALYZE) shows the sub-query InitPlan STRUCTURE (PostgreSQL), without stats"); {
+        // PostgreSQL's plain EXPLAIN shows the InitPlan shape even though it does not RUN the sub-query.
+        // We build each flattened sub-query's physical plan and capture its IR, but never execute it — so
+        // the InitPlan section appears with no `actual time`/rows/loops.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s, "EXPLAIN SELECT * FROM TestDatabase.orders WHERE cust = (SELECT max(id) FROM TestDatabase.customer);");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "orders"));
-        REQUIRE_FALSE(contains(t, "InitPlan")); // #6: plain EXPLAIN skips sub-query execution
+        REQUIRE(contains(t, "InitPlan 1 (returns $")); // structure shown ...
+        REQUIRE(contains(t, "customer"));
+        REQUIRE_FALSE(contains(t, "actual time")); // ... but the sub-query was NOT executed (no ANALYZE stats)
     }
 }
 

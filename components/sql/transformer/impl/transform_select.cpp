@@ -3,6 +3,7 @@
 
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/expression.hpp>
+#include <components/expressions/jsonb_path.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -989,6 +990,37 @@ namespace components::sql::transform {
                             if (op_str == "#-" ||
                                 (op_str == "-" && a_expr->lexpr && jsonb_lhs_is_table(a_expr->lexpr, names))) {
                                 has_non_star = true;
+                                // '-' with a text-array operand '{a,b}' deletes several
+                                // top-level keys at once (postgres `jsonb - text[]`).
+                                // Each key becomes one delete prefix carried as a param;
+                                // the empty array '{}' deletes nothing. Every other
+                                // spelling ('- key', '#- path') is a single prefix.
+                                if (op_str == "-") {
+                                    std::string rhs = get_str_value(a_expr->rexpr);
+                                    if (has_error()) {
+                                        return nullptr;
+                                    }
+                                    if (rhs.size() >= 2 && rhs.front() == '{' && rhs.back() == '}') {
+                                        expressions::side_t side = expressions::side_t::undefined;
+                                        std::pmr::vector<std::pmr::string> base(resource_);
+                                        if (!resolve_jsonb_base(a_expr->lexpr, names, base, side)) {
+                                            return nullptr;
+                                        }
+                                        if (side == expressions::side_t::undefined && names.right_name.empty() &&
+                                            names.right_alias.empty()) {
+                                            side = expressions::side_t::left;
+                                        }
+                                        auto del = make_scalar_expression(resource_, scalar_type::jsonb_delete);
+                                        for (auto& k : jsonb_path::split_operand(rhs, resource_)) {
+                                            std::pmr::vector<std::pmr::string> segs(base);
+                                            segs.emplace_back(std::move(k));
+                                            del->append_param(
+                                                expressions::key_t(resource_, jsonb_path::flatten(segs, resource_), side));
+                                        }
+                                        select_node->append_expression(del);
+                                        break;
+                                    }
+                                }
                                 expressions::key_t prefix_key{resource_};
                                 if (!resolve_jsonb_prefix_key(a_expr, names, prefix_key)) {
                                     return nullptr;

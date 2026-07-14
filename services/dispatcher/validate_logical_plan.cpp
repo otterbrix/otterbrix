@@ -1774,6 +1774,29 @@ namespace services::dispatcher {
                                 }
                                 const std::string prefix = se->key().as_string();
                                 const std::string prefix_slash = prefix + "/";
+                                // Delete may carry several prefixes: key() plus any
+                                // key_t params (the multi-key form `jsonb - text[]`).
+                                // A column survives only if it is under NONE of them.
+                                std::vector<std::string> del_prefixes;
+                                if (is_delete) {
+                                    if (!se->key().is_null()) {
+                                        del_prefixes.push_back(prefix);
+                                    }
+                                    for (const auto& p : se->params()) {
+                                        if (std::holds_alternative<components::expressions::key_t>(p)) {
+                                            del_prefixes.push_back(
+                                                std::get<components::expressions::key_t>(p).as_string());
+                                        }
+                                    }
+                                }
+                                auto under_any = [&](const std::string& alias) {
+                                    for (const auto& pfx : del_prefixes) {
+                                        if (alias == pfx || alias.rfind(pfx + "/", 0) == 0) {
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                };
                                 // (output_name, source_alias) pairs
                                 std::vector<std::pair<std::string, std::string>> cols;
                                 for (const auto& sc : incoming_schema) {
@@ -1781,12 +1804,11 @@ namespace services::dispatcher {
                                         continue;
                                     }
                                     std::string alias(sc.type.alias());
-                                    const bool under = alias == prefix || alias.rfind(prefix_slash, 0) == 0;
                                     if (is_delete) {
-                                        if (!under) {
+                                        if (!under_any(alias)) {
                                             cols.emplace_back(alias, alias);
                                         }
-                                    } else if (under) {
+                                    } else if (alias == prefix || alias.rfind(prefix_slash, 0) == 0) {
                                         std::string out = alias == prefix ? prefix.substr(prefix.find_last_of('/') + 1)
                                                                           : alias.substr(prefix_slash.size());
                                         cols.emplace_back(std::move(out), std::move(alias));

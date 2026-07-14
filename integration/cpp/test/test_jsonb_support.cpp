@@ -737,22 +737,44 @@ TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
     CHECK(i64(exec(d, "SELECT d #>> 'arr.0' AS v FROM jp.d;"), "v", 0) == 7);
 }
 
-// `- '{key}'` (the postgres text-array form of key deletion) is silently ignored:
-// no column is removed and no error is raised. Only the bare `- 'key'` form works.
-TEST_CASE("integration::cpp::test_jsonb_support::bug_array_form_of_delete_is_silent_noop") {
+// [C] `- '{a,b}'` is the postgres text-array form of key deletion (`jsonb - text[]`):
+// it removes SEVERAL top-level keys at once. The bare `- 'key'` form still removes
+// one key, and `#- 'a.b'` still deletes a nested path — the three are distinct.
+TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
     auto config = make_test_config("/tmp/test_jsonb_matrix/del_arr");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    seed(d);
+    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c, x, y) VALUES (1, 10, 20, 'p', 'q');")->is_success());
 
-    auto ok = exec(d, "SELECT t - 'x' FROM jp.t;");
-    REQUIRE(ok->is_success());
-    CHECK(aliases(ok) == std::set<std::string>{"id", "a/b", "a/c"});
+    // single key (unchanged)
+    CHECK(aliases(exec(d, "SELECT t - 'x' FROM jp.t;")) == std::set<std::string>{"id", "a/b", "a/c", "y"});
 
-    auto arr = exec(d, "SELECT t - '{x}' FROM jp.t;");
-    REQUIRE(arr->is_success());
-    // correct: {"id", "a/b", "a/c"} — x should have been deleted, or the form rejected.
-    CHECK(aliases(arr) == std::set<std::string>{"id", "a/b", "a/c", "x"});
+    // one-element array removes that one key
+    CHECK(aliases(exec(d, "SELECT t - '{x}' FROM jp.t;")) == std::set<std::string>{"id", "a/b", "a/c", "y"});
+
+    // several keys removed together
+    CHECK(aliases(exec(d, "SELECT t - '{x,y}' FROM jp.t;")) == std::set<std::string>{"id", "a/b", "a/c"});
+
+    // a key that names a subtree removes the whole subtree, mixed with a leaf key
+    CHECK(aliases(exec(d, "SELECT t - '{x,a}' FROM jp.t;")) == std::set<std::string>{"id", "y"});
+
+    // the empty array deletes nothing; an unknown key deletes nothing (no error)
+    CHECK(aliases(exec(d, "SELECT t - '{}' FROM jp.t;")) ==
+          std::set<std::string>{"id", "a/b", "a/c", "x", "y"});
+    CHECK(aliases(exec(d, "SELECT t - '{nokey}' FROM jp.t;")) ==
+          std::set<std::string>{"id", "a/b", "a/c", "x", "y"});
+
+    // #- with an array is still a single nested PATH delete, not multi-key
+    CHECK(aliases(exec(d, "SELECT t #- '{a,b}' FROM jp.t;")) == std::set<std::string>{"id", "a/c", "x", "y"});
+
+    // values of the surviving columns are intact after a multi-key delete
+    auto surv = exec(d, "SELECT t - '{a}' FROM jp.t;");
+    REQUIRE(surv->is_success());
+    CHECK(aliases(surv) == std::set<std::string>{"id", "x", "y"});
+    CHECK(str(surv, "x", 0) == "p");
+    CHECK(str(surv, "y", 0) == "q");
 }
 
 // Expanding a path that matches no column does not error — the expansion item is

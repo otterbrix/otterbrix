@@ -1,0 +1,526 @@
+// ===========================================================================
+// RESTART CONSISTENCY -- the differential battery.
+//
+// Each group asserts one clause of the RC invariant: what the database did
+// before the restart, it must still do after the restart. See restart_probe.hpp
+// for the machinery and for why the probes are shaped the way they are.
+//
+// Two rules every group here obeys, and why:
+//
+//   * A probe that WRITES must CLEAN UP. The post-restart phase runs on a data
+//     directory that already contains the pre-restart phase's writes. Without a
+//     cleanup, every unkeyed read (a COUNT, a full scan) sees one extra row and
+//     "diverges" for a reason the harness itself created.
+//
+//   * A probe may freely SELECT its own key. The phase key is folded back out of
+//     the observation before the two phases are compared, so a row keyed $K+1
+//     renders identically in both.
+//
+// Groups are independently selectable, so a group that bricks the database
+// cannot hide a divergence elsewhere:
+//
+//   RC_ONLY=defaults,index_content  ./test_otterbrix "[restart]"
+//   RC_DATA_ROOT=/var/tmp/rc        (default: /tmp/otterbrix/restart_consistency)
+// ===========================================================================
+
+#include "restart_probe.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
+using namespace restart_rc;
+
+namespace {
+
+    bool group_enabled(const std::string& name) {
+        const char* only = std::getenv("RC_ONLY");
+        if (!only) {
+            return true;
+        }
+        const std::string all = std::string(",") + only + ",";
+        return all.find("," + name + ",") != std::string::npos;
+    }
+
+    // Run one group under every storage mode and every restart flavor. Each
+    // (mode, flavor) is CHECKed rather than REQUIREd, so one broken mode still
+    // reports the others.
+    void check_restart_consistency(const group_t& group) {
+        if (!group_enabled(group.name)) {
+            SUCCEED("group " << group.name << " disabled by RC_ONLY");
+            return;
+        }
+        const storage_mode modes[] = {storage_mode::in_memory, storage_mode::disk, storage_mode::disk_checkpoint};
+        const restart_flavor flavors[] = {restart_flavor::clean, restart_flavor::crash};
+
+        for (auto mode : modes) {
+            for (auto flavor : flavors) {
+                const auto report = check_group(group, mode, flavor);
+                INFO("group=" << group.name << " mode=" << to_string(mode) << " restart=" << to_string(flavor) << "\n"
+                              << report.describe());
+                CHECK(report.consistent());
+            }
+        }
+    }
+
+    const std::string create_db = "CREATE DATABASE rcdb;";
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Column DEFAULTs. The archetypal write-only divergence: a row written BEFORE
+// the restart keeps its defaults (the value is baked into the WAL payload), so
+// only an INSERT issued AFTER the restart can see that the schema lost them.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::restart_consistency::defaults", "[restart]") {
+    group_t g;
+    g.name = "defaults";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (a bigint, b int DEFAULT 5, c bigint DEFAULT 7, s string DEFAULT 'dflt')$S;",
+               "INSERT INTO rcdb.t (a) VALUES (1), (2);"};
+    g.probes = {
+        {"existing_rows", {}, {{"all", "SELECT * FROM rcdb.t;"}}, {}},
+        // The whole point: a NEW row, inserted in THIS phase, must get the same
+        // defaults it would have got before the restart.
+        {"new_row",
+         {"INSERT INTO rcdb.t (a) VALUES ($K);"},
+         {{"values", "SELECT b, c, s FROM rcdb.t WHERE a = $K;"},
+          {"b_not_null", "SELECT a FROM rcdb.t WHERE a = $K AND b IS NULL;"},
+          {"c_is_7", "SELECT a FROM rcdb.t WHERE a = $K AND c = 7;"},
+          {"s_is_dflt", "SELECT a FROM rcdb.t WHERE a = $K AND s = 'dflt';"}},
+         {"DELETE FROM rcdb.t WHERE a = $K;"}},
+        // An explicit value must still override the default after a restart.
+        // Keyed $K+1 so it can never be confused with the new_row probe's row.
+        {"explicit_overrides_default",
+         {"INSERT INTO rcdb.t (a, c) VALUES ($K + 1, 42);"},
+         {{"value", "SELECT c FROM rcdb.t WHERE a = $K + 1;"}},
+         {"DELETE FROM rcdb.t WHERE a = $K + 1;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// A DEFAULT on a TIMESTAMP column: the catalog's default codec cannot encode
+// temporal types at all, so this loses the default even where a bigint survives.
+TEST_CASE("integration::cpp::restart_consistency::timestamp_default", "[restart]") {
+    group_t g;
+    g.name = "timestamp_default";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, created timestamp DEFAULT '2020-01-01 00:00:00')$S;",
+               "INSERT INTO rcdb.t (id) VALUES (1);"};
+    g.probes = {
+        {"new_row",
+         {"INSERT INTO rcdb.t (id) VALUES ($K);"},
+         {{"value", "SELECT created FROM rcdb.t WHERE id = $K;"},
+          {"not_null", "SELECT id FROM rcdb.t WHERE id = $K AND created IS NULL;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// NOT NULL + DEFAULT on the same column. The plan layer deliberately delegates
+// NOT NULL enforcement for a defaulted column to storage ("the disk agent fills
+// them non-NULL"). If the restart drops either the default or the not-null flag,
+// this stores a NULL in a NOT NULL column -- or silently writes zero rows.
+TEST_CASE("integration::cpp::restart_consistency::not_null_with_default", "[restart]") {
+    group_t g;
+    g.name = "not_null_with_default";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (a bigint, b bigint NOT NULL DEFAULT 7)$S;",
+               "INSERT INTO rcdb.t (a) VALUES (1);"};
+    g.probes = {
+        {"insert_omitting_b",
+         {"INSERT INTO rcdb.t (a) VALUES ($K);"},
+         {{"row", "SELECT a, b FROM rcdb.t WHERE a = $K;"},
+          {"no_null_stored", "SELECT a FROM rcdb.t WHERE b IS NULL;"}},
+         {"DELETE FROM rcdb.t WHERE a = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// NOT NULL enforcement itself must survive, with byte-identical error text.
+TEST_CASE("integration::cpp::restart_consistency::not_null_enforcement", "[restart]") {
+    group_t g;
+    g.name = "not_null_enforcement";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, tag string NOT NULL)$S;",
+               "INSERT INTO rcdb.t (id, tag) VALUES (1, 'red');"};
+    g.probes = {
+        {"violation_rejected",
+         {"INSERT INTO rcdb.t (id, tag) VALUES ($K, NULL);"},
+         {{"not_stored", "SELECT * FROM rcdb.t WHERE id = $K;"}, {"table_intact", "SELECT * FROM rcdb.t;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+        {"valid_row_accepted",
+         {"INSERT INTO rcdb.t (id, tag) VALUES ($K, 'ok');"},
+         {{"row", "SELECT tag FROM rcdb.t WHERE id = $K;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// CHECK / UNIQUE / FOREIGN KEY must still reject after the restart.
+TEST_CASE("integration::cpp::restart_consistency::check_constraint", "[restart]") {
+    group_t g;
+    g.name = "check_constraint";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, amount bigint)$S;",
+               "ALTER TABLE rcdb.t ADD CONSTRAINT ck_amount CHECK (amount > 0);",
+               "INSERT INTO rcdb.t (id, amount) VALUES (1, 10);"};
+    g.probes = {
+        {"violation_rejected",
+         {"INSERT INTO rcdb.t (id, amount) VALUES ($K, -1);"},
+         {{"not_stored", "SELECT * FROM rcdb.t WHERE id = $K;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+        {"valid_accepted",
+         {"INSERT INTO rcdb.t (id, amount) VALUES ($K, 5);"},
+         {{"row", "SELECT amount FROM rcdb.t WHERE id = $K;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+TEST_CASE("integration::cpp::restart_consistency::unique_constraint", "[restart]") {
+    group_t g;
+    g.name = "unique_constraint";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, name string)$S;",
+               "ALTER TABLE rcdb.t ADD CONSTRAINT uq_id UNIQUE (id);",
+               "INSERT INTO rcdb.t (id, name) VALUES (1, 'a');"};
+    g.probes = {
+        {"duplicate_rejected",
+         {"INSERT INTO rcdb.t (id, name) VALUES (1, 'dup');"},
+         {{"still_one_row", "SELECT * FROM rcdb.t WHERE id = 1;"}},
+         {}},
+        {"fresh_key_accepted",
+         {"INSERT INTO rcdb.t (id, name) VALUES ($K, 'ok');"},
+         {{"row", "SELECT name FROM rcdb.t WHERE id = $K;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+TEST_CASE("integration::cpp::restart_consistency::foreign_key", "[restart]") {
+    group_t g;
+    g.name = "foreign_key";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.parent (id bigint, v string)$S;",
+               "CREATE TABLE rcdb.child (id bigint, parent_id bigint)$S;",
+               "INSERT INTO rcdb.parent (id, v) VALUES (1, 'p1');",
+               "ALTER TABLE rcdb.child ADD CONSTRAINT fk_parent FOREIGN KEY (parent_id) REFERENCES rcdb.parent (id);",
+               "INSERT INTO rcdb.child (id, parent_id) VALUES (10, 1);"};
+    g.probes = {
+        {"orphan_rejected",
+         {"INSERT INTO rcdb.child (id, parent_id) VALUES ($K, 999);"},
+         {{"not_stored", "SELECT * FROM rcdb.child WHERE id = $K;"}},
+         {"DELETE FROM rcdb.child WHERE id = $K;"}},
+        {"valid_child_accepted",
+         {"INSERT INTO rcdb.child (id, parent_id) VALUES ($K, 1);"},
+         {{"row", "SELECT parent_id FROM rcdb.child WHERE id = $K;"}},
+         {"DELETE FROM rcdb.child WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// ---------------------------------------------------------------------------
+// Physical row_id stability. A live UPDATE is an MVCC delete+append (the row
+// moves to the end of the table); replay applies the same record in place. The
+// two disagree about where the row is, and every later record keyed by physical
+// row_id then lands on the wrong slot -- or on no slot at all.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::restart_consistency::update_then_delete", "[restart]") {
+    group_t g;
+    g.name = "update_then_delete";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (k bigint, v bigint)$S;",
+               "INSERT INTO rcdb.t (k, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8);",
+               "UPDATE rcdb.t SET v = 999 WHERE k = 5;",
+               "DELETE FROM rcdb.t WHERE k = 6;"};
+    g.probes = {
+        {"state",
+         {},
+         {{"all_rows", "SELECT * FROM rcdb.t;"},
+          {"updated_row", "SELECT v FROM rcdb.t WHERE k = 5;"},
+          {"deleted_row_gone", "SELECT * FROM rcdb.t WHERE k = 6;"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
+TEST_CASE("integration::cpp::restart_consistency::two_updates", "[restart]") {
+    group_t g;
+    g.name = "two_updates";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (k bigint, v bigint)$S;",
+               "INSERT INTO rcdb.t (k, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5);",
+               "UPDATE rcdb.t SET v = 100 WHERE k = 2;",
+               "UPDATE rcdb.t SET v = 200 WHERE k = 4;"};
+    g.probes = {
+        {"state",
+         {},
+         {{"all_rows", "SELECT * FROM rcdb.t;"},
+          {"first_update", "SELECT v FROM rcdb.t WHERE k = 2;"},
+          {"second_update", "SELECT v FROM rcdb.t WHERE k = 4;"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
+// The same row updated twice: the second UPDATE is keyed by a row_id the first
+// UPDATE already moved.
+TEST_CASE("integration::cpp::restart_consistency::update_same_row_twice", "[restart]") {
+    group_t g;
+    g.name = "update_same_row_twice";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (k bigint, v bigint)$S;",
+               "INSERT INTO rcdb.t (k, v) VALUES (1,1),(2,2),(3,3);",
+               "UPDATE rcdb.t SET v = 20 WHERE k = 2;",
+               "UPDATE rcdb.t SET v = 30 WHERE k = 2;"};
+    g.probes = {
+        {"state",
+         {},
+         {{"all_rows", "SELECT * FROM rcdb.t;"}, {"final_value", "SELECT v FROM rcdb.t WHERE k = 2;"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
+// An UPDATE issued AFTER the restart must behave like one issued before it.
+TEST_CASE("integration::cpp::restart_consistency::update_after_restart", "[restart]") {
+    group_t g;
+    g.name = "update_after_restart";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (k bigint, v bigint)$S;",
+               "INSERT INTO rcdb.t (k, v) VALUES (1,10),(2,20),(3,30);"};
+    g.probes = {
+        // Idempotent: sets a constant, then puts it back, so both phases end in
+        // the same state.
+        {"update_sets_constant",
+         {"UPDATE rcdb.t SET v = 77 WHERE k = 2;"},
+         {{"value", "SELECT v FROM rcdb.t WHERE k = 2;"}, {"others_untouched", "SELECT * FROM rcdb.t WHERE k <> 2;"}},
+         {"UPDATE rcdb.t SET v = 20 WHERE k = 2;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// Compaction renumbers every surviving row from zero, with no WAL barrier. Any
+// DELETE or UPDATE recorded after that point replays against the OLD numbering.
+TEST_CASE("integration::cpp::restart_consistency::delete_then_compact", "[restart]") {
+    group_t g;
+    g.name = "delete_then_compact";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (a bigint, v bigint)$S;",
+               "INSERT INTO rcdb.t (a, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);",
+               // >30% dead rows: crosses the automatic cleanup threshold, which
+               // compacts and renumbers with no WAL barrier.
+               "DELETE FROM rcdb.t WHERE a IN (1, 2, 3, 4);",
+               "DELETE FROM rcdb.t WHERE a = 6;",
+               "UPDATE rcdb.t SET v = 99 WHERE a = 8;"};
+    g.probes = {
+        {"state",
+         {},
+         {{"survivors", "SELECT * FROM rcdb.t;"},
+          {"post_compact_delete_stuck", "SELECT * FROM rcdb.t WHERE a = 6;"},
+          {"post_compact_update_stuck", "SELECT v FROM rcdb.t WHERE a = 8;"},
+          {"no_resurrection", "SELECT * FROM rcdb.t WHERE a <= 4;"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
+// ---------------------------------------------------------------------------
+// Type fidelity. The .otbx column record stores a bare uint8 logical_type, so
+// everything a type extension carries -- decimal width/scale, array size, list
+// and struct children -- is destroyed on reload.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::restart_consistency::decimal", "[restart]") {
+    group_t g;
+    g.name = "decimal";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, price decimal(10,2))$S;",
+               "INSERT INTO rcdb.t (id, price) VALUES (1, 12.34), (2, 99.99);"};
+    g.probes = {
+        {"existing",
+         {},
+         {{"all_rows", "SELECT * FROM rcdb.t;"}, {"value_predicate", "SELECT id FROM rcdb.t WHERE price = 12.34;"}},
+         {}},
+        {"new_row",
+         {"INSERT INTO rcdb.t (id, price) VALUES ($K, 7.25);"},
+         {{"value", "SELECT price FROM rcdb.t WHERE id = $K;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+TEST_CASE("integration::cpp::restart_consistency::array", "[restart]") {
+    group_t g;
+    g.name = "array";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, xs int[3])$S;",
+               "INSERT INTO rcdb.t (id, xs) VALUES (1, ARRAY[1,2,3]);"};
+    g.probes = {
+        {"existing", {}, {{"ids", "SELECT id FROM rcdb.t;"}}, {}},
+        {"new_row",
+         {"INSERT INTO rcdb.t (id, xs) VALUES ($K, ARRAY[7,8,9]);"},
+         {{"id", "SELECT id FROM rcdb.t WHERE id = $K;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// The scalar types the catalog type codec cannot name: they decode back to
+// logical_type::UNKNOWN.
+TEST_CASE("integration::cpp::restart_consistency::unsigned_types", "[restart]") {
+    group_t g;
+    g.name = "unsigned_types";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, u8 utinyint, u16 usmallint, u32 uinteger, u64 ubigint)$S;",
+               "INSERT INTO rcdb.t (id, u8, u16, u32, u64) VALUES (1, 200, 60000, 4000000000, 9000000000);"};
+    g.probes = {
+        {"existing", {}, {{"all_rows", "SELECT * FROM rcdb.t;"}}, {}},
+        {"new_row",
+         {"INSERT INTO rcdb.t (id, u8, u16, u32, u64) VALUES ($K, 1, 2, 3, 4);"},
+         {{"values", "SELECT u8, u16, u32, u64 FROM rcdb.t WHERE id = $K;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// ---------------------------------------------------------------------------
+// NULL-ness. Validity is not persisted by the checkpoint at all: the bitmap is
+// rebuilt implicitly all-valid, so a NULL comes back as whatever the raw buffer
+// happened to hold.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::restart_consistency::null_validity", "[restart]") {
+    group_t g;
+    g.name = "null_validity";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, n bigint, s string)$S;",
+               "INSERT INTO rcdb.t (id, n, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 30, 'c');"};
+    g.probes = {
+        {"existing",
+         {},
+         {{"all_rows", "SELECT * FROM rcdb.t;"},
+          {"is_null", "SELECT id FROM rcdb.t WHERE n IS NULL;"},
+          {"is_not_null", "SELECT id FROM rcdb.t WHERE n IS NOT NULL;"},
+          {"string_is_null", "SELECT id FROM rcdb.t WHERE s IS NULL;"},
+          {"count_ignores_null", "SELECT COUNT(n) FROM rcdb.t;"},
+          {"sum_ignores_null", "SELECT SUM(n) FROM rcdb.t;"}},
+         {}},
+        {"new_null_row",
+         {"INSERT INTO rcdb.t (id, n) VALUES ($K, NULL);"},
+         {{"reads_back_null", "SELECT id FROM rcdb.t WHERE id = $K AND n IS NULL;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// ---------------------------------------------------------------------------
+// Indexes. A live INSERT mirrors the SUBMITTED chunk to the index; bootstrap
+// rebuilds the index from a full storage scan. A row whose indexed column was
+// DB-filled from a DEFAULT is therefore in one and not the other.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::restart_consistency::index_content", "[restart]") {
+    group_t g;
+    g.name = "index_content";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, k bigint DEFAULT 55)$S;",
+               "INSERT INTO rcdb.t (id, k) VALUES (1, 10), (2, 20), (3, 30);",
+               "CREATE INDEX idx_k ON rcdb.t (k);"};
+    g.probes = {
+        {"existing", {}, {{"indexed_lookup", "SELECT id FROM rcdb.t WHERE k = 20;"}}, {}},
+        // This row takes its k from the DEFAULT -- the value the live index path
+        // never sees, and the rebuilt-from-storage index does.
+        {"defaulted_key",
+         {"INSERT INTO rcdb.t (id) VALUES ($K);"},
+         {{"via_index", "SELECT id FROM rcdb.t WHERE k = 55;"},
+          {"via_scan", "SELECT k FROM rcdb.t WHERE id = $K;"},
+          {"index_agrees_with_scan", "SELECT id FROM rcdb.t WHERE k >= 0;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+// An index must still be maintained by writes issued after the restart.
+TEST_CASE("integration::cpp::restart_consistency::index_maintained_after_restart", "[restart]") {
+    group_t g;
+    g.name = "index_maintained_after_restart";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (id bigint, k bigint)$S;",
+               "INSERT INTO rcdb.t (id, k) VALUES (1, 10), (2, 20), (3, 30);",
+               "CREATE INDEX idx_k ON rcdb.t (k);"};
+    g.probes = {
+        {"insert_then_lookup",
+         {"INSERT INTO rcdb.t (id, k) VALUES ($K, 4242);"},
+         {{"via_index", "SELECT id FROM rcdb.t WHERE k = 4242;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+        {"delete_removes_from_index",
+         {"INSERT INTO rcdb.t (id, k) VALUES ($K, 5150);", "DELETE FROM rcdb.t WHERE id = $K;"},
+         {{"gone_from_index", "SELECT id FROM rcdb.t WHERE k = 5150;"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
+// ---------------------------------------------------------------------------
+// DDL that must survive a restart, and DDL issued after one.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::restart_consistency::alter_add_column", "[restart]") {
+    group_t g;
+    g.name = "alter_add_column";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (a bigint)$S;",
+               "INSERT INTO rcdb.t (a) VALUES (1), (2);",
+               "ALTER TABLE rcdb.t ADD COLUMN b bigint;"};
+    g.probes = {
+        {"schema", {}, {{"width", "SELECT * FROM rcdb.t WHERE a < 100;"}}, {}},
+        {"write_new_column",
+         {"INSERT INTO rcdb.t (a, b) VALUES ($K, 5);"},
+         {{"row", "SELECT a, b FROM rcdb.t WHERE a = $K;"}},
+         {"DELETE FROM rcdb.t WHERE a = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
+TEST_CASE("integration::cpp::restart_consistency::create_table_after_restart", "[restart]") {
+    group_t g;
+    g.name = "create_table_after_restart";
+    // A dropped table's OID can be handed out again after a restart, and the
+    // dropped table's INSERT records are still in the WAL. A brand-new table can
+    // therefore come up pre-populated with a dead table's rows.
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.keeper (x bigint)$S;",
+               "CREATE TABLE rcdb.doomed (x bigint)$S;",
+               "INSERT INTO rcdb.doomed (x) VALUES (111), (222), (333);",
+               "DROP TABLE rcdb.doomed;"};
+    g.probes = {
+        {"fresh_table",
+         {"CREATE TABLE rcdb.fresh$K (x bigint)$S;"},
+         {{"is_empty", "SELECT * FROM rcdb.fresh$K;"}},
+         {}},
+        {"fresh_table_writable",
+         {"INSERT INTO rcdb.fresh$K (x) VALUES (7);"},
+         {{"row", "SELECT x FROM rcdb.fresh$K;"}},
+         {"DROP TABLE rcdb.fresh$K;"}},
+        {"keeper", {}, {{"untouched", "SELECT * FROM rcdb.keeper;"}}, {}},
+    };
+    check_restart_consistency(g);
+}
+
+// ---------------------------------------------------------------------------
+// Session settings that change stored values and comparisons.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::restart_consistency::timezone", "[restart]") {
+    group_t g;
+    g.name = "timezone";
+    g.setup = {create_db,
+               "SET TIMEZONE = 'Asia/Tokyo';",
+               "CREATE TABLE rcdb.t (id bigint, ts timestamptz)$S;",
+               "INSERT INTO rcdb.t (id, ts) VALUES (1, '2020-01-01 12:00:00');"};
+    g.probes = {
+        {"existing", {}, {{"value", "SELECT ts FROM rcdb.t WHERE id = 1;"}}, {}},
+        // The literal is cast using the SESSION time zone. If the restart forgets
+        // it, the same literal lands on a different instant.
+        {"new_literal",
+         {"INSERT INTO rcdb.t (id, ts) VALUES ($K, '2020-01-01 12:00:00');"},
+         {{"same_instant", "SELECT ts FROM rcdb.t WHERE id = $K;"}},
+         {"DELETE FROM rcdb.t WHERE id = $K;"}},
+    };
+    check_restart_consistency(g);
+}

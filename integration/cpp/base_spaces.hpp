@@ -72,12 +72,15 @@ namespace otterbrix {
         log_t log_;
         actor_zeta::scheduler_ptr scheduler_;
         actor_zeta::scheduler_ptr scheduler_dispatcher_;
+        // Declared before every manager so all three schedulers are destroyed
+        // AFTER the actors under implicit reverse-declaration destruction
+        // (manager_disk_ holds a raw pointer to scheduler_disk_).
+        actor_zeta::scheduler_ptr scheduler_disk_;
         services::dispatcher::manager_dispatcher_ptr manager_dispatcher_;
         services::disk::manager_disk_ptr manager_disk_;
         services::wal::manager_wal_ptr manager_wal_;
         services::index::manager_index_ptr manager_index_;
         std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper_dispatcher_;
-        actor_zeta::scheduler_ptr scheduler_disk_;
 
         // Catalog-driven index bootstrap. Called once during construction, after
         // WAL replay and before scheduler.start, while single-threaded. Scans

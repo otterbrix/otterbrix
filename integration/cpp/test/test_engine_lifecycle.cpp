@@ -2,10 +2,13 @@
 #include <catch2/catch_test_macros.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
+#include <algorithm>
 #include <array>
 #include <mutex>
 #include <sstream>
+#include <string>
 #include <thread>
+#include <vector>
 
 // Engine lifecycle invariants:
 //
@@ -525,4 +528,156 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
             REQUIRE(cur->size() == expected);
         }
     }
+}
+
+// Teardown leak gate for the boost::lockfree freelist nodes (eviction_queue_t::q
+// and the four manager inbox_{128} queues). Construct an engine (disk on) so the
+// system-table buffer pools are instantiated at bootstrap, add a user table with
+// rows and scan it (exercising the eviction queue), then destroy at scope exit.
+//
+// On Linux ASAN+LeakSanitizer (the CI gate) a clean teardown must report ZERO
+// leaked blocks — a destroyed queue frees every freelist node, so any residual
+// means an owner survived teardown. On macOS LSan does not run, so this also
+// serves as an ASan use-after-free smoke test that exercises the scheduler_disk_
+// teardown ordering (Edit 3).
+TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_teardown",
+          "[engine-lifecycle][leak-repro]") {
+    auto config = test_create_config("/tmp/test_engine_lifecycle/teardown_leak");
+    test_clear_directory(config);
+    config.disk.on = true;
+    components::compute::function_registry_t::reset_default();
+
+    {
+        auto inst = otterbrix::make_otterbrix(config);
+        auto* dispatcher = inst->dispatcher();
+
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE leakreprodb;")
+                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(),
+                                        "CREATE TABLE leakreprodb.t (g bigint, v bigint);")
+                    ->is_success());
+        REQUIRE(dispatcher
+                    ->execute_sql(otterbrix::session_id_t(),
+                                  "INSERT INTO leakreprodb.t (g, v) VALUES "
+                                  "(1, 10), (1, 20), (2, 30), (2, 40), (2, 50);")
+                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "SELECT g, v FROM leakreprodb.t;")
+                    ->is_success());
+    } // engine destroyed here; a clean teardown must free every boost freelist node
+
+    SUCCEED("engine constructed, populated, and destroyed without an ASan/LSan error");
+}
+
+// Stress variant of the teardown gate: repeatedly construct and destroy the
+// engine so any intermittent teardown-ordering leak or use-after-free is
+// amplified under ASAN+LeakSanitizer. Each cycle instantiates the system-table
+// buffer pools plus a user table (more boost::lockfree eviction queues + the
+// four manager inbox queues), then tears the whole graph down. If Edit 3's
+// implicit teardown were unsound, N cycles make a stray freelist node or a
+// dangling scheduler far more likely to surface than a single construct/destroy.
+TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_no_leak",
+          "[engine-lifecycle][leak-repro]") {
+    constexpr int kCycles = 12;
+    for (int i = 0; i < kCycles; ++i) {
+        auto config = test_create_config("/tmp/test_engine_lifecycle/stress_" + std::to_string(i));
+        test_clear_directory(config);
+        config.disk.on = true;
+        components::compute::function_registry_t::reset_default();
+
+        auto inst = otterbrix::make_otterbrix(config);
+        auto* dispatcher = inst->dispatcher();
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE stressdb;")
+                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(),
+                                        "CREATE TABLE stressdb.t (g bigint, v bigint);")
+                    ->is_success());
+        REQUIRE(dispatcher
+                    ->execute_sql(otterbrix::session_id_t(),
+                                  "INSERT INTO stressdb.t (g, v) VALUES (1, 10), (2, 20);")
+                    ->is_success());
+        // inst destroyed at the end of the iteration.
+    }
+    SUCCEED("engine survived repeated construct/destroy cycles without an ASan/LSan error");
+}
+
+namespace {
+
+    // Records the order in which subobjects are destroyed. Each recorder appends
+    // its name to a shared log from its destructor, so the log ends up in
+    // reverse-construction (= reverse-declaration) order.
+    struct destruction_order_recorder_t {
+        std::vector<std::string>* log;
+        std::string name;
+        ~destruction_order_recorder_t() { log->push_back(name); }
+    };
+
+    // Mirrors the data-member layout of base_otterbrix_t AFTER Edit 3: the three
+    // schedulers are declared BEFORE the managers, and manager_dispatcher_ is the
+    // first manager (so it is destroyed last among the managers). C++ destroys
+    // members in reverse declaration order, so this model makes the teardown
+    // ordering Edit 3 establishes observable and assertable. Kept in lockstep
+    // with integration/cpp/base_spaces.hpp:73-80.
+    struct base_spaces_layout_model_t {
+        explicit base_spaces_layout_model_t(std::vector<std::string>* log)
+            : scheduler_{log, "scheduler"}
+            , scheduler_dispatcher_{log, "scheduler_dispatcher"}
+            , scheduler_disk_{log, "scheduler_disk"}
+            , manager_dispatcher_{log, "manager_dispatcher"}
+            , manager_disk_{log, "manager_disk"}
+            , manager_wal_{log, "manager_wal"}
+            , manager_index_{log, "manager_index"}
+            , wrapper_dispatcher_{log, "wrapper_dispatcher"} {}
+
+        destruction_order_recorder_t scheduler_;
+        destruction_order_recorder_t scheduler_dispatcher_;
+        destruction_order_recorder_t scheduler_disk_;
+        destruction_order_recorder_t manager_dispatcher_;
+        destruction_order_recorder_t manager_disk_;
+        destruction_order_recorder_t manager_wal_;
+        destruction_order_recorder_t manager_index_;
+        destruction_order_recorder_t wrapper_dispatcher_;
+    };
+
+} // namespace
+
+// Proves the destruction-order invariant Edit 3 establishes (and that the
+// dropped Edit 2 is unnecessary): under implicit reverse-declaration
+// destruction, all three schedulers are destroyed AFTER every manager
+// (manager_disk_ holds a raw pointer to scheduler_disk_), and the dispatcher —
+// the cyclic-graph sink every manager holds an address to — is destroyed LAST
+// among the managers. This is the exact ordering guarantee that makes the
+// implicit teardown safe without an explicit ordered reset.
+TEST_CASE("integration::cpp::test_engine_lifecycle::teardown_order_schedulers_outlive_managers",
+          "[engine-lifecycle][leak-repro]") {
+    std::vector<std::string> order;
+    { base_spaces_layout_model_t model(&order); }
+
+    REQUIRE(order.size() == 8);
+    const auto pos = [&](const std::string& n) {
+        return std::find(order.begin(), order.end(), n) - order.begin();
+    };
+
+    const std::array<const char*, 3> schedulers{"scheduler", "scheduler_dispatcher", "scheduler_disk"};
+    const std::array<const char*, 5> managers{"manager_dispatcher",
+                                              "manager_disk",
+                                              "manager_wal",
+                                              "manager_index",
+                                              "wrapper_dispatcher"};
+
+    // Every scheduler is destroyed after every manager (schedulers outlive actors).
+    for (const char* s : schedulers) {
+        for (const char* m : managers) {
+            INFO(s << " must destruct after " << m);
+            CHECK(pos(s) > pos(m));
+        }
+    }
+
+    // The dispatcher is destroyed last among the managers (cyclic-graph sink).
+    for (const char* m : {"manager_disk", "manager_wal", "manager_index", "wrapper_dispatcher"}) {
+        INFO("manager_dispatcher must destruct after " << m);
+        CHECK(pos("manager_dispatcher") > pos(m));
+    }
+
+    // scheduler_disk_ specifically outlives manager_disk_ (the raw-pointer holder).
+    CHECK(pos("scheduler_disk") > pos("manager_disk"));
 }

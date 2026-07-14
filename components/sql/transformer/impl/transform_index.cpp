@@ -30,7 +30,17 @@ namespace components::sql::transform {
                                                                  core::indexname_t{std::string(node.idxname)},
                                                                  detect_index_type(node.accessMethod));
         for (auto key : node.indexParams->lst) {
-            create_index->keys().emplace_back(resource_, pg_ptr_cast<IndexElem>(key.data)->name);
+            auto* elem = pg_ptr_cast<IndexElem>(key.data);
+            // An expression element — CREATE INDEX ... ((expr)) — has no name
+            // (elem->expr instead); only plain column elements are supported.
+            if (elem->name == nullptr) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"expression indexes are not supported; "
+                                                        "CREATE INDEX accepts plain column names only",
+                                                        resource_});
+                return nullptr;
+            }
+            create_index->keys().emplace_back(resource_, elem->name);
         }
         // Wrap with catalog_resolve so Pass 1 stamps ns_oid + table_oid +
         // columns; enrich_logical_plan reads from the plan-tree idx.

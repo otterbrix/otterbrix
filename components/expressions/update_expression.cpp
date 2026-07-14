@@ -115,6 +115,18 @@ namespace components::expressions {
         auto* col_vec = to.at(key_.path());
         auto* new_vec = left_->output_vec();
 
+        // A bare NULL literal arrives as an NA-typed constant vector; there is
+        // no NA cast kernel, so write nulls into the target directly. Element
+        // paths (a[1] = NULL) are rejected at transform time, so path size 1
+        // covers every reachable case.
+        if (new_vec->type().type() == types::logical_type::NA) {
+            for (uint64_t row = 0; row < count; ++row) {
+                col_vec->set_null(row, true);
+            }
+            std::fill(modified.begin(), modified.end(), true);
+            return modified;
+        }
+
         // Full-column assignment into an array-like column (e.g. UPDATE v = ARRAY[...]
         // where v is a fixed ARRAY or a variadic LIST). The value is itself an
         // array-like vector whose flat support vector (entry()) holds the actual

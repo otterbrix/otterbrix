@@ -60,6 +60,7 @@ namespace services::wal {
                               uint64_t row_start,
                               uint64_t count,
                               uint64_t txn_id,
+                              bool in_place,
                               components::catalog::oid_t database_oid);
 
         // Schema-growth record (dynamic add_column on IN_MEMORY / computed tables).

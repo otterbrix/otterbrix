@@ -301,7 +301,8 @@ namespace services::wal {
                           const int64_t* row_ids,
                           const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
                           uint64_t row_start,
-                          uint64_t count) {
+                          uint64_t count,
+                          wal_record_type record_type) {
         // Payload layout for UPDATE:
         //   [row_ids_size : 4 LE]          // byte count of the row-ids block
         //   [row_ids      : row_ids_size]
@@ -325,7 +326,7 @@ namespace services::wal {
                                 last_crc32,
                                 wal_id,
                                 txn_id,
-                                wal_record_type::PHYSICAL_UPDATE,
+                                record_type,
                                 table_oid,
                                 row_start,
                                 count,
@@ -490,7 +491,8 @@ namespace services::wal {
                 std::memcpy(rec.physical_row_ids.data(), payload, payload_size);
                 break;
             }
-            case wal_record_type::PHYSICAL_UPDATE: {
+            case wal_record_type::PHYSICAL_UPDATE:
+            case wal_record_type::PHYSICAL_UPDATE_INPLACE: {
                 if (payload_size < 4) {
                     rec.is_corrupt = true;
                     return rec;

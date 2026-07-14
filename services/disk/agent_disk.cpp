@@ -295,6 +295,60 @@ namespace services::disk {
         entry->storage->update(ids_vec, local);
     }
 
+    void agent_disk_t::direct_update_mvcc_sync(components::catalog::oid_t table_oid,
+                                               const std::pmr::vector<int64_t>& row_ids,
+                                               components::vector::data_chunk_t& new_data) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end()) {
+            trace(log_,
+                  "agent_disk[{}]::direct_update_mvcc_sync: oid {} not owned by this agent — no-op",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            return;
+        }
+        auto& entry = it->second;
+        if (entry == nullptr || row_ids.empty() || entry->storage == nullptr) {
+            return;
+        }
+        const auto count = static_cast<uint64_t>(row_ids.size());
+        components::vector::vector_t ids_vec(
+            resource(),
+            components::types::complex_logical_type(components::types::logical_type::BIGINT),
+            count);
+        for (uint64_t i = 0; i < count; i++) {
+            ids_vec.set_value(i, row_ids[i]);
+        }
+        // Deep-copy onto this agent's resource, as direct_update_sync does and for the
+        // same reason (docs/wal-recovery-pmr-mismatch.md).
+        components::vector::data_chunk_t local(resource(), new_data.types(), new_data.size());
+        new_data.copy(local, 0);
+
+        // THE POINT OF THIS FUNCTION: replay drives the SAME storage contract the live
+        // path drives -- tombstone the old rows, append the new ones at the end -- so the
+        // row-id space it rebuilds is the one the live run produced, by construction. An
+        // in-place replay would leave the updated row where it was and consume no row-id,
+        // and every later record keyed by a physical row_id would then be off by the
+        // accumulated drift.
+        //
+        // transaction_data{0, 0}, not the record's own transaction_id: replay never
+        // publishes commits (nothing calls commit_append during bootstrap), so a pending
+        // txn id would leave the new rows permanently invisible and the old rows
+        // delete-marked by a transaction that never commits. An id of 0 is below
+        // TRANSACTION_ID_START, so the version manager reads it as already committed --
+        // which is exactly what the replay append and delete paths already rely on.
+        auto result = entry->storage->update(ids_vec, local, components::table::transaction_data{0, 0});
+        if (result.has_error()) {
+            // Replay cannot abort a transaction. If the update fails here the recovered
+            // state is already wrong, so say so rather than swallow it behind an assert
+            // that compiles away in Release.
+            error(log_,
+                  "agent_disk[{}]::direct_update_mvcc_sync: replay update failed for oid={} — recovered state is "
+                  "incomplete",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+        }
+    }
+
     void agent_disk_t::direct_add_column_sync(components::catalog::oid_t table_oid,
                                               const components::vector::data_chunk_t& schema_chunk) {
         auto it = storages_.find(table_oid);
@@ -1013,6 +1067,7 @@ namespace services::disk {
                                              static_cast<uint64_t>(start_row),
                                              count,
                                              ctx.txn.transaction_id,
+                                             /*in_place=*/false,
                                              db_oid);
             if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
                 trace(log_,
@@ -2558,6 +2613,7 @@ namespace services::disk {
                                              std::uint64_t{0},
                                              static_cast<std::uint64_t>(row_ids.size()),
                                              ctx.txn.transaction_id,
+                                             /*in_place=*/true,
                                              components::catalog::well_known_oid::main_database);
             if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
                 trace(log_,

@@ -12,6 +12,11 @@ namespace services::wal {
         COMMIT = 1,
         PHYSICAL_INSERT = 10,
         PHYSICAL_DELETE = 11,
+        // MVCC update: the live path tombstones the old rows and APPENDS the new ones
+        // at the end of the table. row_ids are therefore the OLD locations (what replay
+        // must tombstone) and physical_row_start is where the new rows landed. Replay has
+        // to reproduce that, or the replayed row-id space diverges from the live one and
+        // every later row-id-keyed record lands on the wrong slot.
         PHYSICAL_UPDATE = 12,
         // Dynamic-schema growth for IN_MEMORY / computed tables. Written BEFORE the
         // PHYSICAL_INSERT that depends on the new columns so WAL-first replay re-applies
@@ -19,6 +24,15 @@ namespace services::wal {
         // new columns (alias-tagged types). Idempotent on replay (already-present
         // columns are skipped).
         PHYSICAL_ADD_COLUMN = 13,
+        // In-place row rewrite, by row_id, with a full-width chunk. The row does NOT move
+        // and no row-ids are consumed, so physical_row_start is meaningless here.
+        //
+        // Written only by the pg_attribute commit-id backfill, which patches an existing
+        // catalog row's added_at / dropped_at fields. That row must keep its identity: an
+        // MVCC replay would tombstone it and re-append it, leaving two live pg_attribute
+        // rows for one attribute -- a dropped column would come back, or appear twice.
+        // Same payload layout as PHYSICAL_UPDATE.
+        PHYSICAL_UPDATE_INPLACE = 14,
     };
 
     struct record_t final {
@@ -50,6 +64,7 @@ namespace services::wal {
         bool is_physical() const {
             return record_type == wal_record_type::PHYSICAL_INSERT || record_type == wal_record_type::PHYSICAL_DELETE ||
                    record_type == wal_record_type::PHYSICAL_UPDATE ||
+                   record_type == wal_record_type::PHYSICAL_UPDATE_INPLACE ||
                    record_type == wal_record_type::PHYSICAL_ADD_COLUMN;
         }
     };

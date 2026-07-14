@@ -500,6 +500,32 @@ TEST_CASE("integration::cpp::restart_consistency::alter_add_column", "[restart]"
     check_restart_consistency(g);
 }
 
+// ADD COLUMN followed by DROP COLUMN exercises the one update in the engine that is
+// genuinely in place: the pg_attribute commit-id backfill, which patches a catalog row
+// that must NOT move. Replaying it as an MVCC delete+append would tombstone the row and
+// re-append it, leaving two live pg_attribute rows for the same attribute -- so the
+// dropped column would come back, or appear twice.
+TEST_CASE("integration::cpp::restart_consistency::catalog_column_lifecycle", "[restart]") {
+    group_t g;
+    g.name = "catalog_column_lifecycle";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (a bigint)$S;",
+               "INSERT INTO rcdb.t (a) VALUES (1), (2);",
+               "ALTER TABLE rcdb.t ADD COLUMN keep bigint;",
+               "ALTER TABLE rcdb.t ADD COLUMN gone bigint;",
+               "ALTER TABLE rcdb.t DROP COLUMN gone;"};
+    g.probes = {
+        // The dropped column must stay dropped, and the kept one must appear exactly once.
+        {"schema", {}, {{"shape", "SELECT * FROM rcdb.t WHERE a < 100;"}}, {}},
+        {"dropped_column_unusable", {}, {{"select_it", "SELECT gone FROM rcdb.t;"}}, {}},
+        {"kept_column_writable",
+         {"INSERT INTO rcdb.t (a, keep) VALUES ($K, 9);"},
+         {{"row", "SELECT a, keep FROM rcdb.t WHERE a = $K;"}},
+         {"DELETE FROM rcdb.t WHERE a = $K;"}},
+    };
+    check_restart_consistency(g);
+}
+
 TEST_CASE("integration::cpp::restart_consistency::create_table_after_restart", "[restart]") {
     group_t g;
     g.name = "create_table_after_restart";

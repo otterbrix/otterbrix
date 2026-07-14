@@ -503,9 +503,17 @@ namespace services::disk {
         void direct_delete_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 uint64_t count);
+        // WAL-replay of PHYSICAL_UPDATE_INPLACE: rewrite the rows where they lie. Used
+        // only by the pg_attribute commit-id backfill, whose catalog row must keep its
+        // identity.
         void direct_update_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 components::vector::data_chunk_t& new_data);
+        // WAL-replay of PHYSICAL_UPDATE: drives the SAME MVCC delete+append contract the
+        // live path drives, so replay rebuilds the live row-id space by construction.
+        void direct_update_mvcc_sync(components::catalog::oid_t table_oid,
+                                     const std::pmr::vector<int64_t>& row_ids,
+                                     components::vector::data_chunk_t& new_data);
         // WAL-replay of a PHYSICAL_ADD_COLUMN record: re-apply each schema column to
         // the owned storage ahead of the dependent PHYSICAL_INSERT. `schema_chunk` is
         // a 0-row chunk whose columns ARE the new columns (alias-tagged types).

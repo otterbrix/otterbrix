@@ -165,6 +165,7 @@ struct test_wal_worker {
                                                                  row_start,
                                                                  static_cast<uint64_t>(row_count),
                                                                  txn_id,
+                                                                 /*in_place=*/false,
                                                                  kMainDb);
         return std::move(future);
     }

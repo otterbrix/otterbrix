@@ -60,6 +60,9 @@ namespace services::wal {
     // at `row_ids` -- those are the OLD locations, which the record carries only so that
     // replay knows what to tombstone. Consumers that need to address the new rows (the
     // CREATE INDEX WAL catch-up) map the g-th row of the record to `row_start + g`.
+    //
+    // `record_type` selects the replay contract: PHYSICAL_UPDATE (the MVCC default) or
+    // PHYSICAL_UPDATE_INPLACE. Both share this payload layout.
     crc32_t encode_update(buffer_t& buffer,
                           std::pmr::memory_resource* resource,
                           crc32_t last_crc32,
@@ -69,7 +72,8 @@ namespace services::wal {
                           const int64_t* row_ids,
                           const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
                           uint64_t row_start,
-                          uint64_t count);
+                          uint64_t count,
+                          wal_record_type record_type = wal_record_type::PHYSICAL_UPDATE);
 
     // commit_id (from transaction_manager_t::commit()) is appended to COMMIT
     // records so replay can rebuild published_horizon_.

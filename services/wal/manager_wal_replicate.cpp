@@ -685,6 +685,7 @@ namespace services::wal {
                                                    uint64_t row_start,
                                                    uint64_t count,
                                                    uint64_t txn_id,
+                                                   bool in_place,
                                                    components::catalog::oid_t database_oid) {
         if (!enabled_) {
             co_return wal::id_t{0};
@@ -704,6 +705,7 @@ namespace services::wal {
                                                               row_start,
                                                               count,
                                                               txn_id,
+                                                              in_place,
                                                               wal_id);
         if (needs_sched) {
             scheduler_->enqueue(worker);

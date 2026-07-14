@@ -118,6 +118,17 @@ namespace services::disk {
         }
     }
 
+    void manager_disk_t::direct_update_mvcc_sync(catalog::oid_t table_oid,
+                                                 const std::pmr::vector<int64_t>& row_ids,
+                                                 components::vector::data_chunk_t& new_data) {
+        // Bootstrap / WAL-replay only; routes the MVCC update to the owning agent, which
+        // applies it through the same delete+append the live path uses.
+        if (!agents_.empty()) {
+            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+            agents_[pool_idx]->direct_update_mvcc_sync(table_oid, row_ids, new_data);
+        }
+    }
+
     void manager_disk_t::direct_add_column_sync(catalog::oid_t table_oid,
                                                 const components::vector::data_chunk_t& schema_chunk) {
         // Bootstrap / WAL-replay only; routes the schema-growth record to the owning

@@ -285,6 +285,22 @@ namespace otterbrix {
                             break;
                         }
                         case services::wal::wal_record_type::PHYSICAL_UPDATE:
+                        case services::wal::wal_record_type::PHYSICAL_UPDATE_INPLACE: {
+                            // An MVCC update tombstones the old rows and APPENDS the new
+                            // ones, so replay must do the same -- otherwise the row-id
+                            // space it rebuilds is not the one the live run produced, and
+                            // every later record keyed by a physical row_id lands on the
+                            // wrong slot or off the end of the segment tree.
+                            //
+                            // PHYSICAL_UPDATE_INPLACE is the one exception: the
+                            // pg_attribute commit-id backfill rewrites a catalog row that
+                            // must keep its identity. A WAL written before that record
+                            // type existed spelled it PHYSICAL_UPDATE, and only a system
+                            // table ever carried in-place semantics, so an old record on a
+                            // system oid still replays the way it was written.
+                            const bool in_place =
+                                r->record_type == services::wal::wal_record_type::PHYSICAL_UPDATE_INPLACE ||
+                                table_oid < components::catalog::FIRST_USER_OID;
                             if (!r->physical_data.empty()) {
                                 // physical_row_ids is flat across the batch; slice it per
                                 // chunk in vector order to match each chunk's rows.
@@ -297,10 +313,15 @@ namespace otterbrix {
                                         ids.push_back(r->physical_row_ids[id_base + i]);
                                     }
                                     id_base += n;
-                                    disk_ptr->direct_update_sync(table_oid, ids, chunk);
+                                    if (in_place) {
+                                        disk_ptr->direct_update_sync(table_oid, ids, chunk);
+                                    } else {
+                                        disk_ptr->direct_update_mvcc_sync(table_oid, ids, chunk);
+                                    }
                                 }
                             }
                             break;
+                        }
                         default:
                             break;
                     }

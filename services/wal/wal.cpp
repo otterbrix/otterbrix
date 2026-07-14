@@ -187,6 +187,7 @@ namespace services::wal {
                                         uint64_t row_start,
                                         uint64_t count,
                                         uint64_t txn_id,
+                                        bool in_place,
                                         wal::id_t wal_id) {
         id_.store(wal_id, std::memory_order_relaxed);
 
@@ -202,7 +203,9 @@ namespace services::wal {
                                   row_ids.data(),
                                   new_chunks,
                                   row_start,
-                                  count);
+                                  count,
+                                  in_place ? wal_record_type::PHYSICAL_UPDATE_INPLACE
+                                           : wal_record_type::PHYSICAL_UPDATE);
 
         ensure_writer();
         writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);

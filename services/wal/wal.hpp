@@ -86,6 +86,7 @@ namespace services::wal {
                                                        uint64_t row_start,
                                                        uint64_t count,
                                                        uint64_t txn_id,
+                                                       bool in_place,
                                                        wal::id_t wal_id);
 
         unique_future<wal::id_t>

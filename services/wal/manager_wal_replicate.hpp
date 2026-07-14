@@ -115,6 +115,10 @@ namespace services::wal {
                                                        uint64_t row_start,
                                                        uint64_t count,
                                                        uint64_t txn_id,
+                                                       // true only for the pg_attribute commit-id backfill: the
+                                                       // row is rewritten where it lies and must not be replayed
+                                                       // as an MVCC delete+append. See PHYSICAL_UPDATE_INPLACE.
+                                                       bool in_place,
                                                        components::catalog::oid_t database_oid);
 
         unique_future<wal::id_t>

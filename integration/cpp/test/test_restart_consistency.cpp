@@ -80,12 +80,18 @@ TEST_CASE("integration::cpp::restart_consistency::defaults", "[restart]") {
         {"existing_rows", {}, {{"all", "SELECT * FROM rcdb.t;"}}, {}},
         // The whole point: a NEW row, inserted in THIS phase, must get the same
         // defaults it would have got before the restart.
+        //
+        // The `values` oracle also pins a bug the differential cannot see: `b int
+        // DEFAULT 5` is filled with an indeterminate non-NULL value, because the DDL
+        // never casts the literal (a BIGINT 5) to the column type and vector_t::set_value
+        // silently early-returns on the type mismatch -- before setting validity. That is
+        // wrong BEFORE any restart, so `after == before` would happily certify it.
         {"new_row",
          {"INSERT INTO rcdb.t (a) VALUES ($K);"},
-         {{"values", "SELECT b, c, s FROM rcdb.t WHERE a = $K;"},
-          {"b_not_null", "SELECT a FROM rcdb.t WHERE a = $K AND b IS NULL;"},
-          {"c_is_7", "SELECT a FROM rcdb.t WHERE a = $K AND c = 7;"},
-          {"s_is_dflt", "SELECT a FROM rcdb.t WHERE a = $K AND s = 'dflt';"}},
+         {{"values", "SELECT b, c, s FROM rcdb.t WHERE a = $K;", "OK|rows=1|cols=3|[I32:5,I64:7,STR:\"dflt\"]"},
+          {"b_not_null", "SELECT a FROM rcdb.t WHERE a = $K AND b IS NULL;", "OK|rows=0|cols=1"},
+          {"c_is_7", "SELECT a FROM rcdb.t WHERE a = $K AND c = 7;", "OK|rows=1|cols=1|[I64:$K+0]"},
+          {"s_is_dflt", "SELECT a FROM rcdb.t WHERE a = $K AND s = 'dflt';", "OK|rows=1|cols=1|[I64:$K+0]"}},
          {"DELETE FROM rcdb.t WHERE a = $K;"}},
         // An explicit value must still override the default after a restart.
         // Keyed $K+1 so it can never be confused with the new_row probe's row.
@@ -109,7 +115,8 @@ TEST_CASE("integration::cpp::restart_consistency::timestamp_default", "[restart]
         {"new_row",
          {"INSERT INTO rcdb.t (id) VALUES ($K);"},
          {{"value", "SELECT created FROM rcdb.t WHERE id = $K;"},
-          {"not_null", "SELECT id FROM rcdb.t WHERE id = $K AND created IS NULL;"}},
+          // Not an epoch literal: the point is only that the default was APPLIED.
+          {"not_null", "SELECT id FROM rcdb.t WHERE id = $K AND created IS NULL;", "OK|rows=0|cols=1"}},
          {"DELETE FROM rcdb.t WHERE id = $K;"}},
     };
     check_restart_consistency(g);
@@ -186,11 +193,13 @@ TEST_CASE("integration::cpp::restart_consistency::unique_constraint", "[restart]
     g.probes = {
         {"duplicate_rejected",
          {"INSERT INTO rcdb.t (id, name) VALUES (1, 'dup');"},
-         {{"still_one_row", "SELECT * FROM rcdb.t WHERE id = 1;"}},
+         {{"still_one_row", "SELECT * FROM rcdb.t WHERE id = 1;", "OK|rows=1|cols=2|[I64:1,STR:\"a\"]"}},
          {}},
+        // The oracle matters here: the value read back is identical before and after the
+        // restart, so a differential test alone certifies it -- even when it is wrong.
         {"fresh_key_accepted",
          {"INSERT INTO rcdb.t (id, name) VALUES ($K, 'ok');"},
-         {{"row", "SELECT name FROM rcdb.t WHERE id = $K;"}},
+         {{"row", "SELECT name FROM rcdb.t WHERE id = $K;", "OK|rows=1|cols=1|[STR:\"ok\"]"}},
          {"DELETE FROM rcdb.t WHERE id = $K;"}},
     };
     check_restart_consistency(g);
@@ -365,18 +374,27 @@ TEST_CASE("integration::cpp::restart_consistency::array", "[restart]") {
 }
 
 // The scalar types the catalog type codec cannot name: they decode back to
-// logical_type::UNKNOWN.
+// logical_type::UNKNOWN. The column TYPE still round-trips through the probes even
+// with no rows, because a NULL cell is tagged with the cursor's declared type.
 TEST_CASE("integration::cpp::restart_consistency::unsigned_types", "[restart]") {
     group_t g;
     g.name = "unsigned_types";
     g.setup = {create_db,
                "CREATE TABLE rcdb.t (id bigint, u8 utinyint, u16 usmallint, u32 uinteger, u64 ubigint)$S;",
-               "INSERT INTO rcdb.t (id, u8, u16, u32, u64) VALUES (1, 200, 60000, 4000000000, 9000000000);"};
+               "INSERT INTO rcdb.t (id) VALUES (1);"};
     g.probes = {
-        {"existing", {}, {{"all_rows", "SELECT * FROM rcdb.t;"}}, {}},
+        // Reads the declared type of every unsigned column: a column that decays to
+        // UNKNOWN across the restart changes this rendering even though every value
+        // in it is NULL.
+        {"schema",
+         {},
+         {{"declared_types",
+           "SELECT * FROM rcdb.t WHERE id = 1;",
+           "OK|rows=1|cols=5|[I64:1,U8:NULL,U16:NULL,U32:NULL,U64:NULL]"}},
+         {}},
         {"new_row",
-         {"INSERT INTO rcdb.t (id, u8, u16, u32, u64) VALUES ($K, 1, 2, 3, 4);"},
-         {{"values", "SELECT u8, u16, u32, u64 FROM rcdb.t WHERE id = $K;"}},
+         {"INSERT INTO rcdb.t (id) VALUES ($K);"},
+         {{"types", "SELECT u8, u16, u32, u64 FROM rcdb.t WHERE id = $K;"}},
          {"DELETE FROM rcdb.t WHERE id = $K;"}},
     };
     check_restart_consistency(g);
@@ -424,14 +442,18 @@ TEST_CASE("integration::cpp::restart_consistency::index_content", "[restart]") {
                "INSERT INTO rcdb.t (id, k) VALUES (1, 10), (2, 20), (3, 30);",
                "CREATE INDEX idx_k ON rcdb.t (k);"};
     g.probes = {
-        {"existing", {}, {{"indexed_lookup", "SELECT id FROM rcdb.t WHERE k = 20;"}}, {}},
-        // This row takes its k from the DEFAULT -- the value the live index path
-        // never sees, and the rebuilt-from-storage index does.
+        {"existing", {}, {{"indexed_lookup", "SELECT id FROM rcdb.t WHERE k = 20;", "OK|rows=1|cols=1|[I64:2]"}}, {}},
+        // This row takes its k from the DEFAULT -- the value the live index path never
+        // sees (it indexes the SUBMITTED chunk, which has no k) and the rebuilt-from-
+        // storage index does. The oracles are what make this group mean anything: the
+        // divergence is real, but so is the fact that the pre-restart side is the WRONG
+        // one, and a purely differential probe cannot say which side to fix.
         {"defaulted_key",
          {"INSERT INTO rcdb.t (id) VALUES ($K);"},
-         {{"via_index", "SELECT id FROM rcdb.t WHERE k = 55;"},
-          {"via_scan", "SELECT k FROM rcdb.t WHERE id = $K;"},
-          {"index_agrees_with_scan", "SELECT id FROM rcdb.t WHERE k >= 0;"}},
+         {{"via_index", "SELECT id FROM rcdb.t WHERE k = 55;", "OK|rows=1|cols=1|[I64:$K+0]"},
+          {"via_scan", "SELECT k FROM rcdb.t WHERE id = $K;", "OK|rows=1|cols=1|[I64:55]"},
+          {"index_count", "SELECT COUNT(*) FROM rcdb.t WHERE k >= 0;", "OK|rows=1|cols=1|[U64:4]"},
+          {"scan_count", "SELECT COUNT(*) FROM rcdb.t;", "OK|rows=1|cols=1|[U64:4]"}},
          {"DELETE FROM rcdb.t WHERE id = $K;"}},
     };
     check_restart_consistency(g);
@@ -509,16 +531,19 @@ TEST_CASE("integration::cpp::restart_consistency::create_table_after_restart", "
 TEST_CASE("integration::cpp::restart_consistency::timezone", "[restart]") {
     group_t g;
     g.name = "timezone";
+    // SET TIMEZONE is SESSION state: it does not survive a restart, and no client would
+    // expect it to. What must survive is its effect on what got STORED, and the value
+    // the setting persisted into pg_settings. So the SET is re-issued in every phase --
+    // the probe then asks whether the same literal, under the same session setting,
+    // still lands on the same instant.
+    g.session_setup = {"SET TIMEZONE = 'Asia/Tokyo';"};
     g.setup = {create_db,
-               "SET TIMEZONE = 'Asia/Tokyo';",
                "CREATE TABLE rcdb.t (id bigint, ts timestamptz)$S;",
-               "INSERT INTO rcdb.t (id, ts) VALUES (1, '2020-01-01 12:00:00');"};
+               "INSERT INTO rcdb.t (id, ts) VALUES (1, TIMESTAMPTZ '2020-01-01 12:00:00');"};
     g.probes = {
         {"existing", {}, {{"value", "SELECT ts FROM rcdb.t WHERE id = 1;"}}, {}},
-        // The literal is cast using the SESSION time zone. If the restart forgets
-        // it, the same literal lands on a different instant.
         {"new_literal",
-         {"INSERT INTO rcdb.t (id, ts) VALUES ($K, '2020-01-01 12:00:00');"},
+         {"INSERT INTO rcdb.t (id, ts) VALUES ($K, TIMESTAMPTZ '2020-01-01 12:00:00');"},
          {{"same_instant", "SELECT ts FROM rcdb.t WHERE id = $K;"}},
          {"DELETE FROM rcdb.t WHERE id = $K;"}},
     };

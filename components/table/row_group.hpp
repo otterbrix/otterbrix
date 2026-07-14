@@ -61,18 +61,20 @@ namespace components::table {
 
         // `error` carries an out_of_memory error_t when a pin fails mid-check. `expression_layouts`
         // caches per-expression_filter_t chunk layouts across the rows of one scan.
-        bool check_predicate(int64_t row_id,
-                             const table_filter_t* filter,
-                             expression_filter_layout_cache_t& expression_layouts,
-                             core::error_t& error);
+        filter_match_t check_predicate(int64_t row_id,
+                                       const table_filter_t* filter,
+                                       expression_filter_layout_cache_t& expression_layouts,
+                                       core::error_t& error);
 
         // Evaluate an expression_filter_t (WHERE f(col) OP const) for one row: materialize the
         // referenced columns into a row-wide chunk (each at its original storage column index) and
         // run the attached per-row evaluator. `error` carries a pin OOM or an evaluation failure.
-        bool check_expression_predicate(int64_t row_id,
-                                        const expression_filter_t& filter,
-                                        expression_filter_layout_cache_t& expression_layouts,
-                                        core::error_t& error);
+        // The evaluator itself folds an UNKNOWN (NULL-operand) result into false, so this
+        // returns yes/no only.
+        filter_match_t check_expression_predicate(int64_t row_id,
+                                                  const expression_filter_t& filter,
+                                                  expression_filter_layout_cache_t& expression_layouts,
+                                                  core::error_t& error);
 
         void fetch_row(column_fetch_state& state,
                        const std::vector<storage_index_t>& column_ids,

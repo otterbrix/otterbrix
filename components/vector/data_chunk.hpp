@@ -4,6 +4,8 @@
 #include <components/types/logical_value.hpp>
 #include <core/result_wrapper.hpp>
 
+#include <memory>
+
 namespace components::vector {
 
     class data_chunk_t {
@@ -117,6 +119,14 @@ namespace components::vector {
     };
 
     void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size);
+
+    // DEEP copy of `src` onto `resource`: fresh buffers, the same column types (aliases
+    // included) and the same rows. nullptr in => nullptr out, which is the "no data"
+    // sentinel for an owning unique_ptr member (data_chunk_t is move-only and has no
+    // default ctor). Not partial_copy(): that builds SLICE vectors referencing the
+    // source's buffers, which dangle once the source dies.
+    [[nodiscard]] std::unique_ptr<data_chunk_t> deep_copy(std::pmr::memory_resource* resource,
+                                                          const data_chunk_t* src);
 
     core::result_wrapper_t<types::logical_value_t> compact_to_bool_value(const data_chunk_t& data);
     core::result_wrapper_t<types::logical_value_t> compact_to_single_value(const data_chunk_t& data);

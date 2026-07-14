@@ -29,7 +29,10 @@ namespace components::operators {
         constexpr uint64_t kAbsentCol = std::numeric_limits<uint64_t>::max();
         uint64_t find_col_index(const vector::data_chunk_t& chunk, const std::string& name) {
             for (uint64_t c = 0; c < chunk.column_count(); ++c) {
-                if (chunk.data[c].type().alias() == name)
+                // complex_logical_type::alias() asserts on (and dereferences) a missing
+                // extension, so an alias-less column must not reach it.
+                const auto& type = chunk.data[c].type();
+                if (type.has_alias() && type.alias() == name)
                     return c;
             }
             return kAbsentCol;
@@ -42,7 +45,7 @@ namespace components::operators {
         log_t log,
         catalog::oid_t table_oid,
         std::vector<std::vector<std::string>> unique_groups,
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults,
+        std::unique_ptr<vector::data_chunk_t> column_defaults,
         bool write_set_named)
         : read_write_operator_t(resource, std::move(log), operator_type::unique_constraint)
         , table_oid_(table_oid)
@@ -82,8 +85,8 @@ namespace components::operators {
             // NULL => NULLS DISTINCT voids the group (nothing to compare), matching
             // operator_fk_check_t's has_absent skip.
             struct key_source_t {
-                uint64_t col{kAbsentCol};                   // present: column index in the chunk
-                const types::logical_value_t* def{nullptr}; // absent: the non-NULL default
+                uint64_t col{kAbsentCol};     // present: column index in the write-set chunk
+                uint64_t def_col{kAbsentCol}; // absent: column index in the DEFAULTS chunk
             };
             std::vector<key_source_t> sources;
             sources.reserve(group.size());
@@ -94,15 +97,15 @@ namespace components::operators {
                 if (src.col == kAbsentCol) {
                     // Only a NAMED write-set proves the statement omitted the column
                     // (a positional insert aliases arbitrarily — legacy skip).
-                    if (write_set_named_) {
-                        for (const auto& [name, value] : column_defaults_) {
-                            if (name == col_name && !value.is_null()) {
-                                src.def = &value;
-                                break;
-                            }
+                    if (write_set_named_ && column_defaults_ && column_defaults_->size() > 0) {
+                        const uint64_t dc = find_col_index(*column_defaults_, col_name);
+                        // A NULL default is not a usable key value: the stored value is
+                        // NULL, and NULLS DISTINCT voids the group.
+                        if (dc != kAbsentCol && !column_defaults_->is_null(dc, 0)) {
+                            src.def_col = dc;
                         }
                     }
-                    if (src.def == nullptr) {
+                    if (src.def_col == kAbsentCol) {
                         group_void = true;
                         break;
                     }
@@ -121,7 +124,7 @@ namespace components::operators {
             key_types.reserve(sources.size());
             for (const auto& src : sources) {
                 key_types.push_back(src.col != kAbsentCol ? in_chunks.front().data[src.col].type()
-                                                          : src.def->type());
+                                                          : column_defaults_->data[src.def_col].type());
             }
             std::pmr::vector<components::vector::data_chunk_t> key_chunks(resource_);
             key_chunks.reserve(in_chunks.size());
@@ -133,11 +136,14 @@ namespace components::operators {
                         keys_chunk.data[j].reference(chunk.data[sources[j].col]);
                     } else {
                         // Absent-with-default: reference the default as ONE CONSTANT
-                        // vector rather than n per-row logical_value_t writes (LAYER-0
-                        // minimize, rule 1). A CONSTANT column with cardinality n is
-                        // valid — downstream hash / vector_ops::copy / cells_equal all
-                        // read CONSTANT via get_value / zero-indexing.
-                        keys_chunk.data[j].reference(*sources[j].def);
+                        // vector rather than n per-row writes (LAYER-0 minimize, rule 1).
+                        // A CONSTANT column with cardinality n is valid — downstream hash /
+                        // vector_ops::copy / cells_equal all read CONSTANT via get_value /
+                        // zero-indexing. reference(const logical_value_t&) deep-copies into
+                        // a fresh 1-element buffer, so the materialized temporary is safe.
+                        // Referencing the defaults chunk's VECTOR instead would be wrong:
+                        // it is FLAT with a single row and would read OOB for rows > 0.
+                        keys_chunk.data[j].reference(column_defaults_->value(sources[j].def_col, 0));
                     }
                 }
                 keys_chunk.set_cardinality(n);

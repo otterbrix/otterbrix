@@ -18,25 +18,25 @@ namespace components::operators {
 
         const vector::vector_t* find_col(const vector::data_chunk_t& chunk, std::string_view name) {
             for (uint64_t c = 0; c < chunk.column_count(); ++c) {
-                if (chunk.data[c].type().alias() == name)
+                // complex_logical_type::alias() asserts on (and dereferences) a missing
+                // extension, so an alias-less column must not reach it.
+                const auto& type = chunk.data[c].type();
+                if (type.has_alias() && type.alias() == name)
                     return &chunk.data[c];
             }
             return nullptr;
         }
 
-        // The decoded DEFAULT value for `col`, or nullptr when the column has none.
-        const types::logical_value_t*
-        find_default(const std::vector<std::pair<std::string, types::logical_value_t>>* defaults,
-                     std::string_view col) {
-            if (defaults == nullptr) {
+        // The DEFAULT column of `col` in the one-row defaults chunk (column name in the
+        // type alias, row 0 the value), or nullptr when the table has no default for it.
+        // Callers test NULL-ness with def->is_null(0) and read the value with
+        // def->value(0) — data_chunk_t::column_index() is unusable here: it asserts on a
+        // miss, and a miss is the normal case.
+        const vector::vector_t* find_default(const vector::data_chunk_t* defaults, std::string_view col) {
+            if (defaults == nullptr || defaults->size() == 0) {
                 return nullptr;
             }
-            for (const auto& [name, value] : *defaults) {
-                if (name == col) {
-                    return &value;
-                }
-            }
-            return nullptr;
+            return find_col(*defaults, col);
         }
 
         // Parse a literal constant string into a logical_value_t without a type hint.
@@ -92,17 +92,15 @@ namespace components::operators {
         // strict_absent: TRUE when the write-set is name-addressed (absence by alias
         // means the statement omitted the column, so it stores DEFAULT-or-NULL);
         // FALSE keeps the legacy absent-column pass-through.
-        predicates::predicate_ptr
-        build_check_predicate(std::pmr::memory_resource* r,
-                              std::string_view expr,
-                              const std::vector<std::pair<std::string, types::logical_value_t>>* defaults,
-                              bool strict_absent);
+        predicates::predicate_ptr build_check_predicate(std::pmr::memory_resource* r,
+                                                        std::string_view expr,
+                                                        const vector::data_chunk_t* defaults,
+                                                        bool strict_absent);
 
-        predicates::predicate_ptr
-        build_check_predicate(std::pmr::memory_resource* r,
-                              std::string_view expr,
-                              const std::vector<std::pair<std::string, types::logical_value_t>>* defaults,
-                              bool strict_absent) {
+        predicates::predicate_ptr build_check_predicate(std::pmr::memory_resource* r,
+                                                        std::string_view expr,
+                                                        const vector::data_chunk_t* defaults,
+                                                        bool strict_absent) {
             using CT = expressions::compare_type;
             expr = trim(expr);
 
@@ -164,7 +162,7 @@ namespace components::operators {
                 // `INSERT (a) VALUES (..)` would silently bypass `CHECK (b IS NOT
                 // NULL)` for the omitted column b. Resolved once at compile time.
                 const auto* def = find_default(defaults, col);
-                const bool absent_is_valid = !strict_absent || (def != nullptr && !def->is_null());
+                const bool absent_is_valid = !strict_absent || (def != nullptr && !def->is_null(0));
                 return {new predicates::simple_predicate(
                     r,
                     [col, absent_is_valid](const vector::data_chunk_t& chunk,
@@ -181,7 +179,7 @@ namespace components::operators {
                 // DEFAULT when one exists, so IS NULL fails; with no default the
                 // stored value IS NULL.
                 const auto* def = find_default(defaults, col);
-                const bool absent_is_null = !strict_absent || def == nullptr || def->is_null();
+                const bool absent_is_null = !strict_absent || def == nullptr || def->is_null(0);
                 return {new predicates::simple_predicate(
                     r,
                     [col, absent_is_null](const vector::data_chunk_t& chunk,
@@ -221,8 +219,11 @@ namespace components::operators {
                 // DEFAULT the stored row carries that value — evaluate the comparison
                 // against it; without one, keep the legacy pass (untyped/unknown shape).
                 const auto* def = find_default(defaults, col_name);
-                const bool has_def = strict_absent && def != nullptr && !def->is_null();
-                auto def_val = has_def ? *def : const_val;
+                const bool has_def = strict_absent && def != nullptr && !def->is_null(0);
+                // vector_t::value() materializes a logical_value_t BY VALUE (a chunk hands
+                // out no stable pointer); the predicate below captures it by value, so it
+                // owns its copy and the defaults chunk may die afterwards.
+                auto def_val = has_def ? def->value(0) : const_val;
 
                 return {new predicates::simple_predicate(
                     r,
@@ -273,7 +274,7 @@ namespace components::operators {
         std::vector<std::string> not_null_columns,
         std::vector<std::pair<std::string, std::string>> check_exprs,
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs,
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults,
+        std::unique_ptr<vector::data_chunk_t> column_defaults,
         bool write_set_named)
         : read_write_operator_t(resource, log, operator_type::check_constraint)
         , not_null_columns_(std::move(not_null_columns))
@@ -284,7 +285,7 @@ namespace components::operators {
         for (auto& [name, expr_str] : check_exprs) {
             check_predicates_.emplace_back(
                 std::move(name),
-                build_check_predicate(resource, expr_str, &column_defaults_, write_set_named_));
+                build_check_predicate(resource, expr_str, column_defaults_.get(), write_set_named_));
         }
     }
 
@@ -345,8 +346,8 @@ namespace components::operators {
                     break;
                 }
                 if (!found && write_set_named_) {
-                    const auto* def = find_default(&column_defaults_, col_name);
-                    if (def == nullptr || def->is_null()) {
+                    const auto* def = find_default(column_defaults_.get(), col_name);
+                    if (def == nullptr || def->is_null(0)) {
                         set_error(core::error_t{
                             core::error_code_t::other_error,
                             std::pmr::string{"NOT NULL constraint violated for column: " + col_name, resource_}});

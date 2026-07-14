@@ -22,6 +22,7 @@
 #include <logical_plan/node_dynamic_cascade_delete.hpp>
 #include <logical_plan/node_fk_cascade.hpp>
 #include <logical_plan/node_fk_check.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <logical_plan/node_insert.hpp>
 #include <logical_plan/node_refresh_matview.hpp>
 #include <logical_plan/node_sequence.hpp>
@@ -75,7 +76,9 @@ namespace components::planner {
                 // the write-set as its default (the stored row carries it). Absent-by-
                 // name is only meaningful when the INSERT carried an explicit column
                 // list (key_translation) — positional inserts may alias arbitrarily.
-                cc->set_column_defaults(ins->column_defaults());
+                // The chunk is move-only and the insert node keeps its own (create_plan_insert
+                // forwards it to storage_append), so the wrapper takes a deep copy.
+                cc->set_column_defaults(vector::deep_copy(r, ins->column_defaults()));
                 cc->set_write_set_named(!ins->key_translation().empty());
                 cc->append_child(cur);
                 cur = cc;
@@ -104,7 +107,7 @@ namespace components::planner {
                 // UNIQUE / PK enforcement on the UPDATE write-set (see rewrite_insert).
                 cc->set_unique_groups(upd->unique_groups());
                 cc->set_table_oid(upd->table_oid());
-                cc->set_column_defaults(upd->column_defaults());
+                cc->set_column_defaults(vector::deep_copy(r, upd->column_defaults()));
                 // An UPDATE write-set is the gathered storage row — always named.
                 cc->set_write_set_named(true);
                 cc->append_child(cur);

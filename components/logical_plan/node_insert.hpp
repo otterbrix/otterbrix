@@ -6,6 +6,7 @@
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 
+#include <memory>
 #include <utility>
 
 namespace components::logical_plan {
@@ -45,17 +46,19 @@ namespace components::logical_plan {
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
-        // Decoded column DEFAULT values (name -> value), stamped by the enrich pass
-        // from pg_attribute.attdefspec. A column omitted from the INSERT column list
-        // stores its DEFAULT (filled agent-side at storage_append), so the constraint
-        // operators must evaluate an ABSENT column AS its default — the planner
-        // forwards these onto the node_check_constraint_t wrapper.
-        void set_column_defaults(std::vector<std::pair<std::string, types::logical_value_t>> v) {
-            column_defaults_ = std::move(v);
-        }
-        const std::vector<std::pair<std::string, types::logical_value_t>>& column_defaults() const {
-            return column_defaults_;
-        }
+        // Decoded column DEFAULTs as a ONE-ROW data_chunk_t: one column per default,
+        // the column name in the column's type alias, row 0 the decoded value; nullptr
+        // when the table has no usable DEFAULT. Stamped by the enrich pass from
+        // pg_attribute.attdefspec, and the shape the disk contract speaks — the chunk
+        // travels unchanged into operator_insert and on to storage_append, where the
+        // agent fills omitted columns from it. The values stay UN-cast: only the agent
+        // knows the live physical column types.
+        // A column omitted from the INSERT column list stores its DEFAULT, so the
+        // constraint operators must evaluate an ABSENT column AS its default — the
+        // planner deep-copies the chunk onto the node_check_constraint_t wrapper.
+        // MOVE-ONLY: consumers take their own copy via components::vector::deep_copy.
+        void set_column_defaults(std::unique_ptr<vector::data_chunk_t> v) { column_defaults_ = std::move(v); }
+        const vector::data_chunk_t* column_defaults() const noexcept { return column_defaults_.get(); }
 
     private:
         hash_t hash_impl() const override;
@@ -68,8 +71,8 @@ namespace components::logical_plan {
         std::vector<catalog::fk_info_t> outgoing_fks_;
         std::vector<std::pair<std::string, std::string>> check_exprs_;  // (name, expr)
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
-        std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
+        std::vector<std::vector<std::string>> unique_groups_;    // UNIQUE / PK column groups
+        std::unique_ptr<vector::data_chunk_t> column_defaults_;  // one-row chunk; nullptr = no defaults
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

@@ -48,8 +48,12 @@
 #include <components/sql/transformer/utils.hpp>
 #include <services/index/manager_index.hpp>
 
+#include <components/vector/data_chunk.hpp>
+
 #include <algorithm>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -100,22 +104,53 @@ namespace services::dispatcher { namespace {
         }
     }
 
-    // Decoded column DEFAULT values for the constraint operators: an INSERT omitting
-    // a defaulted column stores the default (filled agent-side at storage_append), so
-    // CHECK / UNIQUE must evaluate the ABSENT column AS its default.
-    std::vector<std::pair<std::string, components::types::logical_value_t>>
+    // Decoded column DEFAULTs of the target table as a ONE-ROW data_chunk_t: one column
+    // per default, the column name in the column's type alias, row 0 the decoded value;
+    // nullptr when the table has no usable default. This is the shape the disk contract
+    // speaks — the chunk rides the INSERT node into operator_insert and on to
+    // storage_append, where the agent fills omitted columns from it. Its values stay
+    // UN-cast: only the agent knows the live physical column types.
+    // An INSERT omitting a defaulted column stores the default, so CHECK / UNIQUE must
+    // evaluate the ABSENT column AS its default (the planner deep-copies the chunk onto
+    // the constraint node).
+    std::unique_ptr<components::vector::data_chunk_t>
     decode_column_defaults(std::pmr::memory_resource* resource,
                            const components::logical_plan::resolved_table_metadata_t& md) {
-        std::vector<std::pair<std::string, components::types::logical_value_t>> defaults;
+        // A default is usable when it decodes to a non-NULL value: a NULL default is
+        // indistinguishable from "no default" at every consumer, and an NA-typed value
+        // has no vector representation.
+        auto usable_default = [resource](const auto& col) {
+            auto v = col.atthasdefault && !col.attdefspec.empty()
+                         ? components::catalog::decode_default_spec(resource, col.attdefspec)
+                         : std::nullopt;
+            return v && !v->is_null() ? std::move(v) : std::nullopt;
+        };
+
+        // The chunk needs its full column list up front, so walk the columns once for
+        // the types and once for the values. decode_default_spec is a pure flat-text
+        // parse of a short spec, run once per plan — cheaper than staging the values.
+        std::pmr::vector<components::types::complex_logical_type> types{resource};
         for (const auto& col : md.columns) {
-            if (!col.atthasdefault || col.attdefspec.empty()) {
-                continue;
-            }
-            if (auto v = components::catalog::decode_default_spec(resource, col.attdefspec)) {
-                defaults.emplace_back(col.attname, std::move(*v));
+            if (auto v = usable_default(col)) {
+                // The column type is the value's own type: vector_t::set_value gates on
+                // type equality and ignores the alias, so this always passes.
+                auto type = v->type();
+                type.set_alias(col.attname);
+                types.emplace_back(std::move(type));
             }
         }
-        return defaults;
+        if (types.empty()) {
+            return nullptr; // nullptr is the only "no defaults" sentinel
+        }
+        auto chunk = std::make_unique<components::vector::data_chunk_t>(resource, types, /*capacity=*/1);
+        chunk->set_cardinality(1);
+        uint64_t col_idx = 0;
+        for (const auto& col : md.columns) {
+            if (auto v = usable_default(col)) {
+                chunk->set_value(col_idx++, 0, *v);
+            }
+        }
+        return chunk;
     }
 
     void enrich_insert_sync(components::logical_plan::node_insert_t* node,

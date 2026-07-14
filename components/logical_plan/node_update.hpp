@@ -7,7 +7,9 @@
 #include <components/catalog/fk_info.hpp>
 #include <components/expressions/update_expression.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
 
+#include <memory>
 #include <utility>
 
 namespace components::logical_plan {
@@ -40,15 +42,11 @@ namespace components::logical_plan {
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
-        // Decoded column DEFAULT values (name -> value) for the constraint operators
-        // (see node_insert_t::column_defaults). Stamped by enrich; forwarded onto the
-        // node_check_constraint_t wrapper by the planner.
-        void set_column_defaults(std::vector<std::pair<std::string, types::logical_value_t>> v) {
-            column_defaults_ = std::move(v);
-        }
-        const std::vector<std::pair<std::string, types::logical_value_t>>& column_defaults() const {
-            return column_defaults_;
-        }
+        // Decoded column DEFAULTs as a one-row data_chunk_t for the constraint operators
+        // (see node_insert_t::column_defaults for the shape). Stamped by enrich; the
+        // planner deep-copies it onto the node_check_constraint_t wrapper.
+        void set_column_defaults(std::unique_ptr<vector::data_chunk_t> v) { column_defaults_ = std::move(v); }
+        const vector::data_chunk_t* column_defaults() const noexcept { return column_defaults_.get(); }
 
     private:
         std::pmr::vector<expressions::update_expr_ptr> update_expressions_;
@@ -60,8 +58,8 @@ namespace components::logical_plan {
 
         std::vector<std::string> not_null_cols_;
         std::vector<catalog::fk_info_t> outgoing_fks_;
-        std::vector<std::vector<std::string>> unique_groups_; // UNIQUE / PK column groups
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
+        std::vector<std::vector<std::string>> unique_groups_;   // UNIQUE / PK column groups
+        std::unique_ptr<vector::data_chunk_t> column_defaults_; // one-row chunk; nullptr = no defaults
     };
 
     using node_update_ptr = boost::intrusive_ptr<node_update_t>;

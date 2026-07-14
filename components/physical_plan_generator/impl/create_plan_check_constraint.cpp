@@ -4,6 +4,7 @@
 #include <components/physical_plan/operators/operator_check_constraint.hpp>
 #include <components/physical_plan/operators/operator_unique_constraint.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <components/vector/data_chunk.hpp>
 
 namespace services::planner::impl {
 
@@ -13,13 +14,16 @@ namespace services::planner::impl {
                                  const components::logical_plan::node_ptr& node,
                                  const components::logical_plan::storage_parameters* params) {
         auto* n = static_cast<components::logical_plan::node_check_constraint_t*>(node.get());
-        auto plan = boost::intrusive_ptr(new components::operators::operator_check_constraint_t(context.resource,
-                                                                                                context.log.clone(),
-                                                                                                n->not_null_columns(),
-                                                                                                n->check_exprs(),
-                                                                                                n->array_size_reqs(),
-                                                                                                n->column_defaults(),
-                                                                                                n->write_set_named()));
+        // The node owns ONE defaults chunk but both constraint operators consume it and
+        // the chunk is move-only — each operator gets its own deep copy.
+        auto plan = boost::intrusive_ptr(new components::operators::operator_check_constraint_t(
+            context.resource,
+            context.log.clone(),
+            n->not_null_columns(),
+            n->check_exprs(),
+            n->array_size_reqs(),
+            components::vector::deep_copy(context.resource, n->column_defaults()),
+            n->write_set_named()));
         // Child sub-plan (the DML sink, possibly under an fk_check chain).
         components::operators::operator_ptr child;
         if (!node->children().empty()) {
@@ -32,13 +36,13 @@ namespace services::planner::impl {
         // reads its child DML's constraint_input(), exactly like an fk_check chain).
         // With no unique groups the check sink adopts the child directly.
         if (!n->unique_groups().empty()) {
-            auto unique = boost::intrusive_ptr(
-                new components::operators::operator_unique_constraint_t(context.resource,
-                                                                        context.log.clone(),
-                                                                        n->table_oid(),
-                                                                        n->unique_groups(),
-                                                                        n->column_defaults(),
-                                                                        n->write_set_named()));
+            auto unique = boost::intrusive_ptr(new components::operators::operator_unique_constraint_t(
+                context.resource,
+                context.log.clone(),
+                n->table_oid(),
+                n->unique_groups(),
+                components::vector::deep_copy(context.resource, n->column_defaults()),
+                n->write_set_named()));
             if (child) {
                 unique->set_children(child);
             }

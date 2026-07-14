@@ -5,7 +5,9 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,16 +36,13 @@ namespace components::logical_plan {
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
 
-        // Decoded column DEFAULT values (name -> value), copied from the DML node by
-        // the planner. An INSERT omitting a defaulted column stores the default
-        // (filled agent-side at storage_append), so the check/unique operators must
-        // evaluate an ABSENT column AS its default.
-        const std::vector<std::pair<std::string, types::logical_value_t>>& column_defaults() const {
-            return column_defaults_;
-        }
-        void set_column_defaults(std::vector<std::pair<std::string, types::logical_value_t>> v) {
-            column_defaults_ = std::move(v);
-        }
+        // Decoded column DEFAULTs as a one-row data_chunk_t (column name in the type
+        // alias, row 0 the value; nullptr = the table has none), deep-copied from the
+        // DML node by the planner. An INSERT omitting a defaulted column stores the
+        // default (filled agent-side at storage_append), so the check/unique operators
+        // must evaluate an ABSENT column AS its default.
+        const vector::data_chunk_t* column_defaults() const noexcept { return column_defaults_.get(); }
+        void set_column_defaults(std::unique_ptr<vector::data_chunk_t> v) { column_defaults_ = std::move(v); }
 
         // TRUE when the DML write-set is NAME-ADDRESSED: its column aliases are the
         // statement's explicit column names (SQL INSERT with a column list; every
@@ -69,7 +68,7 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, std::string>> check_exprs_;  // (name, expr)
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
         std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
+        std::unique_ptr<vector::data_chunk_t> column_defaults_;         // one-row chunk; nullptr = none
         bool write_set_named_{false}; // write-set aliases are statement column names
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
     };

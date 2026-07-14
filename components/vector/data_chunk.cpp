@@ -230,6 +230,18 @@ namespace components::vector {
         other.set_cardinality(size() - offset);
     }
 
+    std::unique_ptr<data_chunk_t> deep_copy(std::pmr::memory_resource* resource, const data_chunk_t* src) {
+        if (src == nullptr || src->column_count() == 0) {
+            return nullptr;
+        }
+        // copy() asserts the destination is empty with FLAT columns and sets its
+        // cardinality itself — a freshly constructed chunk of the same types satisfies
+        // that. Capacity must be >= src->size().
+        auto dst = std::make_unique<data_chunk_t>(resource, src->types(), src->size() == 0 ? 1 : src->size());
+        src->copy(*dst, 0);
+        return dst;
+    }
+
     void data_chunk_t::copy(data_chunk_t& other,
                             const indexing_vector_t& indexing,
                             uint64_t source_count,

@@ -131,12 +131,10 @@ namespace components::operators {
                 // storage_append — WAL-FIRST canonical append (batched, handles
                 // schema adoption + _id dedup). The reply carries any
                 // write_conflict / out_of_memory as a value.
-                // The flush lambda can run multiple times (mid-pump flushes), so
-                // send a copy of the defaults each round — never move the member
-                // out, or later rounds would append with no defaults at all.
-                auto defaults_copy = column_defaults_
-                                         ? std::make_unique<data_chunk_t>(copy_of(*column_defaults_))
-                                         : nullptr;
+                // The flush lambda can run multiple times (mid-pump flushes), so send a
+                // copy of the defaults each round — never move the member out, or later
+                // rounds would append with no defaults at all.
+                auto defaults_copy = vector::deep_copy(resource_, column_defaults_.get());
                 auto [_a, af] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::storage_append,
                                                  exec_ctx,

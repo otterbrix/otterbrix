@@ -55,6 +55,11 @@ namespace services::wal {
                               const components::vector::data_chunk_t& schema_chunk,
                               uint64_t column_count);
 
+    // `row_start` is where the new row images LANDED. An MVCC update deletes the old
+    // rows and appends the new ones at the end of the table, so the new rows do not sit
+    // at `row_ids` -- those are the OLD locations, which the record carries only so that
+    // replay knows what to tombstone. Consumers that need to address the new rows (the
+    // CREATE INDEX WAL catch-up) map the g-th row of the record to `row_start + g`.
     crc32_t encode_update(buffer_t& buffer,
                           std::pmr::memory_resource* resource,
                           crc32_t last_crc32,
@@ -63,6 +68,7 @@ namespace services::wal {
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
+                          uint64_t row_start,
                           uint64_t count);
 
     // commit_id (from transaction_manager_t::commit()) is appended to COMMIT

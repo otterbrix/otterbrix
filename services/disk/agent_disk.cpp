@@ -2472,8 +2472,14 @@ namespace services::disk {
             }
         }
 
-        // WAL physical_update: the chunk mirrors the patch chunk full-width so replay's
-        // direct_update_sync takes the same alias-matching path.
+        // WAL physical_update. This is the ONE update that is genuinely in place: it
+        // patches an existing pg_attribute row's commit-id field, and the row must not
+        // move -- an MVCC delete+append would leave two live rows for the same attoid.
+        //
+        // The chunk is built full-width because both the local apply and the replay drive
+        // data_table_t::update, which addresses columns POSITIONALLY (column_ids is
+        // 0..column_count-1). A narrower chunk would read past its own end. Full width is
+        // a precondition, not a convenience.
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
             components::vector::data_chunk_t wal_chunk(resource(), chunk_types, 1);
             wal_chunk.set_cardinality(1);
@@ -2493,6 +2499,11 @@ namespace services::disk {
                                              pg_attr_oid,
                                              std::move(wal_row_ids),
                                              std::move(wal_chunks),
+                                             // row_start is where an MVCC update's new rows
+                                             // landed. This update lands nowhere new: it
+                                             // rewrites the row in place, so there is no
+                                             // append base to report.
+                                             std::uint64_t{0},
                                              static_cast<std::uint64_t>(row_ids.size()),
                                              ctx.txn.transaction_id,
                                              components::catalog::well_known_oid::main_database);

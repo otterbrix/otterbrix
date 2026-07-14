@@ -129,6 +129,7 @@ namespace {
                                      table_oid,
                                      row_ids.data(),
                                      to_chunk_batch(chunk),
+                                     /*row_start=*/0,
                                      count);
         info.data = buffer_to_vec(buf);
         return info;

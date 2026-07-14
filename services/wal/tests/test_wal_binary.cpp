@@ -103,6 +103,11 @@ TEST_CASE("wal_binary::encode_decode_update") {
     std::vector<int64_t> row_ids = {0, 2, 4, 6, 8};
 
     buffer_t buffer(&resource);
+    // An MVCC update is a delete of the old rows plus an append of the new ones, so the
+    // new rows land at the end of the table -- NOT back at the row_ids being updated.
+    // row_start is where they landed. Consumers rely on it: the CREATE INDEX WAL
+    // catch-up maps the g-th row of the record to row_start + g, so a row_start of 0
+    // indexes every updated row at 0, 1, 2, ...
     encode_update(buffer,
                   &resource,
                   /*last_crc32=*/0,
@@ -111,6 +116,7 @@ TEST_CASE("wal_binary::encode_decode_update") {
                   kTestTableOid,
                   row_ids.data(),
                   to_chunk_batch(new_data),
+                  /*row_start=*/9000,
                   /*count=*/5);
 
     REQUIRE(buffer.size() > 0);
@@ -122,6 +128,8 @@ TEST_CASE("wal_binary::encode_decode_update") {
     REQUIRE(record.transaction_id == 102);
     REQUIRE(record.record_type == wal_record_type::PHYSICAL_UPDATE);
     REQUIRE(record.table_oid == kTestTableOid);
+    REQUIRE(record.physical_row_start == 9000);
+    REQUIRE(record.physical_row_count == 5);
     REQUIRE(record.physical_row_ids.size() == 5);
 
     for (size_t i = 0; i < row_ids.size(); i++) {

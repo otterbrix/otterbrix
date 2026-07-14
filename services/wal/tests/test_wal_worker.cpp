@@ -149,7 +149,8 @@ struct test_wal_worker {
     actor_zeta::unique_future<services::wal::id_t> send_update(uint64_t txn_id,
                                                                const std::pmr::vector<int64_t>& row_ids,
                                                                size_t row_count,
-                                                               catalog_ns::oid_t table_oid = kTestTableOid) {
+                                                               catalog_ns::oid_t table_oid = kTestTableOid,
+                                                               uint64_t row_start = 0) {
         auto* arena = std::pmr::new_delete_resource(); // chunk memory must outlive async processing
         auto chunk = gen_data_chunk(row_count, arena);
         auto chunk_ptr = to_batch(std::make_unique<data_chunk_t>(std::move(chunk)));
@@ -161,6 +162,7 @@ struct test_wal_worker {
                                                                  table_oid,
                                                                  std::move(ids_copy),
                                                                  std::move(chunk_ptr),
+                                                                 row_start,
                                                                  static_cast<uint64_t>(row_count),
                                                                  txn_id,
                                                                  kMainDb);

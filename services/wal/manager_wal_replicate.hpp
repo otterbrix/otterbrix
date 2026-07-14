@@ -112,6 +112,7 @@ namespace services::wal {
                                                        components::catalog::oid_t table_oid,
                                                        std::pmr::vector<int64_t> row_ids,
                                                        std::pmr::vector<components::vector::data_chunk_t> new_data,
+                                                       uint64_t row_start,
                                                        uint64_t count,
                                                        uint64_t txn_id,
                                                        components::catalog::oid_t database_oid);

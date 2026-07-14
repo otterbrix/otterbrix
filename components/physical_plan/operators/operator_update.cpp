@@ -424,6 +424,10 @@ namespace components::operators {
 
                 // 3. WAL physical_update: one record for THIS flushed range. UPDATE
                 //    owns its WAL write (unlike INSERT's WAL-first storage_append).
+                //    row_start is `range_start` -- where the MVCC update's new rows were
+                //    actually appended. The record's row_ids are the OLD locations, which
+                //    replay tombstones; a consumer that needs the NEW ones (the CREATE
+                //    INDEX WAL catch-up) reads them off row_start.
                 if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
                     const uint64_t wal_count = wal_row_ids.size();
                     auto [_w, wf] = actor_zeta::send(ctx->wal_address,
@@ -432,6 +436,7 @@ namespace components::operators {
                                                      table_oid_,
                                                      std::move(wal_row_ids),
                                                      std::move(wal_chunks),
+                                                     static_cast<uint64_t>(range_start),
                                                      wal_count,
                                                      ctx->txn.transaction_id,
                                                      db_oid);

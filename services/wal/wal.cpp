@@ -184,6 +184,7 @@ namespace services::wal {
                                         components::catalog::oid_t table_oid,
                                         std::pmr::vector<int64_t> row_ids,
                                         std::pmr::vector<components::vector::data_chunk_t> new_chunks,
+                                        uint64_t row_start,
                                         uint64_t count,
                                         uint64_t txn_id,
                                         wal::id_t wal_id) {
@@ -200,6 +201,7 @@ namespace services::wal {
                                   table_oid,
                                   row_ids.data(),
                                   new_chunks,
+                                  row_start,
                                   count);
 
         ensure_writer();

@@ -300,6 +300,7 @@ namespace services::wal {
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
+                          uint64_t row_start,
                           uint64_t count) {
         // Payload layout for UPDATE:
         //   [row_ids_size : 4 LE]          // byte count of the row-ids block
@@ -326,7 +327,7 @@ namespace services::wal {
                                 txn_id,
                                 wal_record_type::PHYSICAL_UPDATE,
                                 table_oid,
-                                0,
+                                row_start,
                                 count,
                                 payload_buf.data(),
                                 static_cast<uint32_t>(payload_buf.size()));

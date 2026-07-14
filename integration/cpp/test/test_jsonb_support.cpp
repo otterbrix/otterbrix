@@ -28,13 +28,15 @@
 //
 // NOT PINNABLE — these SEGFAULT the process, so they cannot live in a test binary.
 // Verified on this commit; kept here as the repro list:
-//   SELECT t -> (1::bool) FROM t;                       -- bool cast as key -> null deref
-//   SELECT t ->> NULL FROM t;                           -- NULL key -> null deref
-//   INSERT INTO t (a.b, x) VALUES (NULL, 'z');          -- NULL literal in a dotted target
+//   INSERT INTO t (a.b, x) VALUES (NULL, 'z');          -- NULL literal in a dotted target [C3]
 //   SELECT CASE WHEN t #>> 'a.b' = 10 THEN 1 ELSE 0 END -- only when the leaf has a NULL row;
 //     FROM t;                                           --   reproduces on plain columns too (general 3VL bug)
 // And this one escapes as an uncaught C++ exception rather than a cursor error:
-//   INSERT INTO t (id, arr[0]) VALUES (1, 1);           -- "basic_string: construction from null is not valid"
+//   INSERT INTO t (id, arr[0]) VALUES (1, 1);           -- "basic_string: construction from null is not valid" [C4]
+//
+// FIXED (were crashes/wrong results, now pinned as correct below):
+//   [A] get_str_value hardening — a cast key is transparent, a NULL key is a clean
+//       error, and neither `t -> (1::bool)` nor `t ->> NULL` crashes any more.
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -802,19 +804,60 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_missing_key_errors_instead_
     CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' IS NULL;")->is_success()); // correct: row 4
 }
 
-// Any cast on the right of a navigation operator is treated as a boolean cast:
-// the key becomes the string "false" (or "true"), so `t ->> ('x'::text)` looks
-// for a column named "false". The bool cast itself segfaults (see header).
-TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_key_is_treated_as_boolean") {
-    auto config = make_test_config("/tmp/test_jsonb_matrix/cast_key");
+// [A] The key operand of a jsonb operator is a literal: a bare string/number, a
+// cast of one, or NULL. A cast is transparent (it names the same key as the bare
+// literal), a numeric key is stringified, a NULL key is a clean error, and none
+// of these crash the process — the three things get_str_value used to get wrong.
+TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
+    auto config = make_test_config("/tmp/test_jsonb_matrix/key_operand");
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
 
-    auto cur = exec(d, "SELECT t ->> ('x'::text) AS v FROM jp.t;");
-    REQUIRE_FALSE(cur->is_success()); // correct: same as t ->> 'x'
-    // the key was rewritten to the literal "false"
-    CHECK(std::string(cur->get_error().what).find("false") != std::string::npos);
+    SECTION("a cast on a scalar key names the same column as the bare key") {
+        // ->> takes a single key: ('x'::text) is exactly 'x'.
+        auto cast = exec(d, "SELECT id, t ->> ('x'::text) AS v FROM jp.t ORDER BY id;");
+        REQUIRE(cast->is_success());
+        CHECK(str(cast, "v", 0) == "p");
+        CHECK(str(cast, "v", 1) == "q");
+        CHECK(is_null(cast, "v", 2));
+        // identical to the un-cast spelling
+        auto plain = exec(d, "SELECT id, t ->> 'x' AS v FROM jp.t ORDER BY id;");
+        REQUIRE(plain->is_success());
+        CHECK(str(plain, "v", 0) == "p");
+    }
+
+    SECTION("a cast on a path key splits into segments just like the bare path") {
+        // #>> takes a whole path: ('a.b'::text) splits to a/b.
+        auto cast = exec(d, "SELECT id, t #>> ('a.b'::text) AS v FROM jp.t ORDER BY id;");
+        REQUIRE(cast->is_success());
+        CHECK(i64(cast, "v", 0) == 10);
+        CHECK(i64(cast, "v", 1) == 30);
+        // ->> is single-key, so ('a.b'::text) is the literal key "a.b" (no such column)
+        CHECK_FALSE(exec(d, "SELECT t ->> ('a.b'::text) AS v FROM jp.t;")->is_success());
+    }
+
+    SECTION("a cast key composes in every clause the bare key does") {
+        CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ? ('x'::text);")) == std::set<int64_t>{1, 2});
+        CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t #>> ('a.b'::text) = 10;")) == std::set<int64_t>{1});
+    }
+
+    SECTION("a NULL key is a clean error, not a crash") {
+        auto cur = exec(d, "SELECT t ->> NULL FROM jp.t;");
+        REQUIRE_FALSE(cur->is_success());
+        CHECK(std::string(cur->get_error().what).find("NULL") != std::string::npos);
+        CHECK_FALSE(exec(d, "SELECT t #>> NULL FROM jp.t;")->is_success());
+        CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t ? NULL;")->is_success());
+    }
+
+    SECTION("a non-string cast key resolves to its value and never crashes") {
+        // (1::bool) used to segfault; now the key is the text "1" (no such column).
+        // Scalar form errors cleanly; the table-valued form is covered by the
+        // zero-match-expand case. Either way: no crash.
+        CHECK_FALSE(exec(d, "SELECT t ->> (1::bool) AS v FROM jp.t;")->is_success());
+        auto expand = exec(d, "SELECT t -> (1::bool) FROM jp.t;");
+        REQUIRE(expand->is_success()); // key "1" matches nothing -> zero-match expand
+    }
 }
 
 // A cast over a navigated value does not convert it: ::text on an integer leaf

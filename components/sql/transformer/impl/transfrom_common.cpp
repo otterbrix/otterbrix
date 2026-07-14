@@ -253,13 +253,21 @@ namespace components::sql::transform {
         }
     }
 
+    // Render a jsonb operator's right-hand key/path operand into its textual form.
+    // The operand is always a literal: a bare string/number, a cast of one, or a
+    // ParamRef; a bare column reference (`t -> x`) contributes the column's *name*.
+    // The switch is exhaustive and never dereferences a node as the wrong type —
+    // every unhandled shape reports a clean parse error instead.
     std::string transformer::get_str_value(Node* node) {
         switch (nodeTag(node)) {
-            case T_TypeCast: {
-                auto cast = pg_ptr_cast<TypeCast>(node);
-                bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(cast->arg)->val)) == "t";
-                return is_true ? "true" : "false";
-            }
+            case T_TypeCast:
+                // A cast key is just its underlying constant rendered as text:
+                // 'x'::text -> "x", 5::bigint -> "5", TRUE -> "t". Recurse so the
+                // operand's real node type drives the conversion. (This arm used to
+                // collapse EVERY cast to the boolean strings "true"/"false", which
+                // both mis-keyed 'x'::text and dereferenced a non-string cast
+                // argument's integer union member as a char* — a segfault.)
+                return get_str_value(pg_ptr_cast<TypeCast>(node)->arg);
             case T_A_Const: {
                 auto value = &(pg_ptr_cast<A_Const>(node)->val);
                 switch (nodeTag(value)) {
@@ -269,13 +277,26 @@ namespace components::sql::transform {
                         return std::to_string(intVal(value));
                     case T_Float:
                         return strVal(value);
+                    case T_Null:
+                        error_ = core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"jsonb key must be a constant value, not NULL", resource_});
+                        return {};
+                    default:
+                        break;
                 }
+                // No fall-through into the ColumnRef arm below: an unexpected
+                // constant kind is a clean error, not a wild reinterpret-cast.
+                break;
             }
             case T_ColumnRef:
-                assert(false);
+                // `t -> col`: the key is the column's own name (its identifier),
+                // not its per-row value. Kept for compatibility with that spelling.
                 return strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data);
             case T_ParamRef:
                 return "$" + std::to_string(pg_ptr_cast<ParamRef>(node)->number);
+            default:
+                break;
         }
         error_ = core::error_t(core::error_code_t::sql_parse_error,
                                std::pmr::string{"incorrect string value in get_str_value", resource_});

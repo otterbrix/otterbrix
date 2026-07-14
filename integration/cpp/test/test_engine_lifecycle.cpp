@@ -526,3 +526,41 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         }
     }
 }
+
+// Teardown leak gate for the boost::lockfree freelist nodes (eviction_queue_t::q
+// and the four manager inbox_{128} queues). Construct an engine (disk on) so the
+// system-table buffer pools are instantiated at bootstrap, add a user table with
+// rows and scan it (exercising the eviction queue), then destroy at scope exit.
+//
+// On Linux ASAN+LeakSanitizer (the CI gate) a clean teardown must report ZERO
+// leaked blocks — a destroyed queue frees every freelist node, so any residual
+// means an owner survived teardown. On macOS LSan does not run, so this also
+// serves as an ASan use-after-free smoke test that exercises the scheduler_disk_
+// teardown ordering (Edit 3).
+TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_teardown",
+          "[engine-lifecycle][leak-repro]") {
+    auto config = test_create_config("/tmp/test_engine_lifecycle/teardown_leak");
+    test_clear_directory(config);
+    config.disk.on = true;
+    components::compute::function_registry_t::reset_default();
+
+    {
+        auto inst = otterbrix::make_otterbrix(config);
+        auto* dispatcher = inst->dispatcher();
+
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE leakreprodb;")
+                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(),
+                                        "CREATE TABLE leakreprodb.t (g bigint, v bigint);")
+                    ->is_success());
+        REQUIRE(dispatcher
+                    ->execute_sql(otterbrix::session_id_t(),
+                                  "INSERT INTO leakreprodb.t (g, v) VALUES "
+                                  "(1, 10), (1, 20), (2, 30), (2, 40), (2, 50);")
+                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "SELECT g, v FROM leakreprodb.t;")
+                    ->is_success());
+    } // engine destroyed here; a clean teardown must free every boost freelist node
+
+    SUCCEED("engine constructed, populated, and destroyed without an ASan/LSan error");
+}

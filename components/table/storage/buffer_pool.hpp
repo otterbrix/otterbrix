@@ -27,7 +27,15 @@ namespace components::table::storage {
         eviction_queue_t(const file_buffer_type file_buffer_type, std::pmr::memory_resource* resource)
             : buffer_type(file_buffer_type)
             , resource_(resource)
-            , q(INITIAL_QUEUE_CAPACITY)
+            // Start the freelist empty. boost::lockfree::queue eagerly reserves
+            // capacity+1 nodes at construction via an over-aligned allocator
+            // (aligned_alloc/posix_memalign) that bypasses both operator new and
+            // the pmr resource_tracer, so a non-zero capacity here reserves
+            // ~257 untracked nodes per queue at bootstrap. enqueue() uses
+            // q.push(), which grows the dynamic freelist on demand, so starting
+            // empty is functionally identical and pays a malloc only on the first
+            // evictions (restores the lazy a13 std::queue behaviour).
+            , q(0)
             , approx_q_size_(0)
             , evict_queue_insertions_(0)
             , total_dead_nodes_(0) {}
@@ -56,7 +64,6 @@ namespace components::table::storage {
         constexpr static uint64_t PURGE_SIZE_MULTIPLIER = 2;
         constexpr static uint64_t EARLY_OUT_MULTIPLIER = 4;
         constexpr static uint64_t ALIVE_NODE_MULTIPLIER = 4;
-        constexpr static uint64_t INITIAL_QUEUE_CAPACITY = 256;
 
         std::pmr::memory_resource* resource_;
         // lock-free MPMC queue of heap nodes: producers (unpin on scan/disk

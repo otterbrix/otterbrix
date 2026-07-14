@@ -511,9 +511,13 @@ namespace services::disk {
                                    std::pmr::vector<components::vector::vector_t> row_ids,
                                    std::pmr::vector<components::vector::data_chunk_t> data) {
         // Router to the agent twin — the agent's mailbox serializes the canonical write with
-        // every other same-oid access. row_ids[i] pairs with data[i]; the per-chunk new-row
-        // segments are contiguous and coalesce into one range. The agent reply wraps a
-        // write_conflict / out_of_memory; the first error aborts the batch.
+        // every other same-oid access, and the agent (not the operator) writes the WAL
+        // record, so the row-ids an update consumes and the wal_id recording them are
+        // minted without another same-oid mutation in between. row_ids[i] pairs with
+        // data[i]; the per-chunk new-row segments are contiguous and coalesce into one
+        // range. One PHYSICAL_UPDATE record per chunk, as PHYSICAL_INSERT already does.
+        // The agent reply wraps a write_conflict / out_of_memory; the first error aborts
+        // the batch.
         if (agents_.empty()) {
             co_return std::pair<int64_t, uint64_t>{0, 0};
         }
@@ -532,10 +536,10 @@ namespace services::disk {
             auto one = std::make_unique<components::vector::data_chunk_t>(std::move(data[i]));
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                   &agent_disk_t::storage_update_inner,
+                                                                  ctx,
                                                                   table_oid,
                                                                   std::move(row_ids[i]),
-                                                                  std::move(one),
-                                                                  ctx.txn);
+                                                                  std::move(one));
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

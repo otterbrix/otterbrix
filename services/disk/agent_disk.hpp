@@ -246,15 +246,22 @@ namespace services::disk {
         unique_future<void>
         storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges);
 
-        // storage_update_inner — single-OID UPDATE mutation against the
-        //   agent twin. Reply wraps storage_t::update's (updated, appended) pair so a
-        //   write_conflict / out_of_memory travels back to operator_update as a value;
-        //   (0, 0) on no-op.
+        // storage_update_inner — single-OID UPDATE mutation against the agent twin, and
+        //   the owner of its WAL record, for the same reason storage_append_inner owns
+        //   INSERT's: an MVCC update APPENDS its new rows, so it consumes row-ids, and
+        //   the WAL must record them in the order storage handed them out. Mutating here
+        //   and writing the WAL from the operator would let another session's append slip
+        //   between the two and mint a lower wal_id for a higher row-id -- replay would
+        //   then rebuild the two rows swapped. Because the handler owns the mailbox
+        //   across its single co_await, the (mutation, wal_id) pair is atomic.
+        //   Takes the full execution_context (session/txn/db_oid) for that reason.
+        // Reply wraps storage_t::update's (start_row, count) pair so a write_conflict /
+        // out_of_memory travels back to operator_update as a value; (0, 0) on no-op.
         unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
-        storage_update_inner(components::catalog::oid_t table_oid,
+        storage_update_inner(execution_context_t ctx,
+                             components::catalog::oid_t table_oid,
                              components::vector::vector_t row_ids,
-                             std::unique_ptr<components::vector::data_chunk_t> data,
-                             components::table::transaction_data txn);
+                             std::unique_ptr<components::vector::data_chunk_t> data);
 
         // storage_delete_rows_inner — single-OID DELETE mutation. Returns
         //   the deleted-row count; 0 on no-op.

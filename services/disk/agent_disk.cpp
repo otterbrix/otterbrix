@@ -943,10 +943,10 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
-    agent_disk_t::storage_update_inner(components::catalog::oid_t table_oid,
+    agent_disk_t::storage_update_inner(execution_context_t ctx,
+                                       components::catalog::oid_t table_oid,
                                        components::vector::vector_t row_ids,
-                                       std::unique_ptr<components::vector::data_chunk_t> data,
-                                       components::table::transaction_data txn) {
+                                       std::unique_ptr<components::vector::data_chunk_t> data) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -969,7 +969,59 @@ namespace services::disk {
         // No preprocessing here: the manager body already aligned `data` with the
         // canonical schema (the twin shares column defs via bootstrap_inner_sync). The
         // wrapper carries any write_conflict / out_of_memory as a value.
-        co_return entry->storage->update(row_ids, *data, txn);
+        auto update_result = entry->storage->update(row_ids, *data, ctx.txn);
+        if (update_result.has_error()) {
+            co_return std::move(update_result);
+        }
+        const auto [start_row, count] = update_result.value();
+        if (count == 0) {
+            co_return std::pair<int64_t, uint64_t>{start_row, count};
+        }
+
+        // WAL AFTER the mutation, but INSIDE this handler -- the ordering that matters is
+        // not WAL-before-storage, it is that no other same-oid mutation can run between
+        // the two. The handler holds the mailbox across its single co_await, so the
+        // row-ids this update just consumed and the wal_id it is about to mint cannot be
+        // interleaved with another session's append. Replay, walking the WAL in id order
+        // through the same append path, therefore rebuilds the identical row-id space.
+        //
+        // MANDATORY: this must remain the handler's ONLY cross-actor co_await. A second
+        // sequential one risks the actor-zeta lost-wakeup hang (see storage_append_inner).
+        //
+        // WAL-after is also the safer order here: an update that the table layer rejects
+        // (write_conflict / out_of_memory) is returned above and never logged, and UPDATE
+        // has no revert_appends-style unwind to undo a record it already wrote.
+        if (ctx.txn.transaction_id != 0 && manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+            const auto db_oid = ctx.database_oid != components::catalog::INVALID_OID
+                                    ? ctx.database_oid
+                                    : components::catalog::well_known_oid::main_database;
+            components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
+            data->copy(wal_chunk, 0);
+            std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
+            wal_chunks.emplace_back(std::move(wal_chunk));
+            std::pmr::vector<int64_t> wal_row_ids(resource());
+            wal_row_ids.reserve(count);
+            for (uint64_t i = 0; i < count; ++i) {
+                wal_row_ids.push_back(row_ids.value(i).value<int64_t>());
+            }
+            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
+                                             &wal::manager_wal_replicate_t::write_physical_update,
+                                             ctx.session,
+                                             table_oid,
+                                             std::move(wal_row_ids),
+                                             std::move(wal_chunks),
+                                             static_cast<uint64_t>(start_row),
+                                             count,
+                                             ctx.txn.transaction_id,
+                                             db_oid);
+            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+                trace(log_,
+                      "agent_disk[{}]::storage_update_inner: physical_update WAL returned zero id for oid={}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid));
+            }
+        }
+        co_return std::pair<int64_t, uint64_t>{start_row, count};
     }
 
     agent_disk_t::unique_future<uint64_t>

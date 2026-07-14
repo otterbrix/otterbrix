@@ -309,9 +309,14 @@ namespace components::operators {
         const bool is_final = ctx->dml_flush_is_final;
 
         if (output_ && output_->size() > 0) {
-            components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->session_tz, table_oid_};
-            // See operator_insert comment on db_oid temporary hardcode.
+            // See operator_insert comment on db_oid temporary hardcode. The agent writes
+            // this UPDATE's WAL record, so the database oid travels with the context.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+            components::execution_context_t exec_ctx{ctx->session,
+                                                     ctx->txn,
+                                                     ctx->session_tz,
+                                                     table_oid_,
+                                                     db_oid};
             const bool mirror_index = ctx->index_address != actor_zeta::address_t::empty_address();
 
             // STREAMING invariant: consume_batch_/consume_join_batch_ stage exactly one
@@ -337,8 +342,6 @@ namespace components::operators {
 
                 chunks_vector_t update_data(resource_);               // storage_update payload (mutated)
                 std::pmr::vector<vector_t> update_row_ids(resource_); // storage_update row_ids, one per chunk
-                chunks_vector_t wal_chunks(resource_);                // WAL payload (submitted new rows)
-                std::pmr::vector<int64_t> wal_row_ids(resource_);     // WAL row_ids, flat
                 chunks_vector_t idx_old(resource_);                   // index: old row versions, one per chunk
                 chunks_vector_t idx_new(resource_);                   // index: new rows, one per chunk
                 std::pmr::vector<int64_t> idx_row_ids(resource_);     // index row_ids, flat
@@ -357,12 +360,6 @@ namespace components::operators {
                     }
                     update_row_ids.emplace_back(std::move(row_ids));
                     update_data.emplace_back(copy_of(out_chunk));
-
-                    // WAL needs the submitted new rows + their flat row_ids.
-                    wal_chunks.emplace_back(copy_of(out_chunk));
-                    for (uint64_t i = 0; i < n; i++) {
-                        wal_row_ids.push_back(out_chunk.row_ids.data<int64_t>()[i]);
-                    }
 
                     // Index needs the n old row versions + the new rows and their ids.
                     // index_old_chunks_[out_chunk_idx] is this updated chunk's OLD
@@ -422,31 +419,16 @@ namespace components::operators {
                 }
                 auto [range_start, total_count] = update_result.value();
 
-                // 3. WAL physical_update: one record for THIS flushed range. UPDATE
-                //    owns its WAL write (unlike INSERT's WAL-first storage_append).
-                //    row_start is `range_start` -- where the MVCC update's new rows were
-                //    actually appended. The record's row_ids are the OLD locations, which
-                //    replay tombstones; a consumer that needs the NEW ones (the CREATE
-                //    INDEX WAL catch-up) reads them off row_start.
-                if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-                    const uint64_t wal_count = wal_row_ids.size();
-                    auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                                     &services::wal::manager_wal_replicate_t::write_physical_update,
-                                                     ctx->session,
-                                                     table_oid_,
-                                                     std::move(wal_row_ids),
-                                                     std::move(wal_chunks),
-                                                     static_cast<uint64_t>(range_start),
-                                                     wal_count,
-                                                     ctx->txn.transaction_id,
-                                                     db_oid);
-                    auto wal_id = co_await std::move(wf);
-                    auto [_df, dff] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::flush,
-                                                       ctx->session,
-                                                       wal_id);
-                    ctx->add_pending_disk_future(std::move(dff));
-                }
+                // 3. The WAL record is written by the disk AGENT, inside the same handler
+                //    that performed the mutation (storage_update_inner), exactly as
+                //    PHYSICAL_INSERT is. It cannot be written from here: an MVCC update
+                //    APPENDS its new rows, so it consumes row-ids, and between this
+                //    operator's storage_update returning and its WAL send another
+                //    session's append can land -- minting a LOWER wal_id for a HIGHER
+                //    row-id. Replay, which rebuilds the row-id space by walking the WAL
+                //    in id order, would then place the two rows swapped. Owning the WAL
+                //    write inside the agent's mailbox-atomic handler is what makes the
+                //    replayed row-id space equal the live one.
 
                 // 4. Mirror to index (old + new data) — one batched send. idx_old came
                 //    from the streaming staging (index_old_chunks_), aligned row-for-row

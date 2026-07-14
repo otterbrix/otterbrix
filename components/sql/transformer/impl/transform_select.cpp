@@ -550,6 +550,42 @@ namespace components::sql::transform {
         // out cleanly until proper set-operation lowering lands.
         // dynamic_schema_union sits on this path; lldb pinned the crash to
         // node.targetList->lst at line 137 here.
+        // Resolve a positional `ORDER BY <n>` (1-based) to the n-th output column's field:
+        // `n` indexes `target_list` (the SELECT list; for a UNION the output names come from
+        // the FIRST arm's list, PostgreSQL semantics). Sets error_ and returns false on an
+        // out-of-range position or a computed column with no alias to name it.
+        auto positional_sort_field =
+            [&](List* target_list, int64_t n, const name_collection_t& nm, column_ref_t& out) -> bool {
+            int64_t count = 0;
+            ResTarget* res = nullptr;
+            if (target_list) {
+                for (auto t : target_list->lst) {
+                    if (++count == n) {
+                        res = pg_ptr_cast<ResTarget>(t.data);
+                        break;
+                    }
+                }
+            }
+            if (res == nullptr) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"ORDER BY position is out of range of the select list",
+                                                        resource_});
+                return false;
+            }
+            if (nodeTag(res->val) == T_ColumnRef) {
+                out = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(res->val), nm);
+                return true;
+            }
+            if (res->name) {
+                out.field = expressions::key_t{resource_, res->name};
+                return true;
+            }
+            error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                   std::pmr::string{"positional ORDER BY over a computed column requires an alias",
+                                                    resource_});
+            return false;
+        };
+
         if (node.op == SETOP_UNION) {
             // gram.y attaches withClause / sortClause / limitCount / limitOffset / distinctClause to THIS
             // compound node (not to larg/rarg). The old early-return dropped all of them silently.
@@ -593,6 +629,19 @@ namespace components::sql::transform {
                         field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), union_names);
                     } else if (nodeTag(sortby->node) == T_A_Indirection) {
                         field = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), union_names);
+                    } else if (nodeTag(sortby->node) == T_A_Const) {
+                        // Positional `ORDER BY <n>`: map to the n-th UNION output column (the
+                        // output names come from the first arm, node.larg's select list).
+                        auto* value = &(pg_ptr_cast<A_Const>(sortby->node)->val);
+                        if (nodeTag(value) != T_Integer) {
+                            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                                   std::pmr::string{"non-integer constant in ORDER BY", resource_});
+                            return nullptr;
+                        }
+                        List* out_list = node.larg ? node.larg->targetList : nullptr;
+                        if (!positional_sort_field(out_list, intVal(value), union_names, field)) {
+                            return nullptr; // positional_sort_field set error_
+                        }
                     } else {
                         error_ = core::error_t(
                             core::error_code_t::unimplemented_yet,
@@ -1179,6 +1228,20 @@ namespace components::sql::transform {
                         computed_sort->append_param(resolve_select_operand(a_expr->rexpr, names, plan, dummy_node));
                     }
                     sort_exprs.emplace_back(std::move(computed_sort));
+                } else if (nodeTag(sortby->node) == T_A_Const) {
+                    // Positional `ORDER BY <n>`: map to the n-th output column of this SELECT.
+                    auto* value = &(pg_ptr_cast<A_Const>(sortby->node)->val);
+                    if (nodeTag(value) != T_Integer) {
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"non-integer constant in ORDER BY", resource_});
+                        return nullptr;
+                    }
+                    column_ref_t field(resource_);
+                    if (!positional_sort_field(node.targetList, intVal(value), names, field)) {
+                        return nullptr; // positional_sort_field set error_
+                    }
+                    sort_exprs.emplace_back(
+                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,

@@ -1771,6 +1771,72 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
 }
 
 // ---------------------------------------------------------------------------
+// F5: positional ORDER BY <int> maps to the n-th output column, on a plain
+// SELECT and over a UNION (PostgreSQL). Previously a bare integer in ORDER BY
+// errored ("Unknown node type in ORDER BY" / "supports only column references").
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
+    auto config = test_create_config("/tmp/test_subqueries/positional_order_by");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        return dispatcher->execute_sql(s, sql);
+    };
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    INFO("plain SELECT: ORDER BY 1 orders by the first output column (dept_id) ascending");
+    {
+        auto cur = exec("SELECT dept_id, name FROM TestDatabase.Employees ORDER BY 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1); // dept 1 first
+        REQUIRE(cur->value(0, 9).value<int64_t>() == 5); // dept 5 last
+    }
+
+    INFO("plain SELECT: ORDER BY 1 DESC orders by the first output column descending");
+    {
+        auto cur = exec("SELECT dept_id, name FROM TestDatabase.Employees ORDER BY 1 DESC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5); // dept 5 first
+    }
+
+    INFO("plain SELECT: ORDER BY 2 orders by the second output column");
+    {
+        // salary ascending -> lowest salary (Frank, 40000) first.
+        auto cur = exec("SELECT name, salary FROM TestDatabase.Employees ORDER BY 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 40000);
+        REQUIRE(cur->value(1, 9).value<int64_t>() == 90000);
+    }
+
+    INFO("UNION: positional ORDER BY 1 orders the deduped output by its first column");
+    {
+        // distinct dept_ids {1,2,3,4,5}; ORDER BY 1 -> ascending.
+        auto cur = exec("SELECT dept_id FROM TestDatabase.Employees "
+                        "UNION SELECT dept_id FROM TestDatabase.Employees ORDER BY 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 4).value<int64_t>() == 5);
+    }
+
+    INFO("positional ORDER BY out of range is a clean error, not a crash");
+    {
+        auto cur = exec("SELECT dept_id FROM TestDatabase.Employees ORDER BY 5;");
+        REQUIRE_FALSE(cur->is_success());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tier-1: a sub-query result was compacted from cursor->chunks().front() only,
 // so an IN-list past DEFAULT_VECTOR_CAPACITY (1024) — or a multi-branch
 // UNION ALL that keeps each branch as its own chunk — was silently truncated.

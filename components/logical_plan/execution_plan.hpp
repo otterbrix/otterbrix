@@ -19,6 +19,12 @@ namespace components::logical_plan {
     struct id_result_mapping {
         subquery_compacter compacter = nullptr;
         core::parameter_id_t id;
+        // A bare boolean-context scalar sub-query: `WHERE (SELECT ...)` /
+        // `HAVING (SELECT ...)`. PostgreSQL requires the argument of WHERE/HAVING to be
+        // type boolean, so the executor rejects a non-boolean static output type before
+        // binding (else a numeric scalar would silently coerce to bool). false for every
+        // other sub-query form (IN / scalar comparison / EXISTS), where any type is legal.
+        bool boolean_required = false;
     };
 
     // EXPLAIN mode for the whole plan. `plan` renders the physical plan without executing;

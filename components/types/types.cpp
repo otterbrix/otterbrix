@@ -238,6 +238,10 @@ namespace components::types {
                 return sizeof(uint32_t);
             case physical_type::UINT64:
                 return sizeof(uint64_t);
+            case physical_type::INT128:
+                return sizeof(int128_t);
+            case physical_type::UINT128:
+                return sizeof(uint128_t);
             case physical_type::STRING:
                 return sizeof(std::string_view);
             case physical_type::LIST:
@@ -280,6 +284,10 @@ namespace components::types {
                 return alignof(uint32_t);
             case physical_type::UINT64:
                 return alignof(uint64_t);
+            case physical_type::INT128:
+                return alignof(int128_t);
+            case physical_type::UINT128:
+                return alignof(uint128_t);
             case physical_type::STRING:
                 return alignof(std::string_view);
             case physical_type::LIST:

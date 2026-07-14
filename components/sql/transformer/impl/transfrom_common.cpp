@@ -761,7 +761,12 @@ namespace components::sql::transform {
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 // Transform before appending so nested sub_queries/sub_query_results come first.
                 auto sub_node = transform(*node->subselect, plan);
-                plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_result);
+                // boolean_required: WHERE's argument must be type boolean (PostgreSQL). The
+                // executor rejects a non-boolean static output type of this sub-query before
+                // binding, so `WHERE (SELECT 1)` errors instead of silently coercing to bool.
+                plan->sub_query_results.emplace_back(&vector::compact_to_single_value,
+                                                     param_result,
+                                                     /*boolean_required=*/true);
                 plan->sub_queries.emplace_back(std::move(sub_node));
                 auto expr = make_compare_expression(resource_, compare_type::eq, param_true, param_result);
                 expr->make_unfoldable();
@@ -1352,6 +1357,16 @@ namespace components::sql::transform {
         if (nodeTag(node) == T_TypeCast) {
             // HAVING TRUE / FALSE — constant predicate, no aggregate involved.
             return transform_predicate(node, names, plan);
+        }
+        if (nodeTag(node) == T_SubLink) {
+            // A sub-query as a bare HAVING predicate — `HAVING (SELECT flag ...)`, and
+            // EXISTS / IN / ANY / ALL — is transformed exactly as in WHERE. For a bare
+            // EXPR_SUBLINK this yields the compact-to-single-value `== true` predicate with
+            // boolean_required set, so a non-boolean `HAVING (SELECT 1)` is rejected
+            // (PostgreSQL: argument of HAVING must be type boolean). A sub-query as a
+            // comparison OPERAND (`HAVING sum(x) > (SELECT ...)`) is a different path
+            // (resolve_having_operand) and stays untyped, since any type is legal there.
+            return transform_sublink_expr(pg_ptr_cast<SubLink>(node), names, plan);
         }
         if (nodeTag(node) == T_A_Expr) {
             auto a_expr = pg_ptr_cast<A_Expr>(node);

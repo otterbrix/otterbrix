@@ -88,11 +88,24 @@ namespace services::planner::impl {
                 }
             }
 
-            // union compare expressions have nullptr in left and right slots
-            if (!is_union_compare_condition(comp_expr->type()) &&
-                (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
-                 std::holds_alternative<expression_ptr>(comp_expr->right()))) {
-                return false;
+            // A LEAF compare (not a union AND/OR of sub-compares) is pushable into a disk
+            // table_filter_t ONLY as `column OP constant` — one operand a key_t (the column),
+            // the other a bound parameter_id_t. A column-vs-column comparison (both key_t), an
+            // expression operand, or any other shape is NOT representable as a table_filter_t
+            // and MUST be evaluated by operator_match instead: pushing it into full_scan makes
+            // transform_predicate's std::get<parameter_id_t>(right()) throw (bad_variant_access).
+            // (union compare expressions carry nullptr in the left/right slots — handled above.)
+            if (!is_union_compare_condition(comp_expr->type())) {
+                // param_storage is variant<parameter_id_t, key_t, expression_ptr>: a bound
+                // parameter is the alternative that is neither a key nor a nested expression.
+                // "column OP constant" = neither operand a nested expression AND exactly one
+                // operand a key (so the other is a bound parameter). Uses the is_key/is_expr
+                // accessors, not std::holds_alternative (Rule 14: no new std::variant site).
+                const bool col_op_const = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right()) &&
+                                          (is_key(comp_expr->left()) != is_key(comp_expr->right()));
+                if (!col_op_const) {
+                    return false;
+                }
             }
             return true;
         }

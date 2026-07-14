@@ -475,6 +475,27 @@ namespace services::collection::executor {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
             const auto& mapping = plan.sub_query_results[i];
+            // PostgreSQL: the argument of WHERE / HAVING must be type boolean. For a bare
+            // boolean-context scalar sub-query (`WHERE (SELECT ...)` / `HAVING (SELECT ...)`)
+            // reject a non-boolean STATIC output type here — otherwise a numeric scalar would
+            // silently coerce to bool (`(SELECT 1)` -> 0 rows, `(SELECT 0)` -> all rows). This
+            // is a data-independent check on the sub-plan's resolved schema (stamped by the
+            // recursive execute_plan_full's validate above — the SINGLE canonical type source),
+            // so it runs BEFORE the plan-only continue: EXPLAIN of the bad query errors too, as
+            // in PostgreSQL. NA (a zero-row / NULL scalar, whose static type is BOOLEAN for a
+            // bool column anyway) is accepted — it selects nothing, not a type error.
+            if (mapping.boolean_required) {
+                const auto& sub_node = plan.sub_queries[i];
+                assert(sub_node->has_output_types() && "boolean-required sub-query must be schema-stamped");
+                const auto out_type = sub_node->output_types().front().type();
+                if (out_type != components::types::logical_type::BOOLEAN &&
+                    out_type != components::types::logical_type::NA) {
+                    co_return execute_result_t{make_cursor(
+                        resource(),
+                        core::error_t{core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"argument of WHERE/HAVING must be type boolean", resource()}})};
+                }
+            }
             if ((capture_ir || plan_only) && sub_result.captured_explain_ir.has_value()) {
                 // Stamp the sub-plan's returned param slot ($M) and buffer it for the main-root attach.
                 sub_result.captured_explain_ir->subplan_returns = static_cast<uint32_t>(mapping.id);

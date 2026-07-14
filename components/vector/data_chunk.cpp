@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <charconv>
-#include <sstream>
 #include <stdexcept>
 
 namespace components::vector {
@@ -462,61 +461,6 @@ namespace components::vector {
         }
     }
 
-    std::string row_identity_key(const data_chunk_t& chunk, size_t row) {
-        std::ostringstream key;
-        for (size_t j = 0; j < chunk.column_count(); j++) {
-            auto val = chunk.data[j].value(row);
-            if (val.is_null()) {
-                key << "\0NULL\0";
-            } else {
-                key << static_cast<int>(val.type().type()) << ":";
-                switch (val.type().to_physical_type()) {
-                    case types::physical_type::INT8:
-                        key << val.value<int8_t>();
-                        break;
-                    case types::physical_type::INT16:
-                        key << val.value<int16_t>();
-                        break;
-                    case types::physical_type::INT32:
-                        key << val.value<int32_t>();
-                        break;
-                    case types::physical_type::INT64:
-                        key << val.value<int64_t>();
-                        break;
-                    case types::physical_type::UINT8:
-                        key << val.value<uint8_t>();
-                        break;
-                    case types::physical_type::UINT16:
-                        key << val.value<uint16_t>();
-                        break;
-                    case types::physical_type::UINT32:
-                        key << val.value<uint32_t>();
-                        break;
-                    case types::physical_type::UINT64:
-                        key << val.value<uint64_t>();
-                        break;
-                    case types::physical_type::FLOAT:
-                        key << val.value<float>();
-                        break;
-                    case types::physical_type::DOUBLE:
-                        key << val.value<double>();
-                        break;
-                    case types::physical_type::BOOL:
-                        key << val.value<bool>();
-                        break;
-                    case types::physical_type::STRING:
-                        key << val.value<std::string_view>();
-                        break;
-                    default:
-                        key << "?";
-                        break;
-                }
-            }
-            key << "|";
-        }
-        return key.str();
-    }
-
     core::result_wrapper_t<types::logical_value_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks) {
         // EXISTS: true iff ANY chunk carries a row (a multi-chunk / multi-branch result must not be
         // judged empty from chunk 0 alone).
@@ -572,9 +516,12 @@ namespace components::vector {
             total_rows += c.size();
         }
         if (total_rows == 0) {
-            return core::error_t(
-                core::error_code_t::conversion_failure,
-                std::pmr::string{"could not convert data_chunk_t to a array value", chunks.front().resource()});
+            // Empty sub-query (e.g. `x IN (SELECT ... WHERE false)`): PostgreSQL treats
+            // this as an empty semi-join — `IN ()` matches nothing, `NOT IN ()` matches
+            // everything — NOT a type error. Return the SAME NA-null sentinel a zero-row
+            // scalar sub-query returns (compact_to_single_value above); the ANY/ALL
+            // evaluator special-cases the null array (R1: no empty-array value built).
+            return types::logical_value_t{chunks.front().resource(), nullptr};
         }
         std::vector<types::logical_value_t> array;
         array.reserve(total_rows);

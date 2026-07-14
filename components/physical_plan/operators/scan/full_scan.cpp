@@ -134,6 +134,18 @@ namespace components::operators {
             }
             default: {
                 assert(std::holds_alternative<expressions::key_t>(expression->left()));
+                // A disk table_filter_t is `column OP constant` only: the right operand MUST be
+                // a bound parameter (the param_storage alternative that is neither a key nor a
+                // nested expression). A column-vs-column comparison (right is a key_t) is not
+                // representable here — return a clean error instead of std::get throwing
+                // bad_variant_access (create_plan_match routes such predicates to operator_match,
+                // so this is a defensive guard for any other caller — Rule 2: no exceptions).
+                if (expressions::is_key(expression->right()) || expressions::is_expr(expression->right())) {
+                    return core::error_t{
+                        core::error_code_t::physical_plan_error,
+                        std::pmr::string{"comparison operand is not a bound constant — not a pushable table filter",
+                                         resource}};
+                }
                 const auto& path = std::get<expressions::key_t>(expression->left()).path();
                 auto id = std::get<core::parameter_id_t>(expression->right());
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());

@@ -171,6 +171,32 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 4);
     }
 
+    INFO("IN empty subquery matches nothing (PostgreSQL: IN () -> 0 rows, not an error)");
+    {
+        // The sub-query returns zero rows; `x IN (empty)` selects no rows. Used to turn
+        // the whole statement into an error cursor.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count(*) AS c FROM TestDatabase.Employees "
+                                           "WHERE dept_id IN ("
+                                           "  SELECT id FROM TestDatabase.Departments WHERE 1 = 0"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
+    }
+
+    INFO("NOT IN empty subquery matches everything (PostgreSQL: NOT IN () -> all rows)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT count(*) AS c FROM TestDatabase.Employees "
+                                           "WHERE dept_id NOT IN ("
+                                           "  SELECT id FROM TestDatabase.Departments WHERE 1 = 0"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 10);
+    }
+
     INFO("EXISTS non-correlated subquery — rows found");
     {
         // Subquery finds employees earning > 85000 (Alice = 90000) → EXISTS is true for every outer row
@@ -1116,6 +1142,117 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
 }
 
 // ---------------------------------------------------------------------------
+// LIMIT / OFFSET (no ORDER BY) over UNION and GROUP BY — F1: the canonical
+// operator_limit applies the MERGED window once, over the fully-merged stream,
+// instead of pushing the outer limit into each UNION arm / the GROUP BY scan.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
+    auto config = test_create_config("/tmp/test_subqueries/union_group_limit_offset");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    INFO("UNION ALL OFFSET (no ORDER BY) skips the head of the MERGED stream, not each arm");
+    {
+        // left dept_id=1 → {1,1}; right dept_id=2 → {2,2}; UNION ALL → {1,1,2,2}.
+        // OFFSET 2 over the merged stream → the 2-row tail {2,2}. The buggy per-arm
+        // forwarding skipped 2 rows of EACH 2-row arm → 0 rows.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION ALL "
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 2 "
+                                           "OFFSET 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
+    }
+
+    INFO("UNION ALL LIMIT+OFFSET (no ORDER BY) windows the concatenation once");
+    {
+        // 10 ids UNION ALL 10 ids → 20 rows; LIMIT 3 OFFSET 4 → exactly 3 rows.
+        // The buggy per-arm forwarding gave OFFSET 4 LIMIT 3 on EACH arm → 6 rows.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT id FROM TestDatabase.Employees "
+                                           "UNION ALL "
+                                           "SELECT id FROM TestDatabase.Employees "
+                                           "LIMIT 3 OFFSET 4;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("UNION distinct OFFSET (no ORDER BY) offsets the deduped result");
+    {
+        // distinct dept_ids → {1,2,3,4,5} (5 rows); OFFSET 3 → 2 rows. The buggy
+        // per-arm forwarding skipped 3 rows of each 10-row arm before dedup → 4 rows.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id FROM TestDatabase.Employees "
+                                           "UNION "
+                                           "SELECT dept_id FROM TestDatabase.Employees "
+                                           "OFFSET 3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("GROUP BY LIMIT+OFFSET (no ORDER BY) windows the GROUPS, not the scan");
+    {
+        // 5 groups (dept 1..5), each count 2. LIMIT 3 OFFSET 3 → the 2 remaining
+        // whole groups (5-3=2), each with the FULL count 2. Two ways this used to
+        // break: the pushdown coordinator ignored OFFSET (top-cap is count-only) →
+        // 3 rows; the non-pushdown scan was windowed to rows [3,6) → partial groups
+        // with count 1.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id, count(*) AS c FROM TestDatabase.Employees "
+                                           "GROUP BY dept_id LIMIT 3 OFFSET 3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        for (size_t row = 0; row < cur->size(); ++row) {
+            REQUIRE(cur->value(1, row).value<uint64_t>() == 2);
+        }
+    }
+
+    INFO("GROUP BY LIMIT+OFFSET returns whole groups with correct counts");
+    {
+        // LIMIT 2 OFFSET 1 → 2 whole groups, each count 2 (not a windowed scan's
+        // partial count).
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id, count(*) AS c FROM TestDatabase.Employees "
+                                           "GROUP BY dept_id LIMIT 2 OFFSET 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        for (size_t row = 0; row < cur->size(); ++row) {
+            REQUIRE(cur->value(1, row).value<uint64_t>() == 2);
+        }
+    }
+
+    INFO("UNION with ORDER BY LIMIT OFFSET still applies the window post-sort (no regression)");
+    {
+        // dept_ids {1,2,3,4,5} ordered ascending; LIMIT 2 OFFSET 1 → {2,3}.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id FROM TestDatabase.Employees "
+                                           "UNION "
+                                           "SELECT dept_id FROM TestDatabase.Employees "
+                                           "ORDER BY dept_id LIMIT 2 OFFSET 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // UNION with structured / array columns
 // ---------------------------------------------------------------------------
 
@@ -1426,6 +1563,140 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
 }
 
 // ---------------------------------------------------------------------------
+// F4: a bare boolean-context scalar sub-query — `WHERE (SELECT ...)` /
+// `HAVING (SELECT ...)` — must have a BOOLEAN static output type (PostgreSQL:
+// "argument of WHERE/HAVING must be type boolean"). A non-boolean scalar is
+// rejected before binding instead of silently coercing numeric->bool.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::where_having_boolean_required") {
+    auto config = test_create_config("/tmp/test_subqueries/where_having_boolean_required");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.flags (id bigint, ok boolean);")->is_success());
+        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.flags (id, ok) VALUES (1, true), (2, false);")
+                    ->is_success());
+    }
+
+    INFO("WHERE (SELECT <int>) is rejected (argument must be boolean)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT 1);");
+        REQUIRE_FALSE(cur->is_success());
+    }
+
+    INFO("WHERE (SELECT <string>) is rejected");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT 'x');");
+        REQUIRE_FALSE(cur->is_success());
+    }
+
+    INFO("WHERE (SELECT <boolean column>) still works (boolean static type accepted)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE id = 1);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
+    }
+
+    INFO("WHERE (SELECT bool WHERE 1=0) — zero rows, static type BOOLEAN — selects nothing, no error");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "SELECT name FROM TestDatabase.Employees WHERE (SELECT ok FROM TestDatabase.flags WHERE 1 = 0);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("EXPLAIN of the bad query also errors (the check is static, PostgreSQL-faithful)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT name FROM TestDatabase.Employees WHERE (SELECT 1);");
+        REQUIRE_FALSE(cur->is_success());
+    }
+
+    INFO("HAVING (SELECT <boolean column>) is supported (new feature)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT dept_id FROM TestDatabase.Employees GROUP BY dept_id "
+                                           "HAVING (SELECT ok FROM TestDatabase.flags WHERE id = 1);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5); // the bool is true -> every group qualifies
+    }
+
+    INFO("HAVING (SELECT <int>) is rejected (argument must be boolean)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT dept_id FROM TestDatabase.Employees GROUP BY dept_id "
+                                           "HAVING (SELECT 1);");
+        REQUIRE_FALSE(cur->is_success());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F7: numeric <-> boolean coercion. CAST(<numeric> AS boolean) is 0->false /
+// non-zero->true (was inverted), and an IMPLICIT boolean-vs-numeric comparison
+// is rejected (PostgreSQL: "operator does not exist: boolean = integer").
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
+    auto config = test_create_config("/tmp/test_subqueries/bool_numeric_coercion");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        return dispatcher->execute_sql(s, sql);
+    };
+
+    exec("CREATE DATABASE TestDatabase;");
+    REQUIRE(exec("CREATE TABLE TestDatabase.flags (id bigint, ok boolean);")->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.flags (id, ok) VALUES (1, true), (2, false);")->is_success());
+
+    INFO("CAST(non-zero AS boolean) is true, CAST(0 AS boolean) is false (was inverted)");
+    {
+        auto cur = exec("SELECT CAST(1 AS boolean) AS b;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<bool>() == true);
+    }
+    {
+        auto cur = exec("SELECT CAST(0 AS boolean) AS b;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<bool>() == false);
+    }
+
+    INFO("implicit boolean = numeric is rejected cleanly (operator does not exist), not an abort");
+    {
+        // Column-vs-column so the numeric side is NOT coerced to boolean at bind time (a
+        // bare literal `1` is). This must be a clean error cursor — previously it reached a
+        // validate-time throw and aborted under -fno-exceptions.
+        auto cur = exec("SELECT id FROM TestDatabase.flags WHERE ok = id;");
+        REQUIRE_FALSE(cur->is_success());
+    }
+
+    INFO("boolean = boolean (same type) still works");
+    {
+        auto cur = exec("SELECT id FROM TestDatabase.flags WHERE ok = true;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // only id=1 has ok=true
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tier-1: a compound (UNION) SELECT silently dropped its trailing ORDER BY /
 // LIMIT / OFFSET (gram.y attaches them to the SETOP node, and the transformer
 // early-returned the bare union before lowering them). Now they are applied.
@@ -1619,6 +1890,68 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
                                            ") SELECT node FROM reach;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5); // node 4 reached via both 2 and 3
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F2: DISTINCT / recursive-UNION dedup uses the engine's canonical typed
+// hash + cells_equal, NOT a lossy 6-significant-digit ostringstream key with a
+// default:"?" arm. The old key collapsed FLOAT/DOUBLE at 6 sig-digits and every
+// 128-bit / DECIMAL / nested value to "?", silently dropping distinct rows.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
+    auto config = test_create_config("/tmp/test_subqueries/distinct_dedup_fidelity");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        return dispatcher->execute_sql(s, sql);
+    };
+
+    exec("CREATE DATABASE TestDatabase;");
+
+    INFO("DISTINCT over a DOUBLE column keeps values that differ beyond 6 significant digits");
+    {
+        // 1000000.0, 1000001.0, 1000002.0 all round to "1e+06" at ostringstream's
+        // default 6-sig-digit precision, so the old string key collapsed them to ONE
+        // row. cells_equal compares the actual doubles -> 3 distinct (+ the repeat).
+        REQUIRE(exec("CREATE TABLE TestDatabase.dvals (v double);")->is_success());
+        REQUIRE(exec("INSERT INTO TestDatabase.dvals (v) VALUES "
+                     "(1000000.0),(1000001.0),(1000002.0),(1000000.0);")
+                    ->is_success());
+        auto cur = exec("SELECT DISTINCT v FROM TestDatabase.dvals;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    // NOTE: a DISTINCT over a 128-bit column (numeric width>18 -> INT128, hugeint, uuid)
+    // would exercise the extended hash switches + cells_equal's INT128 leg, but DECIMAL-128
+    // COLUMN support has further gaps (INSERT / decimal conversion) outside this fix's scope
+    // — such a DISTINCT aborted before this change too (its typed output chunk hit the same
+    // unsized-INT128 assert). The hash-switch + complex_logical_type::size/align extensions
+    // here remove the latent throw/abort the canonical hash path would otherwise hit.
+
+    INFO("recursive UNION (DISTINCT) over DOUBLE node ids keeps distinct nodes (no 6-digit collapse)");
+    {
+        // Diamond over DOUBLE node ids: 1000000 -> {1000001,1000002} -> 1000003 (reached
+        // by two paths). reach = {1000000,1000001,1000002,1000003} = 4 distinct nodes. The
+        // old 6-sig-digit key collapsed all four to "1e+06" -> 1 row; cells_equal keeps 4.
+        REQUIRE(exec("CREATE TABLE TestDatabase.fedges (src double, dst double);")->is_success());
+        REQUIRE(exec("INSERT INTO TestDatabase.fedges (src, dst) VALUES "
+                     "(1000000.0, 1000001.0), (1000000.0, 1000002.0), "
+                     "(1000001.0, 1000003.0), (1000002.0, 1000003.0);")
+                    ->is_success());
+        auto cur = exec("WITH RECURSIVE reach AS ("
+                        "  SELECT CAST(1000000.0 AS double) AS node "
+                        "  UNION "
+                        "  SELECT e.dst FROM TestDatabase.fedges e JOIN reach r ON e.src = r.node"
+                        ") SELECT count(*) AS c FROM reach;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 4);
     }
 }
 

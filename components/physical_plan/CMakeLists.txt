@@ -35,6 +35,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_group.cpp
         operators/operator_group_merge.cpp
         operators/operator_select.cpp
+        operators/operator_limit.cpp
         operators/operator_sort.cpp
         operators/operator_join.cpp
         operators/operator_hash_join.cpp

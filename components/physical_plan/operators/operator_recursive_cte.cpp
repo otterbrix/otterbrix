@@ -3,13 +3,33 @@
 
 #include <components/context/context.hpp>
 #include <components/context/subplan_runner.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/data_chunk.hpp>
 
-#include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 namespace components::operators {
+
+    namespace {
+        // An address into the accumulated `result` chunks (index-based so it survives
+        // result's reallocation as it grows).
+        struct row_ref_t {
+            std::size_t chunk_idx;
+            uint64_t row;
+        };
+
+        // Whole-row equality via the engine's canonical NULL-aware typed cell equality
+        // (the same semantics as GROUP BY / HASH JOIN / DISTINCT).
+        bool rows_equal(const vector::data_chunk_t& a, uint64_t ra, const vector::data_chunk_t& b, uint64_t rb) {
+            for (size_t c = 0; c < a.column_count(); ++c) {
+                if (!vector::cells_equal(a.data[c], ra, b.data[c], rb)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    } // namespace
 
     // Upper bound on fixpoint iterations: a clean error instead of an unbounded hang if
     // a recursive term keeps producing rows (cyclic graph data with no terminating filter).
@@ -62,7 +82,9 @@ namespace components::operators {
         // time it is seen across the ENTIRE accumulated result — PostgreSQL recursive-UNION semantics, and
         // the termination guard for cyclic graphs (a revisited node produces no new working-set rows). For
         // UNION ALL every row passes and `seen` stays unused.
-        std::unordered_set<std::string> seen;
+        // hash -> the rows already emitted into `result` carrying that hash. Typed hash
+        // + cells_equal verify (the canonical dedup), NOT a lossy string key.
+        std::pmr::unordered_map<uint64_t, std::pmr::vector<row_ref_t>> seen(res);
         auto emit_rows = [&](const vector::data_chunk_t& chunk, chunks_vector_t& ws_target) {
             if (chunk.size() == 0) {
                 return;
@@ -72,10 +94,35 @@ namespace components::operators {
                 ws_target.emplace_back(chunk.partial_copy(res, 0, chunk.size()));
                 return;
             }
+            vector::vector_t hash_vec(res, types::logical_type::UBIGINT, chunk.size());
+            const_cast<vector::data_chunk_t&>(chunk).hash(hash_vec);
+            const auto* hashes = hash_vec.data<uint64_t>();
+
             std::vector<size_t> keep;
             keep.reserve(chunk.size());
             for (size_t r = 0; r < chunk.size(); ++r) {
-                if (seen.insert(vector::row_identity_key(chunk, r)).second) {
+                const uint64_t h = hashes[r];
+                bool dup = false;
+                auto it = seen.find(h);
+                if (it != seen.end()) {
+                    for (const auto& ref : it->second) {
+                        if (rows_equal(result[ref.chunk_idx], ref.row, chunk, r)) {
+                            dup = true;
+                            break;
+                        }
+                    }
+                }
+                // Intra-chunk: a row produced twice within THIS chunk collapses too (the
+                // first copy is not in `result` yet, so check the already-kept rows).
+                if (!dup) {
+                    for (size_t k : keep) {
+                        if (hashes[k] == h && rows_equal(chunk, k, chunk, r)) {
+                            dup = true;
+                            break;
+                        }
+                    }
+                }
+                if (!dup) {
                     keep.push_back(r);
                 }
             }
@@ -89,7 +136,13 @@ namespace components::operators {
                     filtered.set_value(col, out_r, chunk.value(col, keep[out_r]));
                 }
             }
+            // Register the kept rows against their position in the just-appended result
+            // chunk (index-based, so a later result reallocation does not dangle them).
+            const std::size_t result_idx = result.size();
             result.emplace_back(filtered.partial_copy(res, 0, filtered.size()));
+            for (size_t out_r = 0; out_r < keep.size(); ++out_r) {
+                seen[hashes[keep[out_r]]].push_back(row_ref_t{result_idx, out_r});
+            }
             ws_target.emplace_back(std::move(filtered));
         };
 

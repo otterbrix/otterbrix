@@ -37,6 +37,10 @@ namespace components::operators {
         update,
         sort,
         select,
+        // Canonical LIMIT/OFFSET window (streaming). Wraps a terminal whose source
+        // cannot apply a merged outer limit itself (UNION, pushed-down GROUP BY). See
+        // operator_limit.hpp.
+        limit,
         join,
         // Equi-join fast path. Substituted for `join` by create_plan_join when the
         // ON condition is a single eq(left.key, right.key). Builds a hash table on

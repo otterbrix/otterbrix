@@ -13,6 +13,7 @@
 #include <components/physical_plan/operators/operator_distinct.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 #include <components/physical_plan/operators/operator_group_merge.hpp>
+#include <components/physical_plan/operators/operator_limit.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
 #include <components/physical_plan/operators/operator_sort.hpp>
 #include <components/physical_plan/operators/scan/full_scan.hpp>
@@ -245,15 +246,63 @@ namespace services::planner::impl {
         const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
         const auto& projected_cols = agg_node->projected_cols();
 
-        // When ORDER BY is present, scan all rows — limit+offset are applied post-sort.
+        // Classify the children: ORDER BY (sort), a GROUP BY (group), and a non-scan
+        // source (a UNION / recursive-CTE / join reaching the `default` branch below).
         bool has_sort = false;
+        bool has_group = false;
+        bool has_nonscan_source = false;
         for (const components::logical_plan::node_ptr& child : node->children()) {
-            if (child->type() == node_type::sort_t) {
-                has_sort = true;
-                break;
+            switch (child->type()) {
+                case node_type::sort_t:
+                    has_sort = true;
+                    break;
+                case node_type::group_t:
+                    has_group = true;
+                    break;
+                case node_type::limit_t:
+                case node_type::match_t:
+                case node_type::select_t:
+                    break;
+                default:
+                    has_nonscan_source = true; // hits the `default` (non-scan source) build branch below
+                    break;
             }
         }
-        auto scan_limit = has_sort ? components::logical_plan::limit_t::unlimit() : limit;
+
+        // A merged LIMIT/OFFSET that CANNOT be applied by the source itself needs the
+        // canonical operator_limit (see operator_limit.hpp): a UNION forwards the outer
+        // limit into both arms (per-arm windowing), and a GROUP BY that pushes the limit
+        // into its scan produces the WRONG groups. In those shapes, and only when there
+        // is NO ORDER BY (a sort applies the limit itself), pass `unlimit` to the source
+        // and wrap the terminal chain in operator_limit. A plain scan source applies its
+        // own LIMIT/OFFSET correctly, so it is left untouched.
+        const bool limit_effective =
+            limit.limit() != components::logical_plan::limit_t::unlimit().limit() || limit.offset() != 0;
+        const bool needs_limit_operator = limit_effective && !has_sort && (has_group || has_nonscan_source);
+
+        // When ORDER BY is present the source scans all rows (limit+offset applied
+        // post-sort); likewise when operator_limit will apply the merged window on top.
+        auto scan_limit = (has_sort || needs_limit_operator) ? components::logical_plan::limit_t::unlimit() : limit;
+        // The limit forwarded into a GROUP BY / non-scan child: unlimited when
+        // operator_limit will window on top, otherwise the outer limit as before.
+        auto source_limit = needs_limit_operator ? components::logical_plan::limit_t::unlimit() : limit;
+
+        // Wrap `op` in the canonical operator_limit as the OUTERMOST node (above
+        // DISTINCT — SQL applies LIMIT after DISTINCT) when needs_limit_operator; else
+        // pass it through unchanged. Shared by the pushdown and normal return paths.
+        auto wrap_limit = [&](components::operators::operator_ptr op) -> components::operators::operator_ptr {
+            if (!needs_limit_operator) {
+                return op;
+            }
+            auto limit_op =
+                context.has_table_oid(node->table_oid())
+                    ? boost::intrusive_ptr(
+                          new components::operators::operator_limit_t(context.resource, context.log.clone(), limit))
+                    : boost::intrusive_ptr(
+                          new components::operators::operator_limit_t(node->resource(), log_t{}, limit));
+            limit_op->set_children(std::move(op));
+            return limit_op;
+        };
 
         // --- Aggregate-pushdown lowering ---
         // When the optimizer stamped the group child pushdown() AND the whole aggregate is
@@ -308,7 +357,7 @@ namespace services::planner::impl {
                     distinct_op->set_children(std::move(executor));
                     executor = std::move(distinct_op);
                 }
-                return executor;
+                return wrap_limit(std::move(executor));
             }
         }
 
@@ -328,7 +377,7 @@ namespace services::planner::impl {
                     match_op = create_plan_match(context, child, scan_limit, projected_cols);
                     break;
                 case node_type::group_t:
-                    group_op = create_plan(context, function_registry, child, limit, params);
+                    group_op = create_plan(context, function_registry, child, source_limit, params);
                     break;
                 case node_type::sort_t:
                     sort_op = create_plan_sort(context, child, limit);
@@ -337,11 +386,11 @@ namespace services::planner::impl {
                     select_op = create_plan_select(context, child, params);
                     break;
                 default:
-                    // A non-scan source (e.g. a UNION under ORDER BY/LIMIT): when a sort is present the
-                    // source MUST be unlimited (scan_limit == unlimit) so the sort sees every row and
-                    // applies limit/offset itself — otherwise create_plan_union pushes the outer limit
-                    // into each arm and the limit/offset is applied twice (wrong OFFSET results). Mirrors
-                    // the match branch above.
+                    // A non-scan source (e.g. a UNION under ORDER BY/LIMIT): the source MUST be
+                    // unlimited (scan_limit == unlimit) whenever a sort OR operator_limit will apply
+                    // the merged window on top — otherwise create_plan_union pushes the outer limit
+                    // into each arm and the limit/offset is applied twice (wrong OFFSET results).
+                    // Mirrors the match branch above.
                     child_op = create_plan(context, function_registry, child, scan_limit, params);
                     break;
             }
@@ -405,7 +454,7 @@ namespace services::planner::impl {
             executor = std::move(distinct_op);
         }
 
-        return executor;
+        return wrap_limit(std::move(executor));
     }
 
 } // namespace services::planner::impl

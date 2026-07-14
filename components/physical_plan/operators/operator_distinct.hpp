@@ -1,16 +1,19 @@
 #pragma once
 
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/vector/data_chunk.hpp>
 
-#include <string>
-#include <unordered_set>
+#include <unordered_map>
 
 namespace components::operators {
 
     // SELECT DISTINCT. A SINK on its single (LEFT) input: rows arrive batch-by-batch
-    // through push(), the first occurrence of each distinct row is retained, and the
-    // unique rows are emitted in input order at finalize(). The seen-set and the
-    // emission go through emit_distinct_().
+    // through push(), the first occurrence of each distinct row is retained, and each
+    // freshly-unique row is emitted downstream immediately (in input order). Duplicate
+    // detection is the engine's canonical typed hash + verify (data_chunk_t::hash +
+    // vector::cells_equal), the SAME semantics as GROUP BY / HASH JOIN / UNIQUE — so a
+    // FLOAT is deduped by the one float-equality policy, a 128-bit / DECIMAL / nested
+    // key is compared by value, and there is no lossy string key.
     class operator_distinct_t final : public read_only_operator_t {
     public:
         operator_distinct_t(std::pmr::memory_resource* resource, log_t log);
@@ -21,16 +24,39 @@ namespace components::operators {
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
     private:
-        // Distinct-row identity set, accumulated ACROSS input batches (push) so the
-        // first occurrence of a row anywhere in the stream wins. Survives until
-        // finalize().
-        std::unordered_set<std::string> seen_;
+        // An address into retained_ that stays valid across retained_ reallocation: the
+        // vector MOVES its data_chunk_t elements when it grows, but an INDEX resolves to
+        // the current element on every lookup (a pointer would dangle).
+        struct retained_row_ref_t {
+            std::size_t chunk_idx;
+            uint64_t row;
+        };
 
-        // The shared dedup core: for each row of each chunk, build the all-column
-        // identity key, and on first occurrence copy the row into `out` (chunks of
-        // ≤ DEFAULT_VECTOR_CAPACITY). `seen` carries across calls so the streaming
-        // path dedups across batches. Output preserves input order.
+        // Distinct-row identity index, accumulated ACROSS input batches (push) so the
+        // first occurrence of a row anywhere in the stream wins. hash -> the retained
+        // rows carrying that hash; a hash collision is resolved by cells_equal against
+        // the retained row.
+        std::pmr::unordered_map<uint64_t, std::pmr::vector<retained_row_ref_t>> seen_;
+        // Copies of the distinct rows kept for collision verification, on the operator's
+        // stable resource_ (which outlives every transient input batch). Grows with
+        // DISTINCT cardinality, like the old identity set. retained_fill_ is the fill
+        // level of retained_.back().
+        std::pmr::vector<vector::data_chunk_t> retained_;
+        uint64_t retained_fill_{0};
+
+        // The shared dedup core: for each row of each chunk, hash it, verify against the
+        // retained rows, and on first occurrence copy the row into `out` (chunks of
+        // <= DEFAULT_VECTOR_CAPACITY) AND into retained_. Output preserves input order.
         void emit_distinct_(std::pmr::memory_resource* res, const chunks_vector_t& chunks, chunks_vector_t& out);
+        // True iff (chunk,row) duplicates an already-retained distinct row (hash hit +
+        // a cells_equal match on every column).
+        bool is_duplicate_(const vector::data_chunk_t& chunk, uint64_t row, uint64_t hash) const;
+        // Copy (chunk,row) into retained_ and record its ref under `hash`.
+        void retain_(const vector::data_chunk_t& chunk,
+                     uint64_t row,
+                     uint64_t hash,
+                     const std::pmr::vector<types::complex_logical_type>& types,
+                     std::pmr::memory_resource* res);
     };
 
 } // namespace components::operators

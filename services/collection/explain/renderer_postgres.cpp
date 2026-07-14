@@ -55,6 +55,9 @@ namespace services::collection {
                 case ops::operator_type::select:
                     label = "Project";
                     break;
+                case ops::operator_type::limit:
+                    label = "Limit";
+                    break;
                 case ops::operator_type::insert:
                     label = "Insert";
                     break;

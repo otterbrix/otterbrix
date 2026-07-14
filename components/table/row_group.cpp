@@ -203,75 +203,97 @@ namespace components::table {
 
     // A trailing subscript index into an ARRAY/LIST column (e.g. WHERE v[k] = x)
     // addresses an element, not a STRUCT sub-column. Materialize the row's list
-    // value and compare the addressed (0-based) element against the filter. A
-    // NULL list, an out-of-range index, or a NULL element does not match.
-    static bool check_array_element_predicate(column_data_t& column,
-                                              int64_t row_id,
-                                              uint64_t element_index,
-                                              const table_filter_t* filter,
-                                              core::error_t& error) {
+    // value and compare the addressed (0-based) element against the filter.
+    //
+    // A NULL list, an out-of-range subscript, or a NULL element all yield a NULL
+    // operand, so the comparison is UNKNOWN — not FALSE (see filter_match_t).
+    static filter_match_t check_array_element_predicate(column_data_t& column,
+                                                        int64_t row_id,
+                                                        uint64_t element_index,
+                                                        const table_filter_t* filter,
+                                                        core::error_t& error) {
         column_fetch_state fetch_state;
         vector::vector_t result(column.resource(), column.type(), 1);
         column.fetch_row(fetch_state, row_id, result, 0);
         if (fetch_state.fetch_error.contains_error()) {
             error = fetch_state.fetch_error;
-            return false;
+            return filter_match_t::no;
         }
         if (!result.validity().row_is_valid(0)) {
-            return false;
+            return filter_match_t::unknown;
         }
         auto list_value = result.value(0);
         const auto& elements = list_value.children();
         if (element_index >= elements.size()) {
-            return false;
+            return filter_match_t::unknown;
         }
         const auto& element_value = elements[element_index];
         if (element_value.is_null()) {
-            return false;
+            return filter_match_t::unknown;
         }
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-            return set->contains(element_value);
+            return set->contains(element_value) ? filter_match_t::yes : filter_match_t::no;
         }
-        return filter->cast<constant_filter_t>().compare(element_value);
+        return filter->cast<constant_filter_t>().compare(element_value) ? filter_match_t::yes : filter_match_t::no;
     }
 
-    bool row_group_t::check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error) {
+    filter_match_t row_group_t::check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error) {
         switch (filter->filter_type) {
             case expressions::compare_type::union_or: {
+                // TRUE if any child is TRUE; otherwise UNKNOWN if any child is UNKNOWN.
+                // (UNKNOWN OR TRUE = TRUE, so a TRUE disjunct still rescues a NULL row.)
                 auto& conjunction_or = filter->cast<conjunction_or_filter_t>();
+                bool saw_unknown = false;
                 for (auto& child_filter : conjunction_or.child_filters) {
-                    if (check_predicate(row_id, child_filter.get(), error)) {
-                        return true;
-                    }
+                    auto child = check_predicate(row_id, child_filter.get(), error);
                     if (error.contains_error()) {
-                        return false;
+                        return filter_match_t::no;
                     }
+                    if (child == filter_match_t::yes) {
+                        return filter_match_t::yes;
+                    }
+                    saw_unknown |= (child == filter_match_t::unknown);
                 }
-                return false;
+                return saw_unknown ? filter_match_t::unknown : filter_match_t::no;
             }
             case expressions::compare_type::union_and: {
+                // FALSE if any child is FALSE; otherwise UNKNOWN if any child is UNKNOWN.
+                // (UNKNOWN AND FALSE = FALSE, so a FALSE conjunct still excludes decisively.)
                 auto& conjunction_and = filter->cast<conjunction_and_filter_t>();
+                bool saw_unknown = false;
                 for (auto& child_filter : conjunction_and.child_filters) {
-                    if (!check_predicate(row_id, child_filter.get(), error)) {
-                        return false;
-                    }
+                    auto child = check_predicate(row_id, child_filter.get(), error);
                     if (error.contains_error()) {
-                        return false;
+                        return filter_match_t::no;
                     }
+                    if (child == filter_match_t::no) {
+                        return filter_match_t::no;
+                    }
+                    saw_unknown |= (child == filter_match_t::unknown);
                 }
-                return true;
+                return saw_unknown ? filter_match_t::unknown : filter_match_t::yes;
             }
             case expressions::compare_type::union_not: {
+                // NOT over the disjunction of the children: negate the OR result.
+                // Crucially NOT UNKNOWN is UNKNOWN — a row excluded because its operand was
+                // NULL must not be flipped back in. This is what makes the validity gate in
+                // column_data_t::check_predicate safe to add.
                 auto& conjunction_not = filter->cast<conjunction_not_filter_t>();
+                auto acc = filter_match_t::no;
                 for (auto& child_filter : conjunction_not.child_filters) {
-                    if (check_predicate(row_id, child_filter.get(), error)) {
-                        return false;
-                    }
+                    auto child = check_predicate(row_id, child_filter.get(), error);
                     if (error.contains_error()) {
-                        return false;
+                        return filter_match_t::no;
+                    }
+                    if (child == filter_match_t::yes) {
+                        acc = filter_match_t::yes;
+                        break;
+                    }
+                    if (child == filter_match_t::unknown) {
+                        acc = filter_match_t::unknown;
                     }
                 }
-                return true;
+                return filter_match_not(acc);
             }
             case expressions::compare_type::invalid: {
                 assert(false && "invalid type for filter selection");
@@ -285,8 +307,11 @@ namespace components::table {
                     column =
                         static_cast<struct_column_data_t*>(column)->sub_columns[null_filter.table_indices[i]].get();
                 }
+                // IS NULL / IS NOT NULL are the two predicates that interrogate nullness
+                // itself: they are always TRUE or FALSE, never UNKNOWN.
                 bool is_valid = column->check_validity(row_id);
-                return filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;
+                bool matches = filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;
+                return matches ? filter_match_t::yes : filter_match_t::no;
             }
             default: {
                 // Works for both constant_filter_t and set_membership_filter_t.
@@ -342,9 +367,11 @@ namespace components::table {
         for (uint64_t i = 0; i < approved_tuple_count; i++) {
             auto idx = indexing.get_index(i);
             new_indexing.set_index(result_count, idx);
-            result_count += check_predicate(static_cast<int64_t>(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY),
-                                            filter,
-                                            error);
+            // Only TRUE selects a row: UNKNOWN (a NULL operand) is excluded, exactly as FALSE is.
+            auto match = check_predicate(static_cast<int64_t>(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY),
+                                         filter,
+                                         error);
+            result_count += (match == filter_match_t::yes) ? 1 : 0;
             if (error.contains_error()) {
                 // OOM during predicate evaluation: stop; caller copies to scan_error.
                 return;

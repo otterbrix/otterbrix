@@ -23,6 +23,28 @@ namespace components::table {
         TRUE_OR_NULL = 3,
         FALSE_OR_NULL = 4
     };
+    // SQL three-valued logic. A value comparison against a NULL operand is UNKNOWN, not
+    // FALSE: the two differ under NOT (`NOT UNKNOWN` is UNKNOWN, while `NOT FALSE` is TRUE),
+    // so a filter tree that collapses UNKNOWN into FALSE lets NOT resurrect NULL rows.
+    // Only rows that evaluate to `yes` are selected.
+    enum class filter_match_t : uint8_t
+    {
+        no = 0,
+        yes = 1,
+        unknown = 2
+    };
+
+    constexpr filter_match_t filter_match_not(filter_match_t v) {
+        switch (v) {
+            case filter_match_t::yes:
+                return filter_match_t::no;
+            case filter_match_t::no:
+                return filter_match_t::yes;
+            default:
+                return filter_match_t::unknown;
+        }
+    }
+
     constexpr uint64_t MAX_ROW_ID = 1ULL << 55; // 2^55
 
     class column_data_t {
@@ -117,7 +139,9 @@ namespace components::table {
 
         // `error` carries an out_of_memory error_t when a pin fails during the predicate check;
         // on error the bool return is meaningless and the scan loop stops.
-        virtual bool check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error);
+        // Returns `unknown` when the row's value is NULL — a NULL operand never satisfies a
+        // value comparison, and must stay distinguishable from a genuine `no` (see filter_match_t).
+        virtual filter_match_t check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error);
         virtual bool check_validity(int64_t row_id);
         virtual uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result);
         virtual void

@@ -500,13 +500,28 @@ namespace components::table {
         transient.revert_append(static_cast<uint64_t>(start_row));
     }
 
-    bool column_data_t::check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error) {
+    filter_match_t column_data_t::check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error) {
+        // SQL three-valued logic, enforced once for every column type and every storage
+        // layout. A NULL operand makes any value comparison UNKNOWN — the row is neither
+        // selected nor eligible to be flipped back in by NOT.
+        //
+        // This gate must come first: the compressed and raw-buffer paths below read the
+        // value bytes only, and a NULL row's payload is a meaningless 0 (validity lives in a
+        // separate sibling column), so they would otherwise report `0 == 0` and match.
+        // check_validity() goes through fetch_row, which applies the update overlay, so a row
+        // updated to NULL is seen as NULL here too.
+        //
+        // IS NULL / IS NOT NULL never reach this function — row_group_t::check_predicate
+        // answers them from the validity mask directly — so gating here cannot break them.
+        if (!check_validity(row_id)) {
+            return filter_match_t::unknown;
+        }
         if (updates_ &&
             updates_->has_updates(static_cast<uint64_t>(row_id - start_) / vector::DEFAULT_VECTOR_CAPACITY)) {
             // The vector has some updated rows. Check if THIS specific row is updated.
             if (updates_->row_is_updated(row_id)) {
                 // Row is in the update overlay — check against the updated value only
-                return updates_->check_row(row_id, filter);
+                return updates_->check_row(row_id, filter) ? filter_match_t::yes : filter_match_t::no;
             }
         }
         // STRUCT columns store child data in sub_columns, not in data_ segments — fetch the full value
@@ -522,15 +537,13 @@ namespace components::table {
             fetch_row(fetch_state, row_id, result, 0);
             if (fetch_state.fetch_error.contains_error()) {
                 error = fetch_state.fetch_error;
-                return false;
-            }
-            if (!result.validity().row_is_valid(0)) {
-                return false;
+                return filter_match_t::no;
             }
             if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-                return set->contains(result.value(0));
+                return set->contains(result.value(0)) ? filter_match_t::yes : filter_match_t::no;
             }
-            return filter->cast<constant_filter_t>().compare(result.value(0));
+            return filter->cast<constant_filter_t>().compare(result.value(0)) ? filter_match_t::yes
+                                                                              : filter_match_t::no;
         }
         auto segment = data_.get_segment(row_id);
         // For compressed segments, fetch the actual decompressed value
@@ -541,24 +554,21 @@ namespace components::table {
             fetch_row(fetch_state, row_id, result, 0);
             if (fetch_state.fetch_error.contains_error()) {
                 error = fetch_state.fetch_error;
-                return false;
-            }
-            if (!result.validity().row_is_valid(0)) {
-                return false;
+                return filter_match_t::no;
             }
             // Dispatch handles both constant_filter_t and set_membership_filter_t.
             if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-                return set->contains(result.value(0));
+                return set->contains(result.value(0)) ? filter_match_t::yes : filter_match_t::no;
             }
             const auto& const_filter = filter->cast<constant_filter_t>();
-            return const_filter.compare(result.value(0));
+            return const_filter.compare(result.value(0)) ? filter_match_t::yes : filter_match_t::no;
         }
         auto checked = segment->check_predicate(row_id, filter);
         if (checked.has_error()) {
             error = checked.error();
-            return false;
+            return filter_match_t::no;
         }
-        return checked.value();
+        return checked.value() ? filter_match_t::yes : filter_match_t::no;
     }
 
     bool column_data_t::check_validity(int64_t row_id) {

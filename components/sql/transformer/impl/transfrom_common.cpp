@@ -752,7 +752,13 @@ namespace components::sql::transform {
             case INITPLAN_FUNC_SUBLINK:
                 break;
         }
-        assert(false);
+        // Every unhandled SubLink kind lands here. This used to be a bare
+        // assert(false): erased under NDEBUG, execution fell off the end of a
+        // non-void function — undefined behavior, observed as a segfault for
+        // e.g. `WHERE (SELECT x FROM t)`.
+        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                               std::pmr::string{"unsupported subquery expression in this context", resource_});
+        return nullptr;
     }
 
     expression_ptr transformer::transform_a_expr_func(FuncCall* node,

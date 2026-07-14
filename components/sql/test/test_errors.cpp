@@ -159,4 +159,12 @@ TEST_CASE("components::sql::errors") {
     TEST_PARSER_ERROR("CREATE INDEX base ON TEST_DATABASE.TEST_COLLECTION;", R"_(syntax error at or near ";")_");
 
     TEST_TRANSFORMER_ERROR("DROP INDEX TEST_DATABASE.TEST_COLLECTION;", R"_(incorrect drop: arguments size)_");
+
+    // A bare subquery in predicate position (EXPR_SUBLINK) — and the other
+    // SubLink kinds without transform support — used to fall off the end of
+    // transform_sublink_expr through a Release-erased assert(false): undefined
+    // behavior (observed as a segfault). They must be clean transformer errors.
+    TEST_TRANSFORMER_ERROR("SELECT * FROM TEST_DATABASE.TEST_COLLECTION WHERE (SELECT count FROM "
+                           "TEST_DATABASE.TEST_COLLECTION);",
+                           R"_(unsupported subquery expression in this context)_");
 }

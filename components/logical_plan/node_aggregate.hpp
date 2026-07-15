@@ -4,6 +4,8 @@
 #include "node.hpp"
 #include "node_limit.hpp"
 
+#include <components/expressions/key.hpp>
+
 #include <vector>
 
 namespace components::logical_plan {
@@ -18,6 +20,16 @@ namespace components::logical_plan {
 
         void set_distinct(bool d) { distinct_ = d; }
         bool is_distinct() const { return distinct_; }
+
+        // SELECT DISTINCT ON (...) keys. Empty for plain DISTINCT (whole-row dedup) and for
+        // non-DISTINCT. Name-based after transform; validate_logical_plan resolves each key's
+        // numeric path(). A non-empty list forces the coordinator path (pushdown barrier) and
+        // makes create_plan splice the distinct operator BELOW the projection, so the ON columns
+        // are still present for subset dedup.
+        const std::pmr::vector<expressions::key_t>& distinct_on_keys() const { return distinct_on_keys_; }
+        // Non-const: validate_logical_plan resolves each key's numeric path() in place via find_types.
+        std::pmr::vector<expressions::key_t>& distinct_on_keys() { return distinct_on_keys_; }
+        void set_distinct_on_keys(std::pmr::vector<expressions::key_t> keys) { distinct_on_keys_ = std::move(keys); }
 
         // Role-named accessors. The aggregate node carries the source table
         // identity through the parser-window for downstream operator dispatch;
@@ -52,6 +64,7 @@ namespace components::logical_plan {
         core::dbname_t dbname_;
         core::relname_t relname_;
         bool distinct_{false};
+        std::pmr::vector<expressions::key_t> distinct_on_keys_;
         std::vector<size_t> projected_cols_;
         limit_t read_cap_{};
         hash_t hash_impl() const override;

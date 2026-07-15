@@ -634,6 +634,14 @@ namespace components::sql::transform {
             auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
             agg->append_child(std::move(union_node));
             if (has_distinct) {
+                // v1: DISTINCT ON over a compound/UNION query is not supported (plain DISTINCT is).
+                // Plain DISTINCT is the NIL List sentinel; a real ON expression is anything else.
+                if (nodeTag(node.distinctClause->lst.front().data) != T_List) {
+                    error_ = core::error_t(
+                        core::error_code_t::unimplemented_yet,
+                        std::pmr::string{"DISTINCT ON is not supported over a UNION query", resource_});
+                    return nullptr;
+                }
                 agg->set_distinct(true);
             }
             if (has_sort) {
@@ -1250,6 +1258,57 @@ namespace components::sql::transform {
         // distinct
         if (node.distinctClause && !node.distinctClause->lst.empty()) {
             agg->set_distinct(true);
+            // Plain DISTINCT is the grammar sentinel list_make1(resource, NIL): a single element that
+            // IS the NIL List node (nodeTag == T_List). DISTINCT ON (...) carries the real ON
+            // expression nodes (ColumnRef / A_Indirection / ...) instead.
+            if (nodeTag(node.distinctClause->lst.front().data) != T_List) {
+                std::pmr::vector<expressions::key_t> on_keys(resource_);
+                for (auto on_it : node.distinctClause->lst) {
+                    if (nodeTag(on_it.data) == T_ColumnRef) {
+                        on_keys.emplace_back(
+                            columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(on_it.data), names).field);
+                    } else if (nodeTag(on_it.data) == T_A_Indirection) {
+                        on_keys.emplace_back(
+                            indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(on_it.data), names).field);
+                    } else {
+                        // v1: only plain column references. DISTINCT ON (a + b) etc. is a follow-up.
+                        error_ = core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"DISTINCT ON supports only plain column references", resource_});
+                        return nullptr;
+                    }
+                }
+                // PostgreSQL rule: when ORDER BY is present the ON keys must be its leading keys.
+                // Without ORDER BY, DISTINCT ON keeps the first row per key in input order.
+                if (node.sortClause && !node.sortClause->lst.empty()) {
+                    std::pmr::vector<std::pmr::string> lead_sort_names(resource_);
+                    for (auto sort_it : node.sortClause->lst) {
+                        auto* sortby = pg_ptr_cast<SortBy>(sort_it.data);
+                        if (nodeTag(sortby->node) == T_ColumnRef) {
+                            lead_sort_names.emplace_back(
+                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names)
+                                    .field.as_pmr_string());
+                        } else if (nodeTag(sortby->node) == T_A_Indirection) {
+                            lead_sort_names.emplace_back(
+                                indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names)
+                                    .field.as_pmr_string());
+                        } else {
+                            lead_sort_names.emplace_back(); // empty sentinel: a non-column sort key can't match an ON key
+                        }
+                    }
+                    for (size_t i = 0; i < on_keys.size(); ++i) {
+                        if (i >= lead_sort_names.size() || lead_sort_names[i] != on_keys[i].as_pmr_string()) {
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{
+                                    "SELECT DISTINCT ON expressions must match initial ORDER BY expressions",
+                                    resource_});
+                            return nullptr;
+                        }
+                    }
+                }
+                agg->set_distinct_on_keys(std::move(on_keys));
+            }
         }
 
         // order by

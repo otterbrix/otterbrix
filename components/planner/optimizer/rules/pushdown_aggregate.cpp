@@ -9,6 +9,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 
 namespace components::planner::optimizer {
@@ -199,6 +200,12 @@ namespace components::planner::optimizer {
                 if (child && child->type() == lp::node_type::having_t) {
                     return;
                 }
+            }
+            // Skip (d): DISTINCT ON dedups on the ON-key subset BELOW the projection on the
+            // coordinator path; the pushdown reduce / group_merge layout can't resolve those ON
+            // indices. Force it coordinator-side. Plain DISTINCT (empty ON list) still pushes down.
+            if (!static_cast<const lp::node_aggregate_t*>(node.get())->distinct_on_keys().empty()) {
+                return;
             }
             // Skip (b): a distinct or non-mergeable aggregate stays coordinator-side.
             if (has_unmergeable_aggregate(group)) {

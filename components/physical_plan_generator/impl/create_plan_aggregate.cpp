@@ -448,6 +448,24 @@ namespace services::planner::impl {
             sort_op->set_children(std::move(executor));
             executor = std::move(sort_op);
         }
+        // DISTINCT ON dedups on the ON-key subset BELOW the projection, so ON columns that do not
+        // survive projection are still present. Keep-first over the sorted input gives "first row per
+        // ON key in ORDER BY order". Plain DISTINCT (empty ON list) stays ABOVE the projection (below).
+        if (agg_node->is_distinct() && !agg_node->distinct_on_keys().empty()) {
+            auto distinct_op =
+                context.has_table_oid(node->table_oid())
+                    ? boost::intrusive_ptr(
+                          new components::operators::operator_distinct_t(context.resource, context.log.clone()))
+                    : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));
+            std::pmr::vector<size_t> on_cols(node->resource());
+            on_cols.reserve(agg_node->distinct_on_keys().size());
+            for (const auto& key : agg_node->distinct_on_keys()) {
+                on_cols.push_back(key.path().front()); // resolved to a scan/group-output column by validation
+            }
+            distinct_op->set_on_keys(std::move(on_cols));
+            distinct_op->set_children(std::move(executor));
+            executor = std::move(distinct_op);
+        }
         if (select_op) {
             // Forward the plan-resolved output types onto the projection columns so a
             // CASE/COALESCE/deep-field column over zero rows stays correctly typed instead
@@ -459,8 +477,9 @@ namespace services::planner::impl {
             executor = std::move(select_op);
         }
 
-        // Check if DISTINCT flag is set on the aggregate node
-        if (agg_node->is_distinct()) {
+        // Plain DISTINCT (whole-row dedup) sits ABOVE the projection. DISTINCT ON was already
+        // spliced below the projection above, so guard on an empty ON list here.
+        if (agg_node->is_distinct() && agg_node->distinct_on_keys().empty()) {
             auto distinct_op =
                 context.has_table_oid(node->table_oid())
                     ? boost::intrusive_ptr(

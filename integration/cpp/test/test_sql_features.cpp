@@ -451,6 +451,71 @@ TEST_CASE("integration::cpp::test_sql_features::distinct") {
     }
 }
 
+TEST_CASE("integration::cpp::test_sql_features::distinct_on") {
+    auto config = test_create_config("/tmp/test_sql_features/distinct_on");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.orders(id int, cust int);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10),(4,20),(5,30);")
+                    ->is_success());
+    }
+
+    // DISTINCT ON (cust) keeps ONE row per cust (3 custs), NOT full-row DISTINCT on the projected
+    // id (which would keep all 5 distinct ids). This is the core behavior change.
+    INFO("SELECT DISTINCT ON (cust) id ORDER BY cust, id -> one row per cust"); {
+        auto s = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(s, "SELECT DISTINCT ON (cust) id FROM TestDatabase.orders ORDER BY cust, id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    // DISTINCT ON without ORDER BY is allowed: keep-first per input order, still one row per cust.
+    INFO("DISTINCT ON without ORDER BY"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT DISTINCT ON (cust) id FROM TestDatabase.orders;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    // Regression: plain DISTINCT is unchanged (3 distinct custs).
+    INFO("plain SELECT DISTINCT cust unchanged"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT DISTINCT cust FROM TestDatabase.orders;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    // Error: a computed ON expression is not supported in v1.
+    INFO("DISTINCT ON (computed) -> error"); {
+        auto s = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(s, "SELECT DISTINCT ON (id + cust) id FROM TestDatabase.orders ORDER BY id + cust;");
+        REQUIRE(cur->is_error());
+    }
+
+    // Error: the ON keys must be the leading ORDER BY keys (cust is not id).
+    INFO("DISTINCT ON not a prefix of ORDER BY -> error"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "SELECT DISTINCT ON (cust) id FROM TestDatabase.orders ORDER BY id;");
+        REQUIRE(cur->is_error());
+    }
+}
+
 TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
     auto config = test_create_config("/tmp/test_sql_features/count_distinct");
     test_clear_directory(config);

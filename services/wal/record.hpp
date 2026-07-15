@@ -33,6 +33,22 @@ namespace services::wal {
         // rows for one attribute -- a dropped column would come back, or appear twice.
         // Same payload layout as PHYSICAL_UPDATE.
         PHYSICAL_UPDATE_INPLACE = 14,
+        // Numbering-epoch boundary. data_table_t::compact() renumbers every surviving row
+        // densely from 0; it fires at commit time and in VACUUM, OUTSIDE the checkpoint
+        // barrier. Because DML records are keyed by physical row_id and replayed
+        // positionally, a compaction that is not itself in the log would let every later
+        // record resolve against the wrong (un-compacted) numbering on replay. This record
+        // marks the compaction at its exact wal_id slot: replay re-runs compact() there, so
+        // records before it resolve against the pre-compaction numbering and records after
+        // against the post-compaction numbering -- the ARIES "repeat history" discipline.
+        //
+        // Carries table_oid only (transaction_id=0; empty physical_data / physical_row_ids).
+        // The survivor permutation is NOT stored: compact() is a deterministic, ordered,
+        // dense rebuild, so replay re-derives the identical numbering from the record's
+        // wal_id position in the committed record prefix (see base_spaces direct_compact_sync).
+        // physical_row_start carries the live compact_watermark for forensics only -- it is
+        // not load-bearing (replay compacts with the see-all horizon in its quiescent window).
+        PHYSICAL_COMPACT = 15,
     };
 
     struct record_t final {
@@ -65,7 +81,8 @@ namespace services::wal {
             return record_type == wal_record_type::PHYSICAL_INSERT || record_type == wal_record_type::PHYSICAL_DELETE ||
                    record_type == wal_record_type::PHYSICAL_UPDATE ||
                    record_type == wal_record_type::PHYSICAL_UPDATE_INPLACE ||
-                   record_type == wal_record_type::PHYSICAL_ADD_COLUMN;
+                   record_type == wal_record_type::PHYSICAL_ADD_COLUMN ||
+                   record_type == wal_record_type::PHYSICAL_COMPACT;
         }
     };
 

@@ -45,6 +45,17 @@ namespace services::wal {
                           const int64_t* row_ids,
                           uint64_t count);
 
+    // Numbering-epoch boundary for `table_oid` (see wal_record_type::PHYSICAL_COMPACT).
+    // Payload-free: carries only the table_oid; `compact_watermark` is stored in
+    // physical_row_start for forensics and is not load-bearing on replay. txn_id is 0
+    // (a system write that re-derives over already-committed state).
+    crc32_t encode_compact(buffer_t& buffer,
+                           crc32_t last_crc32,
+                           id_t wal_id,
+                           uint64_t txn_id,
+                           components::catalog::oid_t table_oid,
+                           uint64_t compact_watermark);
+
     // Schema-growth record: payload is a 0-row data_chunk whose columns ARE the
     // new columns (alias-tagged types). Written BEFORE the dependent PHYSICAL_INSERT.
     crc32_t encode_add_column(buffer_t& buffer,

@@ -97,6 +97,54 @@ TEST_CASE("wal_binary::encode_decode_delete") {
     }
 }
 
+TEST_CASE("wal_binary::encode_decode_compact") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+
+    buffer_t buffer(&resource);
+    // txn_id is 0 (system write); watermark is carried for forensics only.
+    encode_compact(buffer,
+                   /*last_crc32=*/0,
+                   /*wal_id=*/7,
+                   /*txn_id=*/0,
+                   kTestTableOid,
+                   /*compact_watermark=*/424242);
+
+    REQUIRE(buffer.size() > 0);
+
+    auto record = decode_record(buffer, &resource);
+    REQUIRE(record.is_valid());
+    REQUIRE_FALSE(record.is_corrupt);
+    REQUIRE(record.id == 7);
+    REQUIRE(record.transaction_id == 0);
+    REQUIRE(record.record_type == wal_record_type::PHYSICAL_COMPACT);
+    REQUIRE(record.is_physical());
+    REQUIRE(record.table_oid == kTestTableOid);
+    // No payload: neither a row-id list nor a data batch.
+    REQUIRE(record.physical_row_ids.empty());
+    REQUIRE(record.physical_data.empty());
+    REQUIRE(record.physical_row_count == 0);
+    // Watermark round-trips in physical_row_start (forensic only).
+    REQUIRE(record.physical_row_start == 424242);
+}
+
+// A PHYSICAL_COMPACT sitting between physical records and their COMMIT must NOT
+// perturb the committed-only classification: it is a physical record whose
+// transaction_id is 0, so any consumer that keys on record_type/transaction_id
+// (never on a non-empty payload) treats it uniformly.
+TEST_CASE("wal_binary::compact_is_physical_and_payload_free") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    buffer_t buffer(&resource);
+    crc32_t last = 0;
+    last = encode_compact(buffer, last, /*wal_id=*/5, /*txn_id=*/0, kTestTableOid, /*watermark=*/1);
+
+    auto record = decode_record(buffer, &resource);
+    REQUIRE_FALSE(record.is_corrupt);
+    REQUIRE(record.is_physical());
+    REQUIRE_FALSE(record.is_commit_marker());
+    // The chain CRC is well-formed so it links into the record stream like any other.
+    REQUIRE(record.crc32 != 0);
+}
+
 TEST_CASE("wal_binary::encode_decode_update") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
     auto new_data = gen_data_chunk(5, 0, wal_test_types(&resource), &resource);

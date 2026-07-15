@@ -290,6 +290,31 @@ namespace services::wal {
     }
 
     // -----------------------------------------------------------------------
+    // encode_compact
+    //
+    // Numbering-epoch boundary. No payload: replay re-runs compact() deterministically
+    // from this record's wal_id position, so only table_oid is needed. row_count = 0;
+    // row_start carries the live compact_watermark for forensics (not read on replay).
+    // -----------------------------------------------------------------------
+    crc32_t encode_compact(buffer_t& buffer,
+                           crc32_t last_crc32,
+                           id_t wal_id,
+                           uint64_t txn_id,
+                           components::catalog::oid_t table_oid,
+                           uint64_t compact_watermark) {
+        return write_dml_record(buffer,
+                                last_crc32,
+                                wal_id,
+                                txn_id,
+                                wal_record_type::PHYSICAL_COMPACT,
+                                table_oid,
+                                /*row_start=*/compact_watermark,
+                                /*row_count=*/0,
+                                /*payload=*/nullptr,
+                                /*payload_size=*/0);
+    }
+
+    // -----------------------------------------------------------------------
     // encode_update
     // -----------------------------------------------------------------------
     crc32_t encode_update(buffer_t& buffer,
@@ -517,6 +542,16 @@ namespace services::wal {
                         rec.is_corrupt = true;
                         return rec;
                     }
+                }
+                break;
+            }
+            case wal_record_type::PHYSICAL_COMPACT: {
+                // Numbering-epoch boundary: payload-free. table_oid and the forensic
+                // watermark (physical_row_start) are already parsed from the DML header;
+                // physical_row_ids / physical_data stay empty. A non-empty payload here is
+                // malformed.
+                if (payload_size != 0) {
+                    rec.is_corrupt = true;
                 }
                 break;
             }

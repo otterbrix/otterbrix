@@ -97,6 +97,14 @@ namespace services::wal {
                                   uint64_t txn_id,
                                   wal::id_t wal_id);
 
+        // PHYSICAL_COMPACT: payload-free numbering-epoch boundary for table_oid (compact_watermark
+        // stored in the record's row_start for forensics only). txn_id is 0.
+        unique_future<wal::id_t> write_physical_compact(session_id_t session,
+                                                        components::catalog::oid_t table_oid,
+                                                        uint64_t txn_id,
+                                                        uint64_t compact_watermark,
+                                                        wal::id_t wal_id);
+
         using dispatch_traits = actor_zeta::dispatch_traits<&wal_worker_t::load,
                                                             &wal_worker_t::commit_txn,
                                                             &wal_worker_t::truncate_before,
@@ -104,7 +112,8 @@ namespace services::wal {
                                                             &wal_worker_t::write_physical_insert,
                                                             &wal_worker_t::write_physical_delete,
                                                             &wal_worker_t::write_physical_update,
-                                                            &wal_worker_t::write_physical_add_column>;
+                                                            &wal_worker_t::write_physical_add_column,
+                                                            &wal_worker_t::write_physical_compact>;
 
     private:
         // -----------------------------------------------------------------------

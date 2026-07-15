@@ -132,7 +132,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void>
-    manager_disk_t::maybe_cleanup_many(execution_context_t /*ctx*/,
+    manager_disk_t::maybe_cleanup_many(execution_context_t ctx,
                                        std::pmr::vector<components::catalog::oid_t> table_oids,
                                        uint64_t compact_watermark) {
         // Each table_oid routes to its owning agent's maybe_cleanup_inner so the
@@ -159,7 +159,8 @@ namespace services::disk {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                   &agent_disk_t::maybe_cleanup_inner,
                                                                   table_oid,
-                                                                  uint64_t{compact_watermark});
+                                                                  uint64_t{compact_watermark},
+                                                                  ctx.session);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

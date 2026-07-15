@@ -97,6 +97,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &wal_worker_t::write_physical_update, msg);
                 break;
             }
+            case actor_zeta::msg_id<wal_worker_t, &wal_worker_t::write_physical_compact>: {
+                co_await actor_zeta::dispatch(this, &wal_worker_t::write_physical_compact, msg);
+                break;
+            }
             case actor_zeta::msg_id<wal_worker_t, &wal_worker_t::write_physical_add_column>: {
                 co_await actor_zeta::dispatch(this, &wal_worker_t::write_physical_add_column, msg);
                 break;
@@ -168,6 +172,28 @@ namespace services::wal {
 
         encode_buf_.clear();
         last_crc_ = encode_delete(encode_buf_, last_crc_, wal_id, txn_id, table_oid, row_ids.data(), count);
+
+        ensure_writer();
+        writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
+
+        co_return wal_id;
+    }
+
+    // -----------------------------------------------------------------------
+    // write_physical_compact
+    // -----------------------------------------------------------------------
+
+    wal_worker_t::unique_future<wal::id_t> wal_worker_t::write_physical_compact(session_id_t /*session*/,
+                                                                                components::catalog::oid_t table_oid,
+                                                                                uint64_t txn_id,
+                                                                                uint64_t compact_watermark,
+                                                                                wal::id_t wal_id) {
+        id_.store(wal_id, std::memory_order_relaxed);
+
+        trace(log_, "wal_worker::write_physical_compact , wal_id : {} , oid : {}", wal_id, static_cast<unsigned>(table_oid));
+
+        encode_buf_.clear();
+        last_crc_ = encode_compact(encode_buf_, last_crc_, wal_id, txn_id, table_oid, compact_watermark);
 
         ensure_writer();
         writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);

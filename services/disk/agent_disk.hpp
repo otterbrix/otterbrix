@@ -453,7 +453,12 @@ namespace services::disk {
         //   cleanup_versions is intentionally omitted: scan_committed
         //   needs intact version metadata to filter tombstones, which cleanup_versions
         //   would strip before compact rebuilds the row_group.
-        unique_future<void> maybe_cleanup_inner(components::catalog::oid_t table_oid, uint64_t compact_watermark);
+        //   On a real renumber (total_rows shrank), a fire-and-forget PHYSICAL_COMPACT epoch
+        //   marker is written to the WAL AFTER the in-memory swap, so recovery re-runs the same
+        //   dense renumber at this log point (INV-RECLAIM-1). `session` is the committing session,
+        //   also used to clear its own retained I-2 pins on this oid before the gate check.
+        unique_future<void>
+        maybe_cleanup_inner(components::catalog::oid_t table_oid, uint64_t compact_watermark, session_id_t session);
 
         // on_horizon_advanced_inner — sweeps dropped_storages_, removing entries whose
         //   dropped_at_commit_id < new_horizon. Exceptions FORBIDDEN: std::error_code

@@ -129,6 +129,14 @@ namespace services::wal {
                                   uint64_t txn_id,
                                   components::catalog::oid_t database_oid);
 
+        // PHYSICAL_COMPACT epoch marker for table_oid, routed to database_oid's worker.
+        // NOT gated on txn_id != 0: it is always a txn=0 system write and must be durable.
+        unique_future<wal::id_t> write_physical_compact(session_id_t session,
+                                                        components::catalog::oid_t table_oid,
+                                                        uint64_t txn_id,
+                                                        uint64_t compact_watermark,
+                                                        components::catalog::oid_t database_oid);
+
         // Mailbox twins of the _sync helpers for callers that run inside an
         // actor (e.g. operator_create_index_backfill in the executor) and so
         // cannot make sync inter-actor calls. Same active_build_start_positions_ set.
@@ -145,6 +153,7 @@ namespace services::wal {
                                                        &manager_wal_replicate_t::write_physical_delete,
                                                        &manager_wal_replicate_t::write_physical_update,
                                                        &manager_wal_replicate_t::write_physical_add_column,
+                                                       &manager_wal_replicate_t::write_physical_compact,
                                                        &manager_wal_replicate_t::register_active_build,
                                                        &manager_wal_replicate_t::unregister_active_build>;
 

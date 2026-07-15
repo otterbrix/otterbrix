@@ -841,6 +841,9 @@ namespace services::disk {
             const auto db_oid = (ctx.database_oid != components::catalog::INVALID_OID)
                                     ? ctx.database_oid
                                     : components::catalog::well_known_oid::main_database;
+            // Remember the WAL stream this table's DML rides so a later PHYSICAL_COMPACT marker
+            // rides the SAME one (I-2); see collection_storage_entry_t::compact_wal_db_oid.
+            entry->wal_route_db_oid = db_oid;
 
             // 5a-i. Schema-growth record BEFORE the rows that depend on it. The
             //       payload is a 0-row chunk whose columns ARE the new columns
@@ -1087,6 +1090,7 @@ namespace services::disk {
             const auto db_oid = ctx.database_oid != components::catalog::INVALID_OID
                                     ? ctx.database_oid
                                     : components::catalog::well_known_oid::main_database;
+            entry->wal_route_db_oid = db_oid; // COMPACT marker rides the same stream (I-2)
             components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
             data->copy(wal_chunk, 0);
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
@@ -1163,6 +1167,7 @@ namespace services::disk {
             const auto db_oid = ctx.database_oid != components::catalog::INVALID_OID
                                     ? ctx.database_oid
                                     : components::catalog::well_known_oid::main_database;
+            entry->wal_route_db_oid = db_oid; // COMPACT marker rides the same stream (I-2)
             std::pmr::vector<int64_t> wal_row_ids(resource());
             wal_row_ids.reserve(count);
             for (uint64_t i = 0; i < count; ++i) {
@@ -2164,7 +2169,8 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::maybe_cleanup_inner(components::catalog::oid_t table_oid,
-                                                                        uint64_t compact_watermark) {
+                                                                        uint64_t compact_watermark,
+                                                                        session_id_t session) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -2182,6 +2188,12 @@ namespace services::disk {
             co_return;
         }
 
+        // I-2: maybe_cleanup only CONSULTS the mutating gate; it never releases it. A DELETE/UPDATE's
+        // pin is dropped by its own apply (storage_delete_rows_inner / storage_update_inner), the
+        // txn-abort broadcast (release_scans_for_session), or the next mutating open's sweep — all of
+        // which precede this committing session's commit fan-out, so by the time we run here the
+        // session holds no residual pin of its own. Releasing here instead would renumber row-ids out
+        // from under any OTHER in-flight session that had legitimately retained a pin on this oid.
         auto& table = entry->table_storage.table();
         auto rg = table.row_group();
         auto total = rg->total_rows();
@@ -2192,9 +2204,12 @@ namespace services::disk {
         auto committed = rg->committed_row_count();
         auto deleted = total - committed;
 
-        // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid (its
-        // stored absolute position indexes the un-swapped collection; the atomic swap would shift
-        // rows out from under it — R17). Reclaim is deferred to a later commit.
+        // Cursor gate: skip compact while a streaming fetch-next cursor is open (or a mutating one
+        // retained past drain, I-2) on this oid — its stored absolute position indexes the
+        // un-swapped collection; the atomic swap would shift rows out from under it (R17), or
+        // renumber rows out from under an in-flight DELETE/UPDATE's captured ids. SKIP, never
+        // block: reclaim is deferred to a later commit, and a subsequent delete-carrying commit
+        // re-nudges it.
         if (has_active_scan_for_oid(table_oid)) {
             trace(log_,
                   "agent_disk[{}]::maybe_cleanup_inner: oid={} has an active scan cursor — deferring compact",
@@ -2222,6 +2237,28 @@ namespace services::disk {
             // cleanup_versions would strip it before compact rebuilds the
             // row_group.
             table.compact(compact_watermark);
+
+            // Log the numbering-epoch boundary (I-2). Emit ONLY when the compaction actually
+            // renumbered (total_rows shrank) — a watermark-gated no-op or a tail-only drop that
+            // did not move a survivor needs no marker. Fire-and-forget (see the identical
+            // discipline at storage_append_inner's ADD_COLUMN emit): the in-memory swap already
+            // reclaimed the space, and co_awaiting a second cross-actor future on this agent
+            // coroutine risks the actor-zeta lost-wakeup. Durability + ordering hold without the
+            // await: the record rides the SAME db WAL worker the table's DML used (compact_wal_db_oid), whose
+            // FIFO mailbox + synchronous wal_id allocation put wal_id(COMPACT) below any later
+            // same-oid DML, so the marker is durable no later than that DML's fsync; if none
+            // follows, the pre/post-compaction numbering is observationally identical.
+            if (table.row_group()->total_rows() < total &&
+                manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+                const auto db_oid = entry->compact_wal_db_oid();
+                [[maybe_unused]] auto _cf = actor_zeta::send(manager_wal_addr_,
+                                                             &wal::manager_wal_replicate_t::write_physical_compact,
+                                                             session,
+                                                             table_oid,
+                                                             uint64_t{0}, // txn_id: system write
+                                                             compact_watermark,
+                                                             db_oid);
+            }
         }
 
         co_return;

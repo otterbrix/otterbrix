@@ -156,6 +156,27 @@ namespace services::disk {
         // (multi-type fields); regular tables coerce.
         bool is_computed = false;
 
+        // The db_oid this table's physical WAL records route to, captured at the first DML WAL emit
+        // (append / update / delete): the db_oid the DML resolved from its execution context —
+        // `ctx.database_oid` if set, else main_database. This is deliberately NOT the table's catalog
+        // db (where the .otbx checkpoint lives under ${db}/${tbl}/): the executor does not propagate
+        // the catalog db onto the DML execution context, so user-table DML resolves to main_database.
+        // The PHYSICAL_COMPACT epoch marker (I-2) MUST ride THIS same stream, so it is truncated and
+        // replayed atomically with the DML it orders — a marker stranded in a different db's WAL is
+        // truncated independently and lost on restart, resurrecting the compacted-away rows. INVALID
+        // until the first DML emit; a compaction never fires before at least one delete/update, so it
+        // is always set by the time maybe_cleanup / VACUUM would emit the marker.
+        components::catalog::oid_t wal_route_db_oid = components::catalog::INVALID_OID;
+
+        // The db_oid the PHYSICAL_COMPACT epoch marker must ride: the WAL stream the table's DML
+        // actually used (wal_route_db_oid), falling back to main_database — the SAME fallback the DML
+        // paths use for an INVALID ctx.database_oid, so the marker lands with the DML it orders.
+        [[nodiscard]] components::catalog::oid_t compact_wal_db_oid() const noexcept {
+            return wal_route_db_oid != components::catalog::INVALID_OID
+                       ? wal_route_db_oid
+                       : components::catalog::well_known_oid::main_database;
+        }
+
         /// In-memory: schema-less (computing / relkind='g' dynamic schema)
         explicit collection_storage_entry_t(std::pmr::memory_resource* resource)
             : table_storage(resource)

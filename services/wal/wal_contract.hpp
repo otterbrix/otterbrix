@@ -75,6 +75,16 @@ namespace services::wal {
                                   uint64_t txn_id,
                                   components::catalog::oid_t database_oid);
 
+        // Numbering-epoch boundary (PHYSICAL_COMPACT): payload-free, carries only the
+        // table_oid; txn_id is 0 (a system write re-derived over already-committed state);
+        // compact_watermark is stored for forensics and is not load-bearing on replay.
+        // Deliberately NOT gated on txn_id != 0 (a txn=0 COMPACT must never be dropped).
+        actor_zeta::unique_future<id_t> write_physical_compact(session_id_t session,
+                                                               components::catalog::oid_t table_oid,
+                                                               uint64_t txn_id,
+                                                               uint64_t compact_watermark,
+                                                               components::catalog::oid_t database_oid);
+
         // Retention guard for CREATE INDEX backfill. The build registers its
         // start wal_position before backfill and unregisters on success/fail;
         // truncate_before clamps to min(active set) so the catchup loop never
@@ -91,6 +101,7 @@ namespace services::wal {
                                                             &wal_contract::write_physical_delete,
                                                             &wal_contract::write_physical_update,
                                                             &wal_contract::write_physical_add_column,
+                                                            &wal_contract::write_physical_compact,
                                                             &wal_contract::register_active_build,
                                                             &wal_contract::unregister_active_build>;
 

@@ -244,6 +244,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_update, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_compact>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_compact, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_add_column>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_add_column, msg);
                 break;
@@ -665,6 +669,38 @@ namespace services::wal {
                                                               std::move(row_ids),
                                                               count,
                                                               txn_id,
+                                                              wal_id);
+        if (needs_sched) {
+            scheduler_->enqueue(worker);
+        }
+        auto result = co_await std::move(fut);
+        co_return result;
+    }
+
+    // -----------------------------------------------------------------------
+    // Contract: write_physical_compact
+    // -----------------------------------------------------------------------
+
+    manager_wal_replicate_t::unique_future<wal::id_t>
+    manager_wal_replicate_t::write_physical_compact(session_id_t session,
+                                                    components::catalog::oid_t table_oid,
+                                                    uint64_t txn_id,
+                                                    uint64_t compact_watermark,
+                                                    components::catalog::oid_t database_oid) {
+        if (!enabled_) {
+            co_return wal::id_t{0};
+        }
+        // No txn-id gate: a compaction is a txn=0 system write and its epoch marker must be
+        // durable. next_wal_id() is the GLOBAL monotonic counter, so this id orders the COMPACT
+        // after every DELETE/UPDATE that ran before it regardless of which worker holds them.
+        auto* worker = get_or_create_worker(database_oid);
+        auto wal_id = next_wal_id();
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
+                                                              &wal_worker_t::write_physical_compact,
+                                                              session,
+                                                              table_oid,
+                                                              txn_id,
+                                                              compact_watermark,
                                                               wal_id);
         if (needs_sched) {
             scheduler_->enqueue(worker);

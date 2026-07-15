@@ -1076,6 +1076,10 @@ namespace components::sql::transform {
             std::pmr::vector<std::pmr::string> segments(prefix);
             segments.emplace_back(k);
             expressions::key_t key(resource_, jsonb_path::flatten(segments, resource_), use_side);
+            // A jsonb existence test: a key that names no column is legally absent
+            // (yields false), and an intermediate object key is present if a child
+            // is — the validator resolves both, so it must not hard-error here.
+            key.set_absent_ok(true);
             auto dummy = params->add_parameter(
                 types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
             return make_compare_expression(params->parameters().resource(), compare_type::is_not_null, key, dummy);

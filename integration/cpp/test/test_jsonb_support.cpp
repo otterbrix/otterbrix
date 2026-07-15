@@ -842,27 +842,53 @@ TEST_CASE("integration::cpp::test_jsonb_support::flattened_name_and_nested_path_
     CHECK(i64_set(exec(d, "SELECT s ->> 'a/b' AS v FROM jp.s;"), "v") == std::set<int64_t>{10, 20});
 }
 
-// In postgres a missing key yields NULL (for ->>) or false (for ?). Here it is a
-// hard error, which makes the existence operators unusable for their one purpose:
-// you cannot ask "does this row have key K" unless K is already known to exist.
-TEST_CASE("integration::cpp::test_jsonb_support::bug_missing_key_errors_instead_of_null_or_false") {
+// [E] Existence over a missing key follows postgres 3VL instead of hard-erroring,
+// which is what makes '?'/'?|'/'?&' usable: you can ask "does this row have key K"
+// without K being known to exist. A truly absent key is false; an intermediate
+// object key (a prefix of stored columns) is present iff a child is; and one
+// absent key no longer poisons an any-of another key satisfies.
+TEST_CASE("integration::cpp::test_jsonb_support::existence_over_missing_key") {
     auto config = make_test_config("/tmp/test_jsonb_matrix/missing");
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
+    // rows: 1(a/b=10,a/c=20,x=p) 2(a/b=30,a/c=40,x=q) 3(a/b=50,a/c=60) 4(a/c=70)
 
-    CHECK_FALSE(exec(d, "SELECT t ->> 'nokey' AS v FROM jp.t;")->is_success()); // correct: NULL for every row
-    CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t ? 'nokey';")->is_success()); // correct: false -> no rows
-    // one absent key poisons an any-of that another key already satisfies
-    CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t ?| '{x,nokey}';")->is_success()); // correct: rows 1,2
-    CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t ?& '{x,nokey}';")->is_success()); // correct: no rows
+    // a key present in some rows
+    CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ? 'x';")) == std::set<int64_t>{1, 2});
+    // a truly absent key -> false for every row (no error)
+    CHECK(exec(d, "SELECT id FROM jp.t WHERE t ? 'nokey';")->size() == 0);
+    CHECK(exec(d, "SELECT id FROM jp.t WHERE NOT (t ? 'nokey');")->size() == 4);
 
-    // ? cannot see an intermediate key either, even though it is a real prefix
-    // of two stored columns ("a/b", "a/c") and postgres would report it present.
-    CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t ? 'a';")->is_success()); // correct: all rows
+    // one absent key no longer poisons an any-of / all-of
+    CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ?| '{x,nokey}';")) == std::set<int64_t>{1, 2});
+    CHECK(exec(d, "SELECT id FROM jp.t WHERE t ?& '{x,nokey}';")->size() == 0);
+    CHECK(exec(d, "SELECT id FROM jp.t WHERE t ?| '{nokey,nokey2}';")->size() == 0);
 
-    // and IS NULL cannot be used to bridge the gap
-    CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' IS NULL;")->is_success()); // correct: row 4
+    // an intermediate object key 'a' (prefix of a/b, a/c) is PRESENT where a child
+    // is non-null — a/b or a/c is set for every row, so all four rows
+    CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ? 'a';")) == std::set<int64_t>{1, 2, 3, 4});
+    CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ?& '{a,x}';")) == std::set<int64_t>{1, 2});
+
+    // a mistyped REGULAR column IS NULL still errors — only jsonb keys are lenient
+    REQUIRE(exec(d, "CREATE TABLE jp.r (id BIGINT, v BIGINT);")->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.r (id, v) VALUES (1, 5);")->is_success());
+    CHECK_FALSE(exec(d, "SELECT id FROM jp.r WHERE nosuchcol IS NULL;")->is_success());
+}
+
+// STILL a hard error, deferred (documented): scalar navigation over an absent key
+// should yield SQL NULL, and `<nav> IS NULL` should be a boolean. Both need the
+// select-list / compare paths to synthesize a typed NULL leaf for a flagged key,
+// a larger change than the existence rewrite; pinned so the deferral is visible.
+TEST_CASE("integration::cpp::test_jsonb_support::navigation_over_missing_key_still_errors") {
+    auto config = make_test_config("/tmp/test_jsonb_matrix/missing_nav");
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    seed(d);
+
+    CHECK_FALSE(exec(d, "SELECT t ->> 'nokey' AS v FROM jp.t;")->is_success());   // deferred: NULL every row
+    CHECK_FALSE(exec(d, "SELECT t #>> 'no.key' AS v FROM jp.t;")->is_success());  // deferred: NULL every row
+    CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' IS NULL;")->is_success()); // deferred: row 4
 }
 
 // [A] The key operand of a jsonb operator is a literal: a bare string/number, a

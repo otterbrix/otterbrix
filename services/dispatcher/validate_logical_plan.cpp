@@ -428,6 +428,34 @@ namespace services::dispatcher {
                     variants.push_back(c.type);
                 }
             }
+            if (variants.empty() && key.absent_ok()) {
+                // A jsonb existence key ('?'/'?|'/'?&') that matches no column
+                // exactly. Postgres 3VL, over the flattened representation:
+                //   - an INTERMEDIATE object key (a prefix of one or more stored
+                //     columns, e.g. 'a' with columns a/b, a/c) is PRESENT iff a
+                //     child is non-null -> OR/AND of the per-child null checks;
+                //   - a truly ABSENT key is present for no row -> constant false
+                //     (is_not_null) / true (is_null), so one missing key can never
+                //     poison a '?|' any-of that another key already satisfies.
+                const std::string prefix_slash = name + "/";
+                std::vector<components::expressions::key_t> children;
+                for (const auto& c : schema) {
+                    if (c.type.has_alias() && std::string(c.type.alias()).rfind(prefix_slash, 0) == 0) {
+                        components::expressions::key_t ckey(resource, std::string(c.type.alias()));
+                        ckey.set_side(key.side());
+                        children.push_back(std::move(ckey));
+                    }
+                }
+                if (children.empty()) {
+                    return make_compare_expression(resource, is_nn ? compare_type::all_false : compare_type::all_true);
+                }
+                auto combined =
+                    make_compare_union_expression(resource, is_nn ? compare_type::union_or : compare_type::union_and);
+                for (auto& ckey : children) {
+                    combined->append_child(make_compare_expression(resource, cmp->type(), ckey, cmp->right()));
+                }
+                return combined;
+            }
             if (variants.size() <= 1) {
                 return expr; // single-type (or unknown) — leave as-is
             }

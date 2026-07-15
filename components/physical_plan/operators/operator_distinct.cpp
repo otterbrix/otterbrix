@@ -7,9 +7,10 @@
 namespace components::operators {
 
     operator_distinct_t::operator_distinct_t(std::pmr::memory_resource* resource, log_t log)
-        : read_only_operator_t(resource, log, operator_type::match)
+        : read_only_operator_t(resource, log, operator_type::distinct)
         , seen_(resource)
-        , retained_(resource) {}
+        , retained_(resource)
+        , on_keys_(resource) {}
 
     bool operator_distinct_t::is_duplicate_(const vector::data_chunk_t& chunk, uint64_t row, uint64_t hash) const {
         auto it = seen_.find(hash);
@@ -19,10 +20,21 @@ namespace components::operators {
         for (const auto& ref : it->second) {
             const auto& kept = retained_[ref.chunk_idx];
             bool equal = true;
-            for (size_t c = 0; c < chunk.column_count(); ++c) {
-                if (!vector::cells_equal(kept.data[c], ref.row, chunk.data[c], row)) {
-                    equal = false;
-                    break;
+            // DISTINCT ON compares only the ON-key columns; plain DISTINCT compares the whole row.
+            // retained_ holds the full row in both cases, so on_keys_ indices address it directly.
+            if (on_keys_.empty()) {
+                for (size_t c = 0; c < chunk.column_count(); ++c) {
+                    if (!vector::cells_equal(kept.data[c], ref.row, chunk.data[c], row)) {
+                        equal = false;
+                        break;
+                    }
+                }
+            } else {
+                for (size_t c : on_keys_) {
+                    if (!vector::cells_equal(kept.data[c], ref.row, chunk.data[c], row)) {
+                        equal = false;
+                        break;
+                    }
                 }
             }
             if (equal) {
@@ -82,10 +94,18 @@ namespace components::operators {
             if (chunk.size() == 0) {
                 continue;
             }
-            // Typed hash of every column (the DISTINCT key is the whole row). hash()
-            // takes a non-const chunk; it only reads the columns.
+            // Typed hash of the DISTINCT key. Plain DISTINCT hashes the whole row; DISTINCT ON
+            // hashes only the ON-key subset. hash() takes a non-const chunk; it only reads columns.
             vector::vector_t hash_vec(res, types::logical_type::UBIGINT, chunk.size());
-            const_cast<vector::data_chunk_t&>(chunk).hash(hash_vec);
+            if (on_keys_.empty()) {
+                const_cast<vector::data_chunk_t&>(chunk).hash(hash_vec);
+            } else {
+                std::vector<uint64_t> col_ids(on_keys_.begin(), on_keys_.end());
+                const_cast<vector::data_chunk_t&>(chunk).hash(col_ids, hash_vec);
+                // An all-CONSTANT ON-column hash can come back non-FLAT; flatten so data<uint64_t>()
+                // reads one hash per row (mirrors operator_unique_constraint).
+                hash_vec.flatten(chunk.size());
+            }
             const auto* hashes = hash_vec.data<uint64_t>();
 
             for (size_t i = 0; i < chunk.size(); i++) {

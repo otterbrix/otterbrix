@@ -530,6 +530,7 @@ TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "Recursive Union"));
+        REQUIRE(contains(t, "CTE Scan")); // the recursive member scans the working table as a CTE Scan
         // Isolate the Recursive Union line: before the fix it read "(actual time=0.000ms rows=0 loops=1)"
         // because the producing bottom's record_analyze was never called.
         const auto pos = t.find("Recursive Union");
@@ -676,4 +677,69 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
         REQUIRE(contains(t, "Aggregate"));
         REQUIRE(t.find("Having") < t.find("Aggregate")); // HAVING filter renders above the group
     }
+}
+
+// One assertion per PostgreSQL node label the renderer can emit on a SELECT/DML spine, so a future
+// operator_type→label change (or a mis-tagged operator, as SELECT DISTINCT once rendered "Filter")
+// is caught here rather than silently shipping a wrong EXPLAIN label.
+TEST_CASE("integration::cpp::test_explain::operator_labels") {
+    auto config = test_create_config("/tmp/test_explain/operator_labels");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.orders(id int, cust int);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.customer(id int, name string);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10);")
+                    ->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "INSERT INTO TestDatabase.customer (id, name) VALUES (10,'a'),(20,'b');")
+                    ->is_success());
+    }
+
+    auto label_of = [&](const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, sql);
+        REQUIRE(cur->is_success());
+        return plan_text(cur);
+    };
+
+    REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders;"), "Seq Scan"));
+    // col-vs-col predicate is not storage-pushable, so it lowers to a standalone Filter (operator_match).
+    REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders WHERE id > cust;"), "Filter"));
+    REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders ORDER BY id;"), "Sort"));
+    REQUIRE(contains(label_of("EXPLAIN SELECT id + cust FROM TestDatabase.orders;"), "Project"));
+    REQUIRE(contains(
+        label_of("EXPLAIN SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust = c.id;"),
+        "Hash Join"));
+    // Non-equi join condition can't hash → Nested Loop.
+    REQUIRE(contains(
+        label_of("EXPLAIN SELECT * FROM TestDatabase.orders o JOIN TestDatabase.customer c ON o.cust > c.id;"),
+        "Nested Loop"));
+    REQUIRE(contains(
+        label_of("EXPLAIN SELECT id FROM TestDatabase.orders UNION SELECT id FROM TestDatabase.customer;"),
+        "Append"));
+    REQUIRE(contains(label_of("EXPLAIN VALUES (1),(2);"), "Values Scan"));
+    // Plan-only EXPLAIN of DML does not execute (proven by the EXPLAIN-INSERT-doesn't-run test above).
+    REQUIRE(contains(label_of("EXPLAIN INSERT INTO TestDatabase.orders (id, cust) VALUES (9, 9);"), "Insert"));
+    REQUIRE(contains(label_of("EXPLAIN UPDATE TestDatabase.orders SET cust = 1 WHERE id = 1;"), "Update"));
+    REQUIRE(contains(label_of("EXPLAIN DELETE FROM TestDatabase.orders WHERE id = 1;"), "Delete"));
+    // Regression: SELECT DISTINCT lowers to operator_distinct, which must render "Unique" (was "Filter").
+    REQUIRE(contains(label_of("EXPLAIN SELECT DISTINCT cust FROM TestDatabase.orders;"), "Unique"));
 }

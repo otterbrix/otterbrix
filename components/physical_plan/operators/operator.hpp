@@ -41,6 +41,9 @@ namespace components::operators {
         update,
         sort,
         select,
+        // SELECT DISTINCT de-duplication (streaming, keep-first). Whole-row dedup layered
+        // outermost (under limit). Rendered "Unique" — distinct from a WHERE "Filter".
+        distinct,
         // Canonical LIMIT/OFFSET window (streaming). Wraps a terminal whose source
         // cannot apply a merged outer limit itself (UNION, pushed-down GROUP BY). See
         // operator_limit.hpp.

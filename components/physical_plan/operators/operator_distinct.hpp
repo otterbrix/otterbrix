@@ -23,6 +23,11 @@ namespace components::operators {
 
         [[nodiscard]] core::error_t finalize(pipeline::context_t* ctx, chunks_vector_t& out) override;
 
+        // DISTINCT ON: dedup on this ON-key column subset (indices into the operator's input layer)
+        // instead of the whole row; the full row is still emitted. Empty = whole-row dedup (plain
+        // DISTINCT). A setter (not a defaulted ctor arg) so no get_default_resource() allocation (R14).
+        void set_on_keys(std::pmr::vector<size_t> on_keys) { on_keys_ = std::move(on_keys); }
+
     private:
         // An address into retained_ that stays valid across retained_ reallocation: the
         // vector MOVES its data_chunk_t elements when it grows, but an INDEX resolves to
@@ -42,6 +47,8 @@ namespace components::operators {
         // DISTINCT cardinality. retained_fill_ is the fill level of retained_.back().
         std::pmr::vector<vector::data_chunk_t> retained_;
         uint64_t retained_fill_{0};
+        // DISTINCT ON key subset (empty ⇒ whole-row dedup). Set via set_on_keys by the planner.
+        std::pmr::vector<size_t> on_keys_;
 
         // The shared dedup core: for each row of each chunk, hash it, verify against the
         // retained rows, and on first occurrence copy the row into `out` (chunks of

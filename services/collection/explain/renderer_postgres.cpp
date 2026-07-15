@@ -58,6 +58,9 @@ namespace services::collection {
                 case ops::operator_type::select:
                     label = "Project";
                     break;
+                case ops::operator_type::distinct:
+                    label = "Unique";
+                    break;
                 case ops::operator_type::limit:
                     label = "Limit";
                     break;

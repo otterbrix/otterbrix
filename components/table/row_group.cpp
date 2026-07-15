@@ -346,6 +346,32 @@ namespace components::table {
         return checked.value() ? filter_match_t::yes : filter_match_t::no;
     }
 
+    // IS NULL / IS NOT NULL over an ARRAY/LIST element. Nullness is always TRUE or FALSE, never
+    // UNKNOWN: an element is NULL when the whole cell is NULL, when the subscript is out of range,
+    // or when that element itself is NULL.
+    static filter_match_t check_array_element_is_null(column_data_t& column,
+                                                      int64_t row_id,
+                                                      uint64_t element_index,
+                                                      bool want_null,
+                                                      core::error_t& error) {
+        column_fetch_state fetch_state;
+        vector::vector_t result(column.resource(), column.type(), 1);
+        column.fetch_row(fetch_state, row_id, result, 0);
+        if (fetch_state.fetch_error.contains_error()) {
+            error = fetch_state.fetch_error;
+            return filter_match_t::no;
+        }
+        bool element_is_null;
+        if (!result.validity().row_is_valid(0)) {
+            element_is_null = true;
+        } else {
+            const auto& elements = result.value(0).children();
+            element_is_null = element_index >= elements.size() || elements[element_index].is_null();
+        }
+        const bool matches = want_null ? element_is_null : !element_is_null;
+        return matches ? filter_match_t::yes : filter_match_t::no;
+    }
+
     filter_match_t row_group_t::check_predicate(int64_t row_id,
                                                 const table_filter_t* filter,
                                                 expression_filter_layout_cache_t& expression_layouts,
@@ -420,15 +446,24 @@ namespace components::table {
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
                 auto& null_filter = filter->cast<is_null_filter_t>();
+                const bool want_null = filter->filter_type == expressions::compare_type::is_null;
                 column_data_t* column = &get_column(null_filter.table_indices.front());
                 for (size_t i = 1; i < null_filter.table_indices.size(); i++) {
+                    // An intermediate ARRAY/LIST index addresses an element, not a STRUCT
+                    // sub-column: descend it through the element accessor rather than casting the
+                    // array column to a struct (which would dereference a bogus sub-columns entry).
+                    if (column->type().type() == types::logical_type::ARRAY ||
+                        column->type().type() == types::logical_type::LIST) {
+                        return check_array_element_is_null(*column, row_id, null_filter.table_indices[i], want_null,
+                                                           error);
+                    }
                     column =
                         static_cast<struct_column_data_t*>(column)->sub_columns[null_filter.table_indices[i]].get();
                 }
                 // IS NULL / IS NOT NULL are the two predicates that interrogate nullness
                 // itself: they are always TRUE or FALSE, never UNKNOWN.
                 bool is_valid = column->check_validity(row_id);
-                bool matches = filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;
+                bool matches = want_null ? !is_valid : is_valid;
                 return matches ? filter_match_t::yes : filter_match_t::no;
             }
             default: {

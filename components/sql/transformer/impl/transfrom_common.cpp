@@ -164,6 +164,33 @@ namespace components::sql::transform {
                     }
                     return col_ref.field;
                 }
+                // A cast over a scalar jsonb navigation, e.g. (t #>> 'a.c')::bigint:
+                // resolve the navigation to its flattened column key and annotate it,
+                // exactly like a column cast. Without this the cast node fell through
+                // to add_param_value, which tried to fold the navigation A_Expr into a
+                // constant parameter and read uninitialized memory — a per-run garbage
+                // constant, identical on every row.
+                if (cast->arg && nodeTag(cast->arg) == T_A_Expr) {
+                    auto* sub = pg_ptr_cast<A_Expr>(cast->arg);
+                    if (sub->kind == AEXPR_OP && sub->name &&
+                        nodeTag(sub->name->lst.front().data) == T_String &&
+                        is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
+                        auto target_type_res = get_type(resource_, cast->typeName);
+                        if (target_type_res.has_error()) {
+                            error_ = target_type_res.error();
+                            return nullptr;
+                        }
+                        expressions::key_t k{resource_};
+                        if (!resolve_jsonb_scalar_key(sub, names, k)) {
+                            return nullptr;
+                        }
+                        k.set_cast_type(target_type_res.value());
+                        if (cast->variant_select) {
+                            k.set_variant_select(true);
+                        }
+                        return k;
+                    }
+                }
                 return add_param_value(node, plan->parameters.get());
             }
             case T_ParamRef:

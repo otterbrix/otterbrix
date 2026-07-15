@@ -48,6 +48,9 @@
 //       no column is a "path not found" error (not a silently vanished select
 //       item), and inside a join expand and delete resolve against the side the
 //       operator named (not blindly across both, which was ambiguous).
+//   [F] a cast over a scalar navigation used in arithmetic ((t #>> 'a.c')::bigint
+//       + 1) reads the navigated column per row, instead of folding the navigation
+//       into an uninitialized constant parameter (per-run garbage on every row).
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -659,15 +662,17 @@ TEST_CASE("integration::cpp::test_jsonb_support::sql_json_standard_absent") {
 // BUG characterization — each CHECK below pins behavior that is WRONG.
 // ===========================================================================
 
-// A cast applied to a navigated value, then used in arithmetic, reads
-// uninitialized memory: the result is a per-run-varying constant repeated on
-// every row. Without the cast, or without the arithmetic, the same expression is
-// correct — so the two together corrupt the value.
-TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_nav_in_arithmetic_is_garbage") {
+// [F] A cast applied to a navigated value, then used in arithmetic, reads the
+// navigated column per row like every other operand. It used to fall through to
+// the constant-parameter path, which folded the navigation expression into an
+// uninitialized parameter: a per-run-varying garbage constant repeated on every
+// row. Both halves were individually correct — only the two together corrupted.
+TEST_CASE("integration::cpp::test_jsonb_support::cast_nav_in_arithmetic_reads_the_column") {
     auto config = make_test_config("/tmp/test_jsonb_matrix/cast_arith");
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
+    // rows: a/c = 20, 40, 60, 70 (present on every row)
 
     // both halves are individually correct
     auto cast_only = exec(d, "SELECT id, (t #>> 'a.c')::bigint AS v FROM jp.t ORDER BY id;");
@@ -678,15 +683,21 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_nav_in_arithmetic_is_g
     REQUIRE(arith_only->is_success());
     CHECK(i64(arith_only, "v", 0) == 21);
 
-    // together: garbage. Same value on every row, unrelated to the data.
+    // together: now the per-row value, not a repeated garbage constant
     auto both = exec(d, "SELECT id, (t #>> 'a.c')::bigint + 1 AS v FROM jp.t ORDER BY id;");
     REQUIRE(both->is_success());
-    // correct: 21, 41, 61, 71
-    CHECK_FALSE(i64(both, "v", 0) == 21);
-    CHECK(i64(both, "v", 0) == i64(both, "v", 1)); // every row gets the same garbage
-    CHECK(i64(both, "v", 1) == i64(both, "v", 2));
+    CHECK(i64(both, "v", 0) == 21);
+    CHECK(i64(both, "v", 1) == 41);
+    CHECK(i64(both, "v", 2) == 61);
+    CHECK(i64(both, "v", 3) == 71);
 
-    // the same shape over a plain column is fine — this is navigation-specific
+    // the cast composes on either side of the operator, still per row
+    auto both2 = exec(d, "SELECT id, 100 - (t #>> 'a.b')::bigint AS v FROM jp.t WHERE id < 3 ORDER BY id;");
+    REQUIRE(both2->is_success());
+    CHECK(i64(both2, "v", 0) == 90);  // 100 - 10
+    CHECK(i64(both2, "v", 1) == 70);  // 100 - 30
+
+    // the same shape over a plain column was always fine — this was nav-specific
     auto plain = exec(d, "SELECT id, (id)::bigint + 1 AS v FROM jp.t ORDER BY id;");
     REQUIRE(plain->is_success());
     CHECK(i64(plain, "v", 0) == 2);

@@ -235,13 +235,13 @@ namespace components::table {
 
     // Dispatch helper used by all storage filter sites. Replaces the
     //     `filter->cast<constant_filter_t>().compare(value)` pattern with one that handles
-    // set_membership_filter_t too. Constructs a temporary logical_value_t on the default
+    // set_membership_filter_t too. Constructs a temporary logical_value_t on the set's own
     // pmr resource for the membership probe — fine for a 1-shot bool, no escape.
     // Templated on the value type (fixed-width T, bool for validity, string_view).
     template<typename T>
     inline bool table_filter_dispatch(const table_filter_t* filter, T value) {
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-            return set->contains(types::logical_value_t{std::pmr::get_default_resource(), value});
+            return set->contains(types::logical_value_t{set->values.get_allocator().resource(), value});
         }
         return filter->cast<constant_filter_t>().compare(value);
     }

@@ -1132,6 +1132,44 @@ namespace components::sql::transform {
                         select_node->append_expression(expr);
                         break;
                     }
+                    case T_SubLink: {
+                        auto sub = pg_ptr_cast<SubLink>(res->val);
+                        if (sub->subLinkType != EXPR_SUBLINK) {
+                            // ARRAY(SELECT ...) / EXISTS(...) / other sub-link kinds projected in the SELECT
+                            // list are not yet supported (deferred, tracked in #559); only a scalar
+                            // EXPR_SUBLINK is handled. Report it clearly rather than as an "unknown node type".
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"unsupported subquery in the SELECT list; only a scalar subquery "
+                                                 "is supported",
+                                                 resource_});
+                            return nullptr;
+                        }
+                        has_non_star = true;
+                        // Scalar sub-query as a projected value: flatten it into a sub-query whose single
+                        // compacted result binds to a parameter, then project that parameter as a constant
+                        // column (read live at execution; a NULL/0-row result is typed from the sub-query's
+                        // output types — see C-NULL). Save/restore the pending internal-aggregate stash so the
+                        // inner transform's clear() does not drop this level's aggregates.
+                        auto param_id =
+                            plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                        auto prev_pending = std::move(pending_internal_aggs_);
+                        pending_internal_aggs_.clear();
+                        auto sub_node = transform(*sub->subselect, plan);
+                        pending_internal_aggs_ = std::move(prev_pending);
+                        if (has_error()) {
+                            return nullptr;
+                        }
+                        plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
+                        plan->sub_queries.emplace_back(std::move(sub_node));
+                        auto expr = make_scalar_expression(resource_,
+                                                           scalar_type::constant,
+                                                           res->name ? expressions::key_t{resource_, res->name}
+                                                                     : expressions::key_t{resource_});
+                        expr->append_param(param_id);
+                        select_node->append_expression(expr);
+                        break;
+                    }
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
                                                std::pmr::string{"Unknown node type in field clause: " +

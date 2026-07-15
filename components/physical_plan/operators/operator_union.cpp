@@ -59,8 +59,24 @@ namespace components::operators {
             return true;
         }
 
-        // Deep-copy selected rows from src into a new chunk.
-        // Uses data_chunk_t::copy which correctly handles STRUCT/ARRAY/LIST columns.
+        // Whether column c is entirely NULL across all chunks of a side (used to spot a reconciled
+        // NULL-literal UNION branch, whose column is all-null and text-typed).
+        bool column_all_null(const chunks_vector_t& chunks, size_t c) {
+            for (const auto& ch : chunks) {
+                for (uint64_t r = 0; r < ch.size(); ++r) {
+                    if (!ch.is_null(c, r)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Deep-copy selected rows from src into a new chunk of `types`. Columns are copied per-column so a
+        // column whose source type differs from the target (a reconciled all-NULL UNION branch — a genuine
+        // type mismatch is rejected at validation) is materialised as target-typed NULLs instead of copied
+        // (data_chunk_t::copy would assert on the type mismatch). Matching columns use the whole-value copy,
+        // which handles STRUCT/ARRAY/LIST.
         vector::data_chunk_t copy_rows(const vector::data_chunk_t& src,
                                        const std::pmr::vector<uint64_t>& row_indices,
                                        const std::pmr::vector<types::complex_logical_type>& types,
@@ -71,7 +87,16 @@ namespace components::operators {
                 idx.set_index(i, row_indices[i]);
             }
             vector::data_chunk_t out(res, types, n);
-            src.copy(out, idx, n, 0);
+            for (size_t c = 0; c < types.size(); ++c) {
+                if (src.data[c].type().type() == types[c].type()) {
+                    vector::vector_ops::copy(src.data[c], out.data[c], idx, n, 0, 0);
+                } else {
+                    for (uint64_t i = 0; i < n; ++i) {
+                        out.data[c].set_null(i, true);
+                    }
+                }
+            }
+            out.set_cardinality(n);
             return out;
         }
 
@@ -85,9 +110,23 @@ namespace components::operators {
                                        const chunks_vector_t& left_chunks,
                                        const chunks_vector_t& right_chunks,
                                        chunks_vector_t& out_chunks) {
-        // Output column types follow the left side (PostgreSQL UNION uses the first
-        // SELECT's column types); fall back to the right side if the left is empty.
-        const auto& types = left_chunks.empty() ? right_chunks.front().types() : left_chunks.front().types();
+        // Output column types follow the left side (PostgreSQL UNION uses the first SELECT's column types);
+        // fall back to the right side if the left is empty. Exception: a bare NULL-literal branch types its
+        // column as text, so when the two sides' column types differ AND the left column is entirely NULL,
+        // adopt the right (concrete) type — the PostgreSQL NULL reconciliation (validation already accepted
+        // the union; a genuine type mismatch would have been rejected there).
+        std::pmr::vector<types::complex_logical_type> types(res);
+        {
+            const auto& lt = left_chunks.empty() ? right_chunks.front().types() : left_chunks.front().types();
+            const auto& rt = right_chunks.empty() ? lt : right_chunks.front().types();
+            for (size_t c = 0; c < lt.size(); ++c) {
+                if (lt[c].type() == rt[c].type() || !column_all_null(left_chunks, c)) {
+                    types.push_back(lt[c]);
+                } else {
+                    types.push_back(rt[c]);
+                }
+            }
+        }
 
         if (all_) {
             auto copy_all = [&](const chunks_vector_t& src_chunks) {

@@ -517,6 +517,20 @@ namespace services::collection::executor {
             if (compacted.has_error()) {
                 co_return execute_result_t{make_cursor(resource(), compacted.error())};
             }
+            if (mapping.array_equality && compacted.value().is_null()) {
+                // A 0-row `col = ARRAY(SELECT ...)`: bind a typed EMPTY array {} (not the NA-null sentinel
+                // that IN / ANY / ALL rely on) so length-aware equality compares against a real empty
+                // array. The element type is the sub-query's schema-derived output type (stamped by its
+                // own validation in the recursive execute_plan_full above).
+                const auto& sub_node = plan.sub_queries[i];
+                assert(sub_node->has_output_types() && "array-equality sub-query must be schema-stamped");
+                plan.parameters->set_parameter(mapping.id,
+                                               components::types::logical_value_t::create_array(
+                                                   resource(),
+                                                   sub_node->output_types().front(),
+                                                   {}));
+                continue;
+            }
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
         }
 
@@ -1259,10 +1273,30 @@ namespace services::collection::executor {
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
+                    // C-NULL: a value-position scalar sub-query that yielded NULL / 0 rows is bound as an
+                    // untyped NA-null, which the projection type resolver would reject (rule 6). Give it a
+                    // concrete type from the sub-query's schema-derived output type, in a VALIDATION-ONLY
+                    // copy of the parameter map — the runtime param stays NA-null so operator_select projects
+                    // a typed NULL from the resolved column type. Mirrors the LATERAL correlation override.
+                    components::logical_plan::storage_parameters validate_params(resource());
+                    validate_params.parameters = plan.parameters->parameters().parameters;
+                    for (size_t i = 0; i + 1 < plan.sub_queries.size(); ++i) {
+                        const auto& m = plan.sub_query_results[i];
+                        if (m.compacter != &components::vector::compact_to_single_value) {
+                            continue;
+                        }
+                        auto it = validate_params.parameters.find(m.id);
+                        if (it == validate_params.parameters.end() || !it->second.is_null() ||
+                            !plan.sub_queries[i]->has_output_types()) {
+                            continue;
+                        }
+                        it->second = components::types::logical_value_t(resource(),
+                                                                        plan.sub_queries[i]->output_types().front());
+                    }
                     auto schema_res = services::dispatcher::validate_schema(resource(),
                                                                             &dispatcher_idx,
                                                                             plan.sub_queries.back().get(),
-                                                                            plan.parameters->parameters());
+                                                                            validate_params);
                     if (schema_res.has_error()) {
                         error = make_cursor(resource(), schema_res.error());
                     }

@@ -105,7 +105,11 @@ namespace components::operators {
                 }
                 auto inner_op = expression->inner_op();
                 if (inner_op == expressions::compare_type::invalid) {
-                    inner_op = expressions::compare_type::eq;
+                    // An unmapped ANY/ALL operator must surface as an error, never silently become `=`
+                    // (finding 5). The transformer already rejects these; this is defence in depth.
+                    return core::error_t{
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"unsupported operator in ANY/ALL subquery comparison", resource}};
                 }
                 // For a subscript path (v[i]) the comparison is against the element
                 // type, not the ARRAY/LIST column type; type_from_path resolves it.

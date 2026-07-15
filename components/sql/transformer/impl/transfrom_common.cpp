@@ -1,5 +1,6 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/function_expression.hpp>
+#include <components/expressions/like_to_regex.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/sql/transformer/transformer.hpp>
@@ -246,6 +247,30 @@ namespace components::sql::transform {
                 // Return key referencing the aggregate result
                 return expressions::key_t{resource_, auto_alias};
             }
+            case T_SubLink: {
+                auto sub = pg_ptr_cast<SubLink>(node);
+                if (sub->subLinkType != EXPR_SUBLINK) {
+                    error_ = core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"Unsupported operand type in SELECT arithmetic", resource_});
+                    return nullptr;
+                }
+                // Scalar sub-query as an arithmetic operand: flatten it and return the bound parameter id
+                // (read live per row by evaluate_arithmetic). Save/restore the pending internal-aggregate
+                // stash around the inner transform so it does not drop this level's aggregates.
+                auto param_id =
+                    plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                auto prev_pending = std::move(pending_internal_aggs_);
+                pending_internal_aggs_.clear();
+                auto sub_node = transform(*sub->subselect, plan);
+                pending_internal_aggs_ = std::move(prev_pending);
+                if (has_error()) {
+                    return nullptr;
+                }
+                plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
+                plan->sub_queries.emplace_back(std::move(sub_node));
+                return param_id;
+            }
             default:
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
                                        std::pmr::string{"Unsupported operand type in SELECT arithmetic", resource_});
@@ -397,12 +422,14 @@ namespace components::sql::transform {
                 if (nodeTag(node) == T_A_Indirection) {
                     return transform_a_indirection(pg_ptr_cast<A_Indirection>(node), names, plan);
                 }
-                if (!node->name || nodeTag(node->name->lst.front().data) != T_String) {
+                // The operator symbol is the LAST element of the name list — a schema-qualified operator
+                // (OPERATOR(pg_catalog.<>)) prepends the schema, so read .back(), not .front().
+                if (!node->name || nodeTag(node->name->lst.back().data) != T_String) {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
                                            std::pmr::string{"Unsupported expr in transform_a_exr", resource_});
                     return nullptr;
                 }
-                auto op_str = std::string_view(strVal(node->name->lst.front().data));
+                auto op_str = std::string_view(strVal(node->name->lst.back().data));
 
                 // Check if this is arithmetic (+, -, *, /, %)
                 if (is_arithmetic_operator(op_str)) {
@@ -410,7 +437,8 @@ namespace components::sql::transform {
                 }
 
                 // Check for LIKE / NOT LIKE
-                if (op_str == "~~" || op_str == "!~~") {
+                // LIKE ~~ / NOT LIKE !~~ / ILIKE ~~* / NOT ILIKE !~~*.
+                if (op_str == "~~" || op_str == "!~~" || op_str == "~~*" || op_str == "!~~*") {
                     column_ref_t key_left(resource_);
                     if (nodeTag(node->lexpr) == T_ColumnRef) {
                         key_left = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->lexpr), names);
@@ -428,15 +456,28 @@ namespace components::sql::transform {
                         error_ = raw_val.error();
                         return nullptr;
                     }
-                    auto pattern = like_to_regex(std::string(raw_val.value().value<std::string_view>()));
+                    auto pattern = expressions::like_to_regex(std::string(raw_val.value().value<std::string_view>()));
                     auto param_id = plan->parameters->add_parameter(types::logical_value_t(resource_, pattern));
-                    if (op_str == "!~~") {
-                        auto inner = make_compare_expression(resource_, compare_type::regex, key_left.field, param_id);
+                    const bool icase = (op_str == "~~*" || op_str == "!~~*");  // ILIKE / NOT ILIKE
+                    const bool negate = (op_str == "!~~" || op_str == "!~~*"); // NOT LIKE / NOT ILIKE
+                    auto cmp = make_compare_expression(resource_, compare_type::regex, key_left.field, param_id);
+                    // On the SCALAR path the pattern is already like_to_regex-converted, so regex_like is not
+                    // needed; negation is expressed by the union_not wrapper. Only case-insensitivity rides
+                    // the compare (the executor builds std::regex with icase when set).
+                    if (icase) {
+                        cmp->set_regex_flags(/*like=*/false, /*icase=*/true, /*negate=*/false);
+                        // The storage constant_filter matches a raw, case-sensitive std::regex, so ILIKE must
+                        // be evaluated in-memory (make_regex_comparator honours regex_icase). Marking it
+                        // unfoldable diverts it from the storage pushdown. (NOT ILIKE is already in-memory via
+                        // its union_not wrapper; plain LIKE stays on the case-sensitive storage path.)
+                        cmp->make_unfoldable();
+                    }
+                    if (negate) {
                         auto not_expr = make_compare_union_expression(resource_, compare_type::union_not);
-                        not_expr->append_child(inner);
+                        not_expr->append_child(cmp);
                         return not_expr;
                     }
-                    return make_compare_expression(resource_, compare_type::regex, key_left.field, param_id);
+                    return cmp;
                 }
 
                 // JSONB key existence: '?' / '?|' / '?&'. Desugars to IS NOT NULL.
@@ -451,7 +492,11 @@ namespace components::sql::transform {
                     return nullptr;
                 }
 
-                auto get_arg = [this, &names, &plan](Node* node) -> param_storage {
+                // Set when a comparison operand is an ARRAY(SELECT ...): such a compare must be marked
+                // unfoldable so it evaluates in-memory (length-aware array equality) and is never pushed to
+                // the storage constant_filter path (which does no length reconcile).
+                bool array_operand = false;
+                auto get_arg = [this, &names, &plan, &array_operand](Node* node) -> param_storage {
                     switch (nodeTag(node)) {
                         case T_ColumnRef: {
                             if (auto corr = try_lateral_correlate(pg_ptr_cast<ColumnRef>(node), names)) {
@@ -572,15 +617,48 @@ namespace components::sql::transform {
                         }
                         case T_SubLink: {
                             auto sub = pg_ptr_cast<SubLink>(node);
+                            // Transform first so nested sub_queries/sub_query_results are appended before this
+                            // level's entries — the executor runs sub_queries front-to-back and
+                            // sub_query_results[i] must correspond to sub_queries[i]. Dispatch on the sub-link
+                            // kind: a bare comparison operand only ever carries EXPR / EXISTS / ARRAY (ANY/ALL
+                            // arrive as whole predicates via transform_sublink_expr and reach here only through
+                            // unusual parenthesised nesting).
                             auto param_id = plan->parameters->add_parameter(
                                 types::logical_value_t{resource_, types::logical_type::NA});
-                            // Transform first so nested sub_queries/sub_query_results are appended
-                            // before this level's entries — executor runs sub_queries front-to-back
-                            // and sub_query_results[i] must correspond to sub_queries[i].
-                            auto sub_node = transform(*sub->subselect, plan);
-                            plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
-                            plan->sub_queries.emplace_back(std::move(sub_node));
-                            return param_id;
+                            switch (sub->subLinkType) {
+                                case EXPR_SUBLINK: {
+                                    auto sub_node = transform(*sub->subselect, plan);
+                                    plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
+                                    plan->sub_queries.emplace_back(std::move(sub_node));
+                                    return param_id;
+                                }
+                                case EXISTS_SUBLINK: {
+                                    // `col = EXISTS (SELECT ...)`: compare against the boolean EXISTS result.
+                                    auto sub_node = transform(*sub->subselect, plan);
+                                    plan->sub_query_results.emplace_back(&vector::compact_to_bool_value, param_id);
+                                    plan->sub_queries.emplace_back(std::move(sub_node));
+                                    return param_id;
+                                }
+                                case ARRAY_SUBLINK: {
+                                    // `col = ARRAY (SELECT ...)`: array equality against the compacted array.
+                                    // array_equality lets the executor rebuild a 0-row result as a typed empty
+                                    // {}; array_operand marks the enclosing compare unfoldable (see below).
+                                    auto sub_node = transform(*sub->subselect, plan);
+                                    plan->sub_query_results.emplace_back(&vector::compact_to_array_value,
+                                                                         param_id,
+                                                                         /*boolean_required=*/false,
+                                                                         /*array_equality=*/true);
+                                    plan->sub_queries.emplace_back(std::move(sub_node));
+                                    array_operand = true;
+                                    return param_id;
+                                }
+                                default:
+                                    error_ = core::error_t(
+                                        core::error_code_t::sql_parse_error,
+                                        std::pmr::string{"unsupported subquery form as a comparison operand",
+                                                         resource_});
+                                    return nullptr;
+                            }
                         }
                         default:
                             error_ = core::error_t(core::error_code_t::sql_parse_error,
@@ -591,7 +669,13 @@ namespace components::sql::transform {
 
                 param_storage left = get_arg(node->lexpr);
                 param_storage right = get_arg(node->rexpr);
-                return make_compare_expression(resource_, comp_type, left, right);
+                auto cmp = make_compare_expression(resource_, comp_type, left, right);
+                if (array_operand) {
+                    // Route array equality to the in-memory operator_match (length-aware
+                    // logical_value_t::operator==), never the storage constant_filter pushdown.
+                    cmp->make_unfoldable();
+                }
+                return cmp;
             }
             case AEXPR_NOT: {
                 expression_ptr right;
@@ -737,8 +821,31 @@ namespace components::sql::transform {
                                ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->testexpr), names)
                                : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->testexpr), names);
                 key.deduce_side(names);
-                auto op_str = std::string_view(strVal(node->operName->lst.front().data));
-                auto inner_op = get_compare_type(op_str);
+                // Operator symbol is last (schema-qualified OPERATOR(schema.op) prepends the schema).
+                auto op_str = std::string_view(strVal(node->operName->lst.back().data));
+                // LIKE family: ~~ (LIKE), ~~* (ILIKE), !~~ (NOT LIKE), !~~* (NOT ILIKE) all map to a regex
+                // inner_op whose LIKE glob is converted per element at eval time (regex_like), matched
+                // case-insensitively for ILIKE (regex_icase), and negated per element before the any/all
+                // fold for NOT LIKE (regex_negate). Everything else (=, <>, <, ~~->regexp, ...) goes through
+                // get_compare_type; an unmapped operator is rejected (never silently `=` — finding 5).
+                compare_type inner_op;
+                bool re_like = false;
+                bool re_icase = false;
+                bool re_negate = false;
+                if (op_str == "~~" || op_str == "~~*" || op_str == "!~~" || op_str == "!~~*") {
+                    inner_op = compare_type::regex;
+                    re_like = true;
+                    re_icase = (op_str == "~~*" || op_str == "!~~*");
+                    re_negate = (op_str == "!~~" || op_str == "!~~*");
+                } else {
+                    inner_op = get_compare_type(op_str);
+                    if (inner_op == compare_type::invalid) {
+                        error_ = core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"unsupported operator in ANY/ALL subquery comparison", resource_});
+                        return nullptr;
+                    }
+                }
                 auto param_id =
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 // Transform before appending so nested sub_queries/sub_query_results come first.
@@ -748,6 +855,9 @@ namespace components::sql::transform {
                 auto ctype = node->subLinkType == ANY_SUBLINK ? compare_type::any : compare_type::all;
                 auto expr = make_compare_expression(resource_, ctype, key.field, param_id);
                 expr->set_inner_op(inner_op);
+                if (inner_op == compare_type::regex) {
+                    expr->set_regex_flags(re_like, re_icase, re_negate);
+                }
                 expr->make_unfoldable();
                 return expr;
             }
@@ -1210,8 +1320,18 @@ namespace components::sql::transform {
 
             // Condition
             if (node->arg) {
-                // Simple CASE: CASE col WHEN val THEN ... → generate equality: col = val
-                auto col_key = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->arg), names);
+                // Simple CASE: CASE col WHEN val THEN ... → generate equality: col = val.
+                // The operand must be a column reference — a blind pg_ptr_cast<ColumnRef> on any other
+                // node (e.g. a SubLink) reinterprets it and crashes; guard the tag first, mirroring
+                // transform_null_test.
+                if (nodeTag(node->arg) != T_ColumnRef && nodeTag(node->arg) != T_A_Indirection) {
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"CASE operand must be a column reference", resource_});
+                    return nullptr;
+                }
+                auto col_key = nodeTag(node->arg) == T_ColumnRef
+                                   ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->arg), names)
+                                   : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->arg), names);
                 col_key.deduce_side(names);
                 auto param_id = add_param_value(pg_ptr_cast<Node>(when->expr), plan->parameters.get());
                 auto cond = make_compare_expression(resource_, compare_type::eq, col_key.field, param_id);
@@ -1370,7 +1490,8 @@ namespace components::sql::transform {
         if (nodeTag(node) == T_A_Expr) {
             auto a_expr = pg_ptr_cast<A_Expr>(node);
             if (a_expr->kind == AEXPR_OP) {
-                auto op_str = std::string_view(strVal(a_expr->name->lst.front().data));
+                // Operator symbol is last (schema-qualified OPERATOR(schema.op) prepends the schema).
+                auto op_str = std::string_view(strVal(a_expr->name->lst.back().data));
                 if (!is_arithmetic_operator(op_str)) {
                     auto comp_type = get_compare_type(op_str);
                     if (comp_type == compare_type::invalid) {

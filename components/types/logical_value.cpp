@@ -450,23 +450,18 @@ namespace components::types {
             return create_struct(resource_, type, fields);
         } else if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
                    type.type() == logical_type::ARRAY) {
-            // A fixed ARRAY value or a variable-length LIST is cast to a fixed ARRAY,
-            // casting each element to the target element type. The target has a declared
-            // size, so the source length is reconciled to it: an over-long value is
-            // truncated and a short one is padded with NULL. This is the schema-free
-            // fallback; the INSERT/append path reconciles short values against the
-            // column DEFAULT instead (see table::reconcile_to_fixed_array).
+            // A fixed ARRAY value or a variable-length LIST is cast to a fixed ARRAY, casting each element
+            // to the target element type while KEEPING THE SOURCE LENGTH (no truncate/pad). Array equality
+            // is length-aware, so a size mismatch must stay visible (a different-length array is simply
+            // unequal) rather than be silently reconciled to the target size. The INSERT/append path
+            // reconciles short values against the column DEFAULT via table::reconcile_to_fixed_array, not
+            // this cast — so this cast is used only by the comparison paths.
             const auto& target_elem_type = type.child_type();
-            const auto target_size = static_cast<const array_logical_type_extension*>(type.extension())->size();
             const auto& src = children();
             std::vector<logical_value_t> elems;
-            elems.reserve(target_size);
-            for (uint64_t i = 0; i < target_size; ++i) {
-                if (i < src.size()) {
-                    elems.emplace_back(src[i].cast_as(target_elem_type, session_tz));
-                } else {
-                    elems.emplace_back(logical_value_t{resource_, complex_logical_type{logical_type::NA}});
-                }
+            elems.reserve(src.size());
+            for (const auto& child : src) {
+                elems.emplace_back(child.cast_as(target_elem_type, session_tz));
             }
             return create_array(resource_, target_elem_type, elems);
         } else if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
@@ -616,6 +611,24 @@ namespace components::types {
     }
 
     bool logical_value_t::operator==(const logical_value_t& rhs) const {
+        // Array/list equality is length-aware (PostgreSQL): arrays of different length are simply unequal —
+        // never reconciled, never an assert. Element types are coerced by cast_as before comparison; a
+        // residual per-element type mismatch (e.g. an NA pad against a typed element) also counts as
+        // not-equal rather than tripping the element assert. Handled before the size-inclusive type assert.
+        if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
+            (rhs.type_.type() == logical_type::ARRAY || rhs.type_.type() == logical_type::LIST)) {
+            const auto& l = *vec_ptr();
+            const auto& r = *rhs.vec_ptr();
+            if (l.size() != r.size()) {
+                return false;
+            }
+            for (size_t i = 0; i < l.size(); ++i) {
+                if (!(l[i].type_ == r[i].type_) || !(l[i] == r[i])) {
+                    return false;
+                }
+            }
+            return true;
+        }
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
         switch (type_.type()) {
             case logical_type::NA:
@@ -673,6 +686,24 @@ namespace components::types {
     bool logical_value_t::operator!=(const logical_value_t& rhs) const { return !(*this == rhs); }
 
     bool logical_value_t::operator<(const logical_value_t& rhs) const {
+        // Array/list ordering is length-aware: compare element-wise, a shorter array that is a prefix sorts
+        // first (lexicographic). Handled before the size-inclusive type assert so different-length arrays
+        // do not trip it.
+        if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
+            (rhs.type_.type() == logical_type::ARRAY || rhs.type_.type() == logical_type::LIST)) {
+            const auto& lv = *vec_ptr();
+            const auto& rv = *rhs.vec_ptr();
+            const size_t n = lv.size() < rv.size() ? lv.size() : rv.size();
+            for (size_t i = 0; i < n; ++i) {
+                if (lv[i] < rv[i]) {
+                    return true;
+                }
+                if (rv[i] < lv[i]) {
+                    return false;
+                }
+            }
+            return lv.size() < rv.size();
+        }
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
         switch (type_.type()) {
             case logical_type::BOOLEAN:
@@ -719,9 +750,20 @@ namespace components::types {
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP: {
-                auto& lv = *vec_ptr();
-                auto& rv = *rhs.vec_ptr();
-                return std::lexicographical_compare(lv.begin(), lv.end(), rv.begin(), rv.end());
+                // Element-wise lexicographic comparison (ARRAY/LIST length-awareness is handled before the
+                // assert above; STRUCT/MAP have an equal field count guaranteed by the assert).
+                const auto& lv = *vec_ptr();
+                const auto& rv = *rhs.vec_ptr();
+                const size_t n = lv.size() < rv.size() ? lv.size() : rv.size();
+                for (size_t i = 0; i < n; ++i) {
+                    if (lv[i] < rv[i]) {
+                        return true;
+                    }
+                    if (rv[i] < lv[i]) {
+                        return false;
+                    }
+                }
+                return lv.size() < rv.size();
             }
             default:
                 return false;

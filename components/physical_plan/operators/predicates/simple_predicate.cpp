@@ -1,6 +1,7 @@
 #include "simple_predicate.hpp"
 #include "utils.hpp"
 
+#include <components/expressions/like_to_regex.hpp>
 #include <regex>
 
 namespace components::operators::predicates {
@@ -40,6 +41,42 @@ namespace components::operators::predicates {
                       const types::logical_value_t& left,
                       const types::logical_value_t& right) requires(std::is_same_v<COMP, regex<>>) {
             return evaluate_comp<COMP>(resource, left.value<std::string_view>(), right.value<std::string_view>());
+        }
+
+        // Scalar `col ~~/~~*/!~~/!~~* pattern` (LIKE/ILIKE, the NOT forms wrapped in union_not by the
+        // transformer). The pattern is already like_to_regex-converted at transform time (always a well-formed
+        // regex); here we only apply case-insensitivity (regex_icase, ILIKE).
+        inline simple_predicate::row_check_fn_t make_regex_comparator(std::pmr::memory_resource* resource,
+                                                                      const compute::function_registry_t* function_registry,
+                                                                      const expressions::compare_expression_ptr& expr,
+                                                                      const logical_plan::storage_parameters* parameters) {
+            auto left_getter = impl::create_value_getter(resource, function_registry, expr->left(), parameters);
+            auto right_getter = impl::create_value_getter(resource, function_registry, expr->right(), parameters);
+            const bool icase = expr->regex_icase();
+            return [left_getter = std::move(left_getter), right_getter = std::move(right_getter), icase](
+                       const vector::data_chunk_t& chunk_left,
+                       const vector::data_chunk_t& chunk_right,
+                       size_t index_left,
+                       size_t index_right) -> core::result_wrapper_t<bool> {
+                auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
+                auto right_val = right_getter(chunk_left, chunk_right, index_left, index_right);
+                if (left_val.has_error()) {
+                    return left_val.convert_error<bool>();
+                }
+                if (right_val.has_error()) {
+                    return right_val.convert_error<bool>();
+                }
+                if (left_val.value().is_null() || right_val.value().is_null()) {
+                    return false;
+                }
+                std::string subject(left_val.value().value<std::string_view>());
+                std::string pat(right_val.value().value<std::string_view>());
+                auto re_flags = std::regex::ECMAScript;
+                if (icase) {
+                    re_flags |= std::regex::icase;
+                }
+                return core::result_wrapper_t<bool>{std::regex_search(subject, std::regex(pat, re_flags))};
+            };
         }
 
         template<typename COMP>
@@ -257,10 +294,12 @@ namespace components::operators::predicates {
                     make_comparator<std::less_equal<>>(resource, function_registry, expr, parameters, session_tz))};
             case compare_type::any:
             case compare_type::all: {
+                // inner_op is guaranteed valid by the transformer (an unmapped ANY/ALL operator is rejected
+                // there, not silently defaulted to `=` — finding 5). No invalid->eq remap here.
                 auto inner_op = expr->inner_op();
-                if (inner_op == compare_type::invalid) {
-                    inner_op = compare_type::eq;
-                }
+                const bool re_like = expr->regex_like();
+                const bool re_icase = expr->regex_icase();
+                const bool re_negate = expr->regex_negate();
                 auto left_getter = impl::create_value_getter(resource, function_registry, expr->left(), parameters);
                 auto param_id = std::get<core::parameter_id_t>(expr->right());
                 const bool is_any = expr->type() == compare_type::any;
@@ -271,6 +310,9 @@ namespace components::operators::predicates {
                      param_id,
                      parameters,
                      inner_op,
+                     re_like,
+                     re_icase,
+                     re_negate,
                      is_any,
                      session_tz](const vector::data_chunk_t& chunk_left,
                                  const vector::data_chunk_t& chunk_right,
@@ -322,6 +364,25 @@ namespace components::operators::predicates {
                                 case compare_type::lte:
                                     cmp = evaluate_comp<std::less_equal<>>(resource, left_val.value(), rhs);
                                     break;
+                                case compare_type::regex: {
+                                    // LIKE/ILIKE/NOT-LIKE ANY: the array element is the pattern, left_val the
+                                    // subject. Convert a LIKE glob per element (regex_like) — a converted glob
+                                    // is always a well-formed regex — match case-insensitively (regex_icase),
+                                    // and negate the per-element result for NOT LIKE (regex_negate) before the
+                                    // any/all fold.
+                                    std::string subject(left_val.value().value<std::string_view>());
+                                    std::string pat(rhs.value<std::string_view>());
+                                    if (re_like) {
+                                        pat = expressions::like_to_regex(pat);
+                                    }
+                                    auto re_flags = std::regex::ECMAScript;
+                                    if (re_icase) {
+                                        re_flags |= std::regex::icase;
+                                    }
+                                    bool matched = std::regex_search(subject, std::regex(pat, re_flags));
+                                    cmp = core::result_wrapper_t<bool>{re_negate ? !matched : matched};
+                                    break;
+                                }
                                 default:
                                     break;
                             }
@@ -339,9 +400,8 @@ namespace components::operators::predicates {
                     })};
             }
             case compare_type::regex:
-                return {new simple_predicate(
-                    resource,
-                    make_comparator<regex<>>(resource, function_registry, expr, parameters, session_tz))};
+                return {new simple_predicate(resource,
+                                             make_regex_comparator(resource, function_registry, expr, parameters))};
             case compare_type::all_false:
                 return {new simple_predicate(
                     resource,

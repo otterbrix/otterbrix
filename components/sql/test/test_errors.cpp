@@ -180,4 +180,22 @@ TEST_CASE("components::sql::errors") {
     // (see integration where_having_boolean_required), not in the transformer.
     TEST_TRANSFORMER_OK("SELECT * FROM TEST_DATABASE.TEST_COLLECTION WHERE (SELECT count FROM "
                         "TEST_DATABASE.TEST_COLLECTION);");
+
+    // #563 finding 4: a SubLink (or any non-column) as the operand of a simple CASE must be a clean
+    // transformer error, not a blind pg_ptr_cast<ColumnRef> that reinterprets the node and crashes.
+    TEST_TRANSFORMER_ERROR("SELECT CASE (SELECT count FROM TEST_DATABASE.TEST_COLLECTION) WHEN 1 THEN 2 ELSE 3 END "
+                           "FROM TEST_DATABASE.TEST_COLLECTION;",
+                           R"_(CASE operand must be a column reference)_");
+
+    // ARRAY(SELECT ...) projected in the SELECT list is not supported yet (deferred, #559): a clear
+    // error, not a crash and not a misleading "unknown node type".
+    TEST_TRANSFORMER_ERROR("SELECT ARRAY(SELECT count FROM TEST_DATABASE.TEST_COLLECTION) FROM "
+                           "TEST_DATABASE.TEST_COLLECTION;",
+                           R"_(unsupported subquery in the SELECT list; only a scalar subquery is supported)_");
+
+    // #563 finding 6b: node_tag_to_string must name the node tag ("T_SubLink"), not print "unknown".
+    // A SubLink in ORDER BY still reports through node_tag_to_string.
+    TEST_TRANSFORMER_ERROR("SELECT count FROM TEST_DATABASE.TEST_COLLECTION ORDER BY (SELECT count FROM "
+                           "TEST_DATABASE.TEST_COLLECTION);",
+                           R"_(Unknown node type in ORDER BY: T_SubLink)_");
 }

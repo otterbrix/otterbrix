@@ -2309,3 +2309,226 @@ TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
         REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
     }
 }
+
+// M2 (#563 finding 2): a SubLink as a comparison operand is lowered by kind. `flag = EXISTS (SELECT ...)`
+// must compare against the BOOLEAN result of EXISTS (compact_to_bool_value), not the first value of the
+// sub-query (the pre-fix silent-wrong behaviour).
+TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
+    auto config = test_create_config("/tmp/test_subqueries/exists_operand");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (x bigint, flag boolean);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (x, flag) VALUES (1, true), (2, false);")->is_success());
+
+    INFO("EXISTS is TRUE (sub-query has rows) → matches the flag=true row");
+    {
+        auto cur = run("SELECT x FROM db.t WHERE flag = EXISTS (SELECT x FROM db.t WHERE x > 0);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+    }
+    INFO("EXISTS is FALSE (sub-query empty) → matches the flag=false row");
+    {
+        auto cur = run("SELECT x FROM db.t WHERE flag = EXISTS (SELECT x FROM db.t WHERE x > 100);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+}
+
+// M4 (#559): scalar sub-queries in value position — projected in the SELECT list and as an arithmetic
+// operand — plus a NULL/0-row scalar sub-query returning a typed NULL row (C-NULL).
+TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
+    auto config = test_create_config("/tmp/test_subqueries/value_position_scalar");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (x bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (x) VALUES (10), (20), (30);")->is_success());
+    REQUIRE(run("CREATE TABLE db.one (id bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.one (id) VALUES (1);")->is_success());
+    REQUIRE(run("CREATE TABLE db.empty (y bigint);")->is_success());
+
+    INFO("M4a: scalar sub-query projected in the SELECT list");
+    {
+        auto cur = run("SELECT (SELECT count(*) FROM db.t) FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+    }
+    INFO("M4b: scalar sub-query as an arithmetic operand (per outer row)");
+    {
+        auto cur = run("SELECT x + (SELECT max(x) FROM db.t) FROM db.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // 10+30, 20+30, 30+30
+    }
+    INFO("Reentrancy: outer aggregate + value-position sub-query in the same list");
+    {
+        auto cur = run("SELECT sum(x) + (SELECT count(*) FROM db.t) FROM db.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 63); // sum=60 + count=3
+    }
+    INFO("M4-NULL: a 0-row scalar sub-query projects a typed NULL row");
+    {
+        auto cur = run("SELECT (SELECT max(y) FROM db.empty) FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+    }
+}
+
+// M5 (#559 / #563): a bare NULL literal in value position is typed (PG unknown->text) instead of rejected,
+// and `NULL::T` is a proper NULL rather than a garbage non-null value.
+TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
+    auto config = test_create_config("/tmp/test_subqueries/null_literal_typing");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.one (id bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.one (id) VALUES (1);")->is_success());
+
+    INFO("bare NULL literal projects a typed NULL row (was rule-6 rejected)");
+    {
+        auto cur = run("SELECT NULL FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+    }
+    INFO("NULL::int is a proper NULL, not a garbage non-null value");
+    {
+        auto cur = run("SELECT NULL::int FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+    }
+    INFO("SELECT (SELECT NULL ...) — scalar sub-query yielding NULL projects a typed NULL row");
+    {
+        auto cur = run("SELECT (SELECT NULL FROM db.one) FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+    }
+}
+
+// M3c (#563 finding 5): the LIKE/ILIKE family for `<op> ANY (SELECT ...)` and scalar ILIKE. LIKE ANY
+// converts each sub-query pattern via like_to_regex (%/_), ILIKE ANY matches case-insensitively, NOT LIKE
+// ANY negates per element before the ANY fold; scalar ILIKE / NOT ILIKE match case-insensitively.
+TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
+    auto config = test_create_config("/tmp/test_subqueries/like_ilike_family");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, s string);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, s) VALUES (1, 'apple'), (2, 'Banana'), (3, 'cherry');")->is_success());
+    REQUIRE(run("CREATE TABLE db.pat (p string);")->is_success());
+    // UPPERCASE glob patterns: LIKE ANY (case-sensitive) matches none; ILIKE ANY matches apple + cherry.
+    REQUIRE(run("INSERT INTO db.pat (p) VALUES ('A%'), ('C%');")->is_success());
+
+    INFO("LIKE ANY (case-sensitive, %/_): uppercase patterns match no lowercase row");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("ILIKE ANY (case-insensitive): 'A%'/'C%' match apple and cherry");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s ILIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    INFO("NOT LIKE ANY: every row fails at least one uppercase pattern (case-sensitive)");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+    INFO("scalar ILIKE matches case-insensitively");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s ILIKE 'banana';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+    INFO("scalar NOT ILIKE");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT ILIKE 'banana';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}
+
+// M5 Part 3 (#559/#563): a bare NULL literal in one UNION branch reconciles to the other branch's type
+// (PostgreSQL), instead of a spurious "UNION column type mismatch". A genuine text-vs-int mismatch still errors.
+TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
+    auto config = test_create_config("/tmp/test_subqueries/union_null_reconcile");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.one (id bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.one (id) VALUES (1);")->is_success());
+
+    INFO("NULL on the right branch reconciles to the left (bigint) type");
+    {
+        auto cur = run("SELECT id FROM db.one UNION SELECT NULL FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // {1, NULL}
+    }
+    INFO("NULL on the left branch reconciles to the right (bigint) type");
+    {
+        auto cur = run("SELECT NULL FROM db.one UNION SELECT id FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}

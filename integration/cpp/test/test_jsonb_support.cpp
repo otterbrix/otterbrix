@@ -45,8 +45,10 @@
 //       absent key folds to constant false and never poisons a '?|' any-of.
 //   [D] table-valued expand/delete are well-behaved: expanding a path that matches
 //       no column is a "path not found" error (not a silently vanished select
-//       item), and inside a join expand and delete resolve against the side the
-//       operator named (not blindly across both, which was ambiguous).
+//       item); inside a join expand and delete resolve against the side the
+//       operator named (not blindly across both, which was ambiguous); and under
+//       GROUP BY / an aggregate they are a clean rejection, not a segfault (the
+//       group branch never expands them).
 //   [F] a cast over a scalar navigation used in arithmetic ((t #>> 'a.c')::bigint
 //       + 1) reads the navigated column per row, instead of folding the navigation
 //       into an uninitialized constant parameter (per-run garbage on every row).
@@ -630,6 +632,34 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
         REQUIRE(cur);
         CHECK_FALSE(cur->is_success());
     }
+}
+
+// A table-valued operator (expand '->'/'#>', delete '-'/'#-') is lowered to
+// per-column get_field only on the plain SELECT path. Under GROUP BY — or a bare
+// aggregate, which routes through the same group branch — it is never expanded, so
+// an un-expanded node used to reach physical execution and SEGFAULT the process.
+// It must be a clean rejection instead (expanding one row into several columns has
+// no meaning under grouping).
+TEST_CASE("integration::cpp::test_jsonb_support::table_valued_op_rejected_under_grouping") {
+    auto config = make_test_config("/tmp/test_jsonb_matrix/gb_reject");
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE jp.gb ();")->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.gb (g, a.b, x) VALUES (1, 1, 9), (1, 2, 90);")->is_success());
+
+    // clean errors, not crashes — with an explicit GROUP BY ...
+    CHECK_FALSE(exec(d, "SELECT g, gb -> 'a' FROM jp.gb GROUP BY g;")->is_success());
+    CHECK_FALSE(exec(d, "SELECT gb #> 'a' FROM jp.gb GROUP BY g;")->is_success());
+    CHECK_FALSE(exec(d, "SELECT gb - 'x' FROM jp.gb GROUP BY g;")->is_success());
+    CHECK_FALSE(exec(d, "SELECT gb #- 'a.b' FROM jp.gb GROUP BY g;")->is_success());
+    // ... and with a bare aggregate (routes through the group branch too)
+    CHECK_FALSE(exec(d, "SELECT gb -> 'a', COUNT(x) FROM jp.gb;")->is_success());
+
+    // a genuine aggregate over the same table is unaffected
+    auto ok = exec(d, "SELECT g, COUNT(x) AS n FROM jp.gb GROUP BY g;");
+    REQUIRE(ok->is_success());
+    CHECK(ok->size() == 1);
 }
 
 // The wiki's SQL-Standards matrix marks every SQL:2016 JSON row ❌ for otterbrix.

@@ -1628,6 +1628,28 @@ namespace services::dispatcher {
                     }
                 }
 
+                // Table-valued jsonb operators ('->'/'#>' expand, '-'/'#-' delete)
+                // are lowered to per-column get_field only on the non-GROUP-BY path.
+                // With a GROUP BY (or a bare aggregate, which also routes here) they
+                // are never expanded, so an un-expanded jsonb_expand/jsonb_delete would
+                // reach physical execution and crash. Reject them cleanly instead —
+                // expanding one row into several columns has no meaning under grouping.
+                if (node_group && node_select) {
+                    for (const auto& expr : node_select->expressions()) {
+                        if (expr->group() != expression_group::scalar) {
+                            continue;
+                        }
+                        auto* se = reinterpret_cast<scalar_expression_t*>(expr.get());
+                        if (se->type() == scalar_type::jsonb_expand || se->type() == scalar_type::jsonb_delete) {
+                            return core::error_t(
+                                core::error_code_t::schema_error,
+                                std::pmr::string{"table-valued jsonb operator ('->'/'#>'/'-'/'#-') "
+                                                 "is not supported with GROUP BY or aggregation",
+                                                 resource});
+                        }
+                    }
+                }
+
                 if (node_data) {
                     auto node_data_res = validate_schema(resource, idx, node_data, parameters);
                     if (node_data_res.has_error()) {

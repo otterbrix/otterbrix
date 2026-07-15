@@ -372,9 +372,8 @@ namespace components::sql::transform {
                                              resource_});
                         return;
                     }
-                    // A child transform may have failed (e.g. an unsupported sub-query form returns nullptr
-                    // + sets error_). Only the top-level WHERE path guards has_error(); guard here too, or
-                    // the child_expr->group() below null-derefs before that guard is reached.
+                    // A child transform may fail (unsupported sub-query form → nullptr + error_).
+                    // Guard before child_expr->group() below null-derefs.
                     if (has_error() || !child_expr) {
                         return;
                     }
@@ -778,10 +777,10 @@ namespace components::sql::transform {
             case INITPLAN_FUNC_SUBLINK:
                 break;
         }
-        // Unsupported / parser-unreachable sub-query form. An internal error, NOT assert(false) (a Release
-        // no-op → falls off the end → UB). In this fork the grammar never emits NOT_EXISTS/ROWCOMPARE/
-        // CTE/INITPLAN_FUNC (NOT EXISTS is AEXPR_NOT+EXISTS; WITH rides withClause); ARRAY(SELECT ...) as a
-        // predicate is meaningless (array != bool) and target-list ARRAY is a separate deferred feature.
+        // Unsupported / parser-unreachable sub-query form. In this fork the grammar never emits
+        // NOT_EXISTS/ROWCOMPARE/CTE/INITPLAN_FUNC (NOT EXISTS is AEXPR_NOT+EXISTS; WITH rides withClause);
+        // ARRAY(SELECT ...) as a predicate is meaningless (array != bool) and target-list ARRAY is a
+        // separate deferred feature.
         error_ = core::error_t(core::error_code_t::sql_parse_error,
                                std::pmr::string{"unsupported sub-query form", resource_});
         return nullptr;

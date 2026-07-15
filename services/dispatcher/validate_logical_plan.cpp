@@ -2348,7 +2348,7 @@ namespace services::dispatcher {
                         return res;
                     }
                 }
-                // HAVING is now a first-class node_having_t child of the aggregate (its compare at
+                // HAVING is a first-class node_having_t child of the aggregate (its compare at
                 // expressions()[0]), validated against the group-output `result` schema (built above:
                 // GROUP keys + aggregate columns incl. hidden __having aggregates).
                 if (node_having && !node_having->expressions().empty()) {

@@ -350,10 +350,9 @@ namespace components::sql::transform {
                 auto constant = pg_ptr_cast<A_Const>(cast->arg);
                 if (constant->val.type != T_String) {
                     // A numeric literal under a CAST: a T_Float keeps its payload in `str`
-                    // (floatVal -> double -> DOUBLE), a T_Integer in `ival` (intVal -> long ->
-                    // BIGINT). The previous code always read `ival`, so a float literal — e.g.
-                    // CAST(1000000.0 AS double) — was misread as a garbage BIGINT instead of a
-                    // DOUBLE, which then failed every downstream type-matched comparison/join.
+                    // (floatVal -> double -> DOUBLE), a T_Integer in `ival` (intVal -> long -> BIGINT).
+                    // Reading `ival` for a T_Float misreads it as a garbage BIGINT — e.g.
+                    // CAST(1000000.0 AS double) — failing every downstream type-matched comparison/join.
                     if (constant->val.type == T_Float) {
                         return types::logical_value_t(resource, floatVal(&constant->val));
                     }

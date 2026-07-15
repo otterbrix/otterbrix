@@ -281,9 +281,8 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_fl
 // ---------------------------------------------------------------------------
 // DELETE ... USING ... LIMIT n stops at EXACTLY n matched rows ACROSS mid-pump
 // flushes. The bound is enforced by the persistent matched_total_ counter, NOT
-// by the per-flush-cleared modified_ buffer — with n well above the flush
-// threshold the sink flushes >1 time BEFORE reaching n, so a flush-derived count
-// would under-count and over-delete. This is the cross-flush regression.
+// by the per-flush-cleared modified_ buffer — a flush-derived count would
+// under-count and over-delete.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes") {
     auto config = make_test_config("/tmp/test_bounded_dml_flush/delete_using_limit");
@@ -323,10 +322,8 @@ TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes
     }
     const auto flushes_after = services::collection::executor::dml_flush_count();
 
-    // EXACTLY n rows deleted — the persistent matched_total_ counter bounds the semi-join at
-    // n MATCHED rows over the whole multi-batch (kRowCount=3000) left scan, and it holds
-    // regardless of how the sink flushed (a mid-pump flush that clears modified_ does NOT
-    // reset the count — matched_total_ is counted at MATCH time, not derived from the buffer).
+    // EXACTLY n rows deleted: matched_total_ is counted at MATCH time (not derived from the
+    // per-flush modified_ buffer), so a flush that clears modified_ does not reset the bound.
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.tgt;");
         REQUIRE(cur->is_success());

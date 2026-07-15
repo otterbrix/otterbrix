@@ -51,9 +51,9 @@ namespace {
 
     // aggregate_t(output_types, distinct) -> group_t(pushdown, exprs). The pushdown group is
     // built here; the aggregate-node wrapping (oid / distinct / output_types) is the shared
-    // planner_test::make_agg. HAVING is no longer carried inside node_group: when non-null it
-    // is attached as a node_having_t CHILD OF THE AGGREGATE, which the re-homed
-    // create_plan_aggregate gate scans for and rejects.
+    // planner_test::make_agg. HAVING is not carried inside node_group: when non-null it is
+    // attached as a node_having_t CHILD OF THE AGGREGATE, which the create_plan_aggregate
+    // gate scans for and rejects.
     node_ptr make_agg(std::pmr::memory_resource* r,
                       const std::vector<expression_ptr>& group_exprs,
                       expression_ptr having,

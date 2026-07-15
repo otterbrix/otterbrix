@@ -259,14 +259,12 @@ namespace services::planner::impl {
         const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
         const auto& projected_cols = agg_node->projected_cols();
 
-        // UNIFIED LIMIT: operator_limit is the SINGLE authoritative limiter. It is
-        // inserted as the OUTERMOST node (above DISTINCT — SQL applies LIMIT after
-        // DISTINCT) whenever the LIMIT/OFFSET is effective, and applies the real
-        // [offset, offset+limit) window. Every source below receives only an advisory
-        // COUNT read-cap (offset 0) that the pushdown_limit optimizer rule stamped on
-        // the eligible node (node_match_t / node_sort_t / this aggregate); a node the
-        // rule did not stamp reads unlimit(). So OFFSET is applied in exactly ONE place
-        // and double-OFFSET is structurally impossible.
+        // operator_limit is the single authoritative limiter: inserted as the OUTERMOST
+        // node (above DISTINCT — SQL applies LIMIT after DISTINCT) when the LIMIT/OFFSET is
+        // effective, applying the real [offset, offset+limit) window. Every source below gets
+        // only an advisory read-cap (offset 0) that the pushdown_limit rule stamped on the
+        // eligible node; an unstamped node reads unlimit(). OFFSET is thus applied in exactly
+        // one place, so double-OFFSET is structurally impossible.
         const bool limit_effective =
             limit.limit() != components::logical_plan::limit_t::unlimit().limit() || limit.offset() != 0;
 

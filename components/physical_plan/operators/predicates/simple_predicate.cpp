@@ -289,7 +289,7 @@ namespace components::operators::predicates {
                         // `x = ANY(empty)` is false (IN () matches nothing) and
                         // `x <> ALL(empty)` is true (NOT IN () matches everything) — exactly
                         // the loop-exhausted result, so short-circuit before dereferencing
-                        // the (null) array's children (R1: no empty-array value was built).
+                        // the (null) array's children.
                         if (arr_param.is_null()) {
                             return !is_any;
                         }

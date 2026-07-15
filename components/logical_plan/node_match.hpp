@@ -13,14 +13,13 @@ namespace components::logical_plan {
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 
-        // Optimizer annotation (pushdown_limit rule): a pure COUNT read-cap
-        // (offset always 0) = limit+offset rows the disk scan for this WHERE may
-        // cap its POST-filter output at, so the authoritative operator_limit above
-        // can still window [offset, offset+limit). unlimit() = no cap. ANNOTATION
-        // only (no logical-semantics change); like node_group_t::pushdown_ it is
-        // deliberately EXCLUDED from hash_impl() (stays 0) and operator== (which
-        // ignores scalar members) — safe only while no logical-plan-hash-keyed
-        // plan cache exists; if one is introduced, fold read_cap_ into hash_impl().
+        // Optimizer annotation set by the pushdown_limit rule: a pure COUNT read-cap
+        // (offset always 0) capping this WHERE scan's POST-filter output at
+        // limit+offset rows, so the authoritative operator_limit above can still
+        // window [offset, offset+limit). unlimit() = no cap. Advisory only, no
+        // semantics change. Deliberately EXCLUDED from hash_impl() and operator==
+        // (like node_group_t::pushdown_): safe only while no logical-plan-hash-keyed
+        // plan cache exists — fold it into hash_impl() if one is introduced.
         void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
         const limit_t& read_cap() const noexcept { return read_cap_; }
 

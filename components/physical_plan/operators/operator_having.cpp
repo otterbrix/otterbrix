@@ -80,7 +80,7 @@ namespace components::operators {
             return core::error_t::no_error(); // nothing survived — emit no chunk (matches operator_match)
         }
 
-        // TYPED, no-box gather (Rule 1): data_chunk_t::copy routes each column through vector_ops::copy
+        // TYPED, no-box gather: data_chunk_t::copy routes each column through vector_ops::copy
         // (no per-cell logical_value_t), skips placeholder columns, gathers row_ids (all-zero over a
         // group sink — identical to match's zero sentinel), and sets the target cardinality itself.
         vector::data_chunk_t out_chunk =

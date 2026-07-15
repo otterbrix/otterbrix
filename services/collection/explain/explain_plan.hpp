@@ -17,7 +17,7 @@ namespace services {
 namespace services::collection {
 
     // Engine-neutral EXPLAIN IR node (one per physical operator). MOVE-ONLY: a std::pmr copy would
-    // re-anchor to get_default_resource() (Rule 14), so nodes are built with `mr` and moved into
+    // re-anchor to get_default_resource(), so nodes are built with `mr` and moved into
     // their parent's children.
     struct explain_plan_node {
         components::operators::operator_type type{components::operators::operator_type::unused};
@@ -37,8 +37,8 @@ namespace services::collection {
             : relation(mr)
             , children(mr)
             , subplans(mr) {}
-        explain_plan_node(const explain_plan_node&) = delete;            // a COPY re-anchors to
-        explain_plan_node& operator=(const explain_plan_node&) = delete; // get_default_resource() (Rule 14)
+        explain_plan_node(const explain_plan_node&) = delete;
+        explain_plan_node& operator=(const explain_plan_node&) = delete;
         explain_plan_node(explain_plan_node&&) = default;
         explain_plan_node& operator=(explain_plan_node&&) = default;
     };

@@ -74,10 +74,8 @@ namespace services::planner {
                 return impl::create_plan_insert(context, function_registry, node, params);
             case node_type::match_t:
                 return impl::create_plan_match(context, node, std::move(limit));
-            // node_type::having_t has no generic-dispatch case: a HAVING node is emitted by the
-            // transformer ONLY as an aggregate child and is lowered inline by create_plan_aggregate
-            // (via create_plan_having). It never reaches this generic switch; a hypothetical
-            // standalone having_t falls through to `default` (nullptr).
+            // No having_t case: a HAVING node exists only as an aggregate child and is lowered
+            // inline by create_plan_aggregate, so it never reaches this generic dispatch.
             case node_type::group_t:
                 return impl::create_plan_group(context, function_registry, node, params);
             case node_type::select_t:

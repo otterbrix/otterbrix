@@ -10,15 +10,14 @@ namespace components::operators {
     // SQL HAVING — a post-aggregation streaming filter placed ABOVE the group operator.
     //
     // It reuses the shared predicates/ layer (create_predicate + batch_check) exactly as
-    // operator_match does, but is a DISTINCT operator (operator_type::having, rendered "Having"),
-    // NOT a subclass of a shared filter base extracted from operator_match — operator_match is left
-    // unchanged. The split is justified by three WHERE-only branches that are structurally
+    // operator_match does, but is a DISTINCT operator (operator_type::having, rendered "Having").
+    // It is kept separate from operator_match because three WHERE-only branches are structurally
     // unreachable for HAVING (its child is ALWAYS the group operator, never a scan or nothing):
     //   * NO LIMIT / read-cap  — HAVING is always lowered unlimit(); operator_limit is the window.
     //   * NO row-id propagation — the input is a group SINK whose output row_ids are the zero
     //     sentinel; the typed gather (data_chunk_t::copy) reproduces that sentinel for free.
     //   * NO sourceless shape   — role() is unconditionally streaming; there is no source_next.
-    // The row copy uses the TYPED, no-box data_chunk_t::copy gather (Rule 1), not match's per-cell
+    // The row copy uses the TYPED, no-box data_chunk_t::copy gather, not match's per-cell
     // logical_value_t box/unbox loop.
     class operator_having_t final : public read_only_operator_t {
     public:

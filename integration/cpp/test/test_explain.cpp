@@ -664,8 +664,8 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
                     ->is_success());
     }
 
-    // HAVING now lowers to a dedicated operator_having_t (operator_type::having), rendered "Having"
-    // above the "Aggregate" — distinct from a WHERE "Filter". Before this change both rendered "Filter".
+    // HAVING lowers to a dedicated operator_having_t (operator_type::having), rendered "Having"
+    // above the "Aggregate" — distinct from a WHERE "Filter".
     INFO("EXPLAIN of GROUP BY ... HAVING shows a Having node above the Aggregate"); {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(

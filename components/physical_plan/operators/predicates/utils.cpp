@@ -140,11 +140,9 @@ namespace components::operators::predicates::impl {
                                                 const compute::function_registry_t* function_registry,
                                                 const expressions::scalar_expression_ptr& expr,
                                                 const logical_plan::storage_parameters* parameters) {
-        // Single-operand unary_minus: negate the inner operand (0 - inner). filter_having
-        // handled this shape (operator_group.cpp:877-880); the binary getter's assert(>=2)
-        // below would abort (debug) / OOB-read params()[1] (release) without this branch,
-        // so it must precede the assert. Keep the boxed logical_value_t path (typed no-box
-        // rewrite is the separate global step, out of scope here).
+        // Single-operand unary_minus: negate the inner operand (0 - inner). This branch must
+        // precede the binary getter's assert(>=2) below, which would otherwise abort (debug) /
+        // OOB-read params()[1] (release) on a one-operand expression.
         if (expr->type() == expressions::scalar_type::unary_minus && !expr->params().empty()) {
             auto inner_getter = create_value_getter(resource, function_registry, expr->params()[0], parameters);
             return [resource, inner_getter = std::move(inner_getter)](

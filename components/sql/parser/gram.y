@@ -12400,11 +12400,10 @@ opt_select_limit:
 		;
 
 /*
- * DML LIMIT (DELETE/UPDATE ... LIMIT n). A dedicated LIMIT-only production
- * (NO OFFSET/FETCH) — otterbrix bounds affected/matched rows, and OFFSET has no
- * meaning for a set-based DML; writing OFFSET is therefore a clean syntax error.
- * Yields the count expression (or NULL when absent); the transformer validates it
- * (integer / bound parameter) exactly like a SELECT limit.
+ * DML LIMIT (DELETE/UPDATE ... LIMIT n): LIMIT-only, no OFFSET/FETCH. OFFSET has
+ * no meaning for set-based DML that bounds affected/matched rows, so writing it is
+ * a clean syntax error. Yields the count expression (or NULL when absent); the
+ * transformer validates it (integer / bound parameter) like a SELECT limit.
  */
 opt_dml_limit:
 			LIMIT a_expr						{ $$ = $2; }

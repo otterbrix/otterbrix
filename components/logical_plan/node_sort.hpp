@@ -15,12 +15,12 @@ namespace components::logical_plan {
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
 
-        // Optimizer annotation (pushdown_limit rule): a pure COUNT read-cap
-        // (offset always 0) = limit+offset rows this FULL sort may truncate its
-        // OUTPUT to, so the authoritative operator_limit above can still window
-        // [offset, offset+limit). Stamped only when there is NO DISTINCT above the
-        // sort. unlimit() = no cap. ANNOTATION only; EXCLUDED from hash_impl()
-        // (stays 0) and operator== — see node_match_t::read_cap_ for the rationale.
+        // Optimizer annotation set by the pushdown_limit rule: a pure COUNT read-cap
+        // (offset always 0) this FULL sort may truncate its OUTPUT to, so the
+        // authoritative operator_limit above can still window [offset, offset+limit).
+        // Stamped only when there is NO DISTINCT above the sort. unlimit() = no cap.
+        // Advisory only; EXCLUDED from hash_impl()/operator== — see
+        // node_match_t::read_cap_ for the rationale.
         void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
         const limit_t& read_cap() const noexcept { return read_cap_; }
 

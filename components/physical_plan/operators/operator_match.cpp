@@ -110,8 +110,8 @@ namespace components::operators {
                 for (size_t j : populated_cols) {
                     out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));
                 }
-                // DEFECT FIX (a): only propagate the input row_id when it is a REAL
-                // absolute id (input is a scan source's batch). Over a SINK
+                // Only propagate the input row_id when it is a REAL absolute id
+                // (input is a scan source's batch). Over a SINK
                 // (group/join) the input's row_ids are zero-filled placeholders; the
                 // out_chunk's row_ids are likewise zero-initialized, so leaving them
                 // (no copy) reproduces exactly what the materialized path produced

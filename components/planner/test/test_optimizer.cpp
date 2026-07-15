@@ -1095,8 +1095,8 @@ TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
     auto resource = core::pmr::otterbrix_resource();
     auto having = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "h"));
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    // HAVING is now a node_having_t child of the AGGREGATE (not carried in the group); the
-    // re-homed pushdown_aggregate gate scans the aggregate's children for it and skips.
+    // HAVING is a node_having_t child of the AGGREGATE (not carried in the group); the
+    // pushdown_aggregate gate scans the aggregate's children for it and skips.
     auto agg = planner_test::make_agg(&resource, group, pushable_oid, expression_ptr(having));
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }

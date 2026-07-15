@@ -26,10 +26,10 @@ namespace components::planner::optimizer {
     //                                        is_distinct() (the terminal
     //                                        transfer_scan reads the aggregate's cap).
     //
-    // ANNOTATION only — logical semantics are unchanged; the read-cap is advisory
-    // (children may over-read; correctness never depends on them honoring it).
-    // Signature mirrors pushdown_aggregate. Returns the root; nodes annotated in
-    // place. Registered UNGATED (a local scan/sort hint, valid in in-memory mode).
+    // Advisory annotation only — logical semantics are unchanged; children may
+    // over-read and correctness never depends on them honoring the cap. Returns the
+    // root, nodes annotated in place. Registered ungated (a local scan/sort hint,
+    // valid in in-memory mode too).
     logical_plan::node_ptr pushdown_limit(std::pmr::memory_resource* resource, logical_plan::node_ptr root);
 
 } // namespace components::planner::optimizer

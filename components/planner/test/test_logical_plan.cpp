@@ -174,11 +174,9 @@ TEST_CASE("components::planner::aggregate") {
 }
 
 TEST_CASE("components::planner::aggregate_having") {
-    // Locks the target plan shape of the HAVING refactor: HAVING is a first-class
-    // $having node lowered as an aggregate child, rendered by node_aggregate's
-    // to_string BETWEEN $group and $sort (post-aggregation filter, SQL step between
-    // GROUP BY and ORDER BY). RED until node_having is restored (Step A) and the
-    // transformer emits it as a child; the compare rides at expressions()[0].
+    // HAVING is a first-class $having node lowered as an aggregate child, rendered by
+    // node_aggregate's to_string BETWEEN $group and $sort (post-aggregation filter, the
+    // SQL step between GROUP BY and ORDER BY). The compare rides at expressions()[0].
     auto resource = core::pmr::otterbrix_resource();
     auto aggregate = make_node_aggregate(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
 

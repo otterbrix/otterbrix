@@ -520,7 +520,7 @@ namespace components::vector {
             // this as an empty semi-join — `IN ()` matches nothing, `NOT IN ()` matches
             // everything — NOT a type error. Return the SAME NA-null sentinel a zero-row
             // scalar sub-query returns (compact_to_single_value above); the ANY/ALL
-            // evaluator special-cases the null array (R1: no empty-array value built).
+            // evaluator special-cases the null array (no empty-array value built).
             return types::logical_value_t{chunks.front().resource(), nullptr};
         }
         std::vector<types::logical_value_t> array;

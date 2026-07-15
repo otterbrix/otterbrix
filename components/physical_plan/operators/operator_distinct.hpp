@@ -39,8 +39,7 @@ namespace components::operators {
         std::pmr::unordered_map<uint64_t, std::pmr::vector<retained_row_ref_t>> seen_;
         // Copies of the distinct rows kept for collision verification, on the operator's
         // stable resource_ (which outlives every transient input batch). Grows with
-        // DISTINCT cardinality, like the old identity set. retained_fill_ is the fill
-        // level of retained_.back().
+        // DISTINCT cardinality. retained_fill_ is the fill level of retained_.back().
         std::pmr::vector<vector::data_chunk_t> retained_;
         uint64_t retained_fill_{0};
 

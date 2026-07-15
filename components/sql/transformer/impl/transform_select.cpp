@@ -1236,7 +1236,7 @@ namespace components::sql::transform {
         // (an operator_match above the group), never folded into the group node. A HAVING clause
         // also makes the query grouped (implicit GROUP BY ()) — force a scalar (0-key) group even
         // when nothing else populated it, so a bare HAVING TRUE/FALSE is APPLIED above a single
-        // collapsed row rather than silently dropped (R19).
+        // collapsed row rather than silently dropped.
         if (!group->expressions().empty() || having_expr) {
             agg->append_child(group);
             if (having_expr) {
@@ -1347,7 +1347,7 @@ namespace components::sql::transform {
                 // Pure SELECT * with an aggregate-only HAVING and no GROUP BY (SELECT * FROM t HAVING
                 // count(*) > 5): the star's base columns are not routed to the group, so the visible
                 // set is empty and there is nothing well-defined to project. PostgreSQL and
-                // default-mode MySQL error here (no engine returns the base rows). R19.
+                // default-mode MySQL error here (no engine returns the base rows).
                 error_ = core::error_t(core::error_code_t::sql_parse_error,
                                        std::pmr::string{"column must appear in a GROUP BY clause or be used in "
                                                         "an aggregate function",

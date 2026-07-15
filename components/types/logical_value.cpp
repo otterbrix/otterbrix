@@ -309,9 +309,7 @@ namespace components::types {
                 }
             } else if constexpr (std::is_same_v<LeftValueType, bool>) {
                 // CAST(<numeric> AS boolean): 0 -> false, non-zero -> true (PostgreSQL's
-                // explicit int::boolean). The previous form compared against zero the wrong
-                // way round (0 -> true, non-zero -> false) — an inverted cast shared by
-                // CAST / INSERT / disk, not just comparison.
+                // explicit int::boolean).
                 return logical_value_t{r, !core::is_equals(value.template value<RightValueType>(), RightValueType{})};
             } else if constexpr (std::is_same_v<RightValueType, std::string_view>) {
                 if constexpr (std::is_floating_point_v<LeftValueType>) {

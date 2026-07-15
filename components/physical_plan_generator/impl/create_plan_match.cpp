@@ -230,12 +230,9 @@ namespace services::planner::impl {
         }
     }
 
-    // Lower a first-class node_having_t to a dedicated operator_having_t placed ABOVE the group
-    // (create_plan_aggregate set_children the group operator under it). The HAVING compare lives at
-    // expressions()[0] — passed straight into operator_having_t (const expression_ptr&). HAVING has
-    // no window (the outer operator_limit is the sole window), so there is no limit parameter. The
-    // operator is always built on context.resource, which is unconditionally non-null and outlives
-    // the operator, so no null-resource sentinel is needed.
+    // Lower a node_having_t to a dedicated operator_having_t filtering the group's output. HAVING
+    // has no window of its own (the outer operator_limit is the sole window), so no limit parameter.
+    // context.resource is always non-null and outlives the operator, so no null-resource sentinel.
     components::operators::operator_ptr create_plan_having(const context_storage_t& context,
                                                            const components::logical_plan::node_ptr& node) {
         if (node->expressions().empty()) {

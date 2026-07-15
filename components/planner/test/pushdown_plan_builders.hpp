@@ -25,8 +25,8 @@ namespace planner_test {
 
     // Wrap `group` in an aggregate_t at `table_oid` (no output types, not distinct).
     // When `having != nullptr`, attach a node_having_t as an aggregate CHILD (HAVING is
-    // now first-class, no longer carried inside node_group) so the re-homed pushdown gates
-    // that scan the aggregate's children detect it.
+    // first-class, not carried inside node_group) so pushdown gates that scan the
+    // aggregate's children detect it.
     inline components::logical_plan::node_aggregate_ptr
     make_agg(std::pmr::memory_resource* r,
              const components::logical_plan::node_group_ptr& group,

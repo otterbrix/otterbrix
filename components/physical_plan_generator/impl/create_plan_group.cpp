@@ -215,7 +215,7 @@ namespace services::planner::impl {
         bool known = context.has_table_oid(table_oid);
 
         // create_plan_group is only ever dispatched with a group_t node (create_plan.cpp's
-        // case group_t and the aggregate's group child) → static_cast (R14: no dynamic_cast).
+        // case group_t and the aggregate's group child), so the static_cast is safe.
         const auto* group_node = static_cast<const components::logical_plan::node_group_t*>(node.get());
         const size_t internal_aggregate_count = group_node->internal_aggregate_count;
 

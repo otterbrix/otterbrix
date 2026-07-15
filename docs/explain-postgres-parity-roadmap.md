@@ -94,8 +94,7 @@ stages count as "planning" so the number is meaningful and stable.
 predicate-bearing operator emits its `expression_->to_string()` through the sink during the walk;
 (4) `render_postgres` prints an indented `Filter:`/`Index Cond:` line (Index Cond for `index_scan`,
 Filter otherwise).
-**Effort.** M — touches sink + IR + the predicate operators + renderer (the same seam the earlier
-`emit_params` design used, so it is well understood).
+**Effort.** M — touches sink + IR + the predicate operators + renderer.
 **Caveats.** **The text will NOT match PG.** otterbrix `expressions::*::to_string()` renders
 `$and`/`$or`/`#<param>`/key-path notation, not PG's `(x = 5)`. Getting PG-identical predicate text
 needs a dedicated PG-style expression serialiser (a separate, larger task). Ship the native format

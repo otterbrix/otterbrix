@@ -671,9 +671,9 @@ namespace components::operators {
                 result.data.erase(it_begin, it_end);
             }
 
-            // HAVING is no longer applied here: it is a first-class node_having_t lowered to a
-            // dedicated operator_having filter ABOVE this group (create_plan_aggregate), which
-            // filters the emitted aggregated chunk. This group operator only aggregates.
+            // HAVING is applied by a dedicated operator_having filter spliced ABOVE this group
+            // (create_plan_aggregate), which filters the emitted aggregated chunk. This group
+            // operator only aggregates.
 
             out.emplace_back(std::move(result));
             emitted += slice;
@@ -904,7 +904,7 @@ namespace components::operators {
             // Value-less scalar group (0 keys, 0 aggregates, 0 computed columns) forced by a
             // HAVING clause — an implicit GROUP BY () makes the whole table ONE group, so it must
             // emit exactly one 0-column row even over EMPTY input (SELECT 1 FROM empty HAVING true
-            // returns one row). The $having operator_match above then keeps or drops that row and
+            // returns one row). The operator_having above then keeps or drops that row and
             // operator_select projects the constant. Mirrors materialize_groups' 1-row emission for
             // the non-empty value-less-scalar-group case (num_groups == 1). A plain non-grouped
             // SELECT 1 FROM t builds NO group operator, so this never affects it.

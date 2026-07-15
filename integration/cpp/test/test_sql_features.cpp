@@ -632,7 +632,7 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
     // NOTE: column-referencing aggregates (SUM/COUNT of a column) over a truly EMPTY collection
     // hit a separate, pre-existing schema-on-write limitation (the column type is unknown until
     // some row exists — see edge_cases::"empty table COUNT" which asserts is_error). That is
-    // orthogonal to HAVING, so the R19 empty-INPUT-HAVING path is exercised below over a populated
+    // orthogonal to HAVING, so the empty-INPUT-HAVING path is exercised below over a populated
     // table whose WHERE filters every row (schema stays resolvable, group input is empty).
 
     INFO("insert 100 rows");
@@ -720,9 +720,8 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
         REQUIRE(cur->size() == 5); // all 5 groups with SUM>90 also have COUNT=10 > 5
     }
 
-    // R19: HAVING is now an operator ABOVE the group, so it filters the single scalar row the
-    // group emits for empty input too (empty_aggregate_result). Previously HAVING ran only inside
-    // materialize_groups, so the empty-input row bypassed it. WHERE filters every row -> group
+    // HAVING is an operator ABOVE the group, so it filters the single scalar row the group
+    // emits for empty input too (empty_aggregate_result). WHERE filters every row -> group
     // input is empty -> the scalar COUNT row is 0 and HAVING decides whether to keep it.
     INFO("empty-input scalar HAVING keeps the row when the predicate holds");
     {

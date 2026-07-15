@@ -5,6 +5,7 @@ set(${PROJECT_NAME}_SOURCES
         test_table.cpp
         test_block_manager.cpp
         test_eviction_guard.cpp
+        test_eviction_queue_leak_repro.cpp
         test_metadata.cpp
         test_checkpoint_load.cpp
         test_transaction_manager.cpp

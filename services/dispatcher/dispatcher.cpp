@@ -158,6 +158,7 @@ namespace services::dispatcher {
                         }
                         if (cont) {
                             ready_slot->stale_ticks = 0;
+                            ready_slot->poke_rounds = 0;
                             cont.resume();
                             poll_pending();
                             progress = true;
@@ -195,9 +196,30 @@ namespace services::dispatcher {
                         break;
                     }
                 if (any_stale) {
-                    warn(log_,
-                         "dispatcher loop: stale await detected — poking executors (see "
-                         "docs/actor-zeta-lost-wakeup.md)");
+                    // Routine firings are EXPECTED: any executor operation longer
+                    // than ~2ms (20 ticks x ~100us loop) trips the threshold, so a
+                    // healthy multi-row DML statement fires this several times.
+                    // Those log at trace. A slot that stays stale across hundreds
+                    // of consecutive poke rounds is a genuine stall (a wedged
+                    // executor, or a lost wakeup no poke can clear) — that one
+                    // escalates to a single warn with a distinct message.
+                    constexpr uint32_t escalate_poke_rounds = 256;
+                    bool escalate = false;
+                    for (auto& e : in_flight) {
+                        if (e.behavior && !e.behavior.done() && e.behavior.is_busy() &&
+                            !e.behavior.is_awaited_ready() && e.stale_ticks > 20) {
+                            if (++e.poke_rounds == escalate_poke_rounds) {
+                                escalate = true;
+                            }
+                        }
+                    }
+                    if (escalate) {
+                        warn(log_,
+                             "dispatcher loop: await stale across {} poke rounds — possible stalled executor",
+                             escalate_poke_rounds);
+                    } else {
+                        trace(log_, "dispatcher loop: stale await detected — poking executors");
+                    }
                     for (auto& ex : executors_) {
                         if (ex) {
                             auto [ns, f] = actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);

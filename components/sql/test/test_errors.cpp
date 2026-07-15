@@ -26,6 +26,13 @@ using namespace components::sql;
         REQUIRE(std::string_view{result.get_error().what} == RESULT);                                                  \
     }
 
+#define TEST_TRANSFORMER_OK(QUERY)                                                                                     \
+    SECTION(QUERY) {                                                                                                   \
+        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                                  \
+        REQUIRE_FALSE(result.get_error().contains_error());                                                            \
+    }
+
 using v = components::types::logical_value_t;
 using vec = std::vector<v>;
 using fields = std::vector<std::pair<std::string, v>>;
@@ -159,4 +166,18 @@ TEST_CASE("components::sql::errors") {
     TEST_PARSER_ERROR("CREATE INDEX base ON TEST_DATABASE.TEST_COLLECTION;", R"_(syntax error at or near ";")_");
 
     TEST_TRANSFORMER_ERROR("DROP INDEX TEST_DATABASE.TEST_COLLECTION;", R"_(incorrect drop: arguments size)_");
+
+    // An unsupported SubLink kind must produce a clean transformer error, never fall off the end of
+    // transform_sublink_expr through a Release-erased assert(false) (that was UB, observed as a segfault).
+    // ARRAY(SELECT ...) in bare-predicate position is the one grammar-constructible unsupported form
+    // (ROWCOMPARE/CTE/INITPLAN_FUNC are never emitted by the parser).
+    TEST_TRANSFORMER_ERROR("SELECT * FROM TEST_DATABASE.TEST_COLLECTION WHERE ARRAY(SELECT count FROM "
+                           "TEST_DATABASE.TEST_COLLECTION);",
+                           R"_(unsupported subquery expression in this context)_");
+
+    // A bare scalar sub-query in predicate position (EXPR_SUBLINK) IS supported: it transforms cleanly.
+    // The "argument of WHERE/HAVING must be type boolean" check runs later at execution
+    // (see integration where_having_boolean_required), not in the transformer.
+    TEST_TRANSFORMER_OK("SELECT * FROM TEST_DATABASE.TEST_COLLECTION WHERE (SELECT count FROM "
+                        "TEST_DATABASE.TEST_COLLECTION);");
 }

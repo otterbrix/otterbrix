@@ -782,7 +782,7 @@ namespace components::sql::transform {
         // ARRAY(SELECT ...) as a predicate is meaningless (array != bool) and target-list ARRAY is a
         // separate deferred feature.
         error_ = core::error_t(core::error_code_t::sql_parse_error,
-                               std::pmr::string{"unsupported sub-query form", resource_});
+                               std::pmr::string{"unsupported subquery expression in this context", resource_});
         return nullptr;
     }
 

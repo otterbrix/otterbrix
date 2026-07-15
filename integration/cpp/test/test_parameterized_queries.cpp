@@ -577,14 +577,51 @@ TEST_CASE("integration::cpp::params::error_code_contracts") {
         REQUIRE_FALSE(cur->get_error().what.empty());
     }
 
-    INFO("SELECT from nonexistent table -> table_not_exists");
+    INFO("SELECT from nonexistent table -> table_not_exists with a message naming it");
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM ErrDb.NoSuchTable;");
         REQUIRE(cur->is_error());
         REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
-        // Unlike the DDL error paths above (which carry a descriptive .what), the
-        // SELECT-from-nonexistent-table path surfaces table_not_exists with an empty
-        // message, so we assert only the error code contract here.
+        REQUIRE_FALSE(cur->get_error().what.empty());
+        // Identifiers are case-folded by the parser, so the message carries the
+        // lowercase name.
+        REQUIRE(std::string(cur->get_error().what).find("nosuchtable") != std::string::npos);
+    }
+
+    INFO("aggregate over nonexistent table -> table_not_exists with a message");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT count(*) FROM ErrDb.NoSuchTable;");
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
+        REQUIRE_FALSE(cur->get_error().what.empty());
+    }
+
+    INFO("INSERT into nonexistent table -> table_not_exists with a message");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO ErrDb.NoSuchTable (a) VALUES (1);");
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
+        REQUIRE_FALSE(cur->get_error().what.empty());
+    }
+
+    INFO("CREATE INDEX on nonexistent table -> table_not_exists with a message");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE INDEX ix ON ErrDb.NoSuchTable (a);");
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == core::error_code_t::table_not_exists);
+        REQUIRE_FALSE(cur->get_error().what.empty());
+    }
+
+    INFO("aggregate over a table in a nonexistent database -> database_not_exists with a message");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT count(*) FROM NoSuchDb.NoSuchTable;");
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == core::error_code_t::database_not_exists);
+        REQUIRE_FALSE(cur->get_error().what.empty());
     }
 }

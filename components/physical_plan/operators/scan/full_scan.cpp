@@ -1,5 +1,6 @@
 #include "full_scan.hpp"
 
+#include <components/expressions/compare_expression.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
@@ -14,7 +15,12 @@ namespace components::operators {
             return std::unique_ptr<table::table_filter_t>{};
         }
         if (expression->type() == expressions::compare_type::all_false) {
-            assert(false && "all_false should be short-circuited in source_next");
+            // Callers short-circuit all_false before filter construction
+            // (source_next / pushed_reduce_scan). If one ever does not, fail
+            // with an error instead of the previous Release-erased assert
+            // falling through into the switch below.
+            return core::error_t{core::error_code_t::physical_plan_error,
+                                 std::pmr::string{"all_false predicate reached filter construction", resource}};
         }
         switch (expression->type()) {
             case expressions::compare_type::union_and: {
@@ -133,21 +139,20 @@ namespace components::operators {
                     std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices)));
             }
             default: {
-                assert(std::holds_alternative<expressions::key_t>(expression->left()));
-                // A disk table_filter_t is `column OP constant` only: the right operand MUST be
-                // a bound parameter (the param_storage alternative that is neither a key nor a
-                // nested expression). A column-vs-column comparison (right is a key_t) is not
-                // representable here — return a clean error instead of std::get throwing
-                // bad_variant_access (create_plan_match routes such predicates to operator_match,
-                // so this is a defensive guard for any other caller — Rule 2: no exceptions).
-                if (expressions::is_key(expression->right()) || expressions::is_expr(expression->right())) {
+                // A disk table_filter_t is `column OP constant` only: the LEFT operand must be a key
+                // and the RIGHT a bound parameter (the param_storage alternative that is neither a key
+                // nor a nested expression). A column-vs-column comparison (right is a key_t) or any
+                // other shape is not representable here — return a clean error instead of std::get
+                // throwing bad_variant_access (create_plan_match routes such predicates to
+                // operator_match; this is a defensive guard for any other caller, and with the asserts
+                // erased in Release it stops a bad_variant_access — Rule 2: no exceptions).
+                if (!expressions::is_key(expression->left()) || !expressions::is_parameter(expression->right())) {
                     return core::error_t{
                         core::error_code_t::physical_plan_error,
-                        std::pmr::string{"comparison operand is not a bound constant — not a pushable table filter",
-                                         resource}};
+                        std::pmr::string{"unexpected operand shape in expression to filter conversion", resource}};
                 }
-                const auto& path = std::get<expressions::key_t>(expression->left()).path();
-                auto id = std::get<core::parameter_id_t>(expression->right());
+                const auto& path = expressions::as_key(expression->left()).path();
+                auto id = expressions::as_parameter(expression->right());
                 std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
                 auto it = parameters->parameters.find(id);
                 if (it == parameters->parameters.end()) {

@@ -2115,3 +2115,59 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         }
     }
 }
+
+// UPDATE SET <col> = <col> << 1 on a DOUBLE (or STRING) column used to report
+// success while writing 0 (resp. '') — the bitwise/shift vector kernel's
+// non-integer branch was an assert-only stub, erased in Release, leaving the
+// destination vector unwritten. Such updates must fail with an error and leave
+// the data untouched.
+TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_rejected") {
+    auto config = test_create_config("/tmp/test_arithmetic/update_bitshift_non_integer");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.b (x bigint, f double, s string);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO t.b (x, f, s) VALUES (3, 1.5, 'ab');")->is_success());
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "UPDATE t.b SET f = f << 1 WHERE x > 0;");
+        REQUIRE_FALSE(cur->is_success()); // was: reported success
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "UPDATE t.b SET s = s << 1 WHERE x > 0;");
+        REQUIRE_FALSE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT f, s FROM t.b;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const double f = cur->value(0, 0).value<double>();
+        CHECK(f > 1.4999); // was: silently overwritten with 0
+        CHECK(f < 1.5001);
+        CHECK(cur->value(1, 0).value<std::string_view>() == "ab"); // was: ''
+    }
+    // Bitshift on a genuinely integer column keeps working.
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "UPDATE t.b SET x = x << 1 WHERE x > 0;")->is_success());
+        auto cur = dispatcher->execute_sql(session, "SELECT x FROM t.b;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->value(0, 0).value<int64_t>() == 6);
+    }
+}

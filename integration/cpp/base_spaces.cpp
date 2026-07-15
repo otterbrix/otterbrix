@@ -27,12 +27,12 @@ namespace otterbrix {
         , resource()
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , scheduler_dispatcher_(new actor_zeta::shared_work(3, 1000))
+        , scheduler_disk_(new actor_zeta::shared_work(3, 1000))
         , manager_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , manager_disk_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , manager_wal_(nullptr, actor_zeta::pmr::deleter_t(&resource))
         , manager_index_(nullptr, actor_zeta::pmr::deleter_t(&resource))
-        , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource))
-        , scheduler_disk_(new actor_zeta::shared_work(3, 1000)) {
+        , wrapper_dispatcher_(nullptr, actor_zeta::pmr::deleter_t(&resource)) {
         log_ = initialization_logger("python", config.log.path.c_str());
         log_.set_level(config.log.level);
         trace(log_, "spaces::spaces()");

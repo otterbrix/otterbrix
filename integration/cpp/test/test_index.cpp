@@ -930,3 +930,28 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         CHECK(count_ops_of_type(plan, ops::operator_type::remove) == delete_specs.size());
     }
 }
+
+// Expression index elements — CREATE INDEX ... ((expr)) — parse with a null
+// IndexElem.name; the transformer read it unconditionally and threw an
+// uncaught std::logic_error out of execute_sql. They must be rejected with a
+// proper error cursor; plain column indexes keep working.
+TEST_CASE("integration::cpp::test_index::expression_elements_rejected") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_index/expression_elements_rejected");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE TABLE t.ix (x BIGINT, y TEXT);")->is_success());
+    REQUIRE(exec("INSERT INTO t.ix (x, y) VALUES (1, 'a');")->is_success());
+
+    CHECK_FALSE(exec("CREATE INDEX arith_idx ON t.ix ((x + 1));")->is_success());
+    CHECK_FALSE(exec("CREATE INDEX func_idx ON t.ix ((lower(y)));")->is_success());
+    REQUIRE(exec("CREATE INDEX plain_idx ON t.ix (x);")->is_success());
+}

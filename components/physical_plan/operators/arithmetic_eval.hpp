@@ -5,6 +5,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/types/tri_bool.hpp>
 #include <components/vector/arithmetic.hpp>
 #include <deque>
 
@@ -38,9 +39,10 @@ namespace components::operators {
                           size_t row_idx,
                           core::date::timezone_offset_t session_tz);
 
-        // Evaluate a compare_expression for a specific row.
+        // Evaluate a CASE WHEN condition for a specific row in SQL three-valued logic (TRUE / FALSE /
+        // UNKNOWN); the caller applies selects() -- a WHEN fires only on a definite TRUE.
         // On failure returns the error via result_wrapper_t (never throws).
-        [[nodiscard]] core::result_wrapper_t<bool>
+        [[nodiscard]] core::result_wrapper_t<types::tri_bool_t>
         evaluate_row_condition(std::pmr::memory_resource* resource,
                                const expressions::expression_ptr& condition,
                                const vector::data_chunk_t& chunk,

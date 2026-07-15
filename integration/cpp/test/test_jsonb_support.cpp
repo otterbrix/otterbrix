@@ -53,6 +53,9 @@
 //   [H] a NULL written to a not-yet-existing column of a computing table is an
 //       absent key: it carries no type, so the column is dropped after schema
 //       reconciliation instead of reaching storage as an all-NA column (segfault).
+//   [I] INSERT ... SELECT lands each projected value in its target column: the
+//       target names are stamped onto the streamed columns before the name-based
+//       append, instead of appending a row where the plain columns came out NULL.
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -536,28 +539,41 @@ TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
     // for views over plain tables too), so it is only recorded, not pinned here.
 }
 
-// INSERT ... SELECT reports "1 row inserted" and then discards every value: on a
-// computing table it appends a row in which even the plain columns are NULL.
-// (On a fixed-schema table the same statement inserts nothing at all, so the
-// broken piece is INSERT ... SELECT itself; the flattened-storage variant is
-// pinned here because it is the one that leaves corrupt rows behind.)
-TEST_CASE("integration::cpp::test_jsonb_support::bug_insert_select_appends_a_null_row") {
+// [I] INSERT ... SELECT lands each projected value in its target column. The
+// append is name-based, and a projection need not carry the target names
+// (SELECT 5, 55), so the target names are stamped on the streamed columns in
+// target order. It used to skip that step and append a row in which even the
+// plain columns were NULL (the projection-named columns matched nothing).
+TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_to_target_columns") {
     auto config = make_test_config("/tmp/test_jsonb_matrix/insert_select");
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
+    // rows 1..4: a/b = 10,30,50,(absent); a/c = 20,40,60,70
 
     auto ins = exec(d, "INSERT INTO jp.t (id, a.b) SELECT 5, 55;");
     REQUIRE(ins->is_success());
-    CHECK(ins->size() == 1); // claims one row
+    CHECK(ins->size() == 1);
 
     auto cur = exec(d, "SELECT * FROM jp.t ORDER BY id;");
     REQUIRE(cur->is_success());
-    // correct: 4 rows unchanged plus (id=5, a/b=55). We get a 5th row of all NULLs.
     CHECK(cur->size() == 5);
-    CHECK(is_null(cur, "id", 4));
-    CHECK(is_null(cur, "a/b", 4));
-    CHECK(i64_set(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t;"), "v") == std::set<int64_t>{10, 30, 50});
+    // the new row carries its values, not NULLs: id=5, a/b=55, and the columns
+    // the projection did not name (a/c, x) are absent/null for it
+    CHECK(i64(cur, "id", 4) == 5);
+    CHECK(i64(cur, "a/b", 4) == 55);
+    CHECK(is_null(cur, "a/c", 4));
+    CHECK(is_null(cur, "x", 4));
+    // navigation sees the appended leaf too (row 4 keeps a/b absent -> null)
+    CHECK(i64_set(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t;"), "v") == std::set<int64_t>{10, 30, 50, 55});
+
+    // a SELECT from another table, projected out of target order, still routes
+    // each value by target position (a.b <- w, id <- k), not by source name
+    REQUIRE(exec(d, "CREATE TABLE jp.src ();")->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.src (k, w) VALUES (100, 200);")->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.t (a.b, id) SELECT w, k FROM jp.src;")->is_success());
+    CHECK(ids(exec(d, "SELECT id FROM jp.t;")) == std::set<int64_t>{1, 2, 3, 4, 5, 100});
+    CHECK(i64(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t WHERE id = 100;"), "v", 0) == 200);
 }
 
 // Everything that is NOT supported must fail loudly. This case exists so that a

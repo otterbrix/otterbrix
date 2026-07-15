@@ -31,6 +31,21 @@ namespace services::planner::impl {
                                                                                     context.log.clone(),
                                                                                     node->table_oid(),
                                                                                     std::move(returning)));
+        // INSERT ... SELECT: the SELECT projection column names need not match the
+        // target columns (e.g. SELECT 5, 55 into (id, a.b)), and the append is
+        // name-based, so hand the operator the target names to rename the streamed
+        // columns positionally. INSERT ... VALUES has a raw-data (data_t) child whose
+        // columns fill_row already named, so it is left untouched.
+        const auto& kt = node_insert->key_translation();
+        if (!kt.empty() && !node->children().empty() &&
+            node->children().front()->type() != components::logical_plan::node_type::data_t) {
+            std::pmr::vector<std::pmr::string> names(context.resource);
+            names.reserve(kt.size());
+            for (const auto& k : kt) {
+                names.emplace_back(std::pmr::string{k.as_string().c_str(), context.resource});
+            }
+            plan->set_rename_targets(std::move(names));
+        }
         plan->set_children(create_plan(context,
                                        function_registry,
                                        node->children().front(),

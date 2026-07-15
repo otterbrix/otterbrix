@@ -192,10 +192,13 @@ namespace components::planner::optimizer {
                 return;
             }
             // Skip (c): HAVING is a hard correctness gate — a coordinator kernel-
-            // merge reduce would never evaluate it. Be conservative and skip on
-            // ANY having(), scalar or grouped.
-            if (group->having() != nullptr) {
-                return;
+            // merge reduce would never evaluate it. HAVING is now a having_t child
+            // of the aggregate node (not shape-breaking, so find_group_child still
+            // finds the group); be conservative and skip on ANY having_t child.
+            for (const auto& child : node->children()) {
+                if (child && child->type() == lp::node_type::having_t) {
+                    return;
+                }
             }
             // Skip (b): a distinct or non-mergeable aggregate stays coordinator-side.
             if (has_unmergeable_aggregate(group)) {

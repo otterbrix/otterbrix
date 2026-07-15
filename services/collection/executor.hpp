@@ -132,15 +132,13 @@ namespace services::collection::executor {
         // pipeline::context_t still owns its own copy).
         const components::logical_plan::storage_parameters* parameters;
         services::context_storage_t context_storage_;
-        components::logical_plan::limit_t limit;
         // EXPLAIN ANALYZE: propagates to pipeline_context.analyze in execute_sub_plan_ so
         // execute_pipeline records per-operator stats. Set by execute_plan.
         bool analyze{false};
 
         explicit plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
                         const components::logical_plan::storage_parameters* parameters,
-                        services::context_storage_t&& context_storage,
-                        components::logical_plan::limit_t limit = components::logical_plan::limit_t::unlimit());
+                        services::context_storage_t&& context_storage);
     };
 
     // Internal result with MVCC tracking (never crosses an actor boundary).

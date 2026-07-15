@@ -52,6 +52,9 @@ namespace services::collection {
                 case ops::operator_type::match:
                     label = "Filter";
                     break;
+                case ops::operator_type::having:
+                    label = "Having";
+                    break;
                 case ops::operator_type::select:
                     label = "Project";
                     break;

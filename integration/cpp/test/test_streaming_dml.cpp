@@ -498,3 +498,98 @@ TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
         REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount / 2));
     }
 }
+
+TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
+    // DELETE/UPDATE ... LIMIT n bounds affected/matched rows (MySQL/SQLite semantics):
+    // the count-cap sits on the disk scan (pushable WHERE), on operator_match (a
+    // non-pushable WHERE / bare DELETE), and on a persistent matched-row bound in the
+    // DML operator for the USING/FROM semi-join. DML has NO OFFSET (a clean parse error).
+    auto config = test_create_config("/tmp/test_streaming_dml_limit");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE LimDb;")->is_success());
+
+    // Each sub-case uses its own table (DELETE is destructive): a=id%5 (each of {0..4}
+    // twice), b=100, so `a < b` matches all 10 and `a = 2` matches exactly rows 2 and 7.
+    auto seed = [&](const std::string& tbl) {
+        REQUIRE(exec(dispatcher, "CREATE TABLE LimDb." + tbl + " (id bigint, a bigint, b bigint);")->is_success());
+        std::stringstream q;
+        q << "INSERT INTO LimDb." << tbl << " (id, a, b) VALUES ";
+        for (int i = 0; i < 10; ++i) {
+            q << "(" << i << ", " << (i % 5) << ", 100)" << (i + 1 == 10 ? ";" : ", ");
+        }
+        REQUIRE(exec(dispatcher, q.str())->is_success());
+    };
+    auto count = [&](const std::string& tbl) -> int64_t {
+        auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM LimDb." + tbl + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        return static_cast<int64_t>(cur->value(0, 0).value<uint64_t>());
+    };
+
+    // Non-pushable column-vs-column predicate (a < b) -> operator_match; LIMIT 2 -> 2.
+    seed("t_np");
+    {
+        auto cur = exec(dispatcher, "DELETE FROM LimDb.t_np WHERE a < b LIMIT 2 RETURNING id;");
+        INFO("nonpushable delete limit: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(count("t_np") == 8);
+    }
+
+    // Pushable predicate (a = 2 -> rows 2 and 7) -> disk post-filter cap; LIMIT 1 -> 1.
+    seed("t_p");
+    {
+        auto cur = exec(dispatcher, "DELETE FROM LimDb.t_p WHERE a = 2 LIMIT 1 RETURNING id;");
+        INFO("pushable delete limit: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(count("t_p") == 9);
+    }
+
+    // Bare DELETE ... LIMIT (all-true match via operator_match) bounds to n.
+    seed("t_bare");
+    {
+        auto cur = exec(dispatcher, "DELETE FROM LimDb.t_bare LIMIT 3 RETURNING id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(count("t_bare") == 7);
+    }
+
+    // UPDATE ... LIMIT bounds MATCHED rows (all 10 match a < b; LIMIT 2 -> exactly 2).
+    seed("t_upd");
+    {
+        auto cur = exec(dispatcher, "UPDATE LimDb.t_upd SET b = b + 1 WHERE a < b LIMIT 2 RETURNING id;");
+        INFO("update limit: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        auto cur2 = exec(dispatcher, "SELECT COUNT(id) AS c FROM LimDb.t_upd WHERE b = 101;");
+        REQUIRE(cur2->is_success());
+        REQUIRE(cur2->value(0, 0).value<uint64_t>() == 2u);
+    }
+
+    // Source path: DELETE ... USING ... LIMIT n. Every t.a (0..4) joins some s.k, so all
+    // 10 are eligible; the semi-join stops after exactly 2 matched (deleted) rows.
+    seed("t_src");
+    {
+        REQUIRE(exec(dispatcher, "CREATE TABLE LimDb.s (k bigint);")->is_success());
+        REQUIRE(exec(dispatcher, "INSERT INTO LimDb.s (k) VALUES (0), (1), (2), (3), (4);")->is_success());
+        auto cur = exec(dispatcher,
+                        "DELETE FROM LimDb.t_src USING LimDb.s WHERE t_src.a = s.k LIMIT 2 RETURNING t_src.id;");
+        INFO("source delete limit: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(count("t_src") == 8);
+    }
+
+    // DML has NO OFFSET -> a clean parse error (never a crash/hang).
+    seed("t_off");
+    {
+        auto cur = exec(dispatcher, "DELETE FROM LimDb.t_off LIMIT 2 OFFSET 1;");
+        REQUIRE(cur->is_error());
+    }
+}

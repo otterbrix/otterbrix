@@ -171,12 +171,10 @@ namespace services::collection::executor {
 
     plan_t::plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
                    const components::logical_plan::storage_parameters* parameters,
-                   services::context_storage_t&& context_storage,
-                   components::logical_plan::limit_t limit)
+                   services::context_storage_t&& context_storage)
         : sub_plans(std::move(sub_plans))
         , parameters(parameters)
-        , context_storage_(context_storage)
-        , limit(limit) {}
+        , context_storage_(context_storage) {}
 
     executor_t::executor_t(std::pmr::memory_resource* resource,
                            actor_zeta::address_t parent_address,
@@ -334,7 +332,6 @@ namespace services::collection::executor {
         }
 
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
-        plan_data.limit = limit;
         plan_data.analyze = explain_analyze;
 
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data, lowest_active_start_time);
@@ -2597,24 +2594,7 @@ namespace services::collection::executor {
 
                     if (plan->is_root()) {
                         if (plan->output()) {
-                            auto& chunks = plan->output()->chunks();
-                            // Apply post-sort limit across multi-chunk output.
-                            if (plan_data.limit.limit() > 0) {
-                                uint64_t remaining = static_cast<uint64_t>(plan_data.limit.limit());
-                                for (auto& c : chunks) {
-                                    if (remaining == 0) {
-                                        c.set_cardinality(0);
-                                        continue;
-                                    }
-                                    if (c.size() > remaining) {
-                                        c.set_cardinality(remaining);
-                                        remaining = 0;
-                                    } else {
-                                        remaining -= c.size();
-                                    }
-                                }
-                            }
-                            cursor = make_cursor(resource(), std::move(chunks));
+                            cursor = make_cursor(resource(), std::move(plan->output()->chunks()));
                         } else {
                             cursor = make_cursor(resource(), core::error_t::no_error());
                         }

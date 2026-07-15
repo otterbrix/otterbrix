@@ -175,7 +175,6 @@ namespace components::operators {
 
     operator_group_t::operator_group_t(std::pmr::memory_resource* resource,
                                        log_t log,
-                                       expressions::expression_ptr having,
                                        size_t internal_aggregate_count)
         : read_write_operator_t(resource, log, operator_type::aggregate)
         , keys_(resource_)
@@ -183,7 +182,6 @@ namespace components::operators {
         , computed_columns_(resource_)
         , post_aggregates_(resource_)
         , output_types_(resource_)
-        , having_(std::move(having))
         , internal_aggregate_count_(internal_aggregate_count)
         , agg_plan_(resource_)
         , group_key_chunk_storage_(resource_)
@@ -673,10 +671,9 @@ namespace components::operators {
                 result.data.erase(it_begin, it_end);
             }
 
-            // HAVING filter (columnar, per-slice — a per-row filter, independent per group).
-            if (having_) {
-                filter_having(pipeline_context, result);
-            }
+            // HAVING is no longer applied here: it is a first-class node_having_t lowered to a
+            // dedicated operator_having filter ABOVE this group (create_plan_aggregate), which
+            // filters the emitted aggregated chunk. This group operator only aggregates.
 
             out.emplace_back(std::move(result));
             emitted += slice;
@@ -855,98 +852,6 @@ namespace components::operators {
         }
     }
 
-    void operator_group_t::filter_having(pipeline::context_t* pipeline_context, vector::data_chunk_t& result) {
-        if (!having_ || having_->group() != expressions::expression_group::compare) {
-            return;
-        }
-        auto* cmp = static_cast<const expressions::compare_expression_t*>(having_.get());
-
-        auto resolve =
-            [&](const expressions::param_storage& param, size_t row_idx, auto& self) -> types::logical_value_t {
-            if (std::holds_alternative<expressions::key_t>(param)) {
-                auto& key = std::get<expressions::key_t>(param);
-                assert(!key.path().empty());
-                return result.value(key.path()[0], row_idx);
-            } else if (std::holds_alternative<core::parameter_id_t>(param)) {
-                auto id = std::get<core::parameter_id_t>(param);
-                return pipeline_context->parameters.parameters.at(id);
-            } else {
-                auto& sub_expr = std::get<expressions::expression_ptr>(param);
-                if (sub_expr->group() == expressions::expression_group::scalar) {
-                    auto* scalar = static_cast<const expressions::scalar_expression_t*>(sub_expr.get());
-                    if (scalar->type() == expressions::scalar_type::unary_minus && !scalar->params().empty()) {
-                        auto inner = self(scalar->params()[0], row_idx, self);
-                        return types::logical_value_t::subtract(types::logical_value_t(resource_, int64_t(0)), inner);
-                    }
-                    if (scalar->params().size() >= 2) {
-                        auto left_val = self(scalar->params()[0], row_idx, self);
-                        auto right_val = self(scalar->params()[1], row_idx, self);
-                        switch (scalar->type()) {
-                            case expressions::scalar_type::add:
-                                return types::logical_value_t::sum(left_val, right_val);
-                            case expressions::scalar_type::subtract:
-                                return types::logical_value_t::subtract(left_val, right_val);
-                            case expressions::scalar_type::multiply:
-                                return types::logical_value_t::mult(left_val, right_val);
-                            case expressions::scalar_type::divide:
-                                return types::logical_value_t::divide(left_val, right_val);
-                            case expressions::scalar_type::mod:
-                                return types::logical_value_t::modulus(left_val, right_val);
-                            default:
-                                break;
-                        }
-                    }
-                }
-                return types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA});
-            }
-        };
-
-        std::pmr::vector<size_t> keep_indices(resource_);
-        for (size_t group_idx = 0; group_idx < result.size(); group_idx++) {
-            auto left_val = resolve(cmp->left(), group_idx, resolve);
-            auto right_val = resolve(cmp->right(), group_idx, resolve);
-            auto promoted_type = types::promote_type(left_val.type().type(), right_val.type().type());
-            left_val = left_val.cast_as(promoted_type, pipeline_context->session_tz);
-            right_val = right_val.cast_as(promoted_type, pipeline_context->session_tz);
-            auto cmp_result = left_val.compare(right_val);
-            bool passes = false;
-            switch (cmp->type()) {
-                case expressions::compare_type::gt:
-                    passes = cmp_result == types::compare_t::more;
-                    break;
-                case expressions::compare_type::gte:
-                    passes = cmp_result >= types::compare_t::equals;
-                    break;
-                case expressions::compare_type::lt:
-                    passes = cmp_result == types::compare_t::less;
-                    break;
-                case expressions::compare_type::lte:
-                    passes = cmp_result <= types::compare_t::equals;
-                    break;
-                case expressions::compare_type::eq:
-                    passes = cmp_result == types::compare_t::equals;
-                    break;
-                case expressions::compare_type::ne:
-                    passes = cmp_result != types::compare_t::equals;
-                    break;
-                default:
-                    passes = true;
-                    break;
-            }
-            if (passes) {
-                keep_indices.push_back(group_idx);
-            }
-        }
-
-        if (keep_indices.size() < result.size()) {
-            static_assert(sizeof(size_t) == sizeof(uint64_t), "size_t must be 64-bit");
-            auto keep_count = static_cast<uint64_t>(keep_indices.size());
-            vector::indexing_vector_t idx(resource_, reinterpret_cast<uint64_t*>(keep_indices.data()));
-            result.slice(idx, keep_count);
-            result.flatten();
-        }
-    }
-
     core::error_t
     operator_group_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
         // SINK: fold this batch INCREMENTALLY into the running group table. State is
@@ -994,6 +899,18 @@ namespace components::operators {
                 result_vec.value().set_type_alias(std::string(comp.alias));
                 chunk.data.emplace_back(std::move(result_vec.value()));
             }
+            out.emplace_back(std::move(chunk));
+        } else if (keys_.empty() && values_.empty()) {
+            // Value-less scalar group (0 keys, 0 aggregates, 0 computed columns) forced by a
+            // HAVING clause — an implicit GROUP BY () makes the whole table ONE group, so it must
+            // emit exactly one 0-column row even over EMPTY input (SELECT 1 FROM empty HAVING true
+            // returns one row). The $having operator_match above then keeps or drops that row and
+            // operator_select projects the constant. Mirrors materialize_groups' 1-row emission for
+            // the non-empty value-less-scalar-group case (num_groups == 1). A plain non-grouped
+            // SELECT 1 FROM t builds NO group operator, so this never affects it.
+            std::pmr::vector<types::complex_logical_type> empty_types(resource_);
+            vector::data_chunk_t chunk(resource_, empty_types, 1);
+            chunk.set_cardinality(1);
             out.emplace_back(std::move(chunk));
         }
         return core::error_t::no_error();

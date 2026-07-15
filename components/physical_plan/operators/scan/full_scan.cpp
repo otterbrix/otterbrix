@@ -298,12 +298,10 @@ namespace components::operators {
                 filter = std::move(filter_result.value());
             }
 
-            // OPEN the cursor: offset+limit pushed down as the agent's post-filter matched-row cap;
-            // the head OFFSET rows are skipped per-batch below (the agent caps but does not skip).
-            const int64_t offset_val = limit_.offset();
-            const int64_t limit_val = limit_.limit();
-            const int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
-            remaining_offset_ = offset_val > 0 ? static_cast<uint64_t>(offset_val) : 0;
+            // OPEN the cursor: the read-cap (offset+limit head cap) is pushed down as the agent's
+            // post-filter matched-row COUNT cap. SELECT OFFSET is applied by operator_limit above,
+            // so every scan receives offset()==0 and head_cap() == limit here.
+            const int64_t scan_limit = limit_.head_cap();
 
             auto [_s, sf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_fetch_next_batch,
@@ -345,56 +343,26 @@ namespace components::operators {
         co_return co_await emit_or_skip(ctx, std::move(reply.batch));
     }
 
-    // Apply per-batch OFFSET skip and the drained empty-guard to one fetched batch. A re-fetch is
-    // needed only while OFFSET still consumes whole batches, so this loops over ADVANCE fetches.
+    // Apply the drained empty-guard to one fetched batch. (OFFSET is applied by operator_limit
+    // above; every scan receives offset()==0, so there is no per-batch skip / re-fetch.)
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
-    full_scan::emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch) {
-        while (true) {
-            const uint64_t sz = batch ? batch->size() : 0;
+    full_scan::emit_or_skip(pipeline::context_t* /*ctx*/, std::unique_ptr<vector::data_chunk_t> batch) {
+        const uint64_t sz = batch ? batch->size() : 0;
 
-            // Drained: the agent replied a cardinality-0 batch (and erased its cursor).
-            if (sz == 0) {
-                drained_ = true;
-                // Emit ONE schema'd 0-row guard the first time the source produces nothing, so a
-                // scalar aggregate emits COUNT=0 and an OUTER join NULL-pads.
-                if (!emitted_any_) {
-                    emitted_any_ = true;
-                    co_return make_drain_chunk(guard_types_);
-                }
-                co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
-            }
-
-            // Skip OFFSET rows from the head of the stream.
-            if (remaining_offset_ > 0) {
-                if (sz <= remaining_offset_) {
-                    remaining_offset_ -= sz; // whole batch consumed by OFFSET — fetch the next one
-                    auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                     ctx->session,
-                                                     table_oid_,
-                                                     cursor_id_,
-                                                     std::unique_ptr<table::table_filter_t>(nullptr),
-                                                     int64_t{-1},
-                                                     projected_cols_,
-                                                     ctx->txn);
-                    auto fetch_result = co_await std::move(sf);
-                    if (fetch_result.has_error()) {
-                        set_error(fetch_result.error());
-                        mark_failed();
-                        co_return fetch_result.convert_error<vector::data_chunk_t>();
-                    }
-                    batch = std::move(fetch_result.value().batch);
-                    continue;
-                }
-                auto trimmed = batch->partial_copy(resource_, remaining_offset_, sz - remaining_offset_);
-                remaining_offset_ = 0;
+        // Drained: the agent replied a cardinality-0 batch (and erased its cursor).
+        if (sz == 0) {
+            drained_ = true;
+            // Emit ONE schema'd 0-row guard the first time the source produces nothing, so a
+            // scalar aggregate emits COUNT=0 and an OUTER join NULL-pads.
+            if (!emitted_any_) {
                 emitted_any_ = true;
-                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(trimmed));
+                co_return make_drain_chunk(guard_types_);
             }
-
-            emitted_any_ = true;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(*batch));
+            co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
         }
+
+        emitted_any_ = true;
+        co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(*batch));
     }
 
 } // namespace components::operators

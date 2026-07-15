@@ -226,7 +226,14 @@ namespace components::sql::transform {
         // carries only payload + table_oid() (stamped at enrich time from the
         // sibling resolve_table for the target, and table_oid_from() for the
         // UPDATE ... FROM source).
-        auto upd = logical_plan::make_node_update_many(resource_, match, updates, false);
+        auto upd_limit = build_dml_limit(node.limitCount,
+                                         core::dbname_t{names.left_name.dbname},
+                                         core::relname_t{names.left_name.relname},
+                                         plan);
+        if (has_error()) {
+            return nullptr;
+        }
+        auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates, false);
         // The FROM source is a child sub-plan (the RIGHT side of the update join).
         // Its scans self-resolve by name during enrich, so no table_oid_from / sibling
         // resolve_table splice is needed.

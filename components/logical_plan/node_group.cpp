@@ -4,14 +4,10 @@
 
 namespace components::logical_plan {
 
-    node_group_t::node_group_t(std::pmr::memory_resource* resource,
-                               core::dbname_t dbname,
-                               core::relname_t relname,
-                               expression_ptr having)
+    node_group_t::node_group_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
         : node_t(resource, node_type::group_t)
         , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname)))
-        , having_(std::move(having)) {}
+        , relname_(std::move(static_cast<std::string&>(relname))) {}
 
     void node_group_t::set_pushdown(bool pushdown) noexcept { pushdown_ = pushdown; }
 
@@ -37,19 +33,16 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_group_ptr make_node_group(std::pmr::memory_resource* resource,
-                                   core::dbname_t dbname,
-                                   core::relname_t relname,
-                                   expression_ptr having) {
-        return {new node_group_t{resource, std::move(dbname), std::move(relname), std::move(having)}};
+    node_group_ptr
+    make_node_group(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname) {
+        return {new node_group_t{resource, std::move(dbname), std::move(relname)}};
     }
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
                                    core::dbname_t dbname,
                                    core::relname_t relname,
-                                   const std::vector<expression_ptr>& expressions,
-                                   expression_ptr having) {
-        auto node = new node_group_t{resource, std::move(dbname), std::move(relname), std::move(having)};
+                                   const std::vector<expression_ptr>& expressions) {
+        auto node = new node_group_t{resource, std::move(dbname), std::move(relname)};
         node->append_expressions(expressions);
         return node;
     }
@@ -57,9 +50,8 @@ namespace components::logical_plan {
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
                                    core::dbname_t dbname,
                                    core::relname_t relname,
-                                   const std::pmr::vector<expression_ptr>& expressions,
-                                   expression_ptr having) {
-        auto node = new node_group_t{resource, std::move(dbname), std::move(relname), std::move(having)};
+                                   const std::pmr::vector<expression_ptr>& expressions) {
+        auto node = new node_group_t{resource, std::move(dbname), std::move(relname)};
         node->append_expressions(expressions);
         return node;
     }

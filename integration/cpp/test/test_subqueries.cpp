@@ -2090,3 +2090,222 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
         REQUIRE(cur->is_error());
     }
 }
+
+// ---------------------------------------------------------------------------
+// LIMIT unification: operator_limit is the SINGLE authoritative LIMIT/OFFSET
+// operator for EVERY SELECT shape, inserted ABOVE DISTINCT / GROUP / JOIN /
+// SORT whenever the window is effective. These lock in three shapes that were
+// previously wrong because the SCAN was capped before dedup / before the
+// filter, plus the shapes that were already correct and must stay correct.
+// ---------------------------------------------------------------------------
+
+// (1) Plain `SELECT DISTINCT <col> ... LIMIT/OFFSET` — the scan is NOT capped
+// before dedup; the window is applied to the fully-deduplicated stream. With
+// ORDER BY it is full sort + dedup, THEN the window.
+TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
+    auto config = test_create_config("/tmp/test_subqueries/distinct_limit_offset");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    // Distinct dept_ids across the 10 employees = {1,2,3,4,5} (5 distinct values).
+
+    INFO("SELECT DISTINCT dept_id LIMIT 3 returns exactly 3 distinct rows (was < 3: scan capped pre-dedup)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT DISTINCT dept_id FROM TestDatabase.Employees LIMIT 3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("SELECT DISTINCT dept_id LIMIT 2 OFFSET 2 returns exactly 2 distinct rows");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT DISTINCT dept_id FROM TestDatabase.Employees LIMIT 2 OFFSET 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("SELECT DISTINCT dept_id ORDER BY dept_id LIMIT 3 returns the 3 smallest distinct dept_ids in order");
+    {
+        // Full sort + dedup, THEN the window: {1,2,3,4,5} -> {1,2,3}.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT DISTINCT dept_id FROM TestDatabase.Employees "
+                                           "ORDER BY dept_id LIMIT 3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
+        REQUIRE(cur->value(0, 2).value<int64_t>() == 3);
+    }
+
+    INFO("SELECT DISTINCT dept_id LIMIT 0 returns 0 rows");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT DISTINCT dept_id FROM TestDatabase.Employees LIMIT 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("plain SELECT ... LIMIT 0 returns 0 rows");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT name FROM TestDatabase.Employees LIMIT 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
+// (2) A NON-pushable WHERE predicate (column-vs-column: is_pure_compare -> false
+// because both operands are keys, so it routes through operator_match, NOT a
+// pushable disk table_filter_t) where only the TAIL rows match. The inner
+// full_scan must stay UNLIMITED so the filter is not starved of matching rows;
+// operator_limit applies the window to the FILTERED stream. Was: the inner scan
+// was capped at LIMIT n (the head rows) -> the tail matches were never read.
+TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
+    auto config = test_create_config("/tmp/test_subqueries/nonpushable_where_limit_tail");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        return dispatcher->execute_sql(s, sql);
+    };
+
+    exec("CREATE DATABASE TestDatabase;");
+    REQUIRE(exec("CREATE TABLE TestDatabase.tail_match (a bigint, b bigint);")->is_success());
+    // 6 HEAD rows never match (a=100 > b); 4 TAIL rows match (a=1 < b=100). `a < b` is a
+    // column-vs-column compare -> non-pushable -> operator_match over an unlimited scan.
+    REQUIRE(exec("INSERT INTO TestDatabase.tail_match (a, b) VALUES "
+                 "(100, 1),(100, 2),(100, 3),(100, 4),(100, 5),(100, 6),"
+                 "(1, 100),(1, 100),(1, 100),(1, 100);")
+                ->is_success());
+
+    INFO("control: WHERE a < b matches exactly the 4 tail rows");
+    {
+        auto cur = exec("SELECT b FROM TestDatabase.tail_match WHERE a < b;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+    }
+
+    INFO("non-pushable WHERE ... LIMIT 3 returns exactly 3 (inner scan not capped -> filter not starved)");
+    {
+        auto cur = exec("SELECT b FROM TestDatabase.tail_match WHERE a < b LIMIT 3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("non-pushable WHERE ... LIMIT 2 OFFSET 1 returns exactly 2");
+    {
+        auto cur = exec("SELECT b FROM TestDatabase.tail_match WHERE a < b LIMIT 2 OFFSET 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}
+
+// (3) Regressions: shapes that were ALREADY correct must stay correct under the
+// unified operator_limit — a plain LIMIT, a pushable `col = const` LIMIT (disk
+// table_filter_t path), a GROUP BY LIMIT (whole groups, correct counts), and a
+// UNION ALL LIMIT (the merged concatenation windowed once).
+TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
+    auto config = test_create_config("/tmp/test_subqueries/limit_unification_regressions");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    INFO("plain SELECT ... LIMIT n returns n rows");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT name FROM TestDatabase.Employees LIMIT 4;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+    }
+
+    INFO("pushable WHERE col = const LIMIT n (disk table_filter_t path) still caps correctly");
+    {
+        // dept_id = 3 has two employees (Eve, Frank); LIMIT 1 -> 1 row.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT name FROM TestDatabase.Employees WHERE dept_id = 3 LIMIT 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("GROUP BY ... LIMIT n returns n whole groups with correct counts");
+    {
+        // 5 groups (dept 1..5), each count 2; LIMIT 2 -> 2 whole groups, each count 2
+        // (not a windowed scan's partial count).
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id, count(*) AS c FROM TestDatabase.Employees "
+                                           "GROUP BY dept_id LIMIT 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        for (size_t row = 0; row < cur->size(); ++row) {
+            REQUIRE(cur->value(1, row).value<uint64_t>() == 2);
+        }
+    }
+
+    INFO("UNION ALL ... LIMIT n windows the merged concatenation once");
+    {
+        // dept 1 (2 rows) UNION ALL dept 2 (2 rows) = 4 rows; LIMIT 3 -> 3.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1 "
+                                           "UNION ALL "
+                                           "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 2 "
+                                           "LIMIT 3;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+}
+
+// (4) Top-level `VALUES (...) LIMIT/OFFSET` — previously a hard parse error. The
+// literal rows are wrapped in an aggregate so operator_limit windows them.
+TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
+    auto config = test_create_config("/tmp/test_subqueries/values_top_level_limit");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        return dispatcher->execute_sql(s, sql);
+    };
+
+    exec("CREATE DATABASE TestDatabase;");
+
+    INFO("VALUES (1),(2),(3) LIMIT 2 returns 2 rows (was a hard parse error)");
+    {
+        auto cur = exec("VALUES (1),(2),(3) LIMIT 2;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("VALUES (1),(2),(3) LIMIT 1 OFFSET 1 returns exactly 1 row (the 2nd value)");
+    {
+        auto cur = exec("VALUES (1),(2),(3) LIMIT 1 OFFSET 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+}

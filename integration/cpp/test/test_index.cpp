@@ -8,6 +8,7 @@
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -405,7 +406,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 dispatcher->resource(),
                 database_name,
                 collection_name,
-                components::logical_plan::make_node_delete_many(
+                components::logical_plan::make_node_delete(
                     dispatcher->resource(),
                     components::logical_plan::make_node_match(dispatcher->resource(),
                                                               core::dbname_t{database_name},
@@ -414,7 +415,11 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                                                                   dispatcher->resource(),
                                                                   compare_type::gt,
                                                                   key{dispatcher->resource(), "count", side_t::left},
-                                                                  id_par{1}))));
+                                                                  id_par{1})),
+                    components::logical_plan::make_node_limit(dispatcher->resource(),
+                                                              {},
+                                                              {},
+                                                              components::logical_plan::limit_t::unlimit())));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 90));
             auto cur = dispatcher->execute_plan(
@@ -450,7 +455,14 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 dispatcher->resource(),
                 database_name,
                 collection_name,
-                components::logical_plan::make_node_update_many(dispatcher->resource(), match, {update_expr}));
+                components::logical_plan::make_node_update(
+                    dispatcher->resource(),
+                    match,
+                    components::logical_plan::make_node_limit(dispatcher->resource(),
+                                                              {},
+                                                              {},
+                                                              components::logical_plan::limit_t::unlimit()),
+                    {update_expr}));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50));
             params->add_parameter(id_par{2}, logical_value_t(dispatcher->resource(), 999));

@@ -26,7 +26,15 @@ namespace components::operators {
                         std::pmr::vector<expressions::update_expr_ptr> updates,
                         bool upsert,
                         std::pmr::vector<select_column_t> returning,
-                        expressions::expression_ptr expr = nullptr);
+                        expressions::expression_ptr expr = nullptr,
+                        // Matched-row bound for the UPDATE ... FROM source path
+                        // (UPDATE ... LIMIT n). -1 = unbounded. The no-source path
+                        // leaves this -1 (bound applied upstream by the scan /
+                        // operator_match count-cap); the source (semi-join) path reads
+                        // ALL left rows and stops here at exactly n MATCHED rows (MySQL
+                        // "rows-matched restriction" — matched, not value-changed),
+                        // across mid-pump flushes.
+                        std::int64_t affected_bound = -1);
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
@@ -105,6 +113,12 @@ namespace components::operators {
         chunks_vector_t returning_accum_{resource_};
         uint64_t affected_rows_{0};
         bool delete_marker_recorded_{false};
+        // UPDATE ... FROM matched-row bound (UPDATE ... LIMIT n); -1 = unbounded.
+        // matched_total_ counts MATCHED left rows at MATCH time (in consume_join_batch_)
+        // and persists across mid-pump flushes — output_/affected_rows_ are cleared/lag
+        // per flush, so a flush-derived count would miss already-flushed matches.
+        std::int64_t affected_bound_{-1};
+        uint64_t matched_total_{0};
     };
 
 } // namespace components::operators

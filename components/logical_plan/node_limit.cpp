@@ -1,5 +1,6 @@
 #include "node_limit.hpp"
 
+#include <limits>
 #include <sstream>
 
 namespace components::logical_plan {
@@ -19,6 +20,17 @@ namespace components::logical_plan {
     bool limit_t::check(int64_t count) const { return limit_ == unlimit_ || count < limit_ + offset_; }
 
     bool limit_t::is_skipping(int64_t count) const { return count < offset_; }
+
+    int64_t limit_t::head_cap() const {
+        if (limit_ == unlimit_) {
+            return unlimit_;
+        }
+        // Saturate on overflow instead of wrapping negative (mirrors operator_limit).
+        if (offset_ > std::numeric_limits<int64_t>::max() - limit_) {
+            return std::numeric_limits<int64_t>::max();
+        }
+        return limit_ + offset_;
+    }
 
     node_limit_t::node_limit_t(std::pmr::memory_resource* resource,
                                core::dbname_t dbname,

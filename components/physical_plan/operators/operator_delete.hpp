@@ -13,7 +13,14 @@ namespace components::operators {
                         log_t log,
                         components::catalog::oid_t table_oid,
                         std::pmr::vector<select_column_t> returning,
-                        expressions::expression_ptr expr = nullptr);
+                        expressions::expression_ptr expr = nullptr,
+                        // Affected-row bound for the DELETE ... USING source path
+                        // (DELETE ... LIMIT n). -1 = unbounded. The no-source path
+                        // leaves this -1 — its bound is applied upstream by the scan /
+                        // operator_match count-cap (create_plan_match); the source
+                        // (semi-join) path reads ALL left rows and must stop matching
+                        // here, at exactly n matched rows, across mid-pump flushes.
+                        std::int64_t affected_bound = -1);
 
         // Catalog-table delete (DDL pg_catalog row scrub): deletes every row in
         // `catalog_table_oid` where column[oid_col_idx] == target_oid via the
@@ -101,6 +108,13 @@ namespace components::operators {
         // COMMIT-side revert keys on the txn id, not per-flush ranges).
         uint64_t affected_rows_{0};
         bool delete_marker_recorded_{false};
+        // DELETE ... USING affected-row bound (DELETE ... LIMIT n); -1 = unbounded.
+        // matched_total_ counts MATCHED left rows at MATCH time (in consume_join_batch_),
+        // and persists across mid-pump flushes — modified_ is cleared each flush, so a
+        // flush-derived count would miss already-flushed matches. The semi-join stops
+        // once matched_total_ reaches affected_bound_.
+        std::int64_t affected_bound_{-1};
+        uint64_t matched_total_{0};
         // Catalog-delete spec (set only by the catalog constructor). oid_col_idx_
         // < 0 marks "not a catalog delete" → the predicate-scan path runs.
         std::int64_t oid_col_idx_{-1};

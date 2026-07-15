@@ -7,6 +7,7 @@
 #include <components/expressions/function_expression.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/physical_plan/operators/operator_having.hpp>
 #include <components/physical_plan/operators/operator_match.hpp>
 #include <components/physical_plan/operators/scan/full_scan.hpp>
 #include <components/physical_plan/operators/scan/index_scan.hpp>
@@ -148,7 +149,13 @@ namespace services::planner::impl {
                                                                                      limit,
                                                                                      projected_cols));
                 } else {
-                    // For now we do a full scan and apply function after
+                    // Non-pushable predicate (column-vs-column, a function, a non-representable
+                    // shape): the inner full_scan reads ALL raw rows (unlimit) because the filter
+                    // runs ABOVE it in operator_match; capping the inner scan at the read-cap
+                    // could starve the filter of matching rows. operator_match carries the
+                    // read-cap and bounds the FILTERED (matched) stream — for SELECT it is an
+                    // advisory hint under operator_limit, for DML …WHERE f(x) LIMIT n it is the
+                    // AUTHORITATIVE affected-row bound (no operator_limit over a DML root).
                     auto match_operator =
                         boost::intrusive_ptr(new components::operators::operator_match_t(context.resource,
                                                                                          context.log.clone(),
@@ -159,7 +166,7 @@ namespace services::planner::impl {
                                                                                   context.log.clone(),
                                                                                   table_oid,
                                                                                   nullptr,
-                                                                                  limit,
+                                                                                  components::logical_plan::limit_t::unlimit(),
                                                                                   projected_cols)));
                     return match_operator;
                 }
@@ -223,19 +230,20 @@ namespace services::planner::impl {
         }
     }
 
+    // Lower a first-class node_having_t to a dedicated operator_having_t placed ABOVE the group
+    // (create_plan_aggregate set_children the group operator under it). The HAVING compare lives at
+    // expressions()[0] — passed straight into operator_having_t (const expression_ptr&). HAVING has
+    // no window (the outer operator_limit is the sole window), so there is no limit parameter. The
+    // operator is always built on context.resource, which is unconditionally non-null and outlives
+    // the operator, so no null-resource sentinel is needed.
     components::operators::operator_ptr create_plan_having(const context_storage_t& context,
-                                                           const components::logical_plan::node_ptr& node,
-                                                           components::logical_plan::limit_t limit) {
+                                                           const components::logical_plan::node_ptr& node) {
         if (node->expressions().empty()) {
             return nullptr;
         }
-        auto expr = reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node->expressions()[0]);
-        if (context.has_table_oid(node->table_oid())) {
-            return boost::intrusive_ptr(
-                new components::operators::operator_match_t(context.resource, context.log.clone(), *expr, limit));
-        } else {
-            return boost::intrusive_ptr(new components::operators::operator_match_t(nullptr, log_t{}, *expr, limit));
-        }
+        return boost::intrusive_ptr(new components::operators::operator_having_t(context.resource,
+                                                                                 context.log.clone(),
+                                                                                 node->expressions()[0]));
     }
 
 } // namespace services::planner::impl

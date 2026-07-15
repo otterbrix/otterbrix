@@ -19,12 +19,18 @@ namespace components::sql::transform {
         // path below — otherwise an empty source would wrongly delete all rows.
         if (!node.whereClause && (!node.usingClause || node.usingClause->lst.empty())) {
             auto qn = rangevar_to_qualified_name(node.relation);
-            auto del = logical_plan::make_node_delete_many(
+            auto del_limit =
+                build_dml_limit(node.limitCount, core::dbname_t{qn.dbname}, core::relname_t{qn.relname}, plan);
+            if (has_error()) {
+                return nullptr;
+            }
+            auto del = logical_plan::make_node_delete(
                 resource_,
                 logical_plan::make_node_match(resource_,
                                               core::dbname_t{qn.dbname},
                                               core::relname_t{qn.relname},
-                                              make_compare_expression(resource_, compare_type::all_true)));
+                                              make_compare_expression(resource_, compare_type::all_true)),
+                del_limit);
             if (node.returningList) {
                 name_collection_t rnames;
                 rnames.left_name = qn;
@@ -73,12 +79,20 @@ namespace components::sql::transform {
         } else {
             where_expr = make_compare_expression(resource_, compare_type::all_true);
         }
+        auto del_limit = build_dml_limit(node.limitCount,
+                                         core::dbname_t{names.left_name.dbname},
+                                         core::relname_t{names.left_name.relname},
+                                         plan);
+        if (has_error()) {
+            return nullptr;
+        }
         auto del =
-            logical_plan::make_node_delete_many(resource_,
-                                                logical_plan::make_node_match(resource_,
-                                                                              core::dbname_t{names.left_name.dbname},
-                                                                              core::relname_t{names.left_name.relname},
-                                                                              where_expr));
+            logical_plan::make_node_delete(resource_,
+                                           logical_plan::make_node_match(resource_,
+                                                                         core::dbname_t{names.left_name.dbname},
+                                                                         core::relname_t{names.left_name.relname},
+                                                                         where_expr),
+                                           del_limit);
         // The USING source is a child sub-plan (the RIGHT side of the delete join);
         // its scans self-resolve by name, so no table_oid_from splice is needed.
         if (source_child) {

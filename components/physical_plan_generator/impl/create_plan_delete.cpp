@@ -75,14 +75,21 @@ namespace services::planner::impl {
         auto expr =
             reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node_match->expressions()[0]);
 
+        // Source (DELETE ... USING) path: the semi-join reads ALL left rows (unlimit) and
+        // operator_delete stops after exactly limit.limit() MATCHED rows — capping the left
+        // scan would under-delete (fewer than n of the first n left rows may join a source row).
         auto plan = boost::intrusive_ptr(new components::operators::operator_delete(context.resource,
                                                                                     context.log.clone(),
                                                                                     table_oid,
                                                                                     std::move(returning),
-                                                                                    *expr));
+                                                                                    *expr,
+                                                                                    limit.limit()));
         plan->set_children(
-            boost::intrusive_ptr(
-                new components::operators::full_scan(context.resource, context.log.clone(), table_oid, nullptr, limit)),
+            boost::intrusive_ptr(new components::operators::full_scan(context.resource,
+                                                                      context.log.clone(),
+                                                                      table_oid,
+                                                                      nullptr,
+                                                                      components::logical_plan::limit_t::unlimit())),
             create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
         return plan;
     }

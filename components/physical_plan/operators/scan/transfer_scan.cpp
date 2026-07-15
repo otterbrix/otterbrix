@@ -55,14 +55,12 @@ namespace components::operators {
             co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(row));
         }
 
-        const int64_t offset_val = limit_.offset();
-        const int64_t limit_val = limit_.limit();
-
         if (!opened_) {
             opened_ = true;
-            remaining_offset_ = offset_val > 0 ? static_cast<uint64_t>(offset_val) : 0;
-            // offset+limit head cap pushed down (post-filter == post-scan here; no filter).
-            const int64_t scan_limit = (limit_val < 0) ? limit_val : limit_val + offset_val;
+            // The read-cap (offset+limit head cap) is pushed down as the scan's row-count cap.
+            // SELECT OFFSET is applied by operator_limit above, so every scan receives offset()==0
+            // and head_cap() == limit here.
+            const int64_t scan_limit = limit_.head_cap();
             auto [_s, sf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::storage_fetch_next_batch,
                                              ctx->session,
@@ -103,60 +101,32 @@ namespace components::operators {
         co_return co_await emit_or_skip(ctx, std::move(reply.batch));
     }
 
-    // Per-batch OFFSET skip + the drained empty-guard. transfer_scan fetches the guard schema lazily
+    // The drained empty-guard for one fetched batch. transfer_scan fetches the guard schema lazily
     // (storage_types) only on the drained-with-zero-rows path (it has no upfront filter to type).
+    // (OFFSET is applied by operator_limit above; every scan receives offset()==0, so no skip.)
     actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
     transfer_scan::emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch) {
-        while (true) {
-            const uint64_t sz = batch ? batch->size() : 0;
+        const uint64_t sz = batch ? batch->size() : 0;
 
-            if (sz == 0) {
-                drained_ = true;
-                if (!emitted_any_) {
-                    emitted_any_ = true;
-                    if (!guard_types_loaded_) {
-                        guard_types_loaded_ = true;
-                        auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                                         &services::disk::manager_disk_t::storage_types,
-                                                         ctx->session,
-                                                         table_oid_);
-                        guard_types_ = co_await std::move(tf);
-                    }
-                    co_return make_drain_chunk(guard_types_);
-                }
-                co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
-            }
-
-            if (remaining_offset_ > 0) {
-                if (sz <= remaining_offset_) {
-                    remaining_offset_ -= sz;
-                    auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                     ctx->session,
-                                                     table_oid_,
-                                                     cursor_id_,
-                                                     std::unique_ptr<table::table_filter_t>(nullptr),
-                                                     int64_t{-1},
-                                                     projected_cols_,
-                                                     ctx->txn);
-                    auto fetch_result = co_await std::move(sf);
-                    if (fetch_result.has_error()) {
-                        set_error(fetch_result.error());
-                        mark_failed();
-                        co_return fetch_result.convert_error<vector::data_chunk_t>();
-                    }
-                    batch = std::move(fetch_result.value().batch);
-                    continue;
-                }
-                auto trimmed = batch->partial_copy(resource_, remaining_offset_, sz - remaining_offset_);
-                remaining_offset_ = 0;
+        if (sz == 0) {
+            drained_ = true;
+            if (!emitted_any_) {
                 emitted_any_ = true;
-                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(trimmed));
+                if (!guard_types_loaded_) {
+                    guard_types_loaded_ = true;
+                    auto [_t, tf] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::storage_types,
+                                                     ctx->session,
+                                                     table_oid_);
+                    guard_types_ = co_await std::move(tf);
+                }
+                co_return make_drain_chunk(guard_types_);
             }
-
-            emitted_any_ = true;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(*batch));
+            co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
         }
+
+        emitted_any_ = true;
+        co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(*batch));
     }
 
 } // namespace components::operators

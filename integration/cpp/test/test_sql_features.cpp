@@ -591,6 +591,179 @@ TEST_CASE("integration::cpp::test_sql_features::having") {
     }
 }
 
+TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
+    auto config = test_create_config("/tmp/test_sql_features/having_first_class_node");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("initialization");
+    {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            test_create_collection(dispatcher, session, database_name, collection_name);
+        }
+    }
+
+    // Empty-table cases run BEFORE any insert: a HAVING makes the query grouped (implicit
+    // GROUP BY ()), so the empty table is still ONE group.
+    INFO("empty-input constant HAVING true -> one row");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT 1 FROM TestDatabase.TestCollection HAVING true;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("empty-input constant HAVING false -> zero rows");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT 1 FROM TestDatabase.TestCollection HAVING false;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    // NOTE: column-referencing aggregates (SUM/COUNT of a column) over a truly EMPTY collection
+    // hit a separate, pre-existing schema-on-write limitation (the column type is unknown until
+    // some row exists — see edge_cases::"empty table COUNT" which asserts is_error). That is
+    // orthogonal to HAVING, so the R19 empty-INPUT-HAVING path is exercised below over a populated
+    // table whose WHERE filters every row (schema stays resolvable, group input is empty).
+
+    INFO("insert 100 rows");
+    {
+        auto session = otterbrix::session_id_t();
+        std::stringstream query;
+        query << "INSERT INTO TestDatabase.TestCollection (name, count) VALUES ";
+        for (int num = 0; num < 100; ++num) {
+            query << "('Name " << (num % 10) << "', " << (num % 20) << ")" << (num == 99 ? ";" : ", ");
+        }
+        auto cur = dispatcher->execute_sql(session, query.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 100);
+    }
+
+    INFO("SELECT * GROUP BY HAVING aggregate: hidden __having aggregate is stripped");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "GROUP BY name HAVING SUM(count) > 90;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+        // Only the visible GROUP key column is projected; the hidden __having_sum aggregate
+        // that resolve_having_operand appended to the group must NOT leak as an output column.
+        REQUIRE(cur->chunks().front().data.size() == 1);
+    }
+
+    INFO("SELECT * with aggregate-only HAVING and no GROUP BY -> PostgreSQL-style error");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection HAVING COUNT(count) > 5;");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("bare non-aggregated column under a HAVING-grouped query -> PostgreSQL-style error");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT name FROM TestDatabase.TestCollection HAVING true;");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("constant HAVING true over non-empty table collapses to one row");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT 1 FROM TestDatabase.TestCollection HAVING true;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("constant HAVING false over non-empty table -> zero rows");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT 1 FROM TestDatabase.TestCollection HAVING false;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("COUNT(*) with constant HAVING (no crash)");
+    {
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "SELECT COUNT(count) FROM TestDatabase.TestCollection HAVING true;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "SELECT COUNT(count) FROM TestDatabase.TestCollection HAVING false;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 0);
+        }
+    }
+
+    INFO("HAVING with union_and over two aggregates");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT name, SUM(count) AS total FROM TestDatabase.TestCollection "
+                                           "GROUP BY name HAVING SUM(count) > 90 AND COUNT(count) > 5;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5); // all 5 groups with SUM>90 also have COUNT=10 > 5
+    }
+
+    // R19: HAVING is now an operator ABOVE the group, so it filters the single scalar row the
+    // group emits for empty input too (empty_aggregate_result). Previously HAVING ran only inside
+    // materialize_groups, so the empty-input row bypassed it. WHERE filters every row -> group
+    // input is empty -> the scalar COUNT row is 0 and HAVING decides whether to keep it.
+    INFO("empty-input scalar HAVING keeps the row when the predicate holds");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT COUNT(count) FROM TestDatabase.TestCollection "
+                                           "WHERE count > 999999 HAVING COUNT(count) = 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // COUNT over the empty group input is 0; 0 = 0 keeps the row
+    }
+
+    INFO("empty-input scalar HAVING drops the row when the predicate fails");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT COUNT(count) FROM TestDatabase.TestCollection "
+                                           "WHERE count > 999999 HAVING COUNT(count) > 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0); // 0 > 0 is false -> the single empty-input row is filtered
+    }
+
+    // no-FROM HAVING: exercises the operator_having build on context.resource with a table_oid of
+    // INVALID_OID (has_table_oid == false). A HAVING forces a scalar group over the single synthetic
+    // no-table row, so HAVING true keeps it / false drops it.
+    INFO("no-FROM constant HAVING true -> one row");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT 1 HAVING true;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("no-FROM constant HAVING false -> zero rows");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT 1 HAVING false;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
 TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
     auto config = test_create_config("/tmp/test_sql_features/edge_cases");
     test_clear_directory(config);

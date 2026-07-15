@@ -28,14 +28,16 @@ namespace components::operators {
                                      std::pmr::vector<expressions::update_expr_ptr> updates,
                                      bool upsert,
                                      std::pmr::vector<select_column_t> returning,
-                                     expressions::expression_ptr expr)
+                                     expressions::expression_ptr expr,
+                                     std::int64_t affected_bound)
         : read_write_operator_t(resource, log, operator_type::update)
         , table_oid_(table_oid)
         , updates_(std::move(updates))
         , expr_(std::move(expr))
         , upsert_(upsert)
         , returning_(std::move(returning))
-        , returning_from_chunks_(resource) {}
+        , returning_from_chunks_(resource)
+        , affected_bound_(affected_bound) {}
 
     namespace {
         // Applies all update expressions to out_chunk[0..match_count) and
@@ -185,6 +187,12 @@ namespace components::operators {
         data_chunk_t right_chunk(resource, types_right, chunk_left.size());
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); ++i) {
+            // Matched-row bound (UPDATE ... FROM ... LIMIT n): stop once the running matched
+            // total (already-flushed matched_total_ + this batch's index) reaches the bound.
+            // -1 = unbounded.
+            if (affected_bound_ >= 0 && matched_total_ + index >= static_cast<uint64_t>(affected_bound_)) {
+                break;
+            }
             bool row_matched = false;
             for (const auto& chunk_right : right_chunks) {
                 if (chunk_right.size() == 0) {
@@ -226,6 +234,8 @@ namespace components::operators {
                 }
             }
         }
+        // Count matched left rows at MATCH time so the bound survives mid-pump flushes.
+        matched_total_ += index;
         out_chunk.set_cardinality(index);
         right_chunk.set_cardinality(index);
         if (index == 0) {

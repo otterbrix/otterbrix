@@ -10,6 +10,8 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_limit.hpp>
+#include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_sort.hpp>
 #include <components/physical_plan/operators/operator_distinct.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 #include <components/physical_plan/operators/operator_group_merge.hpp>
@@ -43,7 +45,18 @@ namespace services::planner::impl {
                            std::pmr::memory_resource* resource,
                            ops::pushed_aggregate_spec_t& out) {
         {
-            if (group->having() != nullptr || group->internal_aggregate_count != 0) {
+            // A HAVING (a first-class having_t child of the aggregate) or an internal HAVING
+            // aggregate is not POD-representable — fall back to the coordinator group so the
+            // operator_having filter above it still runs. (The optimizer's pushdown_aggregate rule
+            // already skips any aggregate with a having_t child, so this is defense-in-depth.)
+            bool has_having_child = false;
+            for (const auto& child : agg_node->children()) {
+                if (child && child->type() == node_type::having_t) {
+                    has_having_child = true;
+                    break;
+                }
+            }
+            if (has_having_child || group->internal_aggregate_count != 0) {
                 return false;
             }
             for (const auto& expr : group->expressions()) {
@@ -246,52 +259,22 @@ namespace services::planner::impl {
         const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
         const auto& projected_cols = agg_node->projected_cols();
 
-        // Classify the children: ORDER BY (sort), a GROUP BY (group), and a non-scan
-        // source (a UNION / recursive-CTE / join reaching the `default` branch below).
-        bool has_sort = false;
-        bool has_group = false;
-        bool has_nonscan_source = false;
-        for (const components::logical_plan::node_ptr& child : node->children()) {
-            switch (child->type()) {
-                case node_type::sort_t:
-                    has_sort = true;
-                    break;
-                case node_type::group_t:
-                    has_group = true;
-                    break;
-                case node_type::limit_t:
-                case node_type::match_t:
-                case node_type::select_t:
-                    break;
-                default:
-                    has_nonscan_source = true; // hits the `default` (non-scan source) build branch below
-                    break;
-            }
-        }
-
-        // A merged LIMIT/OFFSET that CANNOT be applied by the source itself needs the
-        // canonical operator_limit (see operator_limit.hpp): a UNION forwards the outer
-        // limit into both arms (per-arm windowing), and a GROUP BY that pushes the limit
-        // into its scan produces the WRONG groups. In those shapes, and only when there
-        // is NO ORDER BY (a sort applies the limit itself), pass `unlimit` to the source
-        // and wrap the terminal chain in operator_limit. A plain scan source applies its
-        // own LIMIT/OFFSET correctly, so it is left untouched.
+        // UNIFIED LIMIT: operator_limit is the SINGLE authoritative limiter. It is
+        // inserted as the OUTERMOST node (above DISTINCT — SQL applies LIMIT after
+        // DISTINCT) whenever the LIMIT/OFFSET is effective, and applies the real
+        // [offset, offset+limit) window. Every source below receives only an advisory
+        // COUNT read-cap (offset 0) that the pushdown_limit optimizer rule stamped on
+        // the eligible node (node_match_t / node_sort_t / this aggregate); a node the
+        // rule did not stamp reads unlimit(). So OFFSET is applied in exactly ONE place
+        // and double-OFFSET is structurally impossible.
         const bool limit_effective =
             limit.limit() != components::logical_plan::limit_t::unlimit().limit() || limit.offset() != 0;
-        const bool needs_limit_operator = limit_effective && !has_sort && (has_group || has_nonscan_source);
 
-        // When ORDER BY is present the source scans all rows (limit+offset applied
-        // post-sort); likewise when operator_limit will apply the merged window on top.
-        auto scan_limit = (has_sort || needs_limit_operator) ? components::logical_plan::limit_t::unlimit() : limit;
-        // The limit forwarded into a GROUP BY / non-scan child: unlimited when
-        // operator_limit will window on top, otherwise the outer limit as before.
-        auto source_limit = needs_limit_operator ? components::logical_plan::limit_t::unlimit() : limit;
-
-        // Wrap `op` in the canonical operator_limit as the OUTERMOST node (above
-        // DISTINCT — SQL applies LIMIT after DISTINCT) when needs_limit_operator; else
-        // pass it through unchanged. Shared by the pushdown and normal return paths.
+        // Wrap `op` in the canonical operator_limit as the OUTERMOST node when the
+        // LIMIT/OFFSET is effective; else pass it through unchanged. Shared by the
+        // pushdown and normal return paths.
         auto wrap_limit = [&](components::operators::operator_ptr op) -> components::operators::operator_ptr {
-            if (!needs_limit_operator) {
+            if (!limit_effective) {
                 return op;
             }
             auto limit_op =
@@ -331,7 +314,10 @@ namespace services::planner::impl {
                 components::operators::operator_ptr push_select_op;
                 for (const components::logical_plan::node_ptr& child : node->children()) {
                     if (child->type() == node_type::sort_t) {
-                        push_sort_op = create_plan_sort(context, child, limit);
+                        push_sort_op = create_plan_sort(
+                            context,
+                            child,
+                            static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
                     } else if (child->type() == node_type::select_t) {
                         push_select_op = create_plan_select(context, child, params);
                     }
@@ -364,6 +350,7 @@ namespace services::planner::impl {
         // Build operator chain: scan/child → match → group → sort → select
         components::operators::operator_ptr match_op;
         components::operators::operator_ptr group_op;
+        components::operators::operator_ptr having_op;
         components::operators::operator_ptr sort_op;
         components::operators::operator_ptr select_op;
         components::operators::operator_ptr child_op;
@@ -373,25 +360,51 @@ namespace services::planner::impl {
                 case node_type::limit_t:
                     break; // already handled above
                 case node_type::match_t:
-                    // Call create_plan_match directly so we can pass projected_cols
-                    match_op = create_plan_match(context, child, scan_limit, projected_cols);
+                    // Call create_plan_match directly so we can pass projected_cols. The
+                    // read-cap is the pushdown_limit stamp on this match node (unlimit when
+                    // the rule left it unstamped — e.g. under a sort / group / distinct).
+                    match_op = create_plan_match(
+                        context,
+                        child,
+                        static_cast<const components::logical_plan::node_match_t*>(child.get())->read_cap(),
+                        projected_cols);
                     break;
                 case node_type::group_t:
-                    group_op = create_plan(context, function_registry, child, source_limit, params);
+                    // A GROUP BY is never cardinality-preserving from its scan and has no
+                    // output-cap hook — operator_limit windows the full grouped output.
+                    group_op = create_plan(context,
+                                           function_registry,
+                                           child,
+                                           components::logical_plan::limit_t::unlimit(),
+                                           params);
                     break;
                 case node_type::sort_t:
-                    sort_op = create_plan_sort(context, child, limit);
+                    // The full sort truncates its OUTPUT to the read-cap the pushdown_limit
+                    // rule stamped (unlimit when a DISTINCT sits above); operator_limit
+                    // applies the real window on top.
+                    sort_op = create_plan_sort(
+                        context,
+                        child,
+                        static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
                     break;
                 case node_type::select_t:
                     select_op = create_plan_select(context, child, params);
                     break;
+                case node_type::having_t:
+                    // HAVING → dedicated operator_having filter, spliced ABOVE the group (below),
+                    // between the group and the sort. It has no window (operator_limit is the sole
+                    // window), so create_plan_having takes no limit.
+                    having_op = create_plan_having(context, child);
+                    break;
                 default:
-                    // A non-scan source (e.g. a UNION under ORDER BY/LIMIT): the source MUST be
-                    // unlimited (scan_limit == unlimit) whenever a sort OR operator_limit will apply
-                    // the merged window on top — otherwise create_plan_union pushes the outer limit
-                    // into each arm and the limit/offset is applied twice (wrong OFFSET results).
-                    // Mirrors the match branch above.
-                    child_op = create_plan(context, function_registry, child, scan_limit, params);
+                    // A non-scan source (UNION / recursive-CTE / join): always unlimited —
+                    // operator_limit applies the merged window on top. Forwarding the outer
+                    // limit into each arm would apply limit/offset twice (wrong OFFSET).
+                    child_op = create_plan(context,
+                                           function_registry,
+                                           child,
+                                           components::logical_plan::limit_t::unlimit(),
+                                           params);
                     break;
             }
         }
@@ -414,7 +427,7 @@ namespace services::planner::impl {
                                 : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
                                       new components::operators::transfer_scan(plan_resource,
                                                                                node->table_oid(),
-                                                                               scan_limit,
+                                                                               agg_node->read_cap(),
                                                                                std::move(projected_cols))));
         }
         if (group_op) {
@@ -427,6 +440,11 @@ namespace services::planner::impl {
             }
             group_op->set_children(std::move(executor));
             executor = std::move(group_op);
+        }
+        // HAVING filters the aggregated output — AFTER the group, BEFORE ORDER BY / projection.
+        if (having_op) {
+            having_op->set_children(std::move(executor));
+            executor = std::move(having_op);
         }
         if (sort_op) {
             sort_op->set_children(std::move(executor));

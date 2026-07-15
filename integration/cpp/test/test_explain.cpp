@@ -567,3 +567,113 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
         REQUIRE(contains(plan_text(cur), "rows=1"));
     }
 }
+
+// LIMIT unification: the canonical operator_limit renders a "Limit" node (renderer
+// label from renderer_postgres.cpp) as the OUTERMOST plan node — above the scan /
+// DISTINCT / GROUP — exactly when the LIMIT/OFFSET window is EFFECTIVE. An ineffective
+// window (LIMIT ALL -> unlimit()+offset 0, or no limit clause) inserts NO operator_limit,
+// so no "Limit" node appears.
+TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
+    auto config = test_create_config("/tmp/test_explain/limit_node_when_effective");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.orders(id int, cust int);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10),(4,30);")
+                    ->is_success());
+    }
+
+    INFO("EXPLAIN of an effectively-limited SELECT shows a Limit node ABOVE the scan"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders LIMIT 2;");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "Limit"));
+        REQUIRE(contains(t, "orders"));
+        REQUIRE(t.find("Limit") < t.find("orders")); // outermost node — rendered above the scan
+    }
+
+    INFO("EXPLAIN of DISTINCT ... LIMIT shows a Limit node (above the DISTINCT/scan)"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT cust FROM TestDatabase.orders LIMIT 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(contains(plan_text(cur), "Limit"));
+    }
+
+    INFO("EXPLAIN of GROUP BY ... LIMIT shows a Limit node (above the aggregate/scan)"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "EXPLAIN SELECT cust, count(*) FROM TestDatabase.orders GROUP BY cust LIMIT 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(contains(plan_text(cur), "Limit"));
+    }
+
+    INFO("EXPLAIN with NO limit clause shows NO Limit node"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "orders"));
+        REQUIRE_FALSE(contains(t, "Limit"));
+    }
+
+    INFO("EXPLAIN of LIMIT ALL (an ineffective window) shows NO Limit node"); {
+        // LIMIT ALL parses to unlimit()+offset 0 -> limit_effective == false -> operator_limit skipped.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders LIMIT ALL;");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "orders"));
+        REQUIRE_FALSE(contains(t, "Limit"));
+    }
+}
+
+TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
+    auto config = test_create_config("/tmp/test_explain/having_node_labeled");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.orders(id int, cust int);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10),(4,30);")
+                    ->is_success());
+    }
+
+    // HAVING now lowers to a dedicated operator_having_t (operator_type::having), rendered "Having"
+    // above the "Aggregate" — distinct from a WHERE "Filter". Before this change both rendered "Filter".
+    INFO("EXPLAIN of GROUP BY ... HAVING shows a Having node above the Aggregate"); {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "EXPLAIN SELECT cust, count(*) FROM TestDatabase.orders GROUP BY cust HAVING count(*) > 1;");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "Having"));
+        REQUIRE(contains(t, "Aggregate"));
+        REQUIRE(t.find("Having") < t.find("Aggregate")); // HAVING filter renders above the group
+    }
+}

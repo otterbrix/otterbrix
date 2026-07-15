@@ -2,6 +2,7 @@
 
 #include "identifier_types.hpp"
 #include "node.hpp"
+#include "node_limit.hpp"
 
 #include <vector>
 
@@ -36,12 +37,24 @@ namespace components::logical_plan {
         const std::vector<size_t>& projected_cols() const { return projected_cols_; }
         void set_projected_cols(std::vector<size_t> cols) { projected_cols_ = std::move(cols); }
 
+        // Optimizer annotation (pushdown_limit rule): a pure COUNT read-cap
+        // (offset always 0) = limit+offset rows the terminal transfer_scan may cap
+        // its base-table read at, for the plain-scan shape (no WHERE match child,
+        // no sort/group/non-scan source, and NOT is_distinct()) whose scan is built
+        // directly by create_plan_aggregate. The authoritative operator_limit above
+        // still windows [offset, offset+limit). unlimit() = no cap. ANNOTATION only;
+        // EXCLUDED from hash_impl() (stays 0) and operator== — see
+        // node_match_t::read_cap_ for the rationale.
+        void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
+        const limit_t& read_cap() const noexcept { return read_cap_; }
+
     private:
         core::uid_t uid_;
         core::dbname_t dbname_;
         core::relname_t relname_;
         bool distinct_{false};
         std::vector<size_t> projected_cols_;
+        limit_t read_cap_{};
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };

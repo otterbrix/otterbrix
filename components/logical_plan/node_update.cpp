@@ -38,22 +38,6 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
-                                          const node_match_ptr& match,
-                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
-                                          bool upsert) {
-        auto limit = make_node_limit(resource, core::dbname_t{}, core::relname_t{}, limit_t::unlimit());
-        return {new node_update_t{resource, match, limit, updates, upsert}};
-    }
-
-    node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
-                                         const node_match_ptr& match,
-                                         const std::pmr::vector<expressions::update_expr_ptr>& updates,
-                                         bool upsert) {
-        auto limit = make_node_limit(resource, core::dbname_t{}, core::relname_t{}, limit_t::limit_one());
-        return {new node_update_t{resource, match, limit, updates, upsert}};
-    }
-
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,

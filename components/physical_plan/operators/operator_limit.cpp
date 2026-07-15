@@ -40,10 +40,19 @@ namespace components::operators {
         const int64_t emit_start = std::max(win_start, chunk_start);
         const int64_t emit_end = std::min(win_end, chunk_end);
         if (emit_start < emit_end) {
-            auto* res = resource_ ? resource_ : input.resource();
-            out.emplace_back(input.partial_copy(res,
-                                                static_cast<uint64_t>(emit_start - chunk_start),
-                                                static_cast<uint64_t>(emit_end - emit_start)));
+            if (emit_start == chunk_start && emit_end == chunk_end) {
+                // The whole batch lies inside the window — move it through untouched, no
+                // per-row copy. Now that operator_limit is ALWAYS present (the sole
+                // authoritative limiter), a large `LIMIT n` result must not pay a full
+                // copy per surviving batch; only the ≤2 boundary batches (front-skip /
+                // back-trim) need a partial_copy.
+                out.emplace_back(std::move(input));
+            } else {
+                auto* res = resource_ ? resource_ : input.resource();
+                out.emplace_back(input.partial_copy(res,
+                                                    static_cast<uint64_t>(emit_start - chunk_start),
+                                                    static_cast<uint64_t>(emit_end - emit_start)));
+            }
         }
         return core::error_t::no_error();
     }

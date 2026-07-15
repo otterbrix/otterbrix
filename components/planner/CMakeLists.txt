@@ -9,6 +9,7 @@ set(SOURCE_${PROJECT_NAME}
         optimizer/rules/pushdown_filter.cpp
         optimizer/rules/hash_join.cpp
         optimizer/rules/pushdown_aggregate.cpp
+        optimizer/rules/pushdown_limit.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

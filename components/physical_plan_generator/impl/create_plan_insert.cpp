@@ -11,7 +11,6 @@ namespace services::planner::impl {
     create_plan_insert(const context_storage_t& context,
                        const components::compute::function_registry_t& function_registry,
                        const components::logical_plan::node_ptr& node,
-                       components::logical_plan::limit_t limit,
                        const components::logical_plan::storage_parameters* params) {
         const auto* node_insert = static_cast<const components::logical_plan::node_insert_t*>(node.get());
         auto returning = build_returning_columns(context.resource, node_insert->returning(), params);
@@ -32,7 +31,11 @@ namespace services::planner::impl {
                                                                                     context.log.clone(),
                                                                                     node->table_oid(),
                                                                                     std::move(returning)));
-        plan->set_children(create_plan(context, function_registry, node->children().front(), std::move(limit), params));
+        plan->set_children(create_plan(context,
+                                       function_registry,
+                                       node->children().front(),
+                                       components::logical_plan::limit_t::unlimit(),
+                                       params));
 
         return plan;
     }

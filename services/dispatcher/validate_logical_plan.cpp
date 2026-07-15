@@ -1540,6 +1540,7 @@ namespace services::dispatcher {
                 node_match_t* node_match = nullptr;
                 node_sort_t* node_sort = nullptr;
                 node_select_t* node_select = nullptr;
+                node_having_t* node_having = nullptr;
                 node_t* node_data = nullptr;
 
                 named_schema table_schema(resource);
@@ -1559,10 +1560,11 @@ namespace services::dispatcher {
                             break;
                         case node_type::limit_t:
                             break;
-                        case node_type::having_t:
-                            break;
                         case node_type::select_t:
                             node_select = reinterpret_cast<node_select_t*>(child.get());
+                            break;
+                        case node_type::having_t:
+                            node_having = reinterpret_cast<node_having_t*>(child.get());
                             break;
                         default:
                             node_data = child.get();
@@ -2346,8 +2348,11 @@ namespace services::dispatcher {
                         return res;
                     }
                 }
-                if (node_group->having()) {
-                    auto& having = node_group->having();
+                // HAVING is now a first-class node_having_t child of the aggregate (its compare at
+                // expressions()[0]), validated against the group-output `result` schema (built above:
+                // GROUP keys + aggregate columns incl. hidden __having aggregates).
+                if (node_having && !node_having->expressions().empty()) {
+                    auto& having = node_having->expressions()[0];
                     if (having->group() == expression_group::compare) {
                         auto* cmp_expr = reinterpret_cast<compare_expression_t*>(having.get());
                         auto res = impl::validate_schema(resource, cmp_expr, parameters, result, result, true);

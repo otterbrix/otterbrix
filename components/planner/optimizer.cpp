@@ -5,6 +5,7 @@
 #include "optimizer/rules/promote_cross_join.hpp"
 #include "optimizer/rules/pushdown_aggregate.hpp"
 #include "optimizer/rules/pushdown_filter.hpp"
+#include "optimizer/rules/pushdown_limit.hpp"
 
 namespace components::planner {
 
@@ -33,6 +34,14 @@ namespace components::planner {
         node = optimizer::promote_cross_joins(resource, std::move(node));
         node = optimizer::pushdown_filter(resource, std::move(node));
         node = optimizer::rewrite_hash_joins(resource, std::move(node));
+
+        // Stamp a pure COUNT read-cap on the cardinality-preserving source under an
+        // effective LIMIT/OFFSET (create_plan_aggregate reads it; the authoritative
+        // operator_limit still windows on top). UNGATED — unlike pushdown_aggregate
+        // this is a local scan/sort hint with no owning-agent precondition, valid in
+        // in-memory mode too. AFTER pushdown_filter/rewrite_hash_joins so it sees the
+        // settled match/join shape.
+        node = optimizer::pushdown_limit(resource, std::move(node));
 
         // Annotate pushable single-owned-table aggregates. Runs LAST — it only
         // reads node types + table_oid() + the group child, so ordering vs. the

@@ -54,7 +54,6 @@ namespace components::operators {
             emitted_any_ = false;
             guard_types_loaded_ = false;
             cursor_id_ = 0;
-            remaining_offset_ = 0;
             guard_types_.clear();
         }
 
@@ -65,8 +64,8 @@ namespace components::operators {
         // join can NULL-pad and a scalar aggregate can emit COUNT=0.
         vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);
 
-        // Apply per-batch OFFSET skip and the drained empty-guard to one fetched batch, re-fetching
-        // (ADVANCE) while OFFSET still consumes whole batches.
+        // Apply the drained empty-guard to one fetched batch. (OFFSET is applied by operator_limit
+        // above; every scan receives offset()==0, so there is no per-batch skip.)
         actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch);
 
@@ -82,7 +81,6 @@ namespace components::operators {
         bool emitted_any_{false};
         bool guard_types_loaded_{false};
         uint64_t cursor_id_{0};
-        uint64_t remaining_offset_{0};
         std::pmr::vector<types::complex_logical_type> guard_types_{resource_};
     };
 

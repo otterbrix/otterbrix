@@ -26,6 +26,10 @@ namespace components::operators {
         unused = 0x0,
         empty,
         match,
+        // Post-aggregation SQL HAVING filter. A dedicated streaming filter operator placed ABOVE
+        // the group operator (never over a scan): same per-row predicate machinery as `match`, but
+        // structurally always streaming, no LIMIT/read-cap, no row-id propagation. Rendered "Having".
+        having,
         full_scan,
         transfer_scan,
         index_scan,

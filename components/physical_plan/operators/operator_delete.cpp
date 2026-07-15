@@ -15,11 +15,13 @@ namespace components::operators {
                                      log_t log,
                                      components::catalog::oid_t table_oid,
                                      std::pmr::vector<select_column_t> returning,
-                                     expressions::expression_ptr expr)
+                                     expressions::expression_ptr expr,
+                                     std::int64_t affected_bound)
         : read_write_operator_t(resource, log, operator_type::remove)
         , table_oid_(table_oid)
         , expression_(std::move(expr))
-        , returning_(std::move(returning)) {}
+        , returning_(std::move(returning))
+        , affected_bound_(affected_bound) {}
 
     operator_delete::operator_delete(std::pmr::memory_resource* resource,
                                      log_t log,
@@ -193,6 +195,12 @@ namespace components::operators {
 
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
+            // Affected-row bound (DELETE ... USING ... LIMIT n): stop matching once the
+            // running matched total (already-flushed matches in matched_total_ + this
+            // batch's index) reaches the bound. -1 = unbounded.
+            if (affected_bound_ >= 0 && matched_total_ + index >= static_cast<uint64_t>(affected_bound_)) {
+                break;
+            }
             bool row_matched = false;
             for (const auto& chunk_right : right_chunks) {
                 if (chunk_right.size() == 0) {
@@ -234,6 +242,9 @@ namespace components::operators {
                 }
             }
         }
+        // Count matched left rows at MATCH time (covers this batch, flushed or not) so the
+        // bound survives mid-pump flushes that clear modified_.
+        matched_total_ += index;
         if (index == 0) {
             return core::error_t::no_error();
         }

@@ -1349,6 +1349,9 @@ namespace services::dispatcher {
         std::pmr::vector<complex_logical_type> encountered_types{resource};
         std::set<std::string> table_dbnames;
         core::error_t result = core::error_t::no_error();
+        // 'g' once the VALUES target is a schemaless computing table (see the
+        // NA-column drop after chunk reconciliation below).
+        char insert_target_relkind = 0;
 
         auto check_node = [&](node_t* node) {
             // Drop-nodes skip existence + type collection here.
@@ -1367,6 +1370,7 @@ namespace services::dispatcher {
                                            std::pmr::string{"collection does not exist", resource});
                     return false;
                 }
+                insert_target_relkind = tbl->relkind;
                 if (tbl->relkind != 'g') {
                     for (const auto& column : tbl->columns) {
                         encountered_types.emplace_back(column.type);
@@ -1515,6 +1519,21 @@ namespace services::dispatcher {
                                            "missing type conversion in dispatcher_t::check_collections_format_");
                                 }
                             }
+                        }
+                        // A column still typed NA after reconciliation carries no
+                        // storable type. On a schemaless computing table that is an
+                        // absent key (every row null), not a real column, and handing
+                        // an all-NA column to storage segfaults the append. A declared
+                        // table never reaches here NA — its columns are typed by the
+                        // schema — so drop such columns only for a computing target.
+                        if (insert_target_relkind == 'g') {
+                            auto& cols = chunk.data;
+                            cols.erase(std::remove_if(cols.begin(),
+                                                      cols.end(),
+                                                      [](const components::vector::vector_t& c) {
+                                                          return c.type().type() == logical_type::NA;
+                                                      }),
+                                       cols.end());
                         }
                     }
                 }

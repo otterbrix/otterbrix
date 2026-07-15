@@ -28,7 +28,6 @@
 //
 // NOT PINNABLE — these SEGFAULT the process, so they cannot live in a test binary.
 // Verified on this commit; kept here as the repro list:
-//   INSERT INTO t (a.b, x) VALUES (NULL, 'z');          -- NULL literal in a dotted target [C3]
 //   SELECT CASE WHEN t #>> 'a.b' = 10 THEN 1 ELSE 0 END -- only when the leaf has a NULL row;
 //     FROM t;                                           --   reproduces on plain columns too (general 3VL bug)
 //
@@ -51,6 +50,9 @@
 //   [F] a cast over a scalar navigation used in arithmetic ((t #>> 'a.c')::bigint
 //       + 1) reads the navigated column per row, instead of folding the navigation
 //       into an uninitialized constant parameter (per-run garbage on every row).
+//   [H] a NULL written to a not-yet-existing column of a computing table is an
+//       absent key: it carries no type, so the column is dropped after schema
+//       reconciliation instead of reaching storage as an all-NA column (segfault).
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -754,6 +756,42 @@ TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
     CHECK(i64(cur, "arr/1", 0) == 8);
     // and it reads back through the path spelling
     CHECK(i64(exec(d, "SELECT d #>> 'arr.0' AS v FROM jp.d;"), "v", 0) == 7);
+}
+
+// [H] A NULL written to a column that does not yet exist has no type to create
+// the column from. On a schemaless computing table that is simply an absent key:
+// the column is not materialized (it used to build an all-NA column and segfault
+// the insert), and it comes into existence — with the earlier rows null — only
+// once some row supplies a concrete value.
+TEST_CASE("integration::cpp::test_jsonb_support::insert_null_into_new_column_is_absent") {
+    auto config = make_test_config("/tmp/test_jsonb_matrix/null_insert");
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
+
+    // NULL into a brand-new flattened column: no crash, and the value it carried
+    // (x) is stored while the all-null a.b key is simply absent.
+    REQUIRE(exec(d, "INSERT INTO jp.t (a.b, x) VALUES (NULL, 'z');")->is_success());
+    auto only_x = exec(d, "SELECT * FROM jp.t;");
+    REQUIRE(only_x->is_success());
+    CHECK(aliases(only_x) == std::set<std::string>{"x"});
+
+    // NULL then a concrete value in the same insert: the column springs into
+    // existence and every earlier all-null row reads back null, not a zero.
+    REQUIRE(exec(d, "CREATE TABLE jp.u ();")->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.u (id, v) VALUES (1, NULL), (2, NULL), (3, 7);")->is_success());
+    auto u = exec(d, "SELECT id, v FROM jp.u ORDER BY id;");
+    REQUIRE(u->is_success());
+    CHECK(i64(u, "id", 0) == 1);
+    CHECK(is_null(u, "v", 0));
+    CHECK(is_null(u, "v", 1));
+    CHECK(i64(u, "v", 2) == 7);
+
+    // an all-null single-column insert has nothing to store and no column to make
+    REQUIRE(exec(d, "CREATE TABLE jp.w ();")->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.w (a.b) VALUES (NULL);")->is_success());
+    CHECK(exec(d, "SELECT * FROM jp.w;")->size() == 0);
 }
 
 // [C] `- '{a,b}'` is the postgres text-array form of key deletion (`jsonb - text[]`):

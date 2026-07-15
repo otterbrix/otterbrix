@@ -26,6 +26,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_null_deep_path.cpp
         test_null_array_element.cpp
         test_null_comparison.cpp
+        test_null_semantics_matrix.cpp
         test_production_scenarios.cpp
         test_join.cpp
         test_join_raw.cpp

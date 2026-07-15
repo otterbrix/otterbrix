@@ -1,75 +1,66 @@
 #include "operator_distinct.hpp"
 
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/data_chunk.hpp>
-
-#include <sstream>
+#include <components/vector/vector_operations.hpp>
 
 namespace components::operators {
 
-    namespace {
+    operator_distinct_t::operator_distinct_t(std::pmr::memory_resource* resource, log_t log)
+        : read_only_operator_t(resource, log, operator_type::distinct)
+        , seen_(resource)
+        , retained_(resource)
+        , on_keys_(resource) {}
 
-        // The all-column identity key for one row — IDENTICAL to the legacy distinct
-        // key so dedup semantics are unchanged: per-column "<type>:<value>" segments,
-        // NULLs as a dedicated marker, '|' separated. Comparison-based identity.
-        std::string row_key(const vector::data_chunk_t& chunk, size_t row) {
-            std::ostringstream key;
-            for (size_t j = 0; j < chunk.column_count(); j++) {
-                auto val = chunk.data[j].value(row);
-                if (val.is_null()) {
-                    key << "\0NULL\0";
-                } else {
-                    key << static_cast<int>(val.type().type()) << ":";
-                    switch (val.type().to_physical_type()) {
-                        case types::physical_type::INT8:
-                            key << val.value<int8_t>();
-                            break;
-                        case types::physical_type::INT16:
-                            key << val.value<int16_t>();
-                            break;
-                        case types::physical_type::INT32:
-                            key << val.value<int32_t>();
-                            break;
-                        case types::physical_type::INT64:
-                            key << val.value<int64_t>();
-                            break;
-                        case types::physical_type::UINT8:
-                            key << val.value<uint8_t>();
-                            break;
-                        case types::physical_type::UINT16:
-                            key << val.value<uint16_t>();
-                            break;
-                        case types::physical_type::UINT32:
-                            key << val.value<uint32_t>();
-                            break;
-                        case types::physical_type::UINT64:
-                            key << val.value<uint64_t>();
-                            break;
-                        case types::physical_type::FLOAT:
-                            key << val.value<float>();
-                            break;
-                        case types::physical_type::DOUBLE:
-                            key << val.value<double>();
-                            break;
-                        case types::physical_type::BOOL:
-                            key << val.value<bool>();
-                            break;
-                        case types::physical_type::STRING:
-                            key << val.value<std::string_view>();
-                            break;
-                        default:
-                            key << "?";
-                            break;
+    bool operator_distinct_t::is_duplicate_(const vector::data_chunk_t& chunk, uint64_t row, uint64_t hash) const {
+        auto it = seen_.find(hash);
+        if (it == seen_.end()) {
+            return false;
+        }
+        for (const auto& ref : it->second) {
+            const auto& kept = retained_[ref.chunk_idx];
+            bool equal = true;
+            // DISTINCT ON compares only the ON-key columns; plain DISTINCT compares the whole row.
+            // retained_ holds the full row in both cases, so on_keys_ indices address it directly.
+            if (on_keys_.empty()) {
+                for (size_t c = 0; c < chunk.column_count(); ++c) {
+                    if (!vector::cells_equal(kept.data[c], ref.row, chunk.data[c], row)) {
+                        equal = false;
+                        break;
                     }
                 }
-                key << "|";
+            } else {
+                for (size_t c : on_keys_) {
+                    if (!vector::cells_equal(kept.data[c], ref.row, chunk.data[c], row)) {
+                        equal = false;
+                        break;
+                    }
+                }
             }
-            return key.str();
+            if (equal) {
+                return true;
+            }
         }
+        return false;
+    }
 
-    } // namespace
-
-    operator_distinct_t::operator_distinct_t(std::pmr::memory_resource* resource, log_t log)
-        : read_only_operator_t(resource, log, operator_type::match) {}
+    void operator_distinct_t::retain_(const vector::data_chunk_t& chunk,
+                                      uint64_t row,
+                                      uint64_t hash,
+                                      const std::pmr::vector<types::complex_logical_type>& types,
+                                      std::pmr::memory_resource* res) {
+        if (retained_.empty() || retained_fill_ == vector::DEFAULT_VECTOR_CAPACITY) {
+            retained_.emplace_back(res, types, vector::DEFAULT_VECTOR_CAPACITY);
+            retained_fill_ = 0;
+        }
+        auto& dst = retained_.back();
+        for (size_t j = 0; j < chunk.column_count(); ++j) {
+            dst.set_value(j, retained_fill_, chunk.value(j, row));
+        }
+        dst.set_cardinality(retained_fill_ + 1);
+        seen_[hash].push_back(retained_row_ref_t{retained_.size() - 1, retained_fill_});
+        ++retained_fill_;
+    }
 
     void operator_distinct_t::emit_distinct_(std::pmr::memory_resource* res,
                                              const chunks_vector_t& chunks,
@@ -100,26 +91,47 @@ namespace components::operators {
         };
 
         for (const auto& chunk : chunks) {
+            if (chunk.size() == 0) {
+                continue;
+            }
+            // Typed hash of the DISTINCT key. Plain DISTINCT hashes the whole row; DISTINCT ON
+            // hashes only the ON-key subset. hash() takes a non-const chunk; it only reads columns.
+            vector::vector_t hash_vec(res, types::logical_type::UBIGINT, chunk.size());
+            if (on_keys_.empty()) {
+                const_cast<vector::data_chunk_t&>(chunk).hash(hash_vec);
+            } else {
+                std::vector<uint64_t> col_ids(on_keys_.begin(), on_keys_.end());
+                const_cast<vector::data_chunk_t&>(chunk).hash(col_ids, hash_vec);
+                // An all-CONSTANT ON-column hash can come back non-FLAT; flatten so data<uint64_t>()
+                // reads one hash per row (mirrors operator_unique_constraint).
+                hash_vec.flatten(chunk.size());
+            }
+            const auto* hashes = hash_vec.data<uint64_t>();
+
             for (size_t i = 0; i < chunk.size(); i++) {
-                if (seen_.insert(row_key(chunk, i)).second) {
-                    if (filled == vector::DEFAULT_VECTOR_CAPACITY) {
-                        flush();
-                    }
-                    for (size_t j = 0; j < chunk.column_count(); j++) {
-                        cur.set_value(j, filled, chunk.data[j].value(i));
-                    }
-                    ++filled;
+                const uint64_t h = hashes[i];
+                if (is_duplicate_(chunk, i, h)) {
+                    continue;
                 }
+                // First occurrence: retain it (so later batches dedup against it) and
+                // emit it. retain_ registers the row in seen_ BEFORE the next row is
+                // examined, so an intra-batch duplicate is caught too.
+                retain_(chunk, i, h, types, res);
+                if (filled == vector::DEFAULT_VECTOR_CAPACITY) {
+                    flush();
+                }
+                for (size_t j = 0; j < chunk.column_count(); j++) {
+                    cur.set_value(j, filled, chunk.value(j, i));
+                }
+                ++filled;
             }
         }
         flush();
     }
 
     core::error_t operator_distinct_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t& out) {
-        // Dedup this batch against everything seen so far (push accumulates into
-        // seen_), emitting the freshly-unique rows downstream immediately. A single
-        // batch fits in one output chunk (≤ DEFAULT_VECTOR_CAPACITY rows), so no
-        // chunk retention is needed across pushes.
+        // Dedup this batch against everything seen so far (seen_/retained_ accumulate),
+        // emitting the freshly-unique rows downstream immediately.
         chunks_vector_t one(resource_);
         one.emplace_back(std::move(input));
         emit_distinct_(resource_, one, out);

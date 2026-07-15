@@ -31,7 +31,6 @@ namespace components::operators {
                   logical_plan::limit_t limit,
                   std::vector<size_t> projected_cols = {});
 
-        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         const expressions::compare_expression_ptr& expression() const { return expression_; }
         const logical_plan::limit_t& limit() const { return limit_; }
         const std::vector<size_t>& projected_cols() const noexcept { return projected_cols_; }
@@ -65,18 +64,18 @@ namespace components::operators {
             drained_ = false;
             emitted_any_ = false;
             cursor_id_ = 0;
-            remaining_offset_ = 0;
             guard_types_.clear();
         }
 
     private:
+        void explain_impl(const explain_sink& s) const override { explain_begin(s, table_oid_); s.end(); }
+
         // Projected empty chunk (drained / short-circuit sentinel) carrying the table schema, so a
         // downstream OUTER join can NULL-pad and a scalar aggregate can emit COUNT=0.
         vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);
 
-        // Apply per-batch OFFSET skip and the drained empty-guard to one fetched batch, re-fetching
-        // (ADVANCE) while OFFSET still consumes whole batches. Returns the batch to emit, the schema'd
-        // empty-guard, or the 0-column drain sentinel.
+        // Apply the drained empty-guard to one fetched batch. Returns the batch to emit, the schema'd
+        // empty-guard, or the 0-column drain sentinel. (OFFSET is applied by operator_limit above.)
         actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch);
 
@@ -93,13 +92,10 @@ namespace components::operators {
         //   emitted_any_ / guard_types_: if the scan drains having produced zero real rows, emit ONE
         //               schema'd 0-row guard chunk (so a scalar aggregate emits COUNT=0 and an OUTER
         //               join NULL-pads), then the 0-column sentinel.
-        //   remaining_offset_: OFFSET rows still to skip from the head of the stream (the agent caps
-        //               offset+limit but does not skip; the source skips per-batch).
         bool opened_{false};
         bool drained_{false};
         bool emitted_any_{false};
         uint64_t cursor_id_{0};
-        uint64_t remaining_offset_{0};
         std::pmr::vector<types::complex_logical_type> guard_types_{resource_};
     };
 

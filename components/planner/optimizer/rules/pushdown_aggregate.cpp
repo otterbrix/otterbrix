@@ -9,6 +9,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 
 namespace components::planner::optimizer {
@@ -192,9 +193,18 @@ namespace components::planner::optimizer {
                 return;
             }
             // Skip (c): HAVING is a hard correctness gate — a coordinator kernel-
-            // merge reduce would never evaluate it. Be conservative and skip on
-            // ANY having(), scalar or grouped.
-            if (group->having() != nullptr) {
+            // merge reduce would never evaluate it. HAVING is a having_t child of
+            // the aggregate (not shape-breaking, so find_group_child still finds the
+            // group); be conservative and skip on ANY having_t child.
+            for (const auto& child : node->children()) {
+                if (child && child->type() == lp::node_type::having_t) {
+                    return;
+                }
+            }
+            // Skip (d): DISTINCT ON dedups on the ON-key subset BELOW the projection on the
+            // coordinator path; the pushdown reduce / group_merge layout can't resolve those ON
+            // indices. Force it coordinator-side. Plain DISTINCT (empty ON list) still pushes down.
+            if (!static_cast<const lp::node_aggregate_t*>(node.get())->distinct_on_keys().empty()) {
                 return;
             }
             // Skip (b): a distinct or non-mergeable aggregate stays coordinator-side.

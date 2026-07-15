@@ -12,6 +12,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_having.hpp>
 
 #include <memory_resource>
 #include <string>
@@ -23,13 +24,20 @@ namespace planner_test {
     inline core::relname_t reln() { return core::relname_t{std::string{"collection"}}; }
 
     // Wrap `group` in an aggregate_t at `table_oid` (no output types, not distinct).
+    // When `having != nullptr`, attach a node_having_t as an aggregate CHILD (HAVING is
+    // first-class, not carried inside node_group) so pushdown gates that scan the
+    // aggregate's children detect it.
     inline components::logical_plan::node_aggregate_ptr
     make_agg(std::pmr::memory_resource* r,
              const components::logical_plan::node_group_ptr& group,
-             components::catalog::oid_t table_oid) {
+             components::catalog::oid_t table_oid,
+             components::expressions::expression_ptr having = nullptr) {
         auto agg = components::logical_plan::make_node_aggregate(r, dbn(), reln());
         agg->set_table_oid(table_oid);
         agg->append_child(group);
+        if (having != nullptr) {
+            agg->append_child(components::logical_plan::make_node_having(r, dbn(), reln(), having));
+        }
         return agg;
     }
 
@@ -56,8 +64,7 @@ namespace planner_test {
     inline components::logical_plan::node_group_ptr
     make_agg_group(std::pmr::memory_resource* r,
                    bool with_group_key,
-                   bool distinct_agg,
-                   components::expressions::expression_ptr having = nullptr) {
+                   bool distinct_agg) {
         using namespace components::expressions;
         using key = components::expressions::key_t;
         std::vector<expression_ptr> exprs;
@@ -77,7 +84,7 @@ namespace planner_test {
         cnt->set_mergeable(true);
         cnt->append_param(key(r, "v"));
         exprs.push_back(expression_ptr(cnt));
-        return components::logical_plan::make_node_group(r, dbn(), reln(), exprs, having);
+        return components::logical_plan::make_node_group(r, dbn(), reln(), exprs);
     }
 
 } // namespace planner_test

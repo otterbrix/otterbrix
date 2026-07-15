@@ -116,6 +116,82 @@ namespace components::vector::vector_ops {
             }
         }
 
+        // 128-bit hash: std::hash is not portably specialised for absl::[u]int128, so
+        // hash the two 64-bit halves of the two's-complement representation and combine
+        // them. The bit pattern is sign-independent (int128 -> uint128 preserves the raw
+        // bits), so it agrees with cells_equal's value comparison — equal values hash
+        // equal, which is the only invariant the hash+verify dedup relies on.
+        template<class T128>
+        static uint64_t hash_128_value(T128 v, bool is_null) {
+            if (is_null) {
+                return hasher_t::NULL_HASH;
+            }
+            const types::uint128_t bits = static_cast<types::uint128_t>(v);
+            const uint64_t lo = static_cast<uint64_t>(bits);
+            const uint64_t hi = static_cast<uint64_t>(bits >> 64);
+            return combine_hash_scalar(std::hash<uint64_t>{}(lo), std::hash<uint64_t>{}(hi));
+        }
+
+        // FIRST-hash leg for a 128-bit column (mirrors templated_loop_hash, but hashes
+        // via hash_128_value instead of std::hash<T>).
+        template<bool HAS_RINDEXING, class T128>
+        static void
+        templated_loop_hash_128(vector_t& input, vector_t& result, const indexing_vector_t* rindexing, uint64_t count) {
+            if (input.get_vector_type() == vector_type::CONSTANT) {
+                result.set_vector_type(vector_type::CONSTANT);
+                auto ldata = input.data<T128>();
+                *result.data<uint64_t>() = hash_128_value<T128>(*ldata, input.is_null());
+            } else {
+                result.set_vector_type(vector_type::FLAT);
+                unified_vector_format idata(input.resource(), count);
+                input.to_unified_format(count, idata);
+                auto ldata = idata.get_data<T128>();
+                auto* rd = result.data<uint64_t>();
+                for (uint64_t i = 0; i < count; i++) {
+                    auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
+                    auto idx = idata.referenced_indexing->get_index(ridx);
+                    rd[ridx] = hash_128_value<T128>(ldata[idx], !idata.validity.row_is_valid(idx));
+                }
+            }
+        }
+
+        // COMBINE leg for a 128-bit column (mirrors templated_loop_combine_hash).
+        template<bool HAS_RINDEXING, class T128>
+        static void templated_loop_combine_hash_128(vector_t& input,
+                                                    vector_t& hashes,
+                                                    const indexing_vector_t* rindexing,
+                                                    uint64_t count) {
+            if (input.get_vector_type() == vector_type::CONSTANT && hashes.get_vector_type() == vector_type::CONSTANT) {
+                auto ldata = input.data<T128>();
+                auto hd = hashes.data<uint64_t>();
+                *hd = combine_hash_scalar(*hd, hash_128_value<T128>(*ldata, input.is_null()));
+            } else {
+                unified_vector_format idata(input.resource(), count);
+                input.to_unified_format(count, idata);
+                auto ldata = idata.get_data<T128>();
+                if (hashes.get_vector_type() == vector_type::CONSTANT) {
+                    auto constant_hash = *hashes.data<uint64_t>();
+                    hashes.set_vector_type(vector_type::FLAT);
+                    auto* hd = hashes.data<uint64_t>();
+                    for (uint64_t i = 0; i < count; i++) {
+                        auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
+                        auto idx = idata.referenced_indexing->get_index(ridx);
+                        hd[ridx] = combine_hash_scalar(constant_hash,
+                                                       hash_128_value<T128>(ldata[idx], !idata.validity.row_is_valid(idx)));
+                    }
+                } else {
+                    assert(hashes.get_vector_type() == vector_type::FLAT);
+                    auto* hd = hashes.data<uint64_t>();
+                    for (uint64_t i = 0; i < count; i++) {
+                        auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
+                        auto idx = idata.referenced_indexing->get_index(ridx);
+                        hd[ridx] = combine_hash_scalar(hd[ridx],
+                                                       hash_128_value<T128>(ldata[idx], !idata.validity.row_is_valid(idx)));
+                    }
+                }
+            }
+        }
+
         template<bool HAS_RINDEXING, bool FIRST_HASH>
         static void
         struct_loop_hash(vector_t& input, vector_t& hashes, const indexing_vector_t* rindexing, uint64_t count) {
@@ -325,12 +401,12 @@ namespace components::vector::vector_ops {
                 case types::physical_type::UINT64:
                     templated_loop_hash<HAS_RINDEXING, uint64_t>(input, result, rindexing, count);
                     break;
-                // case types::physical_type::INT128:
-                // templated_loop_hash<HAS_RINDEXING, int128_t>(input, result, rindexing, count);
-                // break;
-                // case types::physical_type::UINT128:
-                // templated_loop_hash<HAS_RINDEXING, uint128_t>(input, result, rindexing, count);
-                // break;
+                case types::physical_type::INT128:
+                    templated_loop_hash_128<HAS_RINDEXING, types::int128_t>(input, result, rindexing, count);
+                    break;
+                case types::physical_type::UINT128:
+                    templated_loop_hash_128<HAS_RINDEXING, types::uint128_t>(input, result, rindexing, count);
+                    break;
                 case types::physical_type::FLOAT:
                     templated_loop_hash<HAS_RINDEXING, float>(input, result, rindexing, count);
                     break;
@@ -474,12 +550,12 @@ namespace components::vector::vector_ops {
                 case types::physical_type::UINT64:
                     templated_loop_combine_hash<HAS_RINDEXING, uint64_t>(input, hashes, rindexing, count);
                     break;
-                // case types::physical_type::INT128:
-                // templated_loop_combine_hash<HAS_RINDEXING, int128_t>(input, hashes, rindexing, count);
-                // break;
-                // case types::physical_type::UINT128:
-                // templated_loop_combine_hash<HAS_RINDEXING, uint128_t>(input, hashes, rindexing, count);
-                // break;
+                case types::physical_type::INT128:
+                    templated_loop_combine_hash_128<HAS_RINDEXING, types::int128_t>(input, hashes, rindexing, count);
+                    break;
+                case types::physical_type::UINT128:
+                    templated_loop_combine_hash_128<HAS_RINDEXING, types::uint128_t>(input, hashes, rindexing, count);
+                    break;
                 case types::physical_type::FLOAT:
                     templated_loop_combine_hash<HAS_RINDEXING, float>(input, hashes, rindexing, count);
                     break;

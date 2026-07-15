@@ -140,6 +140,24 @@ namespace components::operators::predicates::impl {
                                                 const compute::function_registry_t* function_registry,
                                                 const expressions::scalar_expression_ptr& expr,
                                                 const logical_plan::storage_parameters* parameters) {
+        // Single-operand unary_minus: negate the inner operand (0 - inner). This branch must
+        // precede the binary getter's assert(>=2) below, which would otherwise abort (debug) /
+        // OOB-read params()[1] (release) on a one-operand expression.
+        if (expr->type() == expressions::scalar_type::unary_minus && !expr->params().empty()) {
+            auto inner_getter = create_value_getter(resource, function_registry, expr->params()[0], parameters);
+            return [resource, inner_getter = std::move(inner_getter)](
+                       const vector::data_chunk_t& chunk_left,
+                       const vector::data_chunk_t& chunk_right,
+                       size_t index_left,
+                       size_t index_right) -> core::result_wrapper_t<types::logical_value_t> {
+                auto inner_val = inner_getter(chunk_left, chunk_right, index_left, index_right);
+                if (inner_val.has_error()) {
+                    return inner_val;
+                }
+                return types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
+                                                        inner_val.value());
+            };
+        }
         assert(expr->params().size() >= 2);
         auto left_getter = create_value_getter(resource, function_registry, expr->params()[0], parameters);
         auto right_getter = create_value_getter(resource, function_registry, expr->params()[1], parameters);

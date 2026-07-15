@@ -8,6 +8,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -440,6 +441,127 @@ namespace components::sql::transform {
         return agg;
     }
 
+    void transformer::register_with_ctes(WithClause* with_clause) {
+        if (!with_clause) {
+            return;
+        }
+        for (const auto& item : with_clause->ctes->lst) {
+            auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
+            if (nodeTag(cte->ctequery) != T_SelectStmt) {
+                // WITH x AS (DELETE/UPDATE/INSERT ... RETURNING ...) — a data-modifying CTE. Deferred:
+                // reject cleanly instead of a bad SelectStmt cast.
+                error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                       std::pmr::string{"data-modifying WITH (CTE) is not supported", resource_});
+                return;
+            }
+            if (with_clause->recursive) {
+                recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+            } else {
+                cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
+            }
+        }
+    }
+
+    logical_plan::node_ptr transformer::build_limit_node(Node* limit_count,
+                                                         Node* limit_offset,
+                                                         const core::dbname_t& db,
+                                                         const core::relname_t& rel,
+                                                         logical_plan::execution_plan_t* plan) {
+        if (!limit_count && !limit_offset) {
+            return nullptr;
+        }
+        int64_t limit_val = logical_plan::limit_t::unlimit().limit();
+        int64_t offset_val = 0;
+        std::optional<core::parameter_id_t> limit_param;
+        std::optional<core::parameter_id_t> offset_param;
+
+        if (limit_count) {
+            switch (nodeTag(limit_count)) {
+                case T_A_Const: {
+                    auto* value = &(pg_ptr_cast<A_Const>(limit_count)->val);
+                    switch (nodeTag(value)) {
+                        case T_Null:
+                            break; // LIMIT ALL — keep unlimit_
+                        case T_Integer:
+                            limit_val = intVal(value);
+                            break;
+                        default:
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                                 resource_});
+                            return nullptr;
+                    }
+                    break;
+                }
+                case T_ParamRef:
+                    limit_param = add_param_value(limit_count, plan->parameters.get());
+                    break;
+                default:
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"Unknown node type in limit clause: " +
+                                                                node_tag_to_string(nodeTag(limit_count)),
+                                                            resource_});
+                    return nullptr;
+            }
+        }
+
+        if (limit_offset) {
+            switch (nodeTag(limit_offset)) {
+                case T_A_Const: {
+                    auto* value = &(pg_ptr_cast<A_Const>(limit_offset)->val);
+                    switch (nodeTag(value)) {
+                        case T_Null:
+                            break; // OFFSET NULL — treat as 0
+                        case T_Integer:
+                            offset_val = intVal(value);
+                            break;
+                        default:
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"Forbidden expression in offset clause: allowed only OFFSET <integer>",
+                                                 resource_});
+                            return nullptr;
+                    }
+                    break;
+                }
+                case T_ParamRef:
+                    offset_param = add_param_value(limit_offset, plan->parameters.get());
+                    break;
+                default:
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"Unknown node type in offset clause: " +
+                                                                node_tag_to_string(nodeTag(limit_offset)),
+                                                            resource_});
+                    return nullptr;
+            }
+        }
+
+        auto limit_node = logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t(limit_val, offset_val));
+        if (limit_param || offset_param) {
+            deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
+        }
+        return limit_node;
+    }
+
+    logical_plan::node_limit_ptr transformer::build_dml_limit(Node* limit_count,
+                                                              const core::dbname_t& db,
+                                                              const core::relname_t& rel,
+                                                              logical_plan::execution_plan_t* plan) {
+        if (!limit_count) {
+            return logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t::unlimit());
+        }
+        // DML has no OFFSET (grammar-enforced): pass a null offset. build_limit_node validates the
+        // count (integer / bound parameter) and defers a ParamRef exactly like a SELECT limit; on an
+        // invalid expression it sets error_ and returns null.
+        auto built = build_limit_node(limit_count, nullptr, db, rel, plan);
+        if (!built) {
+            return nullptr; // error_ set by build_limit_node; caller bails on has_error()
+        }
+        // build_limit_node always constructs a node_limit_t — downcast the base node_ptr.
+        return logical_plan::node_limit_ptr{static_cast<logical_plan::node_limit_t*>(built.get())};
+    }
+
     logical_plan::node_ptr transformer::transform_select(SelectStmt& node, logical_plan::execution_plan_t* plan) {
         // Set operations (UNION / INTERSECT / EXCEPT) are not yet wired
         // through the transformer. For a SETOP_* node, node.targetList is
@@ -448,15 +570,127 @@ namespace components::sql::transform {
         // out cleanly until proper set-operation lowering lands.
         // dynamic_schema_union sits on this path; lldb pinned the crash to
         // node.targetList->lst at line 137 here.
+        // Resolve a positional `ORDER BY <n>` (1-based) to the n-th output column's field:
+        // `n` indexes `target_list` (the SELECT list; for a UNION the output names come from
+        // the FIRST arm's list, PostgreSQL semantics). Sets error_ and returns false on an
+        // out-of-range position or a computed column with no alias to name it.
+        auto positional_sort_field =
+            [&](List* target_list, int64_t n, const name_collection_t& nm, column_ref_t& out) -> bool {
+            int64_t count = 0;
+            ResTarget* res = nullptr;
+            if (target_list) {
+                for (auto t : target_list->lst) {
+                    if (++count == n) {
+                        res = pg_ptr_cast<ResTarget>(t.data);
+                        break;
+                    }
+                }
+            }
+            if (res == nullptr) {
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"ORDER BY position is out of range of the select list",
+                                                        resource_});
+                return false;
+            }
+            if (nodeTag(res->val) == T_ColumnRef) {
+                out = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(res->val), nm);
+                return true;
+            }
+            if (res->name) {
+                out.field = expressions::key_t{resource_, res->name};
+                return true;
+            }
+            error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                   std::pmr::string{"positional ORDER BY over a computed column requires an alias",
+                                                    resource_});
+            return false;
+        };
+
         if (node.op == SETOP_UNION) {
+            // gram.y attaches withClause / sortClause / limitCount / limitOffset / distinctClause to THIS
+            // compound node (not to larg/rarg). The old early-return dropped all of them silently.
+            // WITH must be registered BEFORE the arms so both can see the CTEs.
+            register_with_ctes(node.withClause);
+            if (has_error()) {
+                return nullptr;
+            }
             auto left = transform_select(*node.larg, plan);
             auto right = transform_select(*node.rarg, plan);
             if (has_error()) {
                 return nullptr;
             }
-            return logical_plan::make_node_union(resource_, std::move(left), std::move(right), node.all);
+            logical_plan::node_ptr union_node =
+                logical_plan::make_node_union(resource_, std::move(left), std::move(right), node.all);
+
+            const bool has_sort = node.sortClause && !node.sortClause->lst.empty();
+            const bool has_distinct = node.distinctClause && !node.distinctClause->lst.empty();
+            if (!has_sort && !node.limitCount && !node.limitOffset && !has_distinct) {
+                return union_node; // bare union — no tail clauses to apply
+            }
+
+            // Wrap the union in an aggregate so the existing sort / limit / distinct children apply:
+            // create_plan_aggregate lowers a non-scan source through its default child_op branch
+            // (union -> sort -> limit / distinct).
+            auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+            agg->append_child(std::move(union_node));
+            if (has_distinct) {
+                // v1: DISTINCT ON over a compound/UNION query is not supported (plain DISTINCT is).
+                // Plain DISTINCT is the NIL List sentinel; a real ON expression is anything else.
+                if (nodeTag(node.distinctClause->lst.front().data) != T_List) {
+                    error_ = core::error_t(
+                        core::error_code_t::unimplemented_yet,
+                        std::pmr::string{"DISTINCT ON is not supported over a UNION query", resource_});
+                    return nullptr;
+                }
+                agg->set_distinct(true);
+            }
+            if (has_sort) {
+                // Union output columns resolve by NAME at validation, so an empty name scope is fine.
+                name_collection_t union_names;
+                std::vector<expression_ptr> sort_exprs;
+                sort_exprs.reserve(node.sortClause->lst.size());
+                for (auto sort_it : node.sortClause->lst) {
+                    auto sortby = pg_ptr_cast<SortBy>(sort_it.data);
+                    bool is_desc = sortby->sortby_dir == SORTBY_DESC;
+                    column_ref_t field(resource_);
+                    if (nodeTag(sortby->node) == T_ColumnRef) {
+                        field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), union_names);
+                    } else if (nodeTag(sortby->node) == T_A_Indirection) {
+                        field = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), union_names);
+                    } else if (nodeTag(sortby->node) == T_A_Const) {
+                        // Positional `ORDER BY <n>`: map to the n-th UNION output column (the
+                        // output names come from the first arm, node.larg's select list).
+                        auto* value = &(pg_ptr_cast<A_Const>(sortby->node)->val);
+                        if (nodeTag(value) != T_Integer) {
+                            error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                                   std::pmr::string{"non-integer constant in ORDER BY", resource_});
+                            return nullptr;
+                        }
+                        List* out_list = node.larg ? node.larg->targetList : nullptr;
+                        if (!positional_sort_field(out_list, intVal(value), union_names, field)) {
+                            return nullptr; // positional_sort_field set error_
+                        }
+                    } else {
+                        error_ = core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"ORDER BY over UNION supports only column references", resource_});
+                        return nullptr;
+                    }
+                    sort_exprs.emplace_back(
+                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
+                }
+                agg->append_child(
+                    logical_plan::make_node_sort(resource_, core::dbname_t{}, core::relname_t{}, sort_exprs));
+            }
+            if (auto limit_node =
+                    build_limit_node(node.limitCount, node.limitOffset, core::dbname_t{}, core::relname_t{}, plan)) {
+                agg->append_child(std::move(limit_node));
+            } else if (has_error()) {
+                return nullptr;
+            }
+            return agg;
         }
-        if (node.op != SETOP_NONE || node.targetList == nullptr) {
+        if (node.op != SETOP_NONE || (node.targetList == nullptr && node.valuesLists == nullptr)) {
             error_ = core::error_t(
                 core::error_code_t::unimplemented_yet,
                 std::pmr::string{
@@ -464,18 +698,9 @@ namespace components::sql::transform {
                     resource_});
             return nullptr;
         }
-        if (node.withClause) {
-            if (node.withClause->recursive) {
-                for (const auto& item : node.withClause->ctes->lst) {
-                    auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
-                    recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
-                }
-            } else {
-                for (const auto& item : node.withClause->ctes->lst) {
-                    auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
-                    cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
-                }
-            }
+        register_with_ctes(node.withClause);
+        if (has_error()) {
+            return nullptr;
         }
         logical_plan::node_aggregate_ptr agg = nullptr;
         name_collection_t names;
@@ -511,6 +736,13 @@ namespace components::sql::transform {
                         }
                         if (column_index >= chunk.data.size()) {
                             chunk.data.emplace_back(resource_, value.value().type(), chunk.capacity());
+                            // PostgreSQL names unlabeled VALUES columns column1, column2, ... —
+                            // an aggregate wrapper (LIMIT/ORDER BY tail) and the result cursor
+                            // read a column alias, and an untitled VALUES column would abort in
+                            // complex_logical_type::alias(). Only name columns left unaliased.
+                            if (!chunk.data[column_index].type().has_alias()) {
+                                chunk.data[column_index].set_type_alias("column" + std::to_string(column_index + 1));
+                            }
                         }
                         chunk.set_value(column_index, chunk_row, std::move(value.value()));
                     }
@@ -518,7 +750,32 @@ namespace components::sql::transform {
                 chunks.emplace_back(std::move(chunk));
             }
 
-            return logical_plan::make_node_raw_data(resource_, std::move(chunks));
+            auto raw = logical_plan::make_node_raw_data(resource_, std::move(chunks));
+            const bool values_has_sort = node.sortClause && !node.sortClause->lst.empty();
+            if (!values_has_sort && !node.limitCount && !node.limitOffset) {
+                return raw; // bare VALUES — no tail clauses to apply
+            }
+            if (values_has_sort) {
+                // A top-level VALUES row has no named columns to resolve a sort key against;
+                // ORDER BY over VALUES is not yet supported (LIMIT/OFFSET are). Clean error,
+                // never a silently dropped ORDER BY.
+                error_ = core::error_t(core::error_code_t::unimplemented_yet,
+                                       std::pmr::string{"ORDER BY over a top-level VALUES list is not yet supported",
+                                                        resource_});
+                return nullptr;
+            }
+            // Honor VALUES … LIMIT/OFFSET: wrap in an aggregate so create_plan_aggregate lowers
+            // the data source through its default (non-scan) child branch with the authoritative
+            // operator_limit on top (VALUES keeps OFFSET, unlike DML).
+            auto values_agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+            values_agg->append_child(std::move(raw));
+            if (auto limit_node =
+                    build_limit_node(node.limitCount, node.limitOffset, core::dbname_t{}, core::relname_t{}, plan)) {
+                values_agg->append_child(std::move(limit_node));
+            } else if (has_error()) {
+                return nullptr;
+            }
+            return values_agg;
         }
 
         auto group =
@@ -969,28 +1226,89 @@ namespace components::sql::transform {
         }
         pending_internal_aggs_.clear();
 
-        // Having is parsed after aggregates are routed to group so resolve_having_operand can find them.
+        // Having is transformed AFTER aggregates are routed to the group so resolve_having_operand
+        // can reuse them; a HAVING aggregate not already in SELECT is appended to the group as a
+        // hidden __having_<fn>_<n> column. Snapshot the group size first so those hidden HAVING-only
+        // aggregates (the tail the group grows by here) can be told apart from the visible columns.
+        size_t visible_group_count = group->expressions().size();
         expression_ptr having_expr;
         if (node.havingClause) {
             having_expr = transform_having_expr(node.havingClause, names, plan, group);
+            if (has_error()) {
+                return nullptr;
+            }
         }
+        size_t hidden_having_count = group->expressions().size() - visible_group_count;
 
-        if (!group->expressions().empty()) {
+        // HAVING is a first-class post-aggregation stage: it is lowered to a SEPARATE $having node
+        // (an operator_match above the group), never folded into the group node. A HAVING clause
+        // also makes the query grouped (implicit GROUP BY ()) — force a scalar (0-key) group even
+        // when nothing else populated it, so a bare HAVING TRUE/FALSE is APPLIED above a single
+        // collapsed row rather than silently dropped.
+        if (!group->expressions().empty() || having_expr) {
+            agg->append_child(group);
             if (having_expr) {
-                auto final_group = logical_plan::make_node_group(resource_,
+                agg->append_child(logical_plan::make_node_having(resource_,
                                                                  core::dbname_t{agg->dbname()},
                                                                  core::relname_t{agg->relname()},
-                                                                 group->expressions(),
-                                                                 std::move(having_expr));
-                agg->append_child(final_group);
-            } else {
-                agg->append_child(group);
+                                                                 having_expr));
             }
         }
 
         // distinct
         if (node.distinctClause && !node.distinctClause->lst.empty()) {
             agg->set_distinct(true);
+            // Plain DISTINCT is the grammar sentinel list_make1(resource, NIL): a single element that
+            // IS the NIL List node (nodeTag == T_List). DISTINCT ON (...) carries the real ON
+            // expression nodes (ColumnRef / A_Indirection / ...) instead.
+            if (nodeTag(node.distinctClause->lst.front().data) != T_List) {
+                std::pmr::vector<expressions::key_t> on_keys(resource_);
+                for (auto on_it : node.distinctClause->lst) {
+                    if (nodeTag(on_it.data) == T_ColumnRef) {
+                        on_keys.emplace_back(
+                            columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(on_it.data), names).field);
+                    } else if (nodeTag(on_it.data) == T_A_Indirection) {
+                        on_keys.emplace_back(
+                            indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(on_it.data), names).field);
+                    } else {
+                        // v1: only plain column references. DISTINCT ON (a + b) etc. is a follow-up.
+                        error_ = core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"DISTINCT ON supports only plain column references", resource_});
+                        return nullptr;
+                    }
+                }
+                // PostgreSQL rule: when ORDER BY is present the ON keys must be its leading keys.
+                // Without ORDER BY, DISTINCT ON keeps the first row per key in input order.
+                if (node.sortClause && !node.sortClause->lst.empty()) {
+                    std::pmr::vector<std::pmr::string> lead_sort_names(resource_);
+                    for (auto sort_it : node.sortClause->lst) {
+                        auto* sortby = pg_ptr_cast<SortBy>(sort_it.data);
+                        if (nodeTag(sortby->node) == T_ColumnRef) {
+                            lead_sort_names.emplace_back(
+                                columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names)
+                                    .field.as_pmr_string());
+                        } else if (nodeTag(sortby->node) == T_A_Indirection) {
+                            lead_sort_names.emplace_back(
+                                indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names)
+                                    .field.as_pmr_string());
+                        } else {
+                            lead_sort_names.emplace_back(); // empty sentinel: a non-column sort key can't match an ON key
+                        }
+                    }
+                    for (size_t i = 0; i < on_keys.size(); ++i) {
+                        if (i >= lead_sort_names.size() || lead_sort_names[i] != on_keys[i].as_pmr_string()) {
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{
+                                    "SELECT DISTINCT ON expressions must match initial ORDER BY expressions",
+                                    resource_});
+                            return nullptr;
+                        }
+                    }
+                }
+                agg->set_distinct_on_keys(std::move(on_keys));
+            }
         }
 
         // order by
@@ -1032,6 +1350,20 @@ namespace components::sql::transform {
                         computed_sort->append_param(resolve_select_operand(a_expr->rexpr, names, plan, dummy_node));
                     }
                     sort_exprs.emplace_back(std::move(computed_sort));
+                } else if (nodeTag(sortby->node) == T_A_Const) {
+                    // Positional `ORDER BY <n>`: map to the n-th output column of this SELECT.
+                    auto* value = &(pg_ptr_cast<A_Const>(sortby->node)->val);
+                    if (nodeTag(value) != T_Integer) {
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"non-integer constant in ORDER BY", resource_});
+                        return nullptr;
+                    }
+                    column_ref_t field(resource_);
+                    if (!positional_sort_field(node.targetList, intVal(value), names, field)) {
+                        return nullptr; // positional_sort_field set error_
+                    }
+                    sort_exprs.emplace_back(
+                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
@@ -1048,88 +1380,69 @@ namespace components::sql::transform {
 
         // Append select_node as a child of agg (only if there are actual SELECT columns — not pure star)
         if (has_non_star) {
+            // A HAVING clause forced a scalar (0-key) group above. A bare non-aggregated,
+            // non-constant SELECT column then has no value in that single collapsed group —
+            // PostgreSQL rejects it. This fires ONLY when the group is genuinely EMPTY (no keys,
+            // no aggregate anywhere); a real scalar aggregate (SELECT count(*) ... HAVING ...)
+            // leaves the group non-empty and is allowed. A constant (SELECT 1) is always allowed.
+            if (having_expr && !has_group_by && group->expressions().empty()) {
+                for (const auto& sel : select_node->expressions()) {
+                    if (sel->group() == expression_group::scalar &&
+                        static_cast<const scalar_expression_t*>(sel.get())->type() == scalar_type::get_field) {
+                        error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                               std::pmr::string{"column must appear in a GROUP BY clause or be "
+                                                                "used in an aggregate function",
+                                                                resource_});
+                        return nullptr;
+                    }
+                }
+            }
             agg->append_child(select_node);
+        } else if (hidden_having_count > 0) {
+            // SELECT * with an aggregate in HAVING but no explicit projection: resolve_having_operand
+            // appended hidden __having_<fn>_<n> aggregate(s) to the group that must NOT leak as output
+            // columns (PostgreSQL omits them).
+            if (visible_group_count == 0) {
+                // Pure SELECT * with an aggregate-only HAVING and no GROUP BY (SELECT * FROM t HAVING
+                // count(*) > 5): the star's base columns are not routed to the group, so the visible
+                // set is empty and there is nothing well-defined to project. PostgreSQL and
+                // default-mode MySQL error here (no engine returns the base rows).
+                error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                       std::pmr::string{"column must appear in a GROUP BY clause or be used in "
+                                                        "an aggregate function",
+                                                        resource_});
+                return nullptr;
+            }
+            // Covering GROUP keys exist: synthesize a projection over ONLY the visible group-output
+            // columns (the first visible_group_count group expressions), dropping the trailing hidden
+            // aggregates. operator_select emits one column per select_column_t, so the hidden columns
+            // are stripped WITHOUT touching internal_aggregate_count (setting it >0 is a BLOCKER: the
+            // validator would drop the __having_* column the HAVING match resolves against).
+            auto strip_select = logical_plan::make_node_select(resource_,
+                                                               core::dbname_t{agg->dbname()},
+                                                               core::relname_t{agg->relname()});
+            for (size_t i = 0; i < visible_group_count; ++i) {
+                const auto& ge = group->expressions()[i];
+                // Visible group-output columns are GROUP keys (scalar group_field) or visible
+                // aggregates; key() lives on the concrete subclass, not expression_i.
+                auto col_key = ge->group() == expression_group::aggregate
+                                   ? static_cast<const aggregate_expression_t*>(ge.get())->key()
+                                   : static_cast<const scalar_expression_t*>(ge.get())->key();
+                strip_select->append_expression(
+                    make_scalar_expression(resource_, scalar_type::get_field, std::move(col_key)));
+            }
+            agg->append_child(strip_select);
         }
 
         // limit / offset
-        if (node.limitCount || node.limitOffset) {
-            int64_t limit_val = logical_plan::limit_t::unlimit().limit();
-            int64_t offset_val = 0;
-            std::optional<core::parameter_id_t> limit_param;
-            std::optional<core::parameter_id_t> offset_param;
-
-            if (node.limitCount) {
-                switch (nodeTag(node.limitCount)) {
-                    case T_A_Const: {
-                        auto* value = &(pg_ptr_cast<A_Const>(node.limitCount)->val);
-                        switch (nodeTag(value)) {
-                            case T_Null:
-                                break; // LIMIT ALL — keep unlimit_
-                            case T_Integer:
-                                limit_val = intVal(value);
-                                break;
-                            default:
-                                error_ = core::error_t(
-                                    core::error_code_t::sql_parse_error,
-                                    std::pmr::string{
-                                        "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
-                                        resource_});
-                                return nullptr;
-                        }
-                        break;
-                    }
-                    case T_ParamRef:
-                        limit_param = add_param_value(node.limitCount, plan->parameters.get());
-                        break;
-                    default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"Unknown node type in limit clause: " +
-                                                                    node_tag_to_string(nodeTag(node.limitCount)),
-                                                                resource_});
-                        return nullptr;
-                }
-            }
-
-            if (node.limitOffset) {
-                switch (nodeTag(node.limitOffset)) {
-                    case T_A_Const: {
-                        auto* value = &(pg_ptr_cast<A_Const>(node.limitOffset)->val);
-                        switch (nodeTag(value)) {
-                            case T_Null:
-                                break; // OFFSET NULL — treat as 0
-                            case T_Integer:
-                                offset_val = intVal(value);
-                                break;
-                            default:
-                                error_ = core::error_t(
-                                    core::error_code_t::sql_parse_error,
-                                    std::pmr::string{
-                                        "Forbidden expression in offset clause: allowed only OFFSET <integer>",
-                                        resource_});
-                                return nullptr;
-                        }
-                        break;
-                    }
-                    case T_ParamRef:
-                        offset_param = add_param_value(node.limitOffset, plan->parameters.get());
-                        break;
-                    default:
-                        error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                               std::pmr::string{"Unknown node type in offset clause: " +
-                                                                    node_tag_to_string(nodeTag(node.limitOffset)),
-                                                                resource_});
-                        return nullptr;
-                }
-            }
-
-            auto limit_node = logical_plan::make_node_limit(resource_,
-                                                            core::dbname_t{agg->dbname()},
-                                                            core::relname_t{agg->relname()},
-                                                            logical_plan::limit_t(limit_val, offset_val));
-            if (limit_param || offset_param) {
-                deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
-            }
+        if (auto limit_node = build_limit_node(node.limitCount,
+                                               node.limitOffset,
+                                               core::dbname_t{agg->dbname()},
+                                               core::relname_t{agg->relname()},
+                                               plan)) {
             agg->append_child(std::move(limit_node));
+        } else if (has_error()) {
+            return nullptr;
         }
 
         return agg;

@@ -9,6 +9,7 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <optional>
 #include <set>
 
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -20,6 +21,7 @@
 #include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
+#include <services/collection/explain/explain_renderer.hpp>
 #include <stack>
 #include <string>
 
@@ -111,6 +113,13 @@ namespace services::collection::executor {
         // pg_settings; the dispatcher refreshes its default_tz_cat_ from it.
         // The ONLY post-execute signal the dispatcher consumes besides cursor.
         std::string applied_timezone{};
+        // EXPLAIN ANALYZE only: when a sub-plan ran with explain_capture_ir, its
+        // built IR rides back here (data cursor left intact). The main execute_plan
+        // hangs each captured sub-plan on the main IR root as an InitPlan. Move-only
+        // (explain_plan_node deletes copy) → execute_result_t is move-only, which is
+        // safe: nothing copies it, the mailbox moves it. Appended LAST so every
+        // aggregate-init brace that sets a prefix of members stays valid.
+        std::optional<explain_plan_node> captured_explain_ir{};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -123,12 +132,13 @@ namespace services::collection::executor {
         // pipeline::context_t still owns its own copy).
         const components::logical_plan::storage_parameters* parameters;
         services::context_storage_t context_storage_;
-        components::logical_plan::limit_t limit;
+        // EXPLAIN ANALYZE: propagates to pipeline_context.analyze in execute_sub_plan_ so
+        // execute_pipeline records per-operator stats. Set by execute_plan.
+        bool analyze{false};
 
         explicit plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
                         const components::logical_plan::storage_parameters* parameters,
-                        services::context_storage_t&& context_storage,
-                        components::logical_plan::limit_t limit = components::logical_plan::limit_t::unlimit());
+                        services::context_storage_t&& context_storage);
     };
 
     // Internal result with MVCC tracking (never crosses an actor boundary).
@@ -188,11 +198,16 @@ namespace services::collection::executor {
         // Operator-pipeline run over an already-rewritten plan. INTERNAL:
         // called only from execute_plan_full (directly, via co_await — never
         // through the mailbox). The txn lifecycle is owned by the caller.
+        // captured_subplans (EXPLAIN ANALYZE main plan): flattened sub-query IRs, moved in from
+        // execute_plan_full's loop buffer, hung on the main IR root as InitPlans. Passed BY VALUE
+        // (moved) — a pmr member cannot be defaulted (would re-anchor to get_default_resource(),
+        // Rule 14), so callers with no sub-queries pass an empty vector built on resource().
         unique_future<execute_result_t> execute_plan(components::session::session_id_t session,
                                                      components::logical_plan::execution_plan_t plan,
                                                      services::context_storage_t context_storage,
                                                      components::table::transaction_data txn,
-                                                     uint64_t lowest_active_start_time);
+                                                     uint64_t lowest_active_start_time,
+                                                     std::pmr::vector<explain_plan_node> captured_subplans);
 
         // THE per-query entry point (the dispatcher's only execute send).
         // Runs the full pipeline on an unrewritten logical_plan: session
@@ -208,6 +223,11 @@ namespace services::collection::executor {
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
 
+        // Register a host EXPLAIN renderer into this executor's registry at slot `id` (host
+        // customization; fanned out from the dispatcher). POD fn-pointers stored per-executor — no
+        // shared mutable state (Rule 10). Registration is rare; per-query selection is a local index.
+        unique_future<bool> set_explain_renderer(uint32_t id, explain_render_fn fn);
+
         // No-op poke target for the dispatcher's lost-wakeup watchdog (see
         // executor.cpp for the rationale).
         unique_future<void> poke_msg();
@@ -221,8 +241,10 @@ namespace services::collection::executor {
         [[nodiscard]] unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
 
-        using dispatch_traits = actor_zeta::
-            dispatch_traits<&executor_t::execute_plan_full, &executor_t::register_udf, &executor_t::poke_msg>;
+        using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan_full,
+                                                            &executor_t::register_udf,
+                                                            &executor_t::set_explain_renderer,
+                                                            &executor_t::poke_msg>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
@@ -306,6 +328,45 @@ namespace services::collection::executor {
         // execute_pipeline pump forces an incremental async flush. 0 = disabled
         // (the mid-pump gate never fires).
         uint64_t dml_flush_row_threshold_{0};
+        // Upper bound on registerable EXPLAIN renderer slots. The registry is a small dense set of
+        // host renderers, so a larger id is a caller error and is rejected (see set_explain_renderer)
+        // rather than reserved — this bounds the vector so a bogus host id can never trigger an
+        // unbounded allocation / bad_alloc abort.
+        static constexpr uint32_t kExplainRendererSlotLimit = 1024;
+        // EXPLAIN renderer registry: per-query selectable formatters, indexed by
+        // execution_plan_t::explain_render_id. Slot 0 (built-in postgres) is seeded in the ctor
+        // body — a container member can't brace-default a keyed slot. Registered via
+        // set_explain_renderer; no shared mutable state (Rule 10), no locks (Rule 12), POD
+        // fn-pointers (Rule 14); pinned to `resource` in the ctor init-list.
+        std::pmr::vector<explain_render_fn> explain_renderers_;
+
+        // True when `id` names a real registered renderer (in range and non-null).
+        [[nodiscard]] bool explain_slot_registered_(uint32_t id) const noexcept {
+            return id < explain_renderers_.size() && explain_renderers_[id] != nullptr;
+        }
+
+        // Resolve the per-query renderer by slot `id`. An unregistered id yields the DEFAULT — slot 0
+        // (built-in postgres unless a host overwrote it) — a default value, not a fallback branch.
+        [[nodiscard]] explain_render_fn resolve_explain_renderer_(uint32_t id) const noexcept {
+            if (explain_slot_registered_(id)) {
+                return explain_renderers_[id];
+            }
+            return explain_renderers_.empty() ? &render_postgres : explain_renderers_[0];
+        }
+
+        // Build the EXPLAIN IR from `explain_root`, resolve the per-query renderer (render_id: slot 0
+        // default + unregistered-id trace), and render. `cs` non-null resolves scan names from the live
+        // catalog (plan-only path); null reads the pre-collected `names` (ANALYZE, post context-move).
+        // Shared by the plan-only and ANALYZE branches of execute_plan.
+        // captured_subplans: flattened sub-query IRs to hang on the built root as InitPlans (EXPLAIN
+        // ANALYZE main plan); empty for plan-only / sub-plan captures. Moved in (consumed).
+        [[nodiscard]] components::cursor::cursor_t_ptr
+        render_explain_(const components::operators::operator_ptr& explain_root,
+                        const explain_name_map_t& names,
+                        const services::context_storage_t* cs,
+                        uint32_t render_id,
+                        bool analyze,
+                        std::pmr::vector<explain_plan_node> captured_subplans);
     };
 
     using executor_ptr = std::unique_ptr<executor_t, actor_zeta::pmr::deleter_t>;

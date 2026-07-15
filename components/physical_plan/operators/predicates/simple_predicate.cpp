@@ -67,6 +67,26 @@ namespace components::operators::predicates {
                 if (left_val.value().is_null() || right_val.value().is_null()) {
                     return false;
                 }
+                // PostgreSQL rejects an IMPLICIT boolean <-> numeric comparison ("operator
+                // does not exist: boolean = integer"). is_numeric(BOOLEAN) is true, so without
+                // this guard cast_as would silently coerce the numeric via the int->bool cast
+                // and compare — asymmetric and surprising. Reject when EXACTLY one side is
+                // BOOLEAN and the other is a non-boolean numeric, so `bool_col = 1` errors.
+                // Same-type bool=bool and numeric=numeric (neither trips l_bool != r_bool), and
+                // any string / temporal / NULL pairing, are untouched.
+                {
+                    // Detect a boolean operand by PHYSICAL type (BOOL) so it fires whether the
+                    // value's logical type is BOOL or BOOLEAN. The other side is numeric-non-bool
+                    // when it is is_numeric but not itself physically BOOL.
+                    const bool l_bool = left_val.value().type().to_physical_type() == types::physical_type::BOOL;
+                    const bool r_bool = right_val.value().type().to_physical_type() == types::physical_type::BOOL;
+                    const auto other = l_bool ? right_val.value().type().type() : left_val.value().type().type();
+                    if (l_bool != r_bool && types::is_numeric(other)) {
+                        return core::error_t{
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"operator does not exist: boolean = numeric type", resource}};
+                    }
+                }
                 auto cast_right = right_val.value().cast_as(left_val.value().type(), session_tz);
                 if (!cast_right.is_null()) {
                     return evaluate_comp<COMP>(resource, left_val.value(), cast_right);
@@ -263,7 +283,17 @@ namespace components::operators::predicates {
                         if (left_val.value().is_null()) {
                             return false;
                         }
-                        const auto& arr = parameters->parameters.at(param_id).children();
+                        const auto& arr_param = parameters->parameters.at(param_id);
+                        // Empty sub-query list: compact_to_array_value returns the NA-null
+                        // sentinel for a zero-row `x [NOT] IN (SELECT ...)`. PostgreSQL:
+                        // `x = ANY(empty)` is false (IN () matches nothing) and
+                        // `x <> ALL(empty)` is true (NOT IN () matches everything) — exactly
+                        // the loop-exhausted result, so short-circuit before dereferencing
+                        // the (null) array's children.
+                        if (arr_param.is_null()) {
+                            return !is_any;
+                        }
+                        const auto& arr = arr_param.children();
                         for (const auto& element : arr) {
                             if (element.is_null()) {
                                 continue;

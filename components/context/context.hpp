@@ -94,6 +94,11 @@ namespace components::pipeline {
         // single-final-flush, no-parent-constraint case.
         bool dml_flush_is_final{true};
         bool dml_has_parent_constraint{false};
+        // EXPLAIN ANALYZE: when true, execute_pipeline records per-operator time/rows/loops into the
+        // operators it drives (zero clock sampling when false). Set in-place in execute_sub_plan_ and
+        // read via this ctx pointer only; the hand-written move ctor (context.cpp) does not copy it —
+        // harmless, a populated context_t is never move-constructed.
+        bool analyze{false};
         // DROP back-channel: operator_dynamic_cascade_delete_t records each
         // storage oid it dropped (alongside the mark_storage_dropped_many send). The
         // executor lifts these into execute_result_t.dropped_storage_oids and

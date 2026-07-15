@@ -22,9 +22,9 @@ namespace components::operators {
         , limit_(limit) {}
 
     // --- Windowing core -------------------------------------------------------------------------
-    // Run the ONE-SHOT index search and compute the OFFSET/LIMIT window [pos_=start, end_) over the
-    // matched ids. source_next calls this exactly once (the first call), so the search + windowing
-    // logic lives in ONE place.
+    // Run the ONE-SHOT index search and compute the read-cap window [pos_=0, end_) over the matched
+    // ids. source_next calls this exactly once (the first call), so the search + windowing logic
+    // lives in ONE place.
     actor_zeta::unique_future<void> index_scan::open_index_window(pipeline::context_t* ctx) {
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
             // No index service — empty window (no matched ids).
@@ -59,15 +59,14 @@ namespace components::operators {
                                                ctx->session_tz);
         row_ids_vec_ = co_await std::move(sf);
 
-        // Apply offset and limit to compute the [pos_, end_) window over the matched ids.
+        // Apply the read-cap (offset+limit head cap) count to compute the [0, count) window over the
+        // matched ids. SELECT OFFSET is applied by operator_limit above, so the scan receives
+        // offset()==0 and the seek starts at 0 (head_cap() == limit here).
         const size_t total = row_ids_vec_.size();
-        const size_t offset_val = static_cast<size_t>(std::max(int64_t{0}, limit_.offset()));
-        const size_t start = std::min(offset_val, total);
-        const size_t available = total - start;
-        const int64_t limit_val = limit_.limit();
-        const size_t count = (limit_val >= 0) ? std::min(available, static_cast<size_t>(limit_val)) : available;
-        pos_ = start;
-        end_ = start + count;
+        const int64_t cap = limit_.head_cap();
+        const size_t count = (cap >= 0) ? std::min(total, static_cast<size_t>(cap)) : total;
+        pos_ = 0;
+        end_ = count;
         co_return;
     }
 

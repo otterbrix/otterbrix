@@ -19,6 +19,11 @@ namespace components::logical_plan {
         int64_t offset() const;
         bool check(int64_t count) const;
         bool is_skipping(int64_t count) const;
+        // Row count a cardinality-preserving source must produce so an operator_limit
+        // above it can still window [offset, offset+limit): unlimit when unlimited,
+        // else limit_+offset_ SATURATING to INT64_MAX on overflow (not a plain add).
+        // Single home for the limit+offset formula.
+        int64_t head_cap() const;
 
     private:
         int64_t limit_ = unlimit_;

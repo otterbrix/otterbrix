@@ -112,9 +112,10 @@ namespace components::operators {
             }
         }
 
-        int64_t offset_val = limit_.offset();
+        // The full blocking sort truncates its OUTPUT to `take` rows. OFFSET is applied by
+        // operator_limit above (a full sort has no top-N heap to skip into), so only the LIMIT
+        // count caps the emitted output here.
         int64_t limit_val = limit_.limit();
-        uint64_t skip = offset_val > 0 ? static_cast<uint64_t>(offset_val) : 0;
         uint64_t take = (limit_val >= 0) ? static_cast<uint64_t>(limit_val) : std::numeric_limits<uint64_t>::max();
 
         vector::data_chunk_t cur(resource_, out_types, vector::DEFAULT_VECTOR_CAPACITY);
@@ -137,21 +138,17 @@ namespace components::operators {
             auto& src_chunk = in_chunks[top.chunk_idx];
             size_t row = sorted_indices[top.chunk_idx][top.cursor];
 
-            if (skip > 0) {
-                --skip;
-            } else {
-                if (cur_filled == vector::DEFAULT_VECTOR_CAPACITY) {
-                    flush_cur();
-                }
-                // vector_ops::copy arg 3 is the END index (exclusive), arg 4 is the start
-                // offset in the source, arg 5 is the target offset. Copy count = end - offset.
-                for (size_t c = 0; c < out_cols_effective; ++c) {
-                    vector::vector_ops::copy(src_chunk.data[c], cur.data[c], row + 1, row, cur_filled);
-                }
-                vector::vector_ops::copy(src_chunk.row_ids, cur.row_ids, row + 1, row, cur_filled);
-                ++cur_filled;
-                ++produced;
+            if (cur_filled == vector::DEFAULT_VECTOR_CAPACITY) {
+                flush_cur();
             }
+            // vector_ops::copy arg 3 is the END index (exclusive), arg 4 is the start
+            // offset in the source, arg 5 is the target offset. Copy count = end - offset.
+            for (size_t c = 0; c < out_cols_effective; ++c) {
+                vector::vector_ops::copy(src_chunk.data[c], cur.data[c], row + 1, row, cur_filled);
+            }
+            vector::vector_ops::copy(src_chunk.row_ids, cur.row_ids, row + 1, row, cur_filled);
+            ++cur_filled;
+            ++produced;
 
             ++top.cursor;
             if (top.cursor < sorted_indices[top.chunk_idx].size()) {

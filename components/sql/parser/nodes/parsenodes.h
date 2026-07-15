@@ -1187,6 +1187,8 @@ typedef struct DeleteStmt {
     RangeVar* relation;     /* relation to delete from */
     List* usingClause;      /* optional using clause for more tables */
     Node* whereClause;      /* qualifications */
+    Node* limitOffset;      /* OFFSET — unused for DML (no grammar), kept for symmetry */
+    Node* limitCount;       /* LIMIT — bounds affected rows (DELETE ... LIMIT n) */
     List* returningList;    /* list of expressions to return */
     WithClause* withClause; /* WITH clause */
 } DeleteStmt;
@@ -1201,6 +1203,8 @@ typedef struct UpdateStmt {
     List* targetList;       /* the target list (of ResTarget) */
     Node* whereClause;      /* qualifications */
     List* fromClause;       /* optional from clause for more tables */
+    Node* limitOffset;      /* OFFSET — unused for DML (no grammar), kept for symmetry */
+    Node* limitCount;       /* LIMIT — bounds matched rows (UPDATE ... LIMIT n) */
     List* returningList;    /* list of expressions to return */
     WithClause* withClause; /* WITH clause */
 } UpdateStmt;

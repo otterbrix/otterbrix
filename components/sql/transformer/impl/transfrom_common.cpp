@@ -372,6 +372,11 @@ namespace components::sql::transform {
                                              resource_});
                         return;
                     }
+                    // A child transform may fail (unsupported sub-query form → nullptr + error_).
+                    // Guard before child_expr->group() below null-derefs.
+                    if (has_error() || !child_expr) {
+                        return;
+                    }
                     if (expr->group() == child_expr->group()) {
                         auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(child_expr);
                         if (expr->type() == comp_expr->type()) {
@@ -604,6 +609,11 @@ namespace components::sql::transform {
                         std::pmr::string{"Unsupported expression: unknown expr type in transform_a_expr", resource_});
                     return nullptr;
                 }
+                // A child transform may have failed (unsupported sub-query form → nullptr + error_);
+                // guard before right->group() null-derefs.
+                if (has_error() || !right) {
+                    return nullptr;
+                }
                 auto expr = make_compare_union_expression(resource_, compare_type::union_not);
                 if (expr->group() == right->group()) {
                     auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(right);
@@ -741,21 +751,36 @@ namespace components::sql::transform {
                 expr->make_unfoldable();
                 return expr;
             }
+            case EXPR_SUBLINK: {
+                // Scalar sub-query as a bare boolean predicate: `WHERE (SELECT flag ...)`. PostgreSQL
+                // supports this; it is EXISTS-shaped. Compact the sub-query to its single scalar value and
+                // compare it against true. (>1 row errors inside compact_to_single_value, as PostgreSQL does.)
+                auto param_true = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
+                auto param_result =
+                    plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                // Transform before appending so nested sub_queries/sub_query_results come first.
+                auto sub_node = transform(*node->subselect, plan);
+                // boolean_required: WHERE's argument must be type boolean (PostgreSQL). The
+                // executor rejects a non-boolean static output type of this sub-query before
+                // binding, so `WHERE (SELECT 1)` errors instead of silently coercing to bool.
+                plan->sub_query_results.emplace_back(&vector::compact_to_single_value,
+                                                     param_result,
+                                                     /*boolean_required=*/true);
+                plan->sub_queries.emplace_back(std::move(sub_node));
+                auto expr = make_compare_expression(resource_, compare_type::eq, param_true, param_result);
+                expr->make_unfoldable();
+                return expr;
+            }
             case ROWCOMPARE_SUBLINK:
-                break;
-            case EXPR_SUBLINK:
-                break;
             case ARRAY_SUBLINK:
-                break;
             case CTE_SUBLINK:
-                break;
             case INITPLAN_FUNC_SUBLINK:
                 break;
         }
-        // Every unhandled SubLink kind lands here. This used to be a bare
-        // assert(false): erased under NDEBUG, execution fell off the end of a
-        // non-void function — undefined behavior, observed as a segfault for
-        // e.g. `WHERE (SELECT x FROM t)`.
+        // Unsupported / parser-unreachable sub-query form. In this fork the grammar never emits
+        // NOT_EXISTS/ROWCOMPARE/CTE/INITPLAN_FUNC (NOT EXISTS is AEXPR_NOT+EXISTS; WITH rides withClause);
+        // ARRAY(SELECT ...) as a predicate is meaningless (array != bool) and target-list ARRAY is a
+        // separate deferred feature.
         error_ = core::error_t(core::error_code_t::sql_parse_error,
                                std::pmr::string{"unsupported subquery expression in this context", resource_});
         return nullptr;
@@ -1331,6 +1356,16 @@ namespace components::sql::transform {
         if (nodeTag(node) == T_TypeCast) {
             // HAVING TRUE / FALSE — constant predicate, no aggregate involved.
             return transform_predicate(node, names, plan);
+        }
+        if (nodeTag(node) == T_SubLink) {
+            // A sub-query as a bare HAVING predicate — `HAVING (SELECT flag ...)`, and
+            // EXISTS / IN / ANY / ALL — is transformed exactly as in WHERE. For a bare
+            // EXPR_SUBLINK this yields the compact-to-single-value `== true` predicate with
+            // boolean_required set, so a non-boolean `HAVING (SELECT 1)` is rejected
+            // (PostgreSQL: argument of HAVING must be type boolean). A sub-query as a
+            // comparison OPERAND (`HAVING sum(x) > (SELECT ...)`) is a different path
+            // (resolve_having_operand) and stays untyped, since any type is legal there.
+            return transform_sublink_expr(pg_ptr_cast<SubLink>(node), names, plan);
         }
         if (nodeTag(node) == T_A_Expr) {
             auto a_expr = pg_ptr_cast<A_Expr>(node);

@@ -14,7 +14,6 @@ namespace services::planner::impl {
     create_plan_join(const context_storage_t& context,
                      const components::compute::function_registry_t& function_registry,
                      const components::logical_plan::node_ptr& node,
-                     components::logical_plan::limit_t limit,
                      const components::logical_plan::storage_parameters* params) {
         const auto* join_node = static_cast<const components::logical_plan::node_join_t*>(node.get());
         // assign left table as actor for join
@@ -120,17 +119,11 @@ namespace services::planner::impl {
                                                                                      probe_key_col,
                                                                                      build_key_col,
                                                                                      swap_build_side));
-            // Push the LIMIT down to whichever side an outer join preserves. The hash
-            // path covers inner/left/right/full only (cross never carries an equi-key).
-            auto hash_limit_left = components::logical_plan::limit_t::unlimit();
-            auto hash_limit_right = components::logical_plan::limit_t::unlimit();
+            // The hash path covers inner/left/right/full only (cross never carries an
+            // equi-key). Defensive guard against a cross/invalid slipping through.
             switch (join_node->type()) {
                 case join_type::left:
-                    hash_limit_left = limit;
-                    break;
                 case join_type::right:
-                    hash_limit_right = limit;
-                    break;
                 case join_type::inner:
                 case join_type::full:
                     break;
@@ -141,20 +134,24 @@ namespace services::planner::impl {
                     return nullptr;
             }
             // Physical roles: probe = left_, build = right_. When swapped the
-            // logical-right child becomes the probe and the logical-left child the
-            // build; the per-side LIMIT follows the LOGICAL side (only outer joins ever
-            // set a limit, and those never swap, so this is a no-op under a swap).
+            // logical-right child becomes the probe and the logical-left child the build.
             const auto& probe_child = swap_build_side ? node->children().back() : node->children().front();
             const auto& build_child = swap_build_side ? node->children().front() : node->children().back();
-            const auto probe_limit = swap_build_side ? hash_limit_right : hash_limit_left;
-            const auto build_limit = swap_build_side ? hash_limit_left : hash_limit_right;
             components::operators::operator_ptr hash_left;
             components::operators::operator_ptr hash_right;
             if (probe_child) {
-                hash_left = create_plan(context, function_registry, probe_child, probe_limit, params);
+                hash_left = create_plan(context,
+                                        function_registry,
+                                        probe_child,
+                                        components::logical_plan::limit_t::unlimit(),
+                                        params);
             }
             if (build_child) {
-                hash_right = create_plan(context, function_registry, build_child, build_limit, params);
+                hash_right = create_plan(context,
+                                         function_registry,
+                                         build_child,
+                                         components::logical_plan::limit_t::unlimit(),
+                                         params);
             }
             hash_join->set_children(std::move(hash_left), std::move(hash_right));
             return hash_join;
@@ -168,19 +165,10 @@ namespace services::planner::impl {
         components::operators::operator_ptr join = boost::intrusive_ptr(
             new components::operators::operator_join_t(resource, std::move(log), join_node->type(), expression));
 
-        auto limit_left = components::logical_plan::limit_t::unlimit();
-        auto limit_right = components::logical_plan::limit_t::unlimit();
         switch (join_node->type()) {
             case join_type::left:
-                limit_left = limit;
-                break;
             case join_type::right:
-                limit_right = limit;
-                break;
             case join_type::cross:
-                limit_left = limit;
-                limit_right = limit;
-                break;
             case join_type::inner:
             case join_type::full:
                 break;
@@ -192,10 +180,18 @@ namespace services::planner::impl {
         components::operators::operator_ptr left;
         components::operators::operator_ptr right;
         if (node->children().front()) {
-            left = create_plan(context, function_registry, node->children().front(), limit_left, params);
+            left = create_plan(context,
+                               function_registry,
+                               node->children().front(),
+                               components::logical_plan::limit_t::unlimit(),
+                               params);
         }
         if (node->children().back()) {
-            right = create_plan(context, function_registry, node->children().back(), limit_right, params);
+            right = create_plan(context,
+                                function_registry,
+                                node->children().back(),
+                                components::logical_plan::limit_t::unlimit(),
+                                params);
         }
         join->set_children(std::move(left), std::move(right));
         return join;

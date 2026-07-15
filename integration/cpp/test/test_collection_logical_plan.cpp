@@ -278,7 +278,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             auto del =
                 WRAP_DML_TARGET(table_database_name,
                                 table_collection_name,
-                                logical_plan::make_node_delete_many(
+                                logical_plan::make_node_delete(
                                     dispatcher->resource(),
                                     logical_plan::make_node_match(
                                         dispatcher->resource(),
@@ -287,7 +287,11 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                         make_compare_expression(dispatcher->resource(),
                                                                 compare_type::gt,
                                                                 key{dispatcher->resource(), "count", side_t::left},
-                                                                id_par{1}))));
+                                                                id_par{1})),
+                                    logical_plan::make_node_limit(dispatcher->resource(),
+                                                                  {},
+                                                                  {},
+                                                                  logical_plan::limit_t::unlimit())));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 90));
             auto cur =
@@ -339,12 +343,13 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                              compare_type::eq,
                                                              key{dispatcher->resource(), "count", side_t::left},
                                                              key{dispatcher->resource(), "count", side_t::right});
-        auto del_inner = logical_plan::make_node_delete_many(
+        auto del_inner = logical_plan::make_node_delete(
             dispatcher->resource(),
             logical_plan::make_node_match(dispatcher->resource(),
                                           core::dbname_t{table_database_name},
                                           core::relname_t{table_other_collection_name},
-                                          std::move(expr)));
+                                          std::move(expr)),
+            logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()));
         del_inner->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(using_data)));
         auto del = WRAP_DML_TARGET(table_database_name, table_other_collection_name, del_inner);
         {
@@ -391,9 +396,14 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             expressions::update_expr_ptr update_expr =
                 new expressions::update_expr_set_t(expressions::key_t{dispatcher->resource(), "count"});
             update_expr->left() = new expressions::update_expr_get_const_value_t(id_par{2});
-            auto upd = WRAP_DML_TARGET(table_database_name,
-                                       table_collection_name,
-                                       make_node_update_many(dispatcher->resource(), match, {update_expr}));
+            auto upd = WRAP_DML_TARGET(
+                table_database_name,
+                table_collection_name,
+                make_node_update(
+                    dispatcher->resource(),
+                    match,
+                    logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()),
+                    {update_expr}));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 20));
             params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), 1000));
@@ -463,9 +473,14 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             path.emplace_back("1");
             expressions::update_expr_ptr update_expr = new expressions::update_expr_set_t(key{std::move(path)});
             update_expr->left() = new expressions::update_expr_get_const_value_t(id_par{2});
-            auto upd = WRAP_DML_TARGET(table_database_name,
-                                       table_collection_name,
-                                       make_node_update_many(dispatcher->resource(), match, {update_expr}));
+            auto upd = WRAP_DML_TARGET(
+                table_database_name,
+                table_collection_name,
+                make_node_update(
+                    dispatcher->resource(),
+                    match,
+                    logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()),
+                    {update_expr}));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, types::logical_value_t(dispatcher->resource(), 1000));
             params->add_parameter(id_par{2}, types::logical_value_t(dispatcher->resource(), uint64_t{9999}));
@@ -533,12 +548,13 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 key{{{"initial_table", "count"}, dispatcher->resource()}},
                 key{{{"from_table", "count"}, dispatcher->resource()}});
 
-            auto update_inner = logical_plan::make_node_update_many(
+            auto update_inner = logical_plan::make_node_update(
                 dispatcher->resource(),
                 logical_plan::make_node_match(dispatcher->resource(),
                                               core::dbname_t{table_database_name},
                                               core::relname_t{table_other_collection_name},
                                               std::move(expr)),
+                logical_plan::make_node_limit(dispatcher->resource(), {}, {}, logical_plan::limit_t::unlimit()),
                 {std::move(update_expr)},
                 false);
             update_inner->append_child(logical_plan::make_node_raw_data(dispatcher->resource(), std::move(data)));

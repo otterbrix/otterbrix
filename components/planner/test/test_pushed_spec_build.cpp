@@ -19,6 +19,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/pushed_aggregate_spec.hpp>
 #include <components/physical_plan_generator/impl/create_plan_aggregate.hpp>
@@ -48,18 +49,24 @@ namespace {
         return k;
     }
 
-    // aggregate_t(output_types, distinct) -> group_t(pushdown, exprs, having). The pushdown
-    // group is built here; the aggregate-node wrapping (oid / distinct / output_types) is the
-    // shared planner_test::make_agg.
+    // aggregate_t(output_types, distinct) -> group_t(pushdown, exprs). The pushdown group is
+    // built here; the aggregate-node wrapping (oid / distinct / output_types) is the shared
+    // planner_test::make_agg. HAVING is not carried inside node_group: when non-null it is
+    // attached as a node_having_t CHILD OF THE AGGREGATE, which the create_plan_aggregate
+    // gate scans for and rejects.
     node_ptr make_agg(std::pmr::memory_resource* r,
                       const std::vector<expression_ptr>& group_exprs,
                       expression_ptr having,
                       std::pmr::vector<types::complex_logical_type> out_types,
                       bool agg_distinct = false) {
-        auto group = make_node_group(r, dbn(), reln(), group_exprs, having);
+        auto group = make_node_group(r, dbn(), reln(), group_exprs);
         group->set_pushdown(true);
         group->set_table_oid(components::catalog::oid_t{123});
-        return planner_test::make_agg(r, group, components::catalog::oid_t{123}, std::move(out_types), agg_distinct);
+        auto agg = planner_test::make_agg(r, group, components::catalog::oid_t{123}, std::move(out_types), agg_distinct);
+        if (having != nullptr) {
+            agg->append_child(make_node_having(r, dbn(), reln(), having));
+        }
+        return agg;
     }
 
     const node_group_t* group_of(const node_ptr& agg) {

@@ -2,6 +2,9 @@
 
 #include "identifier_types.hpp"
 #include "node.hpp"
+#include "node_limit.hpp"
+
+#include <components/expressions/key.hpp>
 
 #include <vector>
 
@@ -17,6 +20,16 @@ namespace components::logical_plan {
 
         void set_distinct(bool d) { distinct_ = d; }
         bool is_distinct() const { return distinct_; }
+
+        // SELECT DISTINCT ON (...) keys. Empty for plain DISTINCT (whole-row dedup) and for
+        // non-DISTINCT. Name-based after transform; validate_logical_plan resolves each key's
+        // numeric path(). A non-empty list forces the coordinator path (pushdown barrier) and
+        // makes create_plan splice the distinct operator BELOW the projection, so the ON columns
+        // are still present for subset dedup.
+        const std::pmr::vector<expressions::key_t>& distinct_on_keys() const { return distinct_on_keys_; }
+        // Non-const: validate_logical_plan resolves each key's numeric path() in place via find_types.
+        std::pmr::vector<expressions::key_t>& distinct_on_keys() { return distinct_on_keys_; }
+        void set_distinct_on_keys(std::pmr::vector<expressions::key_t> keys) { distinct_on_keys_ = std::move(keys); }
 
         // Role-named accessors. The aggregate node carries the source table
         // identity through the parser-window for downstream operator dispatch;
@@ -36,12 +49,24 @@ namespace components::logical_plan {
         const std::vector<size_t>& projected_cols() const { return projected_cols_; }
         void set_projected_cols(std::vector<size_t> cols) { projected_cols_ = std::move(cols); }
 
+        // Optimizer annotation set by the pushdown_limit rule: a pure COUNT read-cap
+        // (offset always 0) the terminal transfer_scan may cap its base-table read
+        // at, for the plain-scan shape (no WHERE, no sort/group/non-scan source, NOT
+        // is_distinct()) whose scan create_plan_aggregate builds directly. The
+        // authoritative operator_limit above still windows [offset, offset+limit).
+        // unlimit() = no cap. Advisory only; EXCLUDED from hash_impl()/operator== —
+        // see node_match_t::read_cap_ for the rationale.
+        void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
+        const limit_t& read_cap() const noexcept { return read_cap_; }
+
     private:
         core::uid_t uid_;
         core::dbname_t dbname_;
         core::relname_t relname_;
         bool distinct_{false};
+        std::pmr::vector<expressions::key_t> distinct_on_keys_;
         std::vector<size_t> projected_cols_;
+        limit_t read_cap_{};
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };

@@ -7,12 +7,7 @@ namespace components::logical_plan {
 
     class node_group_t final : public node_t {
     public:
-        explicit node_group_t(std::pmr::memory_resource* resource,
-                              core::dbname_t dbname,
-                              core::relname_t relname,
-                              expression_ptr having = nullptr);
-
-        const expression_ptr& having() const { return having_; }
+        explicit node_group_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
         const std::string& relname() const noexcept { return relname_; }
         const std::string& dbname() const noexcept { return dbname_; }
@@ -43,7 +38,6 @@ namespace components::logical_plan {
     private:
         std::string dbname_;
         std::string relname_;
-        expression_ptr having_;
         // See set_pushdown()/pushdown() above. Default false = coordinator-side
         // reduce. Intentionally NOT folded into hash_impl().
         bool pushdown_{false};
@@ -54,21 +48,17 @@ namespace components::logical_plan {
 
     using node_group_ptr = boost::intrusive_ptr<node_group_t>;
 
-    node_group_ptr make_node_group(std::pmr::memory_resource* resource,
-                                   core::dbname_t dbname,
-                                   core::relname_t relname,
-                                   expression_ptr having = nullptr);
+    node_group_ptr
+    make_node_group(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
                                    core::dbname_t dbname,
                                    core::relname_t relname,
-                                   const std::vector<expression_ptr>& expressions,
-                                   expression_ptr having = nullptr);
+                                   const std::vector<expression_ptr>& expressions);
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
                                    core::dbname_t dbname,
                                    core::relname_t relname,
-                                   const std::pmr::vector<expression_ptr>& expressions,
-                                   expression_ptr having = nullptr);
+                                   const std::pmr::vector<expression_ptr>& expressions);
 
 } // namespace components::logical_plan

@@ -13,7 +13,6 @@ namespace services::planner::impl {
     create_plan_union(const context_storage_t& context,
                       const components::compute::function_registry_t& function_registry,
                       const components::logical_plan::node_ptr& node,
-                      components::logical_plan::limit_t limit,
                       const components::logical_plan::storage_parameters* params);
 
 } // namespace services::planner::impl

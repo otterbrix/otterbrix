@@ -1162,9 +1162,8 @@ namespace services::disk {
 
         // (2) Rebuild the operator_group from the POD: plain-column keys + builtin
         //     SUM/COUNT/MIN/MAX/AVG (COUNT(*) == empty arg path). No HAVING / DISTINCT / computed
-        //     columns (the optimizer never stamps those), so having==nullptr and
-        //     internal_aggregate_count==0.
-        ops::operator_group_t group{resource, log.clone(), nullptr, 0};
+        //     columns (the optimizer never stamps those), so internal_aggregate_count==0.
+        ops::operator_group_t group{resource, log.clone(), 0};
         for (const auto& gk : spec.group_keys) {
             ops::group_key_t key{resource};
             key.name.assign(gk.name.begin(), gk.name.end());

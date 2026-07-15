@@ -63,19 +63,19 @@ namespace services::planner {
             case node_type::data_t:
                 return impl::create_plan_data(node);
             case node_type::union_t:
-                return impl::create_plan_union(context, function_registry, node, std::move(limit), params);
+                return impl::create_plan_union(context, function_registry, node, params);
             case node_type::recursive_cte_t:
-                return impl::create_plan_recursive_cte(context, function_registry, node, std::move(limit), params);
+                return impl::create_plan_recursive_cte(context, function_registry, node, params);
             case node_type::cte_scan_t:
-                return impl::create_plan_cte_scan(context, function_registry, node, std::move(limit), params);
+                return impl::create_plan_cte_scan(context, function_registry, node, params);
             case node_type::delete_t:
                 return impl::create_plan_delete(context, function_registry, node, params);
             case node_type::insert_t:
-                return impl::create_plan_insert(context, function_registry, node, std::move(limit), params);
+                return impl::create_plan_insert(context, function_registry, node, params);
             case node_type::match_t:
                 return impl::create_plan_match(context, node, std::move(limit));
-            case node_type::having_t:
-                return impl::create_plan_having(context, node, std::move(limit));
+            // No having_t case: a HAVING node exists only as an aggregate child and is lowered
+            // inline by create_plan_aggregate, so it never reaches this generic dispatch.
             case node_type::group_t:
                 return impl::create_plan_group(context, function_registry, node, params);
             case node_type::select_t:
@@ -85,7 +85,7 @@ namespace services::planner {
             case node_type::update_t:
                 return impl::create_plan_update(context, function_registry, node, params);
             case node_type::join_t:
-                return impl::create_plan_join(context, function_registry, node, std::move(limit), params);
+                return impl::create_plan_join(context, function_registry, node, params);
             case node_type::check_constraint_t:
                 return impl::create_plan_check_constraint(context, function_registry, node, params);
             case node_type::fk_check_t:

@@ -72,15 +72,15 @@ namespace components::operators {
         const expressions::expression_ptr expression_;
         const logical_plan::limit_t limit_;
 
-        // LIMIT/OFFSET running total for the STREAMING path: count of predicate-true
-        // rows SEEN across all push() batches so far. limit_.is_skipping() /
-        // limit_.check() read it to decide OFFSET-skip vs emit vs limit-reached, so a
-        // LIMIT caps the total across ALL batches and an OFFSET skips the head of the
-        // stream. It feeds the shared filter core.
+        // LIMIT running total for the STREAMING path: count of predicate-true rows SEEN
+        // across all push() batches so far. limit_.check() reads it to decide emit vs
+        // limit-reached, so a LIMIT caps the total across ALL batches. (OFFSET is applied
+        // by operator_limit for SELECT and does not exist for DML, so this stream is
+        // capped, never skipped.) It feeds the shared filter core.
         int64_t stream_limit_total_{0};
 
         // Shared filter core (R6): filter ONE input chunk through the predicate +
-        // projection, advancing the caller-owned LIMIT/OFFSET counter `limit_total`,
+        // projection, advancing the caller-owned LIMIT counter `limit_total`,
         // and append the surviving-rows chunk to `out` (nothing appended when zero
         // rows survive). Called by push() (per streamed batch, member counter).
         // `predicate` and the populated-column projection are passed in so the

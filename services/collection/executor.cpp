@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/context/execution_context.hpp>
@@ -87,6 +88,7 @@ namespace services::collection::executor {
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<executor_t, &executor_t::execute_plan_full>,
             actor_zeta::msg_id<executor_t, &executor_t::register_udf>,
+            actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>,
             actor_zeta::msg_id<executor_t, &executor_t::poke_msg>,
         };
 
@@ -113,6 +115,27 @@ namespace services::collection::executor {
     } // namespace
 
     namespace {
+        // EXPLAIN ANALYZE row tally: sum row counts across a chunk vector.
+        inline uint64_t count_rows(const components::operators::chunks_vector_t& chunks) noexcept {
+            uint64_t rows = 0;
+            for (const auto& c : chunks) {
+                rows += c.size();
+            }
+            return rows;
+        }
+
+        // EXPLAIN ANALYZE stopwatch: samples steady_clock only when `on` (zero cost off the ANALYZE
+        // path). elapsed() is read only under an `if (analyze)` guard at each call site, which also
+        // keeps count_rows off the normal (non-analyze) hot path.
+        struct analyze_scope {
+            std::chrono::steady_clock::time_point t0;
+            explicit analyze_scope(bool on) noexcept
+                : t0(on ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}) {}
+            [[nodiscard]] std::chrono::nanoseconds elapsed() const noexcept {
+                return std::chrono::steady_clock::now() - t0;
+            }
+        };
+
         // Build-side selection: collect the resolved child table oids of
         // every INNER hash join in the optimized plan tree. execute_plan_full
         // fetches each oid's live row count so create_plan_join can put the
@@ -148,12 +171,10 @@ namespace services::collection::executor {
 
     plan_t::plan_t(std::stack<components::operators::operator_ptr>&& sub_plans,
                    const components::logical_plan::storage_parameters* parameters,
-                   services::context_storage_t&& context_storage,
-                   components::logical_plan::limit_t limit)
+                   services::context_storage_t&& context_storage)
         : sub_plans(std::move(sub_plans))
         , parameters(parameters)
-        , context_storage_(context_storage)
-        , limit(limit) {}
+        , context_storage_(context_storage) {}
 
     executor_t::executor_t(std::pmr::memory_resource* resource,
                            actor_zeta::address_t parent_address,
@@ -169,8 +190,10 @@ namespace services::collection::executor {
         , index_address_(std::move(index_address))
         , log_(log)
         , function_registry_(resource)
-        , dml_flush_row_threshold_(dml_flush_row_threshold) {
+        , dml_flush_row_threshold_(dml_flush_row_threshold)
+        , explain_renderers_(resource) {
         register_default_functions(function_registry_);
+        explain_renderers_.push_back(&render_postgres); // slot 0 = built-in default renderer
     }
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -181,6 +204,10 @@ namespace services::collection::executor {
             }
             case actor_zeta::msg_id<executor_t, &executor_t::register_udf>: {
                 co_await actor_zeta::dispatch(this, &executor_t::register_udf, msg);
+                break;
+            }
+            case actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>: {
+                co_await actor_zeta::dispatch(this, &executor_t::set_explain_renderer, msg);
                 break;
             }
             case actor_zeta::msg_id<executor_t, &executor_t::poke_msg>: {
@@ -206,7 +233,8 @@ namespace services::collection::executor {
                              components::logical_plan::execution_plan_t plan,
                              services::context_storage_t context_storage,
                              components::table::transaction_data txn,
-                             uint64_t lowest_active_start_time) {
+                             uint64_t lowest_active_start_time,
+                             std::pmr::vector<explain_plan_node> captured_subplans) {
         trace(log_, "executor::execute_plan, session: {}", session.data());
 
         using namespace components::logical_plan;
@@ -264,10 +292,72 @@ namespace services::collection::executor {
 
         node->set_as_root();
 
+        // === EXPLAIN / EXPLAIN ANALYZE ===
+        // Stable handle to the physical root before traverse_plan_ moves `node`: operator left_/
+        // right_ are frozen after create_plan, so explain_root walks the exact instances the
+        // pipeline drives (and, for ANALYZE, the counters they accumulate). Snapshot oid->name now,
+        // BEFORE context_storage is moved into traverse_plan_ below.
+        components::operators::operator_ptr explain_root =
+            plan.explain != components::logical_plan::explain_type::none ? node : nullptr;
+        explain_name_map_t explain_names{resource()};
+        const bool explain_analyze = plan.explain == components::logical_plan::explain_type::analyze;
+        if (explain_root && explain_analyze) {
+            // ANALYZE builds the IR AFTER context_storage is moved into traverse_plan_ below, so it must
+            // snapshot oid->name now while the catalog is still alive. Plan-only skips this pass — its
+            // single builder walk resolves scan names straight from the still-live catalog (see below).
+            explain_name_collector nc{context_storage, explain_names};
+            explain_root->explain(nc.sink());
+        }
+        if (plan.explain == components::logical_plan::explain_type::plan) {
+            // Plan-only EXPLAIN: build the physical tree's IR WITHOUT executing. context_storage is still
+            // alive, so the builder resolves scan names from the live catalog (no collector).
+            if (plan.explain_capture_ir) {
+                // A flattened sub-query captured for the main query's InitPlan section: return its IR
+                // (structure only, no ANALYZE stats). No render, no execution — the cursor is unused by
+                // the caller (it reads captured_explain_ir) but must be a success cursor.
+                explain_ir_builder b{resource(), explain_names, &context_storage};
+                explain_root->explain(b.sink());
+                execute_result_t out{make_cursor(resource())};
+                out.captured_explain_ir = b.release();
+                co_return std::move(out);
+            }
+            // Main plan: render the tree, hanging each flattened sub-query's captured IR as an InitPlan
+            // (structure only) — like PostgreSQL's plain EXPLAIN.
+            co_return execute_result_t{render_explain_(explain_root,
+                                                       explain_names,
+                                                       &context_storage,
+                                                       plan.explain_render_id,
+                                                       false,
+                                                       std::move(captured_subplans))};
+        }
+
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
-        plan_data.limit = limit;
+        plan_data.analyze = explain_analyze;
 
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data, lowest_active_start_time);
+
+        // EXPLAIN ANALYZE: the query just ran with instrumentation. Two sub-cases:
+        //   * capture (a flattened sub-plan, explain_capture_ir): build the IR and carry it back in
+        //     captured_explain_ir, but KEEP the data cursor — the sub-query loop still compacts it.
+        //   * main plan: substitute the rendered plan (+ any captured sub-plan InitPlans) for the data
+        //     cursor (only on success — an error stays an error cursor so the tail aborts).
+        // The pipeline left the counters on explain_root's instances; build the IR post-exec now.
+        // context_storage is gone (moved above), so pass nullptr — the builder reads the snapshot.
+        std::optional<explain_plan_node> captured_ir;
+        if (explain_analyze && result.cursor->is_success()) {
+            if (plan.explain_capture_ir) {
+                explain_ir_builder b{resource(), explain_names, nullptr};
+                explain_root->explain(b.sink());
+                captured_ir = b.release();
+            } else {
+                result.cursor = render_explain_(explain_root,
+                                                explain_names,
+                                                nullptr,
+                                                plan.explain_render_id,
+                                                true,
+                                                std::move(captured_subplans));
+            }
+        }
 
         // Raw pipeline result. Three cases, distinguished by the vector state
         // and resolved by execute_plan_full's accumulate/commit tail:
@@ -276,16 +366,46 @@ namespace services::collection::executor {
         //     transaction_t and (autocommit) runs the commit pipeline.
         //   * DML error: dml_appends / pg_catalog_appends still carry the
         //     not-yet-published ranges so the tail's abort cascade reverts them.
-        co_return execute_result_t{std::move(result.cursor),
-                                   std::move(result.pg_catalog_appends),
-                                   std::move(result.pg_catalog_delete_tables),
-                                   std::move(result.pg_attribute_commit_id_backfills),
-                                   std::move(result.dml_appends),
-                                   std::move(result.dml_deletes),
-                                   std::move(result.dropped_storage_oids),
-                                   std::move(result.created_storage_oids),
-                                   std::move(result.created_indexes),
-                                   result.commit_id};
+        execute_result_t out{std::move(result.cursor),
+                             std::move(result.pg_catalog_appends),
+                             std::move(result.pg_catalog_delete_tables),
+                             std::move(result.pg_attribute_commit_id_backfills),
+                             std::move(result.dml_appends),
+                             std::move(result.dml_deletes),
+                             std::move(result.dropped_storage_oids),
+                             std::move(result.created_storage_oids),
+                             std::move(result.created_indexes),
+                             result.commit_id};
+        out.captured_explain_ir = std::move(captured_ir);
+        co_return std::move(out);
+    }
+
+    components::cursor::cursor_t_ptr
+    executor_t::render_explain_(const components::operators::operator_ptr& explain_root,
+                                const explain_name_map_t& names,
+                                const services::context_storage_t* cs,
+                                uint32_t render_id,
+                                bool analyze,
+                                std::pmr::vector<explain_plan_node> captured_subplans) {
+        // cs != nullptr (plan-only): resolve scan names from the live catalog. cs == nullptr (ANALYZE,
+        // after context_storage was moved): read the pre-collected `names` snapshot.
+        explain_ir_builder b{resource(), names, cs};
+        explain_root->explain(b.sink());
+        explain_plan_node root = b.release();
+        // Hang each flattened sub-query's captured IR on the main root as an InitPlan. PG attaches
+        // InitPlans at the topmost node of the query level; otterbrix runs every flattened sub-query
+        // top-level (executor loop), so they are siblings here. Each node's subplan_returns ($M) was
+        // stamped in the loop. All nodes share this executor's resource() — no pmr re-anchor.
+        for (auto& sp : captured_subplans) {
+            root.subplans.push_back(std::move(sp));
+        }
+        const auto render = resolve_explain_renderer_(render_id);
+        if (render_id != 0 && !explain_slot_registered_(render_id)) {
+            trace(log_,
+                  "executor::explain: render_id {} not registered on this executor — using default (slot 0)",
+                  render_id);
+        }
+        return render(resource(), root, analyze);
     }
 
     executor_t::unique_future<execute_result_t>
@@ -316,7 +436,18 @@ namespace services::collection::executor {
         // bound as a parameter the later sub-queries / the main query reference
         // by id. Sharing the node is why execute_plan copies (not drains) the
         // parameters: each binding must survive into the next plan.
-        for (std::size_t i = 0; i + 1 < plan.sub_queries.size(); ++i) {
+        //
+        // Plan-only EXPLAIN does not EXECUTE the sub-queries (PostgreSQL: plain EXPLAIN runs no sub-plans),
+        // but it still BUILDS each one's physical plan and captures its IR so the output shows the InitPlan
+        // structure — exactly like PostgreSQL's plain EXPLAIN. EXPLAIN ANALYZE captures the executed IR
+        // (with per-operator stats); normal execution captures nothing. Both EXPLAIN modes hang the captured
+        // IRs on the main IR root as InitPlans (PG-faithful attach-at-root — otterbrix runs/plans them all
+        // top-level).
+        const bool run_sub_queries = plan.explain != components::logical_plan::explain_type::plan;
+        const bool plan_only = plan.explain == components::logical_plan::explain_type::plan;
+        const bool capture_ir = plan.explain == components::logical_plan::explain_type::analyze;
+        std::pmr::vector<explain_plan_node> captured_subplans{resource()};
+        for (std::size_t i = 0; (run_sub_queries || plan_only) && i + 1 < plan.sub_queries.size(); ++i) {
             auto* sub_root = services::catalog_resolve::effective_root_node(plan.sub_queries[i].get());
             const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
             // SQL standard: a sub-query is a query expression — never DML/DDL.
@@ -327,18 +458,57 @@ namespace services::collection::executor {
                                   std::pmr::string{"DML statement is not allowed in a sub-query", resource()}})};
             }
             components::logical_plan::execution_plan_t sub_plan{resource(), plan.sub_queries[i], plan.parameters};
+            if (plan_only) {
+                // Build the sub-query's physical plan + IR, NO execution (returned via captured_explain_ir).
+                sub_plan.explain = components::logical_plan::explain_type::plan;
+                sub_plan.explain_capture_ir = true;
+            } else if (capture_ir) {
+                // Instrument the sub-plan and make it BUILD its IR (kept alongside the data cursor).
+                sub_plan.explain = components::logical_plan::explain_type::analyze;
+                sub_plan.explain_capture_ir = true;
+            }
             auto sub_result = co_await execute_plan_full(session, std::move(sub_plan));
             if (sub_result.cursor->is_error()) {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
             const auto& mapping = plan.sub_query_results[i];
+            // PostgreSQL: the argument of WHERE / HAVING must be type boolean. For a bare
+            // boolean-context scalar sub-query (`WHERE (SELECT ...)` / `HAVING (SELECT ...)`)
+            // reject a non-boolean STATIC output type here — otherwise a numeric scalar would
+            // silently coerce to bool (`(SELECT 1)` -> 0 rows, `(SELECT 0)` -> all rows). This
+            // is a data-independent check on the sub-plan's resolved schema (stamped by the
+            // recursive execute_plan_full's validate above — the SINGLE canonical type source),
+            // so it runs BEFORE the plan-only continue: EXPLAIN of the bad query errors too, as
+            // in PostgreSQL. NA (a zero-row / NULL scalar, whose static type is BOOLEAN for a
+            // bool column anyway) is accepted — it selects nothing, not a type error.
+            if (mapping.boolean_required) {
+                const auto& sub_node = plan.sub_queries[i];
+                assert(sub_node->has_output_types() && "boolean-required sub-query must be schema-stamped");
+                const auto out_type = sub_node->output_types().front().type();
+                if (out_type != components::types::logical_type::BOOLEAN &&
+                    out_type != components::types::logical_type::NA) {
+                    co_return execute_result_t{make_cursor(
+                        resource(),
+                        core::error_t{core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"argument of WHERE/HAVING must be type boolean", resource()}})};
+                }
+            }
+            if ((capture_ir || plan_only) && sub_result.captured_explain_ir.has_value()) {
+                // Stamp the sub-plan's returned param slot ($M) and buffer it for the main-root attach.
+                sub_result.captured_explain_ir->subplan_returns = static_cast<uint32_t>(mapping.id);
+                captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
+            }
+            if (plan_only) {
+                // Plan-only: the IR is captured; there is no data cursor to compact or param to bind.
+                continue;
+            }
             trace(log_,
                   "DBG subq[{}] cursor success={} size={} cols={}",
                   i,
                   sub_result.cursor->is_success(),
                   sub_result.cursor->size(),
                   sub_result.cursor->column_count());
-            auto compacted = mapping.compacter(sub_result.cursor->chunks().front());
+            auto compacted = mapping.compacter(sub_result.cursor->chunks());
             trace(log_,
                   "DBG subq[{}] compacted has_error={} is_null={}",
                   i,
@@ -555,8 +725,14 @@ namespace services::collection::executor {
             original_type == node_type::create_index_t || original_type == node_type::drop_t ||
             original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
             original_type == node_type::create_matview_t;
-        const bool needs_dml_txn = original_type == node_type::insert_t || original_type == node_type::update_t ||
-                                   original_type == node_type::delete_t;
+        // Plan-only EXPLAIN of DML must be a true no-op: gate needs_dml_txn so the statement flows
+        // through the read-only releases_resolve_txn path (like a SELECT) instead of running an
+        // empty commit pipeline (WAL marker + ProcArray barrier for a zero-change txn). EXPLAIN
+        // ANALYZE keeps needs_dml_txn true → commits normally.
+        const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
+        const bool needs_dml_txn = !is_plan_only_explain &&
+                                   (original_type == node_type::insert_t || original_type == node_type::update_t ||
+                                    original_type == node_type::delete_t);
         // SET TIMEZONE and VACUUM are append/delete-shaped catalog writers that
         // are neither DDL nor DML but still produce committable pg_catalog
         // ranges (SET TIMEZONE → pg_settings append; VACUUM → pg_computed_column
@@ -598,7 +774,8 @@ namespace services::collection::executor {
                                                   components::logical_plan::execution_plan_t{resource(), root, params},
                                                   std::move(cstor),
                                                   resolve_txn,
-                                                  session_ctx.lowest_active_start_time);
+                                                  session_ctx.lowest_active_start_time,
+                                                  std::pmr::vector<explain_plan_node>{resource()});
         };
 
         if (plan.sub_queries.back() &&
@@ -1440,7 +1617,8 @@ namespace services::collection::executor {
                                                  plan,
                                                  std::move(context_storage),
                                                  resolve_txn,
-                                                 session_ctx.lowest_active_start_time);
+                                                 session_ctx.lowest_active_start_time,
+                                                 std::move(captured_subplans));
 
         // (C2) Shared failure-revert — undo this statement's storage appends +
         // index mirrors and abort the txn. Identical for the DML and DDL failure
@@ -1823,6 +2001,22 @@ namespace services::collection::executor {
         co_return std::make_unique<function_result_t>(std::move(res));
     }
 
+    executor_t::unique_future<bool> executor_t::set_explain_renderer(uint32_t id, explain_render_fn fn) {
+        // Register the host-supplied renderer into THIS executor's own registry at slot `id` (a POD
+        // fn-pointer, no shared state). Reject a null renderer or an out-of-range id with `false` —
+        // never report success while installing nothing, and never grow the registry unboundedly on a
+        // huge host id (that would allocate gigabytes and, with exceptions disabled, abort the process).
+        if (fn == nullptr || id >= kExplainRendererSlotLimit) {
+            co_return false;
+        }
+        // Grow with the default renderer so any skipped slot resolves to the built-in postgres.
+        if (explain_renderers_.size() <= id) {
+            explain_renderers_.resize(static_cast<std::size_t>(id) + 1, &render_postgres);
+        }
+        explain_renderers_[id] = fn;
+        co_return true;
+    }
+
     plan_t executor_t::traverse_plan_(components::operators::operator_ptr&& plan,
                                       const components::logical_plan::storage_parameters& parameters,
                                       services::context_storage_t&& context_storage) {
@@ -1862,6 +2056,9 @@ namespace services::collection::executor {
             chain.push_back(op);
         }
         std::reverse(chain.begin(), chain.end());
+
+        // EXPLAIN ANALYZE flag for this invocation (zero clock sampling when off).
+        const bool analyze = ctx->analyze;
 
         // Everything below the bottom-most NOT-yet-executed operator is a materialized
         // sub-plan: traverse_plan_ splits a join's build AND probe sides into their own
@@ -1905,6 +2102,18 @@ namespace services::collection::executor {
         const bool sourceless_sink_root = start == 0 && chain.front()->role() != ops::pipeline_role::source;
         const std::size_t op_start = sourceless_sink_root ? 1 : ((start == 0) ? 1 : start);
 
+        // EXPLAIN ANALYZE loops: bump ONLY the ops this invocation drives — chain.front() when it
+        // owns the source / sourceless bottom (start==0), plus chain[op_start..). Not chain[0..start-1]
+        // (already-materialized boundary + its drained source), or a single-pass join shows loops=2.
+        if (analyze) {
+            if (start == 0) {
+                chain.front()->bump_analyze_loop();
+            }
+            for (std::size_t i = op_start; i < chain.size(); ++i) {
+                chain[i]->bump_analyze_loop();
+            }
+        }
+
         // A producing sourceless bottom (recursive_cte) whose ancestors are REAL query
         // operators (sort/select/match) must stream its rows UP through them. The
         // discriminator is "not all-sink": if EVERY op on the chain is a sink it is an
@@ -1932,11 +2141,15 @@ namespace services::collection::executor {
             stage.push_back(std::move(batch));
             for (std::size_t i = op_start; i < chain.size(); ++i) {
                 ops::chunks_vector_t produced{resource()};
+                const analyze_scope scope{analyze};
                 for (auto& in : stage) {
                     auto err = chain[i]->push(ctx, std::move(in), produced);
                     if (err.contains_error()) {
                         return err;
                     }
+                }
+                if (analyze) {
+                    chain[i]->record_analyze(count_rows(produced), scope.elapsed());
                 }
                 stage = std::move(produced);
             }
@@ -1979,11 +2192,20 @@ namespace services::collection::executor {
             // not a push-fed finalize.) Drive it here, deepest-first — exactly the
             // commit the executor's bottom-up async-finalize pass drives — so the
             // FLUSH/async-finalize passes below operate only on the ANCESTORS.
+            const analyze_scope front_scope{analyze};
             if (chain.front()->needs_async_finalize()) {
                 co_await chain.front()->await_async_and_resume(ctx);
                 if (chain.front()->has_error()) {
                     co_return core::result_wrapper_t<ops::chunks_vector_t>(chain.front()->get_error());
                 }
+            }
+            // EXPLAIN ANALYZE: the producing bottom (e.g. a recursive_cte fixpoint) is driven ONLY here
+            // — never via a push()/finalize record site — so without this its plan line would read
+            // rows=0 / actual time=0.000ms regardless of what it produced. Time only the production.
+            if (analyze) {
+                chain.front()->record_analyze(
+                    chain.front()->output() ? count_rows(chain.front()->output()->chunks()) : 0,
+                    front_scope.elapsed());
             }
             // Stream any rows the bottom PRODUCED (recursive_cte's fixpoint output_) UP
             // through the ancestors chain[1..] (e.g. sort -> select, or match -> sort ->
@@ -2020,6 +2242,7 @@ namespace services::collection::executor {
         } else if (start == 0) {
             ops::operator_t* source = chain.front();
             while (true) {
+                const analyze_scope scope{analyze};
                 auto next = co_await source->source_next(ctx);
                 if (next.has_error()) {
                     co_return next.convert_error<ops::chunks_vector_t>();
@@ -2028,6 +2251,10 @@ namespace services::collection::executor {
                 if (batch.data.empty()) {
                     break; // 0-column drain sentinel (a schema'd 0-row batch is real input, e.g.
                            // the empty-guard a scalar aggregate needs to emit COUNT=0)
+                }
+                if (analyze) {
+                    // source emits a single data_chunk_t per fetch (not a chunks_vector_t).
+                    source->record_analyze(batch.size(), scope.elapsed());
                 }
                 auto err = pump_one(std::move(batch));
                 if (err.contains_error()) {
@@ -2061,20 +2288,28 @@ namespace services::collection::executor {
         // since i < j is processed first). Streaming operators finalize to a no-op.
         for (std::size_t i = op_start; i < chain.size(); ++i) {
             ops::chunks_vector_t fin{resource()};
+            const analyze_scope scope{analyze};
             auto err = chain[i]->finalize(ctx, fin);
             if (err.contains_error()) {
                 co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+            }
+            if (analyze) {
+                chain[i]->record_analyze(count_rows(fin), scope.elapsed());
             }
             for (auto& c : fin) {
                 ops::chunks_vector_t stage{resource()};
                 stage.push_back(std::move(c));
                 for (std::size_t j = i + 1; j < chain.size(); ++j) {
                     ops::chunks_vector_t produced{resource()};
+                    const analyze_scope scope{analyze};
                     for (auto& in : stage) {
                         auto e = chain[j]->push(ctx, std::move(in), produced);
                         if (e.contains_error()) {
                             co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(e));
                         }
+                    }
+                    if (analyze) {
+                        chain[j]->record_analyze(count_rows(produced), scope.elapsed());
                     }
                     stage = std::move(produced);
                 }
@@ -2111,9 +2346,13 @@ namespace services::collection::executor {
             if (!op->needs_async_finalize()) {
                 continue;
             }
+            const analyze_scope scope{analyze};
             co_await op->await_async_and_resume(ctx);
             if (op->has_error()) {
                 co_return core::result_wrapper_t<ops::chunks_vector_t>(op->get_error());
+            }
+            if (analyze) {
+                op->record_analyze(op->output() ? count_rows(op->output()->chunks()) : 0, scope.elapsed());
             }
         }
 
@@ -2268,6 +2507,8 @@ namespace services::collection::executor {
             // run a child sub-plan through this SAME streaming executor reaches us
             // via ctx->runner->run_subplan (intra-actor; see subplan_runner_t).
             pipeline_context.runner = this;
+            // EXPLAIN ANALYZE: enable per-operator instrumentation in execute_pipeline.
+            pipeline_context.analyze = plan_data.analyze;
 
             // Prepare the operator tree (connects children in aggregation, etc.)
             plan->prepare();
@@ -2353,24 +2594,7 @@ namespace services::collection::executor {
 
                     if (plan->is_root()) {
                         if (plan->output()) {
-                            auto& chunks = plan->output()->chunks();
-                            // Apply post-sort limit across multi-chunk output.
-                            if (plan_data.limit.limit() > 0) {
-                                uint64_t remaining = static_cast<uint64_t>(plan_data.limit.limit());
-                                for (auto& c : chunks) {
-                                    if (remaining == 0) {
-                                        c.set_cardinality(0);
-                                        continue;
-                                    }
-                                    if (c.size() > remaining) {
-                                        c.set_cardinality(remaining);
-                                        remaining = 0;
-                                    } else {
-                                        remaining -= c.size();
-                                    }
-                                }
-                            }
-                            cursor = make_cursor(resource(), std::move(chunks));
+                            cursor = make_cursor(resource(), std::move(plan->output()->chunks()));
                         } else {
                             cursor = make_cursor(resource(), core::error_t::no_error());
                         }
@@ -2492,7 +2716,8 @@ namespace services::collection::executor {
             components::logical_plan::execution_plan_t{resource(), std::move(commit_node), std::move(cparams)},
             std::move(cstor),
             txn,
-            lowest_active_start_time);
+            lowest_active_start_time,
+            std::pmr::vector<explain_plan_node>{resource()});
     }
 
 } // namespace services::collection::executor

@@ -214,23 +214,18 @@ namespace services::planner::impl {
         auto table_oid = node->table_oid();
         bool known = context.has_table_oid(table_oid);
 
-        components::expressions::expression_ptr having;
-        size_t internal_aggregate_count = 0;
-        if (auto* group_node = dynamic_cast<const components::logical_plan::node_group_t*>(node.get())) {
-            having = group_node->having();
-            internal_aggregate_count = group_node->internal_aggregate_count;
-        }
+        // create_plan_group is only ever dispatched with a group_t node (create_plan.cpp's
+        // case group_t and the aggregate's group child), so the static_cast is safe.
+        const auto* group_node = static_cast<const components::logical_plan::node_group_t*>(node.get());
+        const size_t internal_aggregate_count = group_node->internal_aggregate_count;
 
         if (known) {
             group = new components::operators::operator_group_t(context.resource,
                                                                 context.log.clone(),
-                                                                std::move(having),
                                                                 internal_aggregate_count);
         } else {
-            group = new components::operators::operator_group_t(node->resource(),
-                                                                log_t{},
-                                                                std::move(having),
-                                                                internal_aggregate_count);
+            group =
+                new components::operators::operator_group_t(node->resource(), log_t{}, internal_aggregate_count);
         }
 
         // Build group operator from node expressions

@@ -66,16 +66,6 @@ namespace components::logical_plan {
 
     using node_update_ptr = boost::intrusive_ptr<node_update_t>;
 
-    node_update_ptr make_node_update_many(std::pmr::memory_resource* resource,
-                                          const node_match_ptr& match,
-                                          const std::pmr::vector<expressions::update_expr_ptr>& updates,
-                                          bool upsert = false);
-
-    node_update_ptr make_node_update_one(std::pmr::memory_resource* resource,
-                                         const node_match_ptr& match,
-                                         const std::pmr::vector<expressions::update_expr_ptr>& updates,
-                                         bool upsert = false);
-
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,

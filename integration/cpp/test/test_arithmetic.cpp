@@ -909,6 +909,19 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
         // odd: 5000 is NOT > 5000
         REQUIRE(cur->size() == 1);
     }
+
+    INFO("K3. HAVING with unary minus");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           R"_(SELECT count_bool, SUM(count) AS total )_"
+                                           R"_(FROM TestDatabase.TestCollection )_"
+                                           R"_(GROUP BY count_bool )_"
+                                           R"_(HAVING -SUM(count) > -2520;)_");
+        REQUIRE(cur->is_success());
+        // odd sum = 2500 => -2500 > -2520 (kept); even sum = 2550 => -2550 > -2520 (dropped)
+        REQUIRE(cur->size() == 1);
+    }
 }
 
 // ================================================================

@@ -277,3 +277,59 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_fl
         REQUIRE(cur->value(0, 0).value<uint64_t>() == kCteRows);
     }
 }
+
+// ---------------------------------------------------------------------------
+// DELETE ... USING ... LIMIT n stops at EXACTLY n matched rows ACROSS mid-pump
+// flushes. The bound is enforced by the persistent matched_total_ counter, NOT
+// by the per-flush-cleared modified_ buffer — a flush-derived count would
+// under-count and over-delete.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes") {
+    auto config = make_test_config("/tmp/test_bounded_dml_flush/delete_using_limit");
+    config.execution.dml_flush_row_threshold = kFlushThreshold;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE FlushDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.tgt (id bigint, k bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.src (k bigint);")->is_success());
+    // Every target row (k = id % 10) joins a src row (k in 0..9), so ALL kRowCount are
+    // eligible — the LIMIT is the only thing that stops the delete.
+    {
+        auto cur = seed_rows(dispatcher, "FlushDb.tgt", "id, k", kRowCount, [](unsigned i) {
+            std::stringstream s;
+            s << "(" << i << ", " << (i % 10) << ")";
+            return s.str();
+        });
+        INFO("seed tgt error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == kRowCount);
+    }
+    REQUIRE(exec(dispatcher, "INSERT INTO FlushDb.src (k) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);")
+                ->is_success());
+
+    // n well ABOVE the flush threshold (512) and BELOW the total (kRowCount=3000): the
+    // sink mid-flushes at least once before the bound is reached, so matched_total_ must
+    // survive the flush (which clears modified_) for the bound to land at exactly n.
+    constexpr uint64_t kBound = 1500;
+    const auto flushes_before = services::collection::executor::dml_flush_count();
+    {
+        auto cur = exec(dispatcher,
+                        "DELETE FROM FlushDb.tgt USING FlushDb.src WHERE tgt.k = src.k LIMIT " +
+                            std::to_string(kBound) + ";");
+        INFO("bounded USING delete error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+    }
+    const auto flushes_after = services::collection::executor::dml_flush_count();
+
+    // EXACTLY n rows deleted: matched_total_ is counted at MATCH time (not derived from the
+    // per-flush modified_ buffer), so a flush that clears modified_ does not reset the bound.
+    {
+        auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.tgt;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount) - kBound);
+    }
+    // At least the post-pump flush ran (the USING/join sink runs the non-streaming path, so a
+    // single flush is expected; a streaming sink that mid-flushed would show more).
+    REQUIRE(flushes_after - flushes_before >= 1);
+}

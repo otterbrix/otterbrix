@@ -10,9 +10,12 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_limit.hpp>
+#include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_sort.hpp>
 #include <components/physical_plan/operators/operator_distinct.hpp>
 #include <components/physical_plan/operators/operator_group.hpp>
 #include <components/physical_plan/operators/operator_group_merge.hpp>
+#include <components/physical_plan/operators/operator_limit.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
 #include <components/physical_plan/operators/operator_sort.hpp>
 #include <components/physical_plan/operators/scan/full_scan.hpp>
@@ -42,7 +45,18 @@ namespace services::planner::impl {
                            std::pmr::memory_resource* resource,
                            ops::pushed_aggregate_spec_t& out) {
         {
-            if (group->having() != nullptr || group->internal_aggregate_count != 0) {
+            // A HAVING (a first-class having_t child of the aggregate) or an internal HAVING
+            // aggregate is not POD-representable — fall back to the coordinator group so the
+            // operator_having filter above it still runs. (The optimizer's pushdown_aggregate rule
+            // already skips any aggregate with a having_t child, so this is defense-in-depth.)
+            bool has_having_child = false;
+            for (const auto& child : agg_node->children()) {
+                if (child && child->type() == node_type::having_t) {
+                    has_having_child = true;
+                    break;
+                }
+            }
+            if (has_having_child || group->internal_aggregate_count != 0) {
                 return false;
             }
             for (const auto& expr : group->expressions()) {
@@ -245,15 +259,31 @@ namespace services::planner::impl {
         const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
         const auto& projected_cols = agg_node->projected_cols();
 
-        // When ORDER BY is present, scan all rows — limit+offset are applied post-sort.
-        bool has_sort = false;
-        for (const components::logical_plan::node_ptr& child : node->children()) {
-            if (child->type() == node_type::sort_t) {
-                has_sort = true;
-                break;
+        // operator_limit is the single authoritative limiter: inserted as the OUTERMOST
+        // node (above DISTINCT — SQL applies LIMIT after DISTINCT) when the LIMIT/OFFSET is
+        // effective, applying the real [offset, offset+limit) window. Every source below gets
+        // only an advisory read-cap (offset 0) that the pushdown_limit rule stamped on the
+        // eligible node; an unstamped node reads unlimit(). OFFSET is thus applied in exactly
+        // one place, so double-OFFSET is structurally impossible.
+        const bool limit_effective =
+            limit.limit() != components::logical_plan::limit_t::unlimit().limit() || limit.offset() != 0;
+
+        // Wrap `op` in the canonical operator_limit as the OUTERMOST node when the
+        // LIMIT/OFFSET is effective; else pass it through unchanged. Shared by the
+        // pushdown and normal return paths.
+        auto wrap_limit = [&](components::operators::operator_ptr op) -> components::operators::operator_ptr {
+            if (!limit_effective) {
+                return op;
             }
-        }
-        auto scan_limit = has_sort ? components::logical_plan::limit_t::unlimit() : limit;
+            auto limit_op =
+                context.has_table_oid(node->table_oid())
+                    ? boost::intrusive_ptr(
+                          new components::operators::operator_limit_t(context.resource, context.log.clone(), limit))
+                    : boost::intrusive_ptr(
+                          new components::operators::operator_limit_t(node->resource(), log_t{}, limit));
+            limit_op->set_children(std::move(op));
+            return limit_op;
+        };
 
         // --- Aggregate-pushdown lowering ---
         // When the optimizer stamped the group child pushdown() AND the whole aggregate is
@@ -282,7 +312,10 @@ namespace services::planner::impl {
                 components::operators::operator_ptr push_select_op;
                 for (const components::logical_plan::node_ptr& child : node->children()) {
                     if (child->type() == node_type::sort_t) {
-                        push_sort_op = create_plan_sort(context, child, limit);
+                        push_sort_op = create_plan_sort(
+                            context,
+                            child,
+                            static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
                     } else if (child->type() == node_type::select_t) {
                         push_select_op = create_plan_select(context, child, params);
                     }
@@ -308,13 +341,14 @@ namespace services::planner::impl {
                     distinct_op->set_children(std::move(executor));
                     executor = std::move(distinct_op);
                 }
-                return executor;
+                return wrap_limit(std::move(executor));
             }
         }
 
         // Build operator chain: scan/child → match → group → sort → select
         components::operators::operator_ptr match_op;
         components::operators::operator_ptr group_op;
+        components::operators::operator_ptr having_op;
         components::operators::operator_ptr sort_op;
         components::operators::operator_ptr select_op;
         components::operators::operator_ptr child_op;
@@ -324,20 +358,51 @@ namespace services::planner::impl {
                 case node_type::limit_t:
                     break; // already handled above
                 case node_type::match_t:
-                    // Call create_plan_match directly so we can pass projected_cols
-                    match_op = create_plan_match(context, child, scan_limit, projected_cols);
+                    // Call create_plan_match directly so we can pass projected_cols. The
+                    // read-cap is the pushdown_limit stamp on this match node (unlimit when
+                    // the rule left it unstamped — e.g. under a sort / group / distinct).
+                    match_op = create_plan_match(
+                        context,
+                        child,
+                        static_cast<const components::logical_plan::node_match_t*>(child.get())->read_cap(),
+                        projected_cols);
                     break;
                 case node_type::group_t:
-                    group_op = create_plan(context, function_registry, child, limit, params);
+                    // A GROUP BY is never cardinality-preserving from its scan and has no
+                    // output-cap hook — operator_limit windows the full grouped output.
+                    group_op = create_plan(context,
+                                           function_registry,
+                                           child,
+                                           components::logical_plan::limit_t::unlimit(),
+                                           params);
                     break;
                 case node_type::sort_t:
-                    sort_op = create_plan_sort(context, child, limit);
+                    // The full sort truncates its OUTPUT to the read-cap the pushdown_limit
+                    // rule stamped (unlimit when a DISTINCT sits above); operator_limit
+                    // applies the real window on top.
+                    sort_op = create_plan_sort(
+                        context,
+                        child,
+                        static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
                     break;
                 case node_type::select_t:
                     select_op = create_plan_select(context, child, params);
                     break;
+                case node_type::having_t:
+                    // HAVING → dedicated operator_having filter, spliced ABOVE the group (below),
+                    // between the group and the sort. It has no window (operator_limit is the sole
+                    // window), so create_plan_having takes no limit.
+                    having_op = create_plan_having(context, child);
+                    break;
                 default:
-                    child_op = create_plan(context, function_registry, child, limit, params);
+                    // A non-scan source (UNION / recursive-CTE / join): always unlimited —
+                    // operator_limit applies the merged window on top. Forwarding the outer
+                    // limit into each arm would apply limit/offset twice (wrong OFFSET).
+                    child_op = create_plan(context,
+                                           function_registry,
+                                           child,
+                                           components::logical_plan::limit_t::unlimit(),
+                                           params);
                     break;
             }
         }
@@ -360,7 +425,7 @@ namespace services::planner::impl {
                                 : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
                                       new components::operators::transfer_scan(plan_resource,
                                                                                node->table_oid(),
-                                                                               scan_limit,
+                                                                               agg_node->read_cap(),
                                                                                std::move(projected_cols))));
         }
         if (group_op) {
@@ -374,9 +439,32 @@ namespace services::planner::impl {
             group_op->set_children(std::move(executor));
             executor = std::move(group_op);
         }
+        // HAVING filters the aggregated output — AFTER the group, BEFORE ORDER BY / projection.
+        if (having_op) {
+            having_op->set_children(std::move(executor));
+            executor = std::move(having_op);
+        }
         if (sort_op) {
             sort_op->set_children(std::move(executor));
             executor = std::move(sort_op);
+        }
+        // DISTINCT ON dedups on the ON-key subset BELOW the projection, so ON columns that do not
+        // survive projection are still present. Keep-first over the sorted input gives "first row per
+        // ON key in ORDER BY order". Plain DISTINCT (empty ON list) stays ABOVE the projection (below).
+        if (agg_node->is_distinct() && !agg_node->distinct_on_keys().empty()) {
+            auto distinct_op =
+                context.has_table_oid(node->table_oid())
+                    ? boost::intrusive_ptr(
+                          new components::operators::operator_distinct_t(context.resource, context.log.clone()))
+                    : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));
+            std::pmr::vector<size_t> on_cols(node->resource());
+            on_cols.reserve(agg_node->distinct_on_keys().size());
+            for (const auto& key : agg_node->distinct_on_keys()) {
+                on_cols.push_back(key.path().front()); // resolved to a scan/group-output column by validation
+            }
+            distinct_op->set_on_keys(std::move(on_cols));
+            distinct_op->set_children(std::move(executor));
+            executor = std::move(distinct_op);
         }
         if (select_op) {
             // Forward the plan-resolved output types onto the projection columns so a
@@ -389,8 +477,9 @@ namespace services::planner::impl {
             executor = std::move(select_op);
         }
 
-        // Check if DISTINCT flag is set on the aggregate node
-        if (agg_node->is_distinct()) {
+        // Plain DISTINCT (whole-row dedup) sits ABOVE the projection. DISTINCT ON was already
+        // spliced below the projection above, so guard on an empty ON list here.
+        if (agg_node->is_distinct() && agg_node->distinct_on_keys().empty()) {
             auto distinct_op =
                 context.has_table_oid(node->table_oid())
                     ? boost::intrusive_ptr(
@@ -400,7 +489,7 @@ namespace services::planner::impl {
             executor = std::move(distinct_op);
         }
 
-        return executor;
+        return wrap_limit(std::move(executor));
     }
 
 } // namespace services::planner::impl

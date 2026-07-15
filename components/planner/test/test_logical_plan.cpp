@@ -10,6 +10,7 @@
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_having.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -172,6 +173,58 @@ TEST_CASE("components::planner::aggregate") {
                                            R"_(})_");
 }
 
+TEST_CASE("components::planner::aggregate_having") {
+    // HAVING is a first-class $having node lowered as an aggregate child, rendered by
+    // node_aggregate's to_string BETWEEN $group and $sort (post-aggregation filter, the
+    // SQL step between GROUP BY and ORDER BY). The compare rides at expressions()[0].
+    auto resource = core::pmr::otterbrix_resource();
+    auto aggregate = make_node_aggregate(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
+
+    // $group: GROUP BY k + hidden SUM(x) aggregate exposed as "sum_x"
+    {
+        std::vector<expression_ptr> expressions;
+        auto scalar_expr = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "k"));
+        scalar_expr->append_param(key(&resource, "k"));
+        expressions.emplace_back(std::move(scalar_expr));
+        auto agg_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_x"));
+        agg_expr->append_param(key(&resource, "x"));
+        expressions.emplace_back(std::move(agg_expr));
+        aggregate->append_child(
+            make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
+    }
+
+    // $having: SUM(x) > #1  (compare carried at expressions()[0], mirroring node_match)
+    aggregate->append_child(make_node_having(&resource,
+                                             core::dbname_t{database_name},
+                                             core::relname_t{collection_name},
+                                             make_compare_expression(&resource,
+                                                                     compare_type::gt,
+                                                                     key(&resource, "sum_x", side_t::left),
+                                                                     core::parameter_id_t(1))));
+
+    // $sort: ORDER BY k
+    {
+        std::vector<expression_ptr> expressions;
+        expressions.emplace_back(new sort_expression_t{key(&resource, "k"), sort_order::asc});
+        aggregate->append_child(
+            make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
+    }
+
+    components::planner::planner_t planner;
+    auto node_aggregate = planner.create_plan(&resource, aggregate);
+
+    const std::string plan = node_aggregate->to_string();
+    const auto pos_group = plan.find("$group:");
+    const auto pos_having = plan.find("$having:");
+    const auto pos_sort = plan.find("$sort:");
+    REQUIRE(pos_group != std::string::npos);
+    REQUIRE(pos_having != std::string::npos);
+    REQUIRE(pos_sort != std::string::npos);
+    // $having renders AFTER $group and BEFORE $sort in the aggregate plan string.
+    REQUIRE(pos_group < pos_having);
+    REQUIRE(pos_having < pos_sort);
+}
+
 TEST_CASE("components::planner::insert") {
     auto resource = core::pmr::otterbrix_resource();
     {
@@ -232,13 +285,13 @@ TEST_CASE("components::planner::delete") {
                                                          core::parameter_id_t(1)));
     components::logical_plan::storage_parameters parameters{&resource};
     {
-        auto node = make_node_delete_many(&resource, match);
+        auto node = make_node_delete(&resource, match, make_node_limit(&resource, {}, {}, limit_t::unlimit()));
         components::planner::planner_t planner;
         auto node_delete = planner.create_plan(&resource, node);
         REQUIRE(node_delete->to_string() == R"_($delete: <oid:0> {$match: {"key": {$eq: #1}}, $limit: -1})_");
     }
     {
-        auto node = make_node_delete_one(&resource, match);
+        auto node = make_node_delete(&resource, match, make_node_limit(&resource, {}, {}, limit_t::limit_one()));
         components::planner::planner_t planner;
         auto node_delete = planner.create_plan(&resource, node);
         REQUIRE(node_delete->to_string() == R"_($delete: <oid:0> {$match: {"key": {$eq: #1}}, $limit: 1})_");
@@ -260,14 +313,22 @@ TEST_CASE("components::planner::update") {
 
     components::logical_plan::storage_parameters parameters{&resource};
     {
-        auto node = make_node_update_many(&resource, match, {update}, true);
+        auto node = make_node_update(&resource,
+                                     match,
+                                     make_node_limit(&resource, {}, {}, limit_t::unlimit()),
+                                     {update},
+                                     /*upsert=*/true);
         components::planner::planner_t planner;
         auto node_update = planner.create_plan(&resource, node);
         REQUIRE(node_update->to_string() ==
                 R"_($update: <oid:0> {$upsert: 1, $match: {"key": {$eq: #1}}, $limit: -1})_");
     }
     {
-        auto node = make_node_update_one(&resource, match, {update}, false);
+        auto node = make_node_update(&resource,
+                                     match,
+                                     make_node_limit(&resource, {}, {}, limit_t::limit_one()),
+                                     {update},
+                                     /*upsert=*/false);
         components::planner::planner_t planner;
         auto node_update = planner.create_plan(&resource, node);
         REQUIRE(node_update->to_string() ==

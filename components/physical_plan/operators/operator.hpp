@@ -4,10 +4,16 @@
 
 #include <actor-zeta/detail/future.hpp>
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
 #include <components/log/log.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
+
+#include <chrono>
+#include <memory_resource>
+#include <string>
+#include <vector>
 
 namespace components::expressions {
     class key_t;
@@ -20,6 +26,10 @@ namespace components::operators {
         unused = 0x0,
         empty,
         match,
+        // Post-aggregation SQL HAVING filter. A dedicated streaming filter operator placed ABOVE
+        // the group operator (never over a scan): same per-row predicate machinery as `match`, but
+        // structurally always streaming, no LIMIT/read-cap, no row-id propagation. Rendered "Having".
+        having,
         full_scan,
         transfer_scan,
         index_scan,
@@ -31,6 +41,13 @@ namespace components::operators {
         update,
         sort,
         select,
+        // SELECT DISTINCT de-duplication (streaming, keep-first). Whole-row dedup layered
+        // outermost (under limit). Rendered "Unique" — distinct from a WHERE "Filter".
+        distinct,
+        // Canonical LIMIT/OFFSET window (streaming). Wraps a terminal whose source
+        // cannot apply a merged outer limit itself (UNION, pushed-down GROUP BY). See
+        // operator_limit.hpp.
+        limit,
         join,
         // Equi-join fast path. Substituted for `join` by create_plan_join when the
         // ON condition is a single eq(left.key, right.key). Builds a hash table on
@@ -170,6 +187,19 @@ namespace components::operators {
         sink       // accumulates bounded state in push(), emits in finalize() (hash build, group/agg, sort)
     };
 
+    // EXPLAIN: a POD typed-event sink (raw fn-pointers + void* ctx — same idiom as explain_render_fn,
+    // NOT std::function). The services-side builder installs ctx + callbacks. No IR type crosses into
+    // components — this stays a plain forwarder.
+    struct explain_sink {
+        void (*on_node)(void*, operator_type, catalog::oid_t, uint64_t, std::chrono::nanoseconds, uint64_t);
+        void (*on_end)(void*);
+        void* ctx;
+        void begin(operator_type t, catalog::oid_t o, uint64_t r, std::chrono::nanoseconds ti, uint64_t l) const {
+            on_node(ctx, t, o, r, ti, l);
+        }
+        void end() const { on_end(ctx); }
+    };
+
     class operator_t : public boost::intrusive_ref_counter<operator_t> {
     public:
         using ptr = boost::intrusive_ptr<operator_t>;
@@ -286,7 +316,28 @@ namespace components::operators {
         // typed instead of the 0-byte logical_type::NA sentinel.
         virtual void set_output_types(const std::pmr::vector<types::complex_logical_type>& types);
 
+        // --- EXPLAIN ANALYZE per-operator instrumentation ---
+        // Written ONLY by execute_pipeline when ctx->analyze is set; read ONLY by the EXPLAIN
+        // renderer after the drive completes. Per-instance, driven synchronously inside executor_t
+        // (operator_t is an intrusive_ref_counter, not a basic_actor) — no locks/atomics, no
+        // cross-actor sharing. Untouched off the ANALYZE path.
+        void record_analyze(uint64_t rows, std::chrono::nanoseconds dt) noexcept {
+            analyze_rows_ += rows;
+            analyze_time_ += dt;
+        }
+        void bump_analyze_loop() noexcept { ++analyze_loops_; }
+
+        // --- EXPLAIN: NVI public entry (mirrors node_t::to_string()) — the operator describes itself
+        // into `s` and recurses into its OWN children. Scans override to add their table oid;
+        // lateral/recursive override to recurse into their PRIVATE sub-plans. No static_cast in the walk.
+        void explain(const explain_sink& s) const { explain_impl(s); }
+
     protected:
+        // Lets overrides supply just their oid while keeping analyze_* private. Inline — begin() needs no IR.
+        void explain_begin(const explain_sink& s, catalog::oid_t oid) const {
+            s.begin(type(), oid, analyze_rows_, analyze_time_, analyze_loops_);
+        }
+
         std::pmr::memory_resource* resource_;
         log_t log_;
 
@@ -299,11 +350,29 @@ namespace components::operators {
         operator_data_ptr constraint_input_{nullptr};
 
     private:
+        // NVI customization point (mirrors node_t::to_string_impl, node.hpp:104) — but NON-pure
+        // (default body), because operator_t has concrete leaf subclasses that do not override it.
+        // Scans override to pass table_oid_; lateral/recursive override to recurse into private subtrees.
+        virtual void explain_impl(const explain_sink& s) const {
+            explain_begin(s, catalog::INVALID_OID);
+            if (left_) {
+                left_->explain(s);
+            }
+            if (right_) {
+                right_->explain(s);
+            }
+            s.end();
+        }
+
         operator_type type_;
         operator_state state_{operator_state::created};
         bool root{false};
         bool prepared_{false};
         core::error_t error_;
+        // EXPLAIN ANALYZE counters (see record_analyze). Scalars — no pmr, no re-anchor.
+        uint64_t analyze_rows_{0};
+        std::chrono::nanoseconds analyze_time_{std::chrono::nanoseconds::zero()};
+        uint64_t analyze_loops_{0};
     };
 
     class read_only_operator_t : public operator_t {

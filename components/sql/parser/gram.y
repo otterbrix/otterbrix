@@ -425,7 +425,7 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
 %type <ival>	opt_column event cursor_options opt_hold opt_set_data
 %type <objtype>	reindex_type drop_type comment_type security_label_type
 
-%type <node>	fetch_args limit_clause select_limit_value
+%type <node>	fetch_args limit_clause select_limit_value opt_dml_limit
 				offset_clause select_offset_value
 				select_fetch_first_value I_or_F_const
 %type <ival>	row_or_rows first_or_next
@@ -11803,13 +11803,14 @@ returning_clause:
  *****************************************************************************/
 
 DeleteStmt: opt_with_clause DELETE_P FROM relation_expr_opt_alias
-			using_clause where_or_current_clause returning_clause
+			using_clause where_or_current_clause opt_dml_limit returning_clause
 				{
 					DeleteStmt *n = makeNode(resource, DeleteStmt);
 					n->relation = $4;
 					n->usingClause = $5;
 					n->whereClause = $6;
-					n->returningList = $7;
+					n->limitCount = $7;
+					n->returningList = $8;
 					n->withClause = $1;
 					$$ = (Node *)n;
 				}
@@ -11881,6 +11882,7 @@ UpdateStmt: opt_with_clause UPDATE relation_expr_opt_alias
 			SET set_clause_list
 			from_clause
 			where_or_current_clause
+			opt_dml_limit
 			returning_clause
 				{
 					UpdateStmt *n = makeNode(resource, UpdateStmt);
@@ -11888,7 +11890,8 @@ UpdateStmt: opt_with_clause UPDATE relation_expr_opt_alias
 					n->targetList = $5;
 					n->fromClause = $6;
 					n->whereClause = $7;
-					n->returningList = $8;
+					n->limitCount = $8;
+					n->returningList = $9;
 					n->withClause = $1;
 					$$ = (Node *)n;
 				}
@@ -12394,6 +12397,17 @@ select_limit:
 opt_select_limit:
 			select_limit						{ $$ = $1; }
 			| /* EMPTY */						{ $$ = list_make2(resource, NULL,NULL); }
+		;
+
+/*
+ * DML LIMIT (DELETE/UPDATE ... LIMIT n): LIMIT-only, no OFFSET/FETCH. OFFSET has
+ * no meaning for set-based DML that bounds affected/matched rows, so writing it is
+ * a clean syntax error. Yields the count expression (or NULL when absent); the
+ * transformer validates it (integer / bound parameter) like a SELECT limit.
+ */
+opt_dml_limit:
+			LIMIT a_expr						{ $$ = $2; }
+			| /* EMPTY */						{ $$ = NULL; }
 		;
 
 limit_clause:

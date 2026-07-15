@@ -1540,15 +1540,21 @@ namespace services::dispatcher {
             case node_type::transaction_t:
                 break;
             case node_type::aggregate_t: {
+                auto* aggregate_node = static_cast<node_aggregate_t*>(node);
                 node_group_t* node_group = nullptr;
                 node_match_t* node_match = nullptr;
                 node_sort_t* node_sort = nullptr;
                 node_select_t* node_select = nullptr;
+                node_having_t* node_having = nullptr;
                 node_t* node_data = nullptr;
 
                 named_schema table_schema(resource);
                 named_schema incoming_schema(resource);
                 bool same_schema = false;
+                // Set when the aggregate's direct source is a relkind='g' (computed) table scan: its
+                // transfer_scan reorders columns by chunk_position, so a validate-time schema index
+                // would not match the runtime scan index — DISTINCT ON is rejected on such tables (v1).
+                bool relkind_computed = false;
 
                 for (auto& child : node->children()) {
                     switch (child->type()) {
@@ -1563,10 +1569,11 @@ namespace services::dispatcher {
                             break;
                         case node_type::limit_t:
                             break;
-                        case node_type::having_t:
-                            break;
                         case node_type::select_t:
                             node_select = reinterpret_cast<node_select_t*>(child.get());
+                            break;
+                        case node_type::having_t:
+                            node_having = reinterpret_cast<node_having_t*>(child.get());
                             break;
                         default:
                             node_data = child.get();
@@ -1589,6 +1596,7 @@ namespace services::dispatcher {
                     // there will be a scan
                     const auto* tbl = impl::tbl_md_for(idx, agg_dbname_s, agg_relname_s);
                     if (tbl) {
+                        relkind_computed = (tbl->relkind == 'g');
                         // Both relkinds ('g' and non-'g') build the schema identically
                         // here: same alias source (visible_alias) and same column loop.
                         for (const auto& column : tbl->columns) {
@@ -1644,6 +1652,23 @@ namespace services::dispatcher {
                         auto res = impl::validate_schema(resource, node_sort, incoming_schema);
                         if (res.has_error()) {
                             return res;
+                        }
+                    }
+                    // DISTINCT ON: resolve the ON keys against the pre-projection (incoming) schema —
+                    // the same column index the runtime distinct-below-select operator reads from the
+                    // transfer_scan. Outside the node_sort guard so a no-ORDER-BY DISTINCT ON resolves.
+                    if (!aggregate_node->distinct_on_keys().empty()) {
+                        if (relkind_computed) {
+                            return core::error_t(core::error_code_t::unimplemented_yet,
+                                                 std::pmr::string{"DISTINCT ON is not yet supported on "
+                                                                  "relkind='g' (dynamic-schema) tables",
+                                                                  resource});
+                        }
+                        for (auto& on_key : aggregate_node->distinct_on_keys()) {
+                            auto r = impl::find_types(resource, on_key, incoming_schema);
+                            if (r.has_error()) {
+                                return r.convert_error<named_schema>();
+                            }
                         }
                     }
                     // Validate node_select expressions (no GROUP BY path)
@@ -2355,8 +2380,22 @@ namespace services::dispatcher {
                         return res;
                     }
                 }
-                if (node_group->having()) {
-                    auto& having = node_group->having();
+                // DISTINCT ON (grouped): resolve the ON keys against the group output (hidden-extended
+                // above), the layer the runtime distinct-below-select operator sees. Outside the
+                // node_sort guard so a no-ORDER-BY DISTINCT ON still resolves.
+                if (!aggregate_node->distinct_on_keys().empty()) {
+                    for (auto& on_key : aggregate_node->distinct_on_keys()) {
+                        auto r = impl::find_types(resource, on_key, result);
+                        if (r.has_error()) {
+                            return r.convert_error<named_schema>();
+                        }
+                    }
+                }
+                // HAVING is a first-class node_having_t child of the aggregate (its compare at
+                // expressions()[0]), validated against the group-output `result` schema (built above:
+                // GROUP keys + aggregate columns incl. hidden __having aggregates).
+                if (node_having && !node_having->expressions().empty()) {
+                    auto& having = node_having->expressions()[0];
                     if (having->group() == expression_group::compare) {
                         auto* cmp_expr = reinterpret_cast<compare_expression_t*>(having.get());
                         auto res = impl::validate_schema(resource, cmp_expr, parameters, result, result, true);

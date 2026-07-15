@@ -31,10 +31,12 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_delete.cpp
         operators/operator_update.cpp
         operators/operator_match.cpp
+        operators/operator_having.cpp
         operators/operator_distinct.cpp
         operators/operator_group.cpp
         operators/operator_group_merge.cpp
         operators/operator_select.cpp
+        operators/operator_limit.cpp
         operators/operator_sort.cpp
         operators/operator_join.cpp
         operators/operator_hash_join.cpp

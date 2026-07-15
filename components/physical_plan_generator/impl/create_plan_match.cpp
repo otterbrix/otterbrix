@@ -7,6 +7,7 @@
 #include <components/expressions/function_expression.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/physical_plan/operators/operator_having.hpp>
 #include <components/physical_plan/operators/operator_match.hpp>
 #include <components/physical_plan/operators/scan/full_scan.hpp>
 #include <components/physical_plan/operators/scan/index_scan.hpp>
@@ -88,11 +89,24 @@ namespace services::planner::impl {
                 }
             }
 
-            // union compare expressions have nullptr in left and right slots
-            if (!is_union_compare_condition(comp_expr->type()) &&
-                (std::holds_alternative<expression_ptr>(comp_expr->left()) ||
-                 std::holds_alternative<expression_ptr>(comp_expr->right()))) {
-                return false;
+            // A LEAF compare (not a union AND/OR of sub-compares) is pushable into a disk
+            // table_filter_t ONLY as `column OP constant` — one operand a key_t (the column),
+            // the other a bound parameter_id_t. A column-vs-column comparison (both key_t), an
+            // expression operand, or any other shape is NOT representable as a table_filter_t
+            // and MUST be evaluated by operator_match instead: pushing it into full_scan makes
+            // transform_predicate's std::get<parameter_id_t>(right()) throw (bad_variant_access).
+            // (union compare expressions carry nullptr in the left/right slots — handled above.)
+            if (!is_union_compare_condition(comp_expr->type())) {
+                // param_storage is variant<parameter_id_t, key_t, expression_ptr>: a bound
+                // parameter is the alternative that is neither a key nor a nested expression.
+                // "column OP constant" = neither operand a nested expression AND exactly one
+                // operand a key (so the other is a bound parameter). Uses the is_key/is_expr
+                // accessors, not std::holds_alternative (Rule 14: no new std::variant site).
+                const bool col_op_const = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right()) &&
+                                          (is_key(comp_expr->left()) != is_key(comp_expr->right()));
+                if (!col_op_const) {
+                    return false;
+                }
             }
             return true;
         }
@@ -135,7 +149,13 @@ namespace services::planner::impl {
                                                                                      limit,
                                                                                      projected_cols));
                 } else {
-                    // For now we do a full scan and apply function after
+                    // Non-pushable predicate (column-vs-column, a function, a non-representable
+                    // shape): the inner full_scan reads ALL raw rows (unlimit) because the filter
+                    // runs ABOVE it in operator_match; capping the inner scan at the read-cap
+                    // could starve the filter of matching rows. operator_match carries the
+                    // read-cap and bounds the FILTERED (matched) stream — for SELECT it is an
+                    // advisory hint under operator_limit, for DML …WHERE f(x) LIMIT n it is the
+                    // AUTHORITATIVE affected-row bound (no operator_limit over a DML root).
                     auto match_operator =
                         boost::intrusive_ptr(new components::operators::operator_match_t(context.resource,
                                                                                          context.log.clone(),
@@ -146,7 +166,7 @@ namespace services::planner::impl {
                                                                                   context.log.clone(),
                                                                                   table_oid,
                                                                                   nullptr,
-                                                                                  limit,
+                                                                                  components::logical_plan::limit_t::unlimit(),
                                                                                   projected_cols)));
                     return match_operator;
                 }
@@ -210,19 +230,17 @@ namespace services::planner::impl {
         }
     }
 
+    // Lower a node_having_t to a dedicated operator_having_t filtering the group's output. HAVING
+    // has no window of its own (the outer operator_limit is the sole window), so no limit parameter.
+    // context.resource is always non-null and outlives the operator, so no null-resource sentinel.
     components::operators::operator_ptr create_plan_having(const context_storage_t& context,
-                                                           const components::logical_plan::node_ptr& node,
-                                                           components::logical_plan::limit_t limit) {
+                                                           const components::logical_plan::node_ptr& node) {
         if (node->expressions().empty()) {
             return nullptr;
         }
-        auto expr = reinterpret_cast<const components::expressions::compare_expression_ptr*>(&node->expressions()[0]);
-        if (context.has_table_oid(node->table_oid())) {
-            return boost::intrusive_ptr(
-                new components::operators::operator_match_t(context.resource, context.log.clone(), *expr, limit));
-        } else {
-            return boost::intrusive_ptr(new components::operators::operator_match_t(nullptr, log_t{}, *expr, limit));
-        }
+        return boost::intrusive_ptr(new components::operators::operator_having_t(context.resource,
+                                                                                 context.log.clone(),
+                                                                                 node->expressions()[0]));
     }
 
 } // namespace services::planner::impl

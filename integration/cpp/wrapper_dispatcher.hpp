@@ -58,15 +58,23 @@ namespace otterbrix {
                             const std::pmr::vector<components::types::complex_logical_type>& inputs) -> bool;
         auto execute_plan(const session_id_t& session, components::logical_plan::execution_plan_t plan)
             -> components::cursor::cursor_t_ptr;
-        auto execute_sql(const session_id_t& session, const std::string& query) -> components::cursor::cursor_t_ptr;
+        // `render_id` selects the per-query EXPLAIN renderer slot (0 = built-in postgres default);
+        // stamped onto the plan before send. Inert for non-EXPLAIN queries.
+        auto execute_sql(const session_id_t& session, const std::string& query, uint32_t render_id = 0)
+            -> components::cursor::cursor_t_ptr;
         auto execute_sql_with_params(const session_id_t& session,
                                      const std::string& query,
-                                     const std::vector<std::pair<size_t, components::types::logical_value_t>>& params)
-            -> components::cursor::cursor_t_ptr;
+                                     const std::vector<std::pair<size_t, components::types::logical_value_t>>& params,
+                                     uint32_t render_id = 0) -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
 
         auto add_parser_extension(components::sql::parser::parser_extension_t extension)
             -> core::result_wrapper_t<const components::sql::parser::parser_extension_t*>;
+
+        // Register a host EXPLAIN renderer at registry slot `id` for standard `EXPLAIN` / `EXPLAIN
+        // ANALYZE` output (fanned out to every executor). No SQL change — a query selects a slot via
+        // `execute_sql(..., render_id)` or `execution_plan_t::explain_render_id`. Slot 0 = postgres.
+        auto set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn) -> bool;
 
     private:
         std::pmr::memory_resource* resource_;

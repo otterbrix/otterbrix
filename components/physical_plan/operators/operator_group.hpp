@@ -97,10 +97,7 @@ namespace components::operators {
 
     class operator_group_t final : public read_write_operator_t {
     public:
-        operator_group_t(std::pmr::memory_resource* resource,
-                         log_t log,
-                         expressions::expression_ptr having = nullptr,
-                         size_t internal_aggregate_count = 0);
+        operator_group_t(std::pmr::memory_resource* resource, log_t log, size_t internal_aggregate_count = 0);
 
         void add_key(group_key_t&& key);
         void add_key(const std::pmr::string& name);
@@ -134,7 +131,6 @@ namespace components::operators {
         std::pmr::vector<post_aggregate_column_t> post_aggregates_;
         // Plan-time resolved output types by final output position (see set_output_types).
         std::pmr::vector<types::complex_logical_type> output_types_;
-        expressions::expression_ptr having_;
         size_t internal_aggregate_count_;
 
         // --- Incremental hash-aggregate group table (R1-b: typed HASH+VERIFY) ---
@@ -203,7 +199,6 @@ namespace components::operators {
         vector::data_chunk_t empty_aggregate_result(pipeline::context_t* pipeline_context);
 
         void calc_post_aggregates(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
-        void filter_having(pipeline::context_t* pipeline_context, vector::data_chunk_t& result);
     };
 
 } // namespace components::operators

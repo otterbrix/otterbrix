@@ -1094,8 +1094,10 @@ TEST_CASE("optimizer::pushdown_aggregate::count_distinct_is_skipped") {
 TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
     auto resource = core::pmr::otterbrix_resource();
     auto having = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "h"));
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false, expression_ptr(having));
-    auto agg = make_agg(&resource, group);
+    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
+    // HAVING is a node_having_t child of the AGGREGATE (not carried in the group); the
+    // pushdown_aggregate gate scans the aggregate's children for it and skips.
+    auto agg = planner_test::make_agg(&resource, group, pushable_oid, expression_ptr(having));
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
@@ -1153,7 +1155,7 @@ TEST_CASE("optimizer::pushdown_aggregate::non_mergeable_kind_is_skipped") {
     agg_expr->append_param(key(&resource, "v"));
     exprs.push_back(expression_ptr(agg_expr));
     auto group =
-        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs, nullptr);
+        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
@@ -1174,8 +1176,7 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
         auto group = make_node_group(&resource,
                                      core::dbname_t{database_name},
                                      core::relname_t{collection_name},
-                                     exprs,
-                                     nullptr);
+                                     exprs);
         auto agg = make_agg(&resource, group);
         REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
     }
@@ -1189,8 +1190,7 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
         auto group = make_node_group(&resource,
                                      core::dbname_t{database_name},
                                      core::relname_t{collection_name},
-                                     exprs,
-                                     nullptr);
+                                     exprs);
         auto agg = make_agg(&resource, group);
         REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
     }
@@ -1212,7 +1212,7 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
     sum->append_param(expression_ptr(udf));
     exprs.push_back(expression_ptr(sum));
     auto group =
-        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs, nullptr);
+        make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs);
     auto agg = make_agg(&resource, group);
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }

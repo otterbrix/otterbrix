@@ -63,16 +63,23 @@ namespace services::planner::impl {
 
             return plan;
         }
+        // Source (UPDATE ... FROM) path: the semi-join reads ALL left rows (unlimit) and
+        // operator_update stops after exactly limit.limit() MATCHED rows — capping the left
+        // scan would under-update (fewer than n of the first n left rows may join a source row).
         auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                     context.log.clone(),
                                                                                     table_oid,
                                                                                     node_update->updates(),
                                                                                     node_update->upsert(),
                                                                                     std::move(returning),
-                                                                                    node_match->expressions()[0]));
+                                                                                    node_match->expressions()[0],
+                                                                                    limit.limit()));
         plan->set_children(
-            boost::intrusive_ptr(
-                new components::operators::full_scan(context.resource, context.log.clone(), table_oid, nullptr, limit)),
+            boost::intrusive_ptr(new components::operators::full_scan(context.resource,
+                                                                      context.log.clone(),
+                                                                      table_oid,
+                                                                      nullptr,
+                                                                      components::logical_plan::limit_t::unlimit())),
             create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
         return plan;
     }

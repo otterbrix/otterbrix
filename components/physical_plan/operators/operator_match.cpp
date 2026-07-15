@@ -77,8 +77,8 @@ namespace components::operators {
     }
 
     // Shared filter core (R6): filter ONE chunk through the predicate + projection,
-    // advancing the caller-owned LIMIT/OFFSET running counter `limit_total` across
-    // batches, and append the surviving-rows chunk to `out`. Called by push() (per
+    // advancing the caller-owned LIMIT running counter `limit_total` across batches,
+    // and append the surviving-rows chunk to `out`. Called by push() (per
     // streamed batch, MEMBER counter). The predicate compares chunk against itself
     // (single-input filter), surviving rows carry their absolute row_id, and only
     // populated (non-placeholder) columns are copied — exactly as the prior single-loop
@@ -107,22 +107,24 @@ namespace components::operators {
         int64_t out_count = 0;
         for (size_t i = 0; i < chunk.size(); i++) {
             if (results.value()[i]) {
-                if (!limit_.is_skipping(limit_total)) {
-                    for (size_t j : populated_cols) {
-                        out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));
-                    }
-                    // DEFECT FIX (a): only propagate the input row_id when it is a REAL
-                    // absolute id (input is a scan source's batch). Over a SINK
-                    // (group/join) the input's row_ids are zero-filled placeholders; the
-                    // out_chunk's row_ids are likewise zero-initialized, so leaving them
-                    // (no copy) reproduces exactly what the materialized path produced
-                    // over a sink — and crucially never hands a downstream DML/index
-                    // consumer the bogus absolute id 0.
-                    if (row_ids_meaningful) {
-                        out_chunk.row_ids.data<int64_t>()[out_count] = chunk.row_ids.data<int64_t>()[i];
-                    }
-                    ++out_count;
+                for (size_t j : populated_cols) {
+                    out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));
                 }
+                // Only propagate the input row_id when it is a REAL absolute id
+                // (input is a scan source's batch). Over a SINK
+                // (group/join) the input's row_ids are zero-filled placeholders; the
+                // out_chunk's row_ids are likewise zero-initialized, so leaving them
+                // (no copy) reproduces exactly what the materialized path produced
+                // over a sink — and crucially never hands a downstream DML/index
+                // consumer the bogus absolute id 0.
+                if (row_ids_meaningful) {
+                    out_chunk.row_ids.data<int64_t>()[out_count] = chunk.row_ids.data<int64_t>()[i];
+                }
+                ++out_count;
+                // Count-cap: the AUTHORITATIVE affected-row bound for DML …WHERE f(x) LIMIT n
+                // (no operator_limit over a DML root), and an advisory read-cap under
+                // operator_limit for SELECT. OFFSET is applied by operator_limit (SELECT) and
+                // does not exist for DML, so this stream is never skipped, only capped.
                 ++limit_total;
                 if (!limit_.check(limit_total)) {
                     break;
@@ -140,9 +142,9 @@ namespace components::operators {
         // Streaming filter: run the per-chunk filter+projection on the single batch
         // handed in via `input`. The predicate + projection metadata depend only on the
         // (stable) chunk schema, so they are built once on the first batch and reused.
-        // The LIMIT/OFFSET counter (limit_total_) persists across calls so a LIMIT caps
-        // the total emitted across ALL batches and an OFFSET skips the head of the
-        // stream.
+        // The LIMIT counter (limit_total_) persists across calls so a LIMIT caps the
+        // total emitted across ALL batches. (OFFSET is applied by operator_limit for
+        // SELECT and does not exist for DML, so the stream is capped, never skipped.)
         if (!stream_ready_) {
             // Stable resource for the whole streaming run: the operator's own resource_
             // when it has one (scan-source matches), else the input chunk's resource —

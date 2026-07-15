@@ -78,8 +78,6 @@ namespace components::logical_plan {
         unused
     };
 
-    std::string to_string(node_type type);
-
 #define node_type_from_string(STR)                                                                                     \
     do {                                                                                                               \
         return node_type::STR;                                                                                         \

@@ -58,6 +58,28 @@ namespace components::sql::transform {
         logical_plan::node_ptr transform_create_table(CreateStmt& node);
         logical_plan::node_ptr transform_drop(DropStmt& node);
         logical_plan::node_ptr transform_select(SelectStmt& node, logical_plan::execution_plan_t* plan);
+        // Build a node_limit from a limitCount/limitOffset pair (nullptr when neither is present). A
+        // ParamRef bound limit/offset is registered in deferred_limits_ (resolved later like the simple
+        // SELECT path). Shared by the simple-select, the UNION tail-clause, the top-level VALUES, and
+        // the DML (DELETE/UPDATE) LIMIT lowering — hence a raw (limitCount, limitOffset) pair rather
+        // than a SelectStmt&.
+        logical_plan::node_ptr build_limit_node(Node* limit_count,
+                                                Node* limit_offset,
+                                                const core::dbname_t& db,
+                                                const core::relname_t& rel,
+                                                logical_plan::execution_plan_t* plan);
+        // Build the node_limit child for a DELETE/UPDATE ... [LIMIT n]. Returns an unlimited
+        // limit node when limit_count is null; otherwise validates the count exactly like a
+        // SELECT limit (integer / bound parameter). DML has NO OFFSET (grammar-enforced). Sets
+        // error_ and returns nullptr on an invalid count expression.
+        logical_plan::node_limit_ptr build_dml_limit(Node* limit_count,
+                                                     const core::dbname_t& db,
+                                                     const core::relname_t& rel,
+                                                     logical_plan::execution_plan_t* plan);
+        // Register a statement's WITH (CTE) definitions into cte_queries_ / recursive_cte_queries_ so the
+        // body can reference them. Shared by SELECT (simple + UNION) and DML (DELETE/UPDATE/INSERT). A
+        // data-modifying CTE (ctequery not a SELECT) is rejected cleanly (deferred). No-op on null.
+        void register_with_ctes(WithClause* with_clause);
         logical_plan::node_ptr transform_update(UpdateStmt& node, logical_plan::execution_plan_t* plan);
         logical_plan::node_ptr transform_insert(InsertStmt& node, logical_plan::execution_plan_t* plan);
         logical_plan::node_ptr transform_delete(DeleteStmt& node, logical_plan::execution_plan_t* plan);
@@ -88,6 +110,11 @@ namespace components::sql::transform {
         // return nullptr (see impl).
         logical_plan::node_ptr transform_transaction(TransactionStmt& node);
         logical_plan::node_ptr transform_set_timezone(VariableSetStmt& node);
+        // EXPLAIN / EXPLAIN ANALYZE: read the `analyze` option, restrict the inner to
+        // SELECT/INSERT/UPDATE/DELETE, stamp plan->explain, and lower the inner so sub_queries.back()
+        // stays the real query node. Output formatting is a host concern (the executor's renderer
+        // registry, selected per-query by execution_plan_t::explain_render_id).
+        logical_plan::node_ptr transform_explain(ExplainStmt& node, logical_plan::execution_plan_t* plan);
 
     private:
         using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key

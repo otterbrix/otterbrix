@@ -1080,10 +1080,10 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<uint64_t>
-    agent_disk_t::storage_delete_rows_inner(components::catalog::oid_t table_oid,
+    agent_disk_t::storage_delete_rows_inner(execution_context_t ctx,
+                                            components::catalog::oid_t table_oid,
                                             components::vector::vector_t row_ids,
-                                            uint64_t count,
-                                            components::table::transaction_data txn) {
+                                            uint64_t count) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -1103,10 +1103,45 @@ namespace services::disk {
         if (entry->storage == nullptr || count == 0) {
             co_return 0;
         }
-        if (txn.transaction_id != 0) {
-            co_return entry->storage->delete_rows(row_ids, count, txn.transaction_id);
+        uint64_t deleted = ctx.txn.transaction_id != 0
+                               ? entry->storage->delete_rows(row_ids, count, ctx.txn.transaction_id)
+                               : entry->storage->delete_rows(row_ids, count);
+
+        // WAL AFTER the mutation, but INSIDE this handler (I-1) -- exactly as
+        // storage_update_inner does. The handler holds the mailbox across its single
+        // co_await, so no other same-oid mutation OR compaction can run between the
+        // storage mark and the record that names it. Every physical record for this oid
+        // is therefore an agent->WAL FIFO write and replay, walking the WAL in id order,
+        // reproduces the identical row-id space. The recorded row_ids are the ones this
+        // DELETE just marked.
+        //
+        // MANDATORY: this must remain the handler's ONLY cross-actor co_await (actor-zeta
+        // lost-wakeup, see storage_append_inner / storage_update_inner).
+        if (ctx.txn.transaction_id != 0 && manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+            const auto db_oid = ctx.database_oid != components::catalog::INVALID_OID
+                                    ? ctx.database_oid
+                                    : components::catalog::well_known_oid::main_database;
+            std::pmr::vector<int64_t> wal_row_ids(resource());
+            wal_row_ids.reserve(count);
+            for (uint64_t i = 0; i < count; ++i) {
+                wal_row_ids.push_back(row_ids.value(i).value<int64_t>());
+            }
+            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
+                                             &wal::manager_wal_replicate_t::write_physical_delete,
+                                             ctx.session,
+                                             table_oid,
+                                             std::move(wal_row_ids),
+                                             count,
+                                             ctx.txn.transaction_id,
+                                             db_oid);
+            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+                trace(log_,
+                      "agent_disk[{}]::storage_delete_rows_inner: physical_delete WAL returned zero id for oid={}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid));
+            }
         }
-        co_return entry->storage->delete_rows(row_ids, count);
+        co_return deleted;
     }
 
     agent_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>

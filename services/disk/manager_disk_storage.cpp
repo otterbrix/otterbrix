@@ -578,10 +578,10 @@ namespace services::disk {
             if (agent != nullptr) {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                       &agent_disk_t::storage_delete_rows_inner,
+                                                                      ctx,
                                                                       table_oid,
                                                                       std::move(row_ids),
-                                                                      count,
-                                                                      ctx.txn);
+                                                                      count);
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());
                 }

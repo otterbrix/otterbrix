@@ -343,13 +343,17 @@ namespace components::operators {
             co_return;
         }
 
-        // Flush the buffered matched-id slice, if any. The divergent DELETE storage op
-        // (WAL-first physical_delete, then storage_delete_rows, then the index mirror)
-        // lives in the NAMED coroutine lambda `op`, which yields a flush_outcome_t;
-        // record_flush() then does the COMMON post-storage bookkeeping (constraint
-        // accumulation when a parent constraint sits above the DML). DELETE writes its
-        // OWN WAL (unlike INSERT, where the disk agent owns it) and appends
-        // nothing, so the outcome carries no append range.
+        // Flush the buffered matched-id slice, if any. The DELETE storage op
+        // (storage_delete_rows, then the index mirror) lives in the NAMED coroutine
+        // lambda `op`, which yields a flush_outcome_t; record_flush() then does the
+        // COMMON post-storage bookkeeping (constraint accumulation when a parent
+        // constraint sits above the DML). The disk agent owns the WAL record now (I-1),
+        // exactly as it does for INSERT and UPDATE: storage_delete_rows_inner writes the
+        // PHYSICAL_DELETE after the mutation, inside its mailbox turn, so the wal_id is
+        // minted in apply order and no same-oid compaction can slip between the mark and
+        // the record. DELETE appends nothing, so the outcome carries no append range.
+        // Durability is the commit's FULL-sync COMMIT record (which flushes all preceding
+        // WAL), so no per-op flush is added here.
         if (modified_ && modified_->size() > 0) {
             const bool mirror_index =
                 ctx->index_address != actor_zeta::address_t::empty_address() && !index_old_chunks_.empty();
@@ -360,39 +364,8 @@ namespace components::operators {
                 auto& ids = modified_->ids();
                 const size_t modified_size = modified_->size();
 
-                // 1. WAL-FIRST: physical_delete BEFORE the storage mark, so a crash
-                //    between the two replays the delete (uncommitted deletes are
-                //    filtered by replay). The row_ids come from the upstream scan, so
-                //    they are fully known before any storage mutation — unlike INSERT
-                //    (whose final count depends on dedup), DELETE has no post-op
-                //    dependency, so it adopts the same WAL-first ordering the catalog
-                //    delete uses (delete_pg_catalog_rows_inner).
-                if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-                    std::pmr::vector<int64_t> wal_row_ids(res);
-                    wal_row_ids.reserve(modified_size);
-                    for (size_t i = 0; i < modified_size; i++) {
-                        wal_row_ids.push_back(static_cast<int64_t>(ids[i]));
-                    }
-                    auto count = static_cast<uint64_t>(wal_row_ids.size());
-                    // See operator_insert comment on db_oid temporary hardcode.
-                    constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-                    auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                                     &services::wal::manager_wal_replicate_t::write_physical_delete,
-                                                     ctx->session,
-                                                     table_oid_,
-                                                     std::move(wal_row_ids),
-                                                     count,
-                                                     ctx->txn.transaction_id,
-                                                     db_oid);
-                    auto wal_id = co_await std::move(wf);
-                    auto [_df2, dff] = actor_zeta::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::flush,
-                                                        ctx->session,
-                                                        wal_id);
-                    ctx->add_pending_disk_future(std::move(dff));
-                }
-
-                // 2. storage_delete_rows — mark the rows deleted under this txn (MVCC).
+                // storage_delete_rows — mark the rows deleted under this txn (MVCC) AND
+                // write the PHYSICAL_DELETE record (agent-owned, I-1).
                 vector_t row_ids(res, types::logical_type::BIGINT, modified_size);
                 for (size_t i = 0; i < modified_size; i++) {
                     row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);

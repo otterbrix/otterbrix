@@ -271,12 +271,21 @@ namespace services::disk {
                              components::vector::vector_t row_ids,
                              std::unique_ptr<components::vector::data_chunk_t> data);
 
-        // storage_delete_rows_inner — single-OID DELETE mutation. Returns
-        //   the deleted-row count; 0 on no-op.
-        unique_future<uint64_t> storage_delete_rows_inner(components::catalog::oid_t table_oid,
+        // storage_delete_rows_inner — single-OID DELETE mutation, and the owner of its
+        //   WAL record (I-1), for the same single-writer reason storage_update_inner owns
+        //   UPDATE's: minting the wal_id from any other actor would decouple wal_id order
+        //   from apply order, so a same-oid compaction (also at this agent) could renumber
+        //   rows out from under the captured ids, and replay (walking the WAL in id order)
+        //   would apply the DELETE against a numbering the live path never used. Writing
+        //   the record here, after the mutation, inside the mailbox turn, makes every
+        //   physical record for an oid a single-sender (agent->WAL) FIFO write: wal_id
+        //   order == apply order. Takes the full execution_context (session/txn/db_oid)
+        //   for that reason.
+        // Returns the deleted-row count; 0 on no-op.
+        unique_future<uint64_t> storage_delete_rows_inner(execution_context_t ctx,
+                                                          components::catalog::oid_t table_oid,
                                                           components::vector::vector_t row_ids,
-                                                          uint64_t count,
-                                                          components::table::transaction_data txn);
+                                                          uint64_t count);
 
         // storage_fetch_inner — read-path mirror for point-fetches by row_id.
         //   Returns the fetched rows as a vector of ≤DEFAULT_VECTOR_CAPACITY chunks

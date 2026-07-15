@@ -40,6 +40,10 @@
 //       shared by navigation, existence and the INSERT flattener.
 //   [G] INSERT target flattening keeps every segment (a.b.c -> "a/b/c") and renders
 //       a subscript target (arr[0] -> "arr/0") instead of crashing on it.
+//   [C] delete accepts the text-array form (t - '{a,b}') and removes every listed
+//       subtree, not just a single key.
+//   [E] existence over a missing key is absent (false), not a hard error: a truly
+//       absent key folds to constant false and never poisons a '?|' any-of.
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -780,36 +784,32 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
 // Expanding a path that matches no column does not error — the expansion item is
 // silently ERASED from the select list. On its own that yields a zero-column
 // result; alongside other items it silently changes the arity of the answer.
-TEST_CASE("integration::cpp::test_jsonb_support::bug_zero_match_expand_drops_the_select_item") {
+// [D] Expand ('->'/'#>') names a specific object; a key that matches no column is
+// a "path not found" error, exactly like the scalar form. It used to be erased to
+// nothing, so the select item silently vanished and the caller got fewer columns
+// than it asked for, with no indication that anything went wrong.
+TEST_CASE("integration::cpp::test_jsonb_support::zero_match_expand_is_an_error") {
     auto config = make_test_config("/tmp/test_jsonb_matrix/zero_exp");
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
 
-    // the scalar operator errors, as it should
+    // the scalar operator errors, as it always has
     CHECK_FALSE(exec(d, "SELECT t ->> 'nokey' AS v FROM jp.t;")->is_success());
 
-    // the table-valued one silently produces nothing
-    auto cur = exec(d, "SELECT t -> 'nokey' FROM jp.t;");
-    REQUIRE(cur->is_success()); // correct: this should be an error
-    CHECK(cur->column_count() == 0);
+    // the table-valued one now errors too, instead of producing zero columns
+    CHECK_FALSE(exec(d, "SELECT t -> 'nokey' FROM jp.t;")->is_success());
 
-    // ... and next to other select items it just disappears, so the caller gets
-    // fewer columns than it asked for, with no indication that anything was wrong.
-    auto mixed = exec(d, "SELECT t -> 'nokey', x FROM jp.t;");
-    REQUIRE(mixed->is_success());
-    CHECK(mixed->column_count() == 1); // correct: an error, or 2 columns
-    CHECK(aliases(mixed) == std::set<std::string>{"x"});
+    // ... and it no longer disappears silently from among other select items
+    CHECK_FALSE(exec(d, "SELECT t -> 'nokey', x FROM jp.t;")->is_success());
+    CHECK_FALSE(exec(d, "SELECT id, t -> 'nokey', x FROM jp.t;")->is_success());
 
-    auto mixed3 = exec(d, "SELECT id, t -> 'nokey', x FROM jp.t;");
-    REQUIRE(mixed3->is_success());
-    CHECK(mixed3->column_count() == 2); // correct: an error, or 3 columns
-    CHECK(aliases(mixed3) == std::set<std::string>{"id", "x"});
+    // a dotted path handed to -> (which takes a single key, not a path) names the
+    // literal key "a.b", which no column matches -> error, not a vanished column
+    CHECK_FALSE(exec(d, "SELECT t -> 'a.b' FROM jp.t;")->is_success());
 
-    // same for a dotted path handed to -> (which takes a single key, not a path)
-    auto dotted = exec(d, "SELECT t -> 'a.b' FROM jp.t;");
-    REQUIRE(dotted->is_success()); // correct: error, or expand "a/b"
-    CHECK(dotted->column_count() == 0);
+    // a key that DOES match still expands, so the guard is scoped to true misses
+    CHECK(aliases(exec(d, "SELECT t -> 'a' FROM jp.t;")) == std::set<std::string>{"b", "c"});
 }
 
 // LIMITATION of the flattened representation (documented, not a fix target here).
@@ -939,11 +939,9 @@ TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
 
     SECTION("a non-string cast key resolves to its value and never crashes") {
         // (1::bool) used to segfault; now the key is the text "1" (no such column).
-        // Scalar form errors cleanly; the table-valued form is covered by the
-        // zero-match-expand case. Either way: no crash.
+        // Both the scalar and the table-valued form error cleanly on the miss.
         CHECK_FALSE(exec(d, "SELECT t ->> (1::bool) AS v FROM jp.t;")->is_success());
-        auto expand = exec(d, "SELECT t -> (1::bool) FROM jp.t;");
-        REQUIRE(expand->is_success()); // key "1" matches nothing -> zero-match expand
+        CHECK_FALSE(exec(d, "SELECT t -> (1::bool) FROM jp.t;")->is_success());
     }
 }
 

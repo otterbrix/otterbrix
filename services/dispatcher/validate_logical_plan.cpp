@@ -1842,6 +1842,19 @@ namespace services::dispatcher {
                                         cols.emplace_back(std::move(out), std::move(alias));
                                     }
                                 }
+                                // Expand names a specific object: a key matching no
+                                // column is a "path not found" error, the same as the
+                                // scalar form ('->>'/'#>>'), never a select item that
+                                // silently vanishes and hands the caller fewer columns.
+                                // (Delete-to-empty is legal — it yields the empty object
+                                // '{}' — so this guard is expand-only.)
+                                if (is_expand && cols.empty()) {
+                                    return core::error_t(core::error_code_t::schema_error,
+                                                         std::pmr::string{(std::string{"jsonb expand: path '"} +
+                                                                           prefix + "' matches no column")
+                                                                              .c_str(),
+                                                                          resource});
+                                }
                                 exprs.erase(exprs.begin() + static_cast<ptrdiff_t>(ei));
                                 for (size_t j = 0; j < cols.size(); j++) {
                                     components::expressions::key_t out_key(resource, cols[j].first.c_str());

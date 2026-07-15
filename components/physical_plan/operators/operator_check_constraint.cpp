@@ -230,32 +230,39 @@ namespace components::operators {
                                                                                 const vector::data_chunk_t&,
                                                                                 size_t idx,
                                                                                 size_t) -> bool {
-                        auto apply = [&op_str](types::compare_t cmp) -> bool {
+                        // Returns whether the CHECK is satisfied. A CHECK is violated only by a
+                        // definitely-FALSE comparison; a NULL operand makes it UNKNOWN, which passes
+                        // (compare_sql yields nullopt for a NULL operand).
+                        auto satisfied = [&op_str](const types::logical_value_t& lhs,
+                                                   const types::logical_value_t& rhs) -> bool {
+                            const auto c = lhs.compare_sql(rhs);
+                            if (!c)
+                                return true;
                             using Cmp = types::compare_t;
                             if (op_str == ">")
-                                return cmp == Cmp::more;
+                                return *c == Cmp::more;
                             if (op_str == "<")
-                                return cmp == Cmp::less;
+                                return *c == Cmp::less;
                             if (op_str == ">=")
-                                return cmp == Cmp::more || cmp == Cmp::equals;
+                                return *c == Cmp::more || *c == Cmp::equals;
                             if (op_str == "<=")
-                                return cmp == Cmp::less || cmp == Cmp::equals;
+                                return *c == Cmp::less || *c == Cmp::equals;
                             if (op_str == "=")
-                                return cmp == Cmp::equals;
+                                return *c == Cmp::equals;
                             if (op_str == "<>")
-                                return cmp != Cmp::equals;
+                                return *c != Cmp::equals;
                             return true;
                         };
                         const auto* vec = find_col(chunk, col_name);
                         if (!vec) {
                             if (!has_def)
                                 return true;
-                            return apply(col_is_rhs ? const_val.compare(def_val) : def_val.compare(const_val));
+                            return col_is_rhs ? satisfied(const_val, def_val) : satisfied(def_val, const_val);
                         }
-                        if (!vec->validity().row_is_valid(idx))
-                            return false;
+                        // vec->value reports NA for a NULL row, so the comparison is UNKNOWN and the
+                        // CHECK passes -- SQL rejects only definitely-FALSE checks.
                         auto col_val = vec->value(idx);
-                        return apply(col_is_rhs ? const_val.compare(col_val) : col_val.compare(const_val));
+                        return col_is_rhs ? satisfied(const_val, col_val) : satisfied(col_val, const_val);
                     })};
             }
 

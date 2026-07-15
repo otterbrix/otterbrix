@@ -1,6 +1,7 @@
 #include "operator_select.hpp"
 
 #include "arithmetic_eval.hpp"
+#include "compare_3vl.hpp"
 #include <components/expressions/compare_expression.hpp>
 
 namespace components::operators {
@@ -63,29 +64,21 @@ namespace components::operators {
                 case group_key_t::kind::case_when: {
                     for (const auto& clause : key.case_clauses) {
                         const auto cond_val = src.value(clause.condition_col, row_idx);
-                        auto cmp_result = cond_val.compare(clause.condition_value);
-                        bool matches = false;
+                        bool matches;
                         switch (clause.cmp) {
                             case expressions::compare_type::eq:
-                                matches = cmp_result == types::compare_t::equals;
-                                break;
                             case expressions::compare_type::ne:
-                                matches = cmp_result != types::compare_t::equals;
-                                break;
                             case expressions::compare_type::gt:
-                                matches = cmp_result == types::compare_t::more;
-                                break;
                             case expressions::compare_type::gte:
-                                matches = cmp_result >= types::compare_t::equals;
-                                break;
                             case expressions::compare_type::lt:
-                                matches = cmp_result == types::compare_t::less;
-                                break;
                             case expressions::compare_type::lte:
-                                matches = cmp_result <= types::compare_t::equals;
+                                // A NULL operand makes the WHEN condition UNKNOWN, which (like FALSE)
+                                // falls through to the next clause / ELSE.
+                                matches = types::selects(
+                                    eval_compare_3vl(clause.cmp, cond_val, clause.condition_value));
                                 break;
                             default:
-                                matches = true;
+                                matches = true; // an unconditional clause (preserve prior behaviour)
                                 break;
                         }
                         if (matches) {

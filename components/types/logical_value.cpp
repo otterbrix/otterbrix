@@ -677,6 +677,13 @@ namespace components::types {
     }
 
     bool logical_value_t::operator==(const logical_value_t& rhs) const {
+        // Structural equality, for container keys / DISTINCT / sort: two NULLs are equal, and a
+        // NULL equals no value. (SQL value equality over a NULL is UNKNOWN, not FALSE -- that is
+        // compare_sql(), which the predicate evaluators use.) Guarded first so a NULL operand never
+        // reaches the type switch below with a mismatched type.
+        if (is_null() || rhs.is_null()) {
+            return is_null() && rhs.is_null();
+        }
         // Array/list equality is length-aware (PostgreSQL): arrays of different length are simply unequal —
         // never reconciled, never an assert. Element types are coerced by cast_as before comparison; a
         // residual per-element type mismatch (e.g. an NA pad against a typed element) also counts as
@@ -691,8 +698,6 @@ namespace components::types {
         }
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
         switch (type_.type()) {
-            case logical_type::NA:
-                return true;
             case logical_type::BOOLEAN:
             case logical_type::TINYINT:
             case logical_type::SMALLINT:
@@ -852,6 +857,15 @@ namespace components::types {
         } else {
             return compare_t::more;
         }
+    }
+
+    std::optional<compare_t> logical_value_t::compare_sql(const logical_value_t& rhs) const {
+        // A comparison with a NULL operand is UNKNOWN in SQL three-valued logic; there is no
+        // TRUE/FALSE answer to map an ordering onto.
+        if (is_null() || rhs.is_null()) {
+            return std::nullopt;
+        }
+        return compare(rhs);
     }
 
     const std::vector<logical_value_t>& logical_value_t::children() const {

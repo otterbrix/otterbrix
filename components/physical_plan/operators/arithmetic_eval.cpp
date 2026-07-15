@@ -1,5 +1,6 @@
 #include "arithmetic_eval.hpp"
 
+#include "compare_3vl.hpp"
 #include <core/result_wrapper.hpp>
 
 namespace components::operators {
@@ -296,10 +297,11 @@ namespace components::operators {
                 return right_rw.convert_error<bool>();
             auto left_val = std::move(left_rw.value());
             auto right_val = std::move(right_rw.value());
-            // A NULL operand makes the comparison UNKNOWN; treat it as false (three-valued
-            // logic, mirroring simple_predicate). This is also what keeps a NULL out of the
-            // type-mismatch cast below: casting to/from an NA-typed NULL is a conversion_failure,
-            // and a CASE-WHEN condition over a nullable column must fall through, not error.
+            // A NULL operand makes the comparison UNKNOWN -- which, as a condition, does not match
+            // (three-valued logic, mirroring simple_predicate). Short-circuit before the
+            // type-coercion below: a NULL carries the NA type, and casting to/from NA is a
+            // conversion_failure -- a CASE-WHEN condition over a nullable column must fall
+            // through, not error.
             if (left_val.is_null() || right_val.is_null()) {
                 return false;
             }
@@ -320,20 +322,16 @@ namespace components::operators {
                     }
                 }
             }
-            auto cmp_result = left_val.compare(right_val);
             switch (cmp->type()) {
                 case expressions::compare_type::gt:
-                    return cmp_result == types::compare_t::more;
                 case expressions::compare_type::gte:
-                    return cmp_result >= types::compare_t::equals;
                 case expressions::compare_type::lt:
-                    return cmp_result == types::compare_t::less;
                 case expressions::compare_type::lte:
-                    return cmp_result <= types::compare_t::equals;
                 case expressions::compare_type::eq:
-                    return cmp_result == types::compare_t::equals;
                 case expressions::compare_type::ne:
-                    return cmp_result != types::compare_t::equals;
+                    // A NULL operand makes the comparison UNKNOWN; a CASE WHEN condition that is
+                    // UNKNOWN does not match (it falls through), so it is not selected.
+                    return types::selects(eval_compare_3vl(cmp->type(), left_val, right_val));
                 default:
                     return false;
             }

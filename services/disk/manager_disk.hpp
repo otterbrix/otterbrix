@@ -520,6 +520,10 @@ namespace services::disk {
         // Idempotent: columns already present (by name) are skipped.
         void direct_add_column_sync(components::catalog::oid_t table_oid,
                                     const components::vector::data_chunk_t& schema_chunk);
+        // WAL-replay of a PHYSICAL_COMPACT record: route the dense renumber to the owning agent,
+        // re-running compact(UINT64_MAX) so the row-id numbering epoch closes exactly where it did
+        // live. Bootstrap / pre-scheduler only.
+        void direct_compact_sync(components::catalog::oid_t table_oid);
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }

@@ -141,6 +141,17 @@ namespace services::disk {
         }
     }
 
+    void manager_disk_t::direct_compact_sync(catalog::oid_t table_oid) {
+        // Bootstrap / WAL-replay only; routes the PHYSICAL_COMPACT epoch marker to the owning
+        // agent, which re-runs the dense renumber (compact(UINT64_MAX)) at this log point.
+        if (!agents_.empty()) {
+            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+            if (agents_[pool_idx] != nullptr) {
+                agents_[pool_idx]->direct_compact_sync(table_oid);
+            }
+        }
+    }
+
     // --- Storage management ---
     // Every site routes through agents_[pool_idx_for_oid(oid)] (storage_entry_sync
     // borrow or storage_*_inner mailbox handler). No manager-side storage_t* survives.

@@ -392,6 +392,34 @@ namespace services::disk {
         }
     }
 
+    void agent_disk_t::direct_compact_sync(components::catalog::oid_t table_oid) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr) {
+            trace(log_,
+                  "agent_disk[{}]::direct_compact_sync: oid {} not owned by this agent — no-op",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            return;
+        }
+        auto& entry = it->second;
+        // Load-bearing precondition (INV-REPLAY-3): this runs ONLY in the single-threaded
+        // pre-scheduler bootstrap window, so there is never a live scan cursor whose absolute
+        // position the dense renumber could shift out from under (the live gate is unavailable
+        // and unneeded here).
+        assert(active_scans_.empty() && "direct_compact_sync must run pre-scheduler, with no active scan");
+        // UINT64_MAX watermark: replay stamps are all {0,0}, so nothing is above it and compact
+        // is never MVCC-gated here — it renumbers the survivors densely exactly as the live
+        // maybe_cleanup/VACUUM did at this log point. A false return is therefore a recovery OOM,
+        // not a deferral; the epoch fails to close and later positional records would misresolve.
+        if (!entry->table_storage.table().compact(std::numeric_limits<uint64_t>::max())) {
+            trace(log_,
+                  "agent_disk[{}]::direct_compact_sync: oid {} compact() FAILED on replay (recovery OOM) — "
+                  "row-id epoch not closed; subsequent positional records may misresolve",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+        }
+    }
+
     actor_zeta::behavior_t agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
         switch (msg->command()) {
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::fix_wal_id>: {

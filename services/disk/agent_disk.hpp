@@ -202,6 +202,15 @@ namespace services::disk {
         // local slice ahead of the dependent PHYSICAL_INSERT. Idempotent by column name.
         void direct_add_column_sync(components::catalog::oid_t table_oid,
                                     const components::vector::data_chunk_t& schema_chunk);
+        // WAL-replay of PHYSICAL_COMPACT: re-run the SAME dense renumber the live path ran at
+        // this log point, closing the numbering epoch so every DML record AFTER it resolves
+        // against the compacted row-id space (INV-REPLAY-3). compact(UINT64_MAX) — replay is
+        // single-threaded, pre-scheduler, all stamps {0,0}, no cursor — so the survivor set +
+        // dense numbering are a pure function of the surviving rows, re-derived deterministically
+        // from the ordered scan+append; the record needs only {table_oid}. A false return here is
+        // a recovery OOM (never MVCC-gating: nothing exceeds UINT64_MAX), which corrupts the epoch
+        // and is logged loudly.
+        void direct_compact_sync(components::catalog::oid_t table_oid);
 
         unique_future<void> fix_wal_id(wal::id_t wal_id);
 

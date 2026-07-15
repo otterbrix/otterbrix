@@ -284,6 +284,16 @@ namespace otterbrix {
                             disk_ptr->direct_delete_sync(table_oid, r->physical_row_ids, r->physical_row_count);
                             break;
                         }
+                        case services::wal::wal_record_type::PHYSICAL_COMPACT: {
+                            // Row-id numbering-epoch boundary: re-run the dense renumber the live
+                            // path ran here (maybe_cleanup / VACUUM), so every DML record BEFORE
+                            // this resolved against the pre-compaction numbering and every record
+                            // AFTER resolves against the post-compaction numbering. Explicit case
+                            // (NOT a generic physical-record path): a COMPACT carries empty
+                            // physical_data AND empty physical_row_ids — {table_oid} is all it needs.
+                            disk_ptr->direct_compact_sync(table_oid);
+                            break;
+                        }
                         case services::wal::wal_record_type::PHYSICAL_UPDATE:
                         case services::wal::wal_record_type::PHYSICAL_UPDATE_INPLACE: {
                             // An MVCC update tombstones the old rows and APPENDS the new

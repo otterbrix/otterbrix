@@ -305,3 +305,21 @@ TEST_CASE("i2_gate::abort_sweep_is_session_scoped") {
     run_maybe_cleanup(fx, oid, s2);
     REQUIRE(total_rows(fx, oid) == 12); // now compacted
 }
+
+// Replay hook (PHYSICAL_COMPACT): direct_compact_sync re-runs the SAME dense renumber the live
+// maybe_cleanup ran, closing the row-id numbering epoch on restart. base_spaces replay calls it on
+// a PHYSICAL_COMPACT record; here we drive it directly (a plain synchronous bootstrap method, not a
+// mailbox handler). compact(UINT64_MAX) is never MVCC-gated in the quiescent replay window.
+TEST_CASE("i2_gate::direct_compact_sync_replays_the_renumber") {
+    fixture fx;
+    const auto oid = make_table(fx, catalog::FIRST_USER_OID);
+    append_n(fx, oid, 20);
+    REQUIRE(delete_ids(fx, oid, session_id_t{}, {0, 1, 2, 3, 4, 5, 6, 7}) == 8);
+    REQUIRE(total_rows(fx, oid) == 20);
+
+    fx.manager->direct_compact_sync(oid); // the replay-side dense renumber
+    REQUIRE(total_rows(fx, oid) == 12);   // dead rows reclaimed, survivors renumbered densely
+
+    fx.manager->direct_compact_sync(oid); // idempotent on an already-dense table (INV-REPLAY-4)
+    REQUIRE(total_rows(fx, oid) == 12);
+}

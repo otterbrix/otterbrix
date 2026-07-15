@@ -1129,36 +1129,46 @@ namespace components::vector {
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
-        if (types::is_duration(left.type().type()) || types::is_duration(right.type().type())) {
-            return compute_temporal_binary(resource, op, left, right, count);
-        }
-        auto result_logical = types::arithmetic_result_type(left.type().type(), right.type().type(), op);
-        if (result_logical == types::logical_type::FLOAT) {
-            result_logical = types::logical_type::DOUBLE;
-        }
-        auto result_type = types::complex_logical_type(result_logical);
-        vector_t output(resource, result_type, count);
-        if (result_type.type() == types::logical_type::NA) {
-            return output;
-        }
-
-        switch (op) {
-            case arithmetic_op::add:
-                dispatch_binary<std::plus>(left, right, output, count);
-                break;
-            case arithmetic_op::subtract:
-                dispatch_binary<std::minus>(left, right, output, count);
-                break;
-            case arithmetic_op::multiply:
-                dispatch_binary<std::multiplies>(left, right, output, count);
-                break;
-            case arithmetic_op::divide:
-                dispatch_binary_div<checked_divides>(left, right, output, count);
-                break;
-            case arithmetic_op::mod:
-                dispatch_binary_div<checked_modulus>(left, right, output, count);
-                break;
-        }
+        // Compute the result values first (numeric or temporal), then apply NULL propagation as a
+        // single tail below. Capturing the temporal branch in this local instead of returning it
+        // directly keeps it on the same validity path as the numeric branch.
+        vector_t output = [&]() -> vector_t {
+            if (types::is_duration(left.type().type()) || types::is_duration(right.type().type())) {
+                return compute_temporal_binary(resource, op, left, right, count);
+            }
+            auto result_logical = types::arithmetic_result_type(left.type().type(), right.type().type(), op);
+            if (result_logical == types::logical_type::FLOAT) {
+                result_logical = types::logical_type::DOUBLE;
+            }
+            auto result_type = types::complex_logical_type(result_logical);
+            vector_t out(resource, result_type, count);
+            if (result_type.type() == types::logical_type::NA) {
+                return out;
+            }
+            switch (op) {
+                case arithmetic_op::add:
+                    dispatch_binary<std::plus>(left, right, out, count);
+                    break;
+                case arithmetic_op::subtract:
+                    dispatch_binary<std::minus>(left, right, out, count);
+                    break;
+                case arithmetic_op::multiply:
+                    dispatch_binary<std::multiplies>(left, right, out, count);
+                    break;
+                case arithmetic_op::divide:
+                    dispatch_binary_div<checked_divides>(left, right, out, count);
+                    break;
+                case arithmetic_op::mod:
+                    dispatch_binary_div<checked_modulus>(left, right, out, count);
+                    break;
+            }
+            return out;
+        }();
+        // SQL three-valued logic: a NULL operand makes the result NULL. combine is a word-wise
+        // AND that is a no-op when the operand mask is all-valid, so NULL-free columns pay nothing.
+        // Applied after the dispatch so it composes with the divide/mod zero-invalidation.
+        output.validity().combine(left.validity(), count);
+        output.validity().combine(right.validity(), count);
         return output;
     }
 
@@ -1173,35 +1183,43 @@ namespace components::vector {
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
-        if (types::is_duration(vec.type().type()) || types::is_duration(scalar.type().type())) {
-            return compute_temporal_vec_scalar(resource, op, vec, scalar, count);
-        }
-        auto result_logical = types::arithmetic_result_type(vec.type().type(), scalar.type().type(), op);
-        if (result_logical == types::logical_type::FLOAT) {
-            result_logical = types::logical_type::DOUBLE;
-        }
-        auto result_type = types::complex_logical_type(result_logical);
-        vector_t output(resource, result_type, count);
-        if (result_type.type() == types::logical_type::NA) {
-            return output;
-        }
-
-        switch (op) {
-            case arithmetic_op::add:
-                dispatch_vec_scalar<std::plus>(vec, scalar, output, count);
-                break;
-            case arithmetic_op::subtract:
-                dispatch_vec_scalar<std::minus>(vec, scalar, output, count);
-                break;
-            case arithmetic_op::multiply:
-                dispatch_vec_scalar<std::multiplies>(vec, scalar, output, count);
-                break;
-            case arithmetic_op::divide:
-                dispatch_vec_scalar_div<checked_divides>(vec, scalar, output, count);
-                break;
-            case arithmetic_op::mod:
-                dispatch_vec_scalar_div<checked_modulus>(vec, scalar, output, count);
-                break;
+        vector_t output = [&]() -> vector_t {
+            if (types::is_duration(vec.type().type()) || types::is_duration(scalar.type().type())) {
+                return compute_temporal_vec_scalar(resource, op, vec, scalar, count);
+            }
+            auto result_logical = types::arithmetic_result_type(vec.type().type(), scalar.type().type(), op);
+            if (result_logical == types::logical_type::FLOAT) {
+                result_logical = types::logical_type::DOUBLE;
+            }
+            auto result_type = types::complex_logical_type(result_logical);
+            vector_t out(resource, result_type, count);
+            if (result_type.type() == types::logical_type::NA) {
+                return out;
+            }
+            switch (op) {
+                case arithmetic_op::add:
+                    dispatch_vec_scalar<std::plus>(vec, scalar, out, count);
+                    break;
+                case arithmetic_op::subtract:
+                    dispatch_vec_scalar<std::minus>(vec, scalar, out, count);
+                    break;
+                case arithmetic_op::multiply:
+                    dispatch_vec_scalar<std::multiplies>(vec, scalar, out, count);
+                    break;
+                case arithmetic_op::divide:
+                    dispatch_vec_scalar_div<checked_divides>(vec, scalar, out, count);
+                    break;
+                case arithmetic_op::mod:
+                    dispatch_vec_scalar_div<checked_modulus>(vec, scalar, out, count);
+                    break;
+            }
+            return out;
+        }();
+        // A NULL scalar makes every result NULL; otherwise propagate the vector operand's nulls.
+        if (scalar.is_null()) {
+            output.validity().set_all_invalid(count);
+        } else {
+            output.validity().combine(vec.validity(), count);
         }
         return output;
     }
@@ -1217,35 +1235,43 @@ namespace components::vector {
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
-        if (types::is_duration(scalar.type().type()) || types::is_duration(vec.type().type())) {
-            return compute_temporal_scalar_vec(resource, op, scalar, vec, count);
-        }
-        auto result_logical = types::arithmetic_result_type(scalar.type().type(), vec.type().type(), op);
-        if (result_logical == types::logical_type::FLOAT) {
-            result_logical = types::logical_type::DOUBLE;
-        }
-        auto result_type = types::complex_logical_type(result_logical);
-        vector_t output(resource, result_type, count);
-        if (result_type.type() == types::logical_type::NA) {
-            return output;
-        }
-
-        switch (op) {
-            case arithmetic_op::add:
-                dispatch_scalar_vec<std::plus>(scalar, vec, output, count);
-                break;
-            case arithmetic_op::subtract:
-                dispatch_scalar_vec<std::minus>(scalar, vec, output, count);
-                break;
-            case arithmetic_op::multiply:
-                dispatch_scalar_vec<std::multiplies>(scalar, vec, output, count);
-                break;
-            case arithmetic_op::divide:
-                dispatch_scalar_vec_div<checked_divides>(scalar, vec, output, count);
-                break;
-            case arithmetic_op::mod:
-                dispatch_scalar_vec_div<checked_modulus>(scalar, vec, output, count);
-                break;
+        vector_t output = [&]() -> vector_t {
+            if (types::is_duration(scalar.type().type()) || types::is_duration(vec.type().type())) {
+                return compute_temporal_scalar_vec(resource, op, scalar, vec, count);
+            }
+            auto result_logical = types::arithmetic_result_type(scalar.type().type(), vec.type().type(), op);
+            if (result_logical == types::logical_type::FLOAT) {
+                result_logical = types::logical_type::DOUBLE;
+            }
+            auto result_type = types::complex_logical_type(result_logical);
+            vector_t out(resource, result_type, count);
+            if (result_type.type() == types::logical_type::NA) {
+                return out;
+            }
+            switch (op) {
+                case arithmetic_op::add:
+                    dispatch_scalar_vec<std::plus>(scalar, vec, out, count);
+                    break;
+                case arithmetic_op::subtract:
+                    dispatch_scalar_vec<std::minus>(scalar, vec, out, count);
+                    break;
+                case arithmetic_op::multiply:
+                    dispatch_scalar_vec<std::multiplies>(scalar, vec, out, count);
+                    break;
+                case arithmetic_op::divide:
+                    dispatch_scalar_vec_div<checked_divides>(scalar, vec, out, count);
+                    break;
+                case arithmetic_op::mod:
+                    dispatch_scalar_vec_div<checked_modulus>(scalar, vec, out, count);
+                    break;
+            }
+            return out;
+        }();
+        // A NULL scalar makes every result NULL; otherwise propagate the vector operand's nulls.
+        if (scalar.is_null()) {
+            output.validity().set_all_invalid(count);
+        } else {
+            output.validity().combine(vec.validity(), count);
         }
         return output;
     }
@@ -1262,6 +1288,8 @@ namespace components::vector {
                                                                         vec,
                                                                         output,
                                                                         count);
+        // -NULL is NULL: carry the operand's nulls into the negated result.
+        output.validity().combine(vec.validity(), count);
         return output;
     }
 

@@ -1064,24 +1064,27 @@ namespace components::types {
     * TODO: absl::int128 does not have implementations for all operations
     * Add them in operations_helper.hpp
     */
+    // SQL three-valued logic: an arithmetic operation with any NULL operand is NULL. This is
+    // the single chokepoint every scalar sum/subtract/mult/divide/modulus dispatches through,
+    // so guarding NULL here keeps a NULL operand from being read as a zero payload — which is
+    // both wrong (NULL + 1 would be 1) and unsafe (NULL used as a divisor would divide by zero).
     template<typename OP, typename GET>
     logical_value_t op(const logical_value_t& value, GET getter_function) {
+        if (value.is_null()) {
+            return logical_value_t{value.resource(), complex_logical_type{logical_type::NA}};
+        }
         OP operation{};
         return logical_value_t{value.resource(), operation((value.*getter_function)())};
     }
 
     template<typename OP, typename GET>
     logical_value_t op(const logical_value_t& value1, const logical_value_t& value2, GET getter_function) {
-        using T = typename std::invoke_result<decltype(getter_function), logical_value_t>::type;
-        OP operation{};
         auto* r = value1.resource() ? value1.resource() : value2.resource();
-        if (value1.is_null()) {
-            return logical_value_t{r, operation(T{}, (value2.*getter_function)())};
-        } else if (value2.is_null()) {
-            return logical_value_t{r, operation((value1.*getter_function)(), T{})};
-        } else {
-            return logical_value_t{r, operation((value1.*getter_function)(), (value2.*getter_function)())};
+        if (value1.is_null() || value2.is_null()) {
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
+        OP operation{};
+        return logical_value_t{r, operation((value1.*getter_function)(), (value2.*getter_function)())};
     }
 
     // session timezone cancels out in arithmetics, so we don't have to pass it
@@ -1111,8 +1114,9 @@ namespace components::types {
     } // namespace
 
     logical_value_t logical_value_t::sum(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
@@ -1226,8 +1230,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::subtract(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
@@ -1352,8 +1357,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::mult(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
@@ -1440,8 +1446,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::divide(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         // Division by zero: return 0 of the appropriate type
@@ -1534,8 +1541,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::modulus(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
@@ -1573,8 +1581,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::exponent(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1738,8 +1747,9 @@ namespace components::types {
         }
     }
     logical_value_t logical_value_t::bit_and(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1772,8 +1782,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::bit_or(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1806,8 +1817,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::bit_xor(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1873,8 +1885,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::bit_shift_l(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1907,8 +1920,9 @@ namespace components::types {
     }
 
     logical_value_t logical_value_t::bit_shift_r(const logical_value_t& value1, const logical_value_t& value2) {
-        if (value1.is_null() && value2.is_null()) {
-            return value1;
+        if (value1.is_null() || value2.is_null()) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();

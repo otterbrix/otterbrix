@@ -21,6 +21,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_null_correctness.cpp
         test_dispatcher_watchdog_log.cpp
         test_null_three_valued_logic.cpp
+        test_null_arithmetic.cpp
         test_production_scenarios.cpp
         test_join.cpp
         test_join_raw.cpp

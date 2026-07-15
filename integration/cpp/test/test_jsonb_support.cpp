@@ -578,6 +578,35 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_t
     CHECK(i64(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t WHERE id = 100;"), "v", 0) == 200);
 }
 
+// A jsonb scalar navigation lowers to a plain read of its flattened column, so a
+// same-table comparison of two navigations is an ordinary column-vs-column
+// predicate: it returns exactly the rows whose two leaves are equal, with SQL
+// NULL semantics (an absent leaf never matches). A path naming no column at all
+// is still a clean error, as for any other navigation (see
+// navigation_over_missing_key_still_errors). This was pinned as an unsupported
+// rejection until the predicate/scan layer was generalized upstream.
+TEST_CASE("integration::cpp::test_jsonb_support::compare_two_navigations") {
+    auto config = make_test_config("/tmp/test_jsonb_matrix/nav_cmp");
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
+    // rows 2 and 3 have a.b == a.c; row 4 leaves a.b absent (NULL)
+    REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c) VALUES (1, 10, 20), (2, 30, 30), (3, 99, 99);")
+                ->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.t (id, a.c) VALUES (4, 70);")->is_success());
+
+    SECTION("returns exactly the equal-leaf rows; a NULL leaf never matches") {
+        auto cur = exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = t #>> 'a.c';");
+        REQUIRE(cur->is_success());
+        CHECK(ids(cur) == std::set<int64_t>{2, 3});
+    }
+
+    SECTION("a navigation naming no column is still a clean error, not a wrong answer") {
+        CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = t #>> 'nokey';")->is_success());
+    }
+}
+
 // Everything that is NOT supported must fail loudly. This case exists so that a
 // future change cannot quietly start returning a wrong answer for any of them.
 TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
@@ -593,10 +622,9 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
         // nor as an UPDATE SET source, nor as an index expression
         "UPDATE jp.t SET x = t ->> 'x' WHERE id = 1;",
         "CREATE INDEX ix ON jp.t (t #>> 'a.b');",
-        // nor on the left of IN / LIKE, nor against another navigation
+        // nor on the left of IN / LIKE
         "SELECT id FROM jp.t WHERE t #>> 'a.b' IN (10, 30);",
         "SELECT id FROM jp.t WHERE t ->> 'x' LIKE 'p%';",
-        "SELECT id FROM jp.t WHERE t #>> 'a.b' = t #>> 'a.c';",
         // functions cannot take a navigated argument
         "SELECT upper(t ->> 'x') AS v FROM jp.t;",
         "SELECT SUM(t #>> 'a.b') FROM jp.t;",

@@ -274,6 +274,18 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
         REQUIRE_FALSE(data->constraints()[0].check_expression.empty());
     }
 
+    SECTION("NOT of a comparison is allowed") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(NOT (x > 0)))"));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+        auto node = ddl_consumer(result.sub_queries.back());
+        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        REQUIRE(data->constraints().size() == 1);
+        REQUIRE(data->constraints()[0].check_expression == "NOT (x > 0)");
+    }
+
     // Forbidden node kinds must throw parser_exception_t.
     SECTION("function call in CHECK is rejected") {
         auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(abs(x) > 0))"));

@@ -5,59 +5,80 @@ using namespace components;
 using namespace components::operators::predicates;
 
 namespace {
-    // build a chunk of N rows where column c of row k holds the value returned
-    // by arg_getter[c](left, right, left_indices[k], right_indices[k]), types are inferred from the first row.
+    // build a chunk of N rows where column c of row k holds the value returned by
+    // arg_getter[c](left, right, left_indices[k], right_indices[k]). Each column's type is inferred
+    // from its first NON-NULL value across the batch (a NULL row 0 must not poison the column type),
+    // falling back to whatever row 0 reports when the whole column is NULL. `any_arg_null[k]` is set
+    // when any argument of row k is NULL, so the caller can force that row's predicate to UNKNOWN
+    // (predicate functions -- LIKE / regex / comparisons -- are strict: NULL in, UNKNOWN out).
     core::result_wrapper_t<vector::data_chunk_t> build_batch_chunk(std::pmr::memory_resource* resource,
                                                                    const std::pmr::vector<impl::value_getter>& getters,
                                                                    const vector::data_chunk_t& left,
                                                                    const vector::data_chunk_t& right,
                                                                    const vector::indexing_vector_t& left_indices,
                                                                    const vector::indexing_vector_t& right_indices,
-                                                                   uint64_t count) {
+                                                                   uint64_t count,
+                                                                   std::vector<bool>& any_arg_null) {
         const size_t num_args = getters.size();
 
-        std::pmr::vector<types::logical_value_t> first_vals(resource);
-        first_vals.reserve(num_args);
-        for (const auto& getter : getters) {
-            auto res = getter(left, right, left_indices.get_index(0), right_indices.get_index(0));
-            if (res.has_error()) {
-                return res.convert_error<vector::data_chunk_t>();
-            } else {
-                first_vals.emplace_back(std::move(res.value()));
+        // Materialize every argument value first so a column can be typed from its first non-NULL.
+        // The outer container is a plain std::vector (a pmr vector-of-pmr-vectors would drag the
+        // allocator into each element's construction and fail uses-allocator resolution).
+        std::vector<std::pmr::vector<types::logical_value_t>> cols;
+        cols.reserve(num_args);
+        for (size_t c = 0; c < num_args; ++c) {
+            cols.emplace_back(resource);
+            cols[c].reserve(count);
+        }
+        any_arg_null.assign(count, false);
+        for (uint64_t k = 0; k < count; ++k) {
+            for (size_t c = 0; c < num_args; ++c) {
+                auto res = getters[c](left, right, left_indices.get_index(k), right_indices.get_index(k));
+                if (res.has_error()) {
+                    return res.convert_error<vector::data_chunk_t>();
+                }
+                if (res.value().is_null()) {
+                    any_arg_null[k] = true;
+                }
+                cols[c].emplace_back(std::move(res.value()));
             }
         }
 
         std::pmr::vector<types::complex_logical_type> col_types(resource);
         col_types.reserve(num_args);
-        for (const auto& v : first_vals) {
-            col_types.emplace_back(v.type());
+        for (size_t c = 0; c < num_args; ++c) {
+            const types::logical_value_t* typed = nullptr;
+            for (const auto& v : cols[c]) {
+                if (!v.is_null()) {
+                    typed = &v;
+                    break;
+                }
+            }
+            col_types.emplace_back(typed ? typed->type() : cols[c].front().type());
         }
 
         vector::data_chunk_t batch(resource, col_types, count);
-        for (size_t c = 0; c < num_args; ++c) {
-            batch.set_value(static_cast<uint64_t>(c), 0, first_vals[c]);
-        }
-        for (uint64_t k = 1; k < count; ++k) {
+        for (uint64_t k = 0; k < count; ++k) {
             for (size_t c = 0; c < num_args; ++c) {
-                auto res = getters[c](left, right, left_indices.get_index(k), right_indices.get_index(k));
-                if (res.has_error()) {
-                    return res.convert_error<vector::data_chunk_t>();
-                } else {
-                    batch.set_value(static_cast<uint64_t>(c), k, res.value());
-                }
+                batch.set_value(static_cast<uint64_t>(c), k, cols[c][k]);
             }
         }
         batch.set_cardinality(count);
         return batch;
     }
 
-    core::result_wrapper_t<std::vector<bool>>
-    run_batch_and_extract_bools(const compute::function* function, vector::data_chunk_t& batch, size_t N) {
+    // Extract the function's boolean output as a tri-state, forcing UNKNOWN for rows whose input was
+    // NULL (strict predicate) or whose result the function itself returned as NULL.
+    core::result_wrapper_t<std::vector<types::tri_bool_t>> run_batch_and_extract_tri(
+        const compute::function* function,
+        vector::data_chunk_t& batch,
+        size_t N,
+        const std::vector<bool>& any_arg_null) {
         auto res = function->execute(batch);
         if (res.has_error()) {
-            return res.convert_error<std::vector<bool>>();
+            return res.convert_error<std::vector<types::tri_bool_t>>();
         }
-        std::vector<bool> results(N);
+        std::vector<types::tri_bool_t> results(N);
         if (std::holds_alternative<std::pmr::vector<types::logical_value_t>>(res.value())) {
             const auto& values = std::get<std::pmr::vector<types::logical_value_t>>(res.value());
             if (values.size() < N) {
@@ -67,7 +88,8 @@ namespace {
                                      batch.resource()});
             }
             for (size_t k = 0; k < N; ++k) {
-                results[k] = values[k].value<bool>();
+                results[k] = (any_arg_null[k] || values[k].is_null()) ? types::tri_bool_t::unknown
+                                                                      : types::tri_of(values[k].value<bool>());
             }
         } else {
             // vector_function returns data_chunk_t; result column is data[0]
@@ -78,8 +100,10 @@ namespace {
                     std::pmr::string{"batch function predicate: function returned fewer results than inputs",
                                      batch.resource()});
             }
+            const auto& out_col = chunk.data.front();
             for (size_t k = 0; k < N; ++k) {
-                results[k] = chunk.data.front().get_value<bool>(k);
+                const bool null_out = any_arg_null[k] || !out_col.validity().row_is_valid(k);
+                results[k] = null_out ? types::tri_bool_t::unknown : types::tri_of(out_col.get_value<bool>(k));
             }
         }
         return results;
@@ -93,15 +117,17 @@ namespace {
                    const vector::data_chunk_t& right,
                    const vector::indexing_vector_t& left_indices,
                    const vector::indexing_vector_t& right_indices,
-                   uint64_t count) -> core::result_wrapper_t<std::vector<bool>> {
+                   uint64_t count) -> core::result_wrapper_t<std::vector<types::tri_bool_t>> {
             if (count == 0) {
-                return std::vector<bool>{};
+                return std::vector<types::tri_bool_t>{};
             }
-            auto batch = build_batch_chunk(resource, getters, left, right, left_indices, right_indices, count);
+            std::vector<bool> any_arg_null;
+            auto batch =
+                build_batch_chunk(resource, getters, left, right, left_indices, right_indices, count, any_arg_null);
             if (batch.has_error()) {
-                return batch.convert_error<std::vector<bool>>();
+                return batch.convert_error<std::vector<types::tri_bool_t>>();
             } else {
-                return run_batch_and_extract_bools(function, batch.value(), count);
+                return run_batch_and_extract_tri(function, batch.value(), count, any_arg_null);
             }
         };
     }
@@ -115,14 +141,14 @@ namespace components::operators::predicates {
         : func_(std::move(func))
         , batch_func_(std::move(batch_func)) {}
 
-    core::result_wrapper_t<bool> function_predicate::check_impl(const vector::data_chunk_t& chunk_left,
-                                                                const vector::data_chunk_t& chunk_right,
-                                                                size_t index_left,
-                                                                size_t index_right) {
+    core::result_wrapper_t<types::tri_bool_t> function_predicate::check_impl(const vector::data_chunk_t& chunk_left,
+                                                                             const vector::data_chunk_t& chunk_right,
+                                                                             size_t index_left,
+                                                                             size_t index_right) {
         return func_(chunk_left, chunk_right, index_left, index_right);
     }
 
-    core::result_wrapper_t<std::vector<bool>>
+    core::result_wrapper_t<std::vector<types::tri_bool_t>>
     function_predicate::batch_check_impl(const vector::data_chunk_t& left,
                                          const vector::data_chunk_t& right,
                                          const vector::indexing_vector_t& left_indices,
@@ -132,11 +158,11 @@ namespace components::operators::predicates {
             return batch_func_(left, right, left_indices, right_indices, count);
         }
 
-        std::vector<bool> results(count); // fallback: row-by-row via existing closure
+        std::vector<types::tri_bool_t> results(count); // fallback: row-by-row via existing closure
         for (uint64_t k = 0; k < count; ++k) {
             auto res = func_(left, right, left_indices.get_index(k), right_indices.get_index(k));
             if (res.has_error()) {
-                return res.convert_error<std::vector<bool>>();
+                return res.convert_error<std::vector<types::tri_bool_t>>();
             } else {
                 results[k] = res.value();
             }
@@ -158,26 +184,31 @@ namespace components::operators::predicates {
         // copy for batch (original moved into row closure below)
         auto batch_func = make_batch_func(resource, arg_getters, function);
 
-        function_predicate::row_check_fn_t row_func = [resource, arg_getters = std::move(arg_getters), function](
-                                                          const vector::data_chunk_t& left,
-                                                          const vector::data_chunk_t& right,
-                                                          size_t left_index,
-                                                          size_t right_index) -> core::result_wrapper_t<bool> {
+        function_predicate::row_check_fn_t row_func =
+            [resource, arg_getters = std::move(arg_getters), function](
+                const vector::data_chunk_t& left,
+                const vector::data_chunk_t& right,
+                size_t left_index,
+                size_t right_index) -> core::result_wrapper_t<types::tri_bool_t> {
             std::pmr::vector<types::logical_value_t> args(resource);
             args.reserve(arg_getters.size());
             for (const auto& getter : arg_getters) {
                 auto res = getter(left, right, left_index, right_index);
                 if (res.has_error()) {
-                    return res.convert_error<bool>();
-                } else {
-                    args.emplace_back(std::move(res.value()));
+                    return res.convert_error<types::tri_bool_t>();
                 }
+                // Strict predicate: a NULL argument makes the result UNKNOWN, without executing.
+                if (res.value().is_null()) {
+                    return types::tri_bool_t::unknown;
+                }
+                args.emplace_back(std::move(res.value()));
             }
             auto res = function->execute(args);
             if (res.has_error()) {
-                return res.convert_error<bool>();
+                return res.convert_error<types::tri_bool_t>();
             }
-            return std::get<std::pmr::vector<types::logical_value_t>>(res.value())[0].value<bool>();
+            const auto& out = std::get<std::pmr::vector<types::logical_value_t>>(res.value())[0];
+            return out.is_null() ? types::tri_bool_t::unknown : types::tri_of(out.value<bool>());
         };
         return {new function_predicate(std::move(row_func), std::move(batch_func))};
     }
@@ -209,7 +240,7 @@ namespace components::operators::predicates {
             [resource, expr, function, parameters](const vector::data_chunk_t& left,
                                                    const vector::data_chunk_t& right,
                                                    size_t left_index,
-                                                   size_t right_index) -> core::result_wrapper_t<bool> {
+                                                   size_t right_index) -> core::result_wrapper_t<types::tri_bool_t> {
             std::pmr::vector<types::logical_value_t> args(resource);
             args.reserve(expr->args().size());
             for (const auto& arg : expr->args()) {
@@ -221,12 +252,17 @@ namespace components::operators::predicates {
                 } else {
                     args.emplace_back(parameters->parameters.at(std::get<core::parameter_id_t>(arg)));
                 }
+                // Strict predicate: a NULL argument makes the result UNKNOWN, without executing.
+                if (args.back().is_null()) {
+                    return types::tri_bool_t::unknown;
+                }
             }
             auto res = function->execute(args);
             if (res.has_error()) {
-                return res.convert_error<bool>();
+                return res.convert_error<types::tri_bool_t>();
             }
-            return std::get<std::pmr::vector<types::logical_value_t>>(res.value())[0].value<bool>();
+            const auto& out = std::get<std::pmr::vector<types::logical_value_t>>(res.value())[0];
+            return out.is_null() ? types::tri_bool_t::unknown : types::tri_of(out.value<bool>());
         };
         return {
             new function_predicate(std::move(row_func), make_batch_func(resource, std::move(arg_getters), function))};

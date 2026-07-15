@@ -341,9 +341,9 @@ namespace components::table {
             error = checked.error();
             return filter_match_t::no;
         }
-        // The expression evaluator is two-valued: it folds an UNKNOWN (NULL-operand) result
-        // into false itself, so there is no unknown to surface here.
-        return checked.value() ? filter_match_t::yes : filter_match_t::no;
+        // The evaluator is three-valued (filter_match_t aliases types::tri_bool_t): an UNKNOWN
+        // from a NULL operand flows through, so a NOT above this filter cannot resurrect the row.
+        return checked.value();
     }
 
     // IS NULL / IS NOT NULL over an ARRAY/LIST element. Nullness is always TRUE or FALSE, never

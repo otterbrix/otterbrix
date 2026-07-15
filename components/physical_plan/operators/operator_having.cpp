@@ -63,15 +63,18 @@ namespace components::operators {
         if (results.has_error()) {
             return results.error();
         }
-        const std::vector<bool>& mask = results.value();
+        const std::vector<types::tri_bool_t>& mask = results.value();
 
         // Build the selection of surviving (predicate-true) rows. The selection MUST be sized to the
         // full input length (set_index is unchecked); only the first out_count slots are filled/read.
+        // HAVING keeps a group only when the predicate is definitely TRUE -- a NULL operand (e.g. an
+        // aggregate over an all-NULL group) yields UNKNOWN, which drops the group, exactly as WHERE
+        // drops an UNKNOWN row.
         vector::indexing_vector_t sel(resource_);
         sel.reset(input.size());
         uint64_t out_count = 0;
         for (uint64_t i = 0; i < input.size(); i++) {
-            if (mask[i]) {
+            if (types::selects(mask[i])) {
                 sel.set_index(out_count, i);
                 out_count++;
             }

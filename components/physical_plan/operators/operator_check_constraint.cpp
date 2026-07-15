@@ -109,7 +109,8 @@ namespace components::operators {
             if (expr.empty())
                 return {new predicates::simple_predicate(
                     r,
-                    [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return true; })};
+                    [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
+                        -> core::result_wrapper_t<types::tri_bool_t> { return types::tri_bool_t::yes; })};
 
             // NOT (...)
             if (expr.size() > 5 && expr.substr(0, 5) == "NOT (") {
@@ -170,9 +171,10 @@ namespace components::operators {
                     [col, absent_is_valid](const vector::data_chunk_t& chunk,
                                            const vector::data_chunk_t&,
                                            size_t idx,
-                                           size_t) -> bool {
+                                           size_t) -> core::result_wrapper_t<types::tri_bool_t> {
                         const auto* v = find_col(chunk, col);
-                        return v ? v->validity().row_is_valid(idx) : absent_is_valid;
+                        // IS NOT NULL is a total predicate: a definite TRUE / FALSE, never UNKNOWN.
+                        return types::tri_of(v ? v->validity().row_is_valid(idx) : absent_is_valid);
                     })};
             }
             if (expr.size() > kIsNull.size() && expr.substr(expr.size() - kIsNull.size()) == kIsNull) {
@@ -187,9 +189,9 @@ namespace components::operators {
                     [col, absent_is_null](const vector::data_chunk_t& chunk,
                                           const vector::data_chunk_t&,
                                           size_t idx,
-                                          size_t) -> bool {
+                                          size_t) -> core::result_wrapper_t<types::tri_bool_t> {
                         const auto* v = find_col(chunk, col);
-                        return v ? !v->validity().row_is_valid(idx) : absent_is_null;
+                        return types::tri_of(v ? !v->validity().row_is_valid(idx) : absent_is_null);
                     })};
             }
 
@@ -229,47 +231,50 @@ namespace components::operators {
                     [col_name, const_val, col_is_rhs, op_str, has_def, def_val](const vector::data_chunk_t& chunk,
                                                                                 const vector::data_chunk_t&,
                                                                                 size_t idx,
-                                                                                size_t) -> bool {
-                        // Returns whether the CHECK is satisfied. A CHECK is violated only by a
-                        // definitely-FALSE comparison; a NULL operand makes it UNKNOWN, which passes
-                        // (compare_sql yields nullopt for a NULL operand).
-                        auto satisfied = [&op_str](const types::logical_value_t& lhs,
-                                                   const types::logical_value_t& rhs) -> bool {
+                                                                                size_t)
+                        -> core::result_wrapper_t<types::tri_bool_t> {
+                        // Raw three-valued result of the comparison: a NULL operand is UNKNOWN (not
+                        // pre-folded to "passes"), so that a NOT wrapping it stays UNKNOWN rather
+                        // than flipping to a violation. The consumer applies permits() -- a CHECK is
+                        // violated only by a definitely-FALSE (tri_bool_t::no) result.
+                        auto compare_tri = [&op_str](const types::logical_value_t& lhs,
+                                                     const types::logical_value_t& rhs) -> types::tri_bool_t {
                             const auto c = lhs.compare_sql(rhs);
                             if (!c)
-                                return true;
+                                return types::tri_bool_t::unknown;
                             using Cmp = types::compare_t;
                             if (op_str == ">")
-                                return *c == Cmp::more;
+                                return types::tri_of(*c == Cmp::more);
                             if (op_str == "<")
-                                return *c == Cmp::less;
+                                return types::tri_of(*c == Cmp::less);
                             if (op_str == ">=")
-                                return *c == Cmp::more || *c == Cmp::equals;
+                                return types::tri_of(*c == Cmp::more || *c == Cmp::equals);
                             if (op_str == "<=")
-                                return *c == Cmp::less || *c == Cmp::equals;
+                                return types::tri_of(*c == Cmp::less || *c == Cmp::equals);
                             if (op_str == "=")
-                                return *c == Cmp::equals;
+                                return types::tri_of(*c == Cmp::equals);
                             if (op_str == "<>")
-                                return *c != Cmp::equals;
-                            return true;
+                                return types::tri_of(*c != Cmp::equals);
+                            return types::tri_bool_t::yes; // unreachable operator: do not reject
                         };
                         const auto* vec = find_col(chunk, col_name);
                         if (!vec) {
+                            // Absent column with no default stores NULL -> UNKNOWN (permits passes).
                             if (!has_def)
-                                return true;
-                            return col_is_rhs ? satisfied(const_val, def_val) : satisfied(def_val, const_val);
+                                return types::tri_bool_t::unknown;
+                            return col_is_rhs ? compare_tri(const_val, def_val) : compare_tri(def_val, const_val);
                         }
-                        // vec->value reports NA for a NULL row, so the comparison is UNKNOWN and the
-                        // CHECK passes -- SQL rejects only definitely-FALSE checks.
+                        // vec->value reports NA for a NULL row, so compare_sql yields UNKNOWN.
                         auto col_val = vec->value(idx);
-                        return col_is_rhs ? satisfied(const_val, col_val) : satisfied(col_val, const_val);
+                        return col_is_rhs ? compare_tri(const_val, col_val) : compare_tri(col_val, const_val);
                     })};
             }
 
             // Unrecognised expression — pass.
             return {new predicates::simple_predicate(
                 r,
-                [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return true; })};
+                [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
+                    -> core::result_wrapper_t<types::tri_bool_t> { return types::tri_bool_t::yes; })};
         }
 
     } // anonymous namespace
@@ -391,7 +396,9 @@ namespace components::operators {
             for (const auto& [name, pred] : check_predicates_) {
                 for (uint64_t row = 0; row < chunk.size(); ++row) {
                     auto check_result = pred->check(chunk, row);
-                    if (check_result.has_error() || !check_result.value()) {
+                    // A CHECK is violated only by a definitely-FALSE result; UNKNOWN (a NULL operand,
+                    // even under NOT) permits the row -- SQL rejects only definitely-FALSE checks.
+                    if (check_result.has_error() || !types::permits(check_result.value())) {
                         set_error(
                             core::error_t{core::error_code_t::other_error,
                                           std::pmr::string{"CHECK constraint \"" + name + "\" violated", resource_}});

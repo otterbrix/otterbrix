@@ -36,17 +36,19 @@ namespace components::operators::predicates {
                        const vector::data_chunk_t& chunk_left,
                        const vector::data_chunk_t& chunk_right,
                        size_t index_left,
-                       size_t index_right) -> core::result_wrapper_t<bool> {
+                       size_t index_right) -> core::result_wrapper_t<types::tri_bool_t> {
                 auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
                 auto right_val = right_getter(chunk_left, chunk_right, index_left, index_right);
                 if (left_val.has_error()) {
-                    return left_val.convert_error<bool>();
+                    return left_val.convert_error<types::tri_bool_t>();
                 }
                 if (right_val.has_error()) {
-                    return right_val.convert_error<bool>();
+                    return right_val.convert_error<types::tri_bool_t>();
                 }
+                // SQL 3VL: a comparison with a NULL operand is UNKNOWN (not FALSE) -- the two
+                // diverge under NOT, so collapsing to FALSE here would let NOT resurrect the row.
                 if (left_val.value().is_null() || right_val.value().is_null()) {
-                    return false;
+                    return types::tri_bool_t::unknown;
                 }
                 const auto& subject_val = left_val.value();
                 const auto& pattern_val = right_val.value();
@@ -61,7 +63,7 @@ namespace components::operators::predicates {
                 if (compiled.has_error()) {
                     return compiled.error();
                 }
-                return compiled.value().match(subject_val.value<std::string_view>());
+                return types::tri_of(compiled.value().match(subject_val.value<std::string_view>()));
             };
         }
 
@@ -80,14 +82,14 @@ namespace components::operators::predicates {
                     session_tz](const vector::data_chunk_t& chunk_left,
                                 const vector::data_chunk_t& chunk_right,
                                 size_t index_left,
-                                size_t index_right) -> core::result_wrapper_t<bool> {
+                                size_t index_right) -> core::result_wrapper_t<types::tri_bool_t> {
                 auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
                 auto right_val = right_getter(chunk_left, chunk_right, index_left, index_right);
                 if (left_val.has_error()) {
-                    return left_val.convert_error<bool>();
+                    return left_val.convert_error<types::tri_bool_t>();
                 }
                 if (right_val.has_error()) {
-                    return right_val.convert_error<bool>();
+                    return right_val.convert_error<types::tri_bool_t>();
                 }
                 // PostgreSQL rejects an IMPLICIT boolean <-> numeric comparison ("operator
                 // does not exist: boolean = integer"). is_numeric(BOOLEAN) is true, so without
@@ -96,7 +98,7 @@ namespace components::operators::predicates {
                 // BOOLEAN and the other is a non-boolean numeric, so `bool_col = 1` errors.
                 // Same-type bool=bool and numeric=numeric (neither trips l_bool != r_bool), and
                 // any string / temporal / NULL pairing, are untouched. NULL operands skip the
-                // guard (UNKNOWN -> false inside the shared comparator).
+                // guard (gated to UNKNOWN just below).
                 if (!left_val.value().is_null() && !right_val.value().is_null()) {
                     // Detect a boolean operand by PHYSICAL type (BOOL) so it fires whether the
                     // value's logical type is BOOL or BOOLEAN. The other side is numeric-non-bool
@@ -110,10 +112,21 @@ namespace components::operators::predicates {
                             std::pmr::string{"operator does not exist: boolean = numeric type", resource}};
                     }
                 }
-                // THE canonical NULL + bidirectional-promotion + compare semantics live in ONE
-                // place — table::compare_values_promoting — shared with the pushed col-vs-col
-                // disk filter (row_group_t::check_predicate), so the two paths cannot diverge.
-                return table::compare_values_promoting(left_val.value(), right_val.value(), op, session_tz);
+                // SQL 3VL: a comparison with a NULL operand is UNKNOWN (not FALSE) -- the two
+                // diverge under NOT, so collapsing to FALSE here would let NOT resurrect the row.
+                if (left_val.value().is_null() || right_val.value().is_null()) {
+                    return types::tri_bool_t::unknown;
+                }
+                // THE canonical bidirectional-promotion + compare semantics live in ONE place —
+                // table::compare_values_promoting — shared with the pushed col-vs-col disk filter
+                // (row_group_t::check_predicate), so the two paths cannot diverge. NULL operands
+                // never reach it (gated to UNKNOWN above; the disk filter gates on validity the
+                // same way before calling it).
+                auto cmp = table::compare_values_promoting(left_val.value(), right_val.value(), op, session_tz);
+                if (cmp.has_error()) {
+                    return cmp.convert_error<types::tri_bool_t>();
+                }
+                return types::tri_of(cmp.value());
             };
         }
 
@@ -121,8 +134,9 @@ namespace components::operators::predicates {
         // with RE2 — crash-safe (a bad pattern is stored as an error and returned at eval, never thrown).
         // The subject is read through the shared value_getter. NOT LIKE / NOT ILIKE arrive wrapped in a
         // union_not predicate, so this only performs a positive match. A NULL subject (or a NULL pattern)
-        // yields false (SQL unknown). No per-comparator std::function: this is a real predicate subclass so
-        // the move-only compiled regex can live as a member.
+        // yields UNKNOWN (SQL 3VL), which stays distinct from FALSE under that NOT. No per-comparator
+        // std::function: this is a real predicate subclass so the move-only compiled regex can live as a
+        // member.
         class regex_predicate final : public predicate {
         public:
             regex_predicate(std::pmr::memory_resource* resource,
@@ -139,22 +153,22 @@ namespace components::operators::predicates {
                 , subject_(std::move(subject)) {}
 
         private:
-            core::result_wrapper_t<bool> check_impl(const vector::data_chunk_t& chunk_left,
-                                                    const vector::data_chunk_t& chunk_right,
-                                                    size_t index_left,
-                                                    size_t index_right) override {
+            core::result_wrapper_t<types::tri_bool_t> check_impl(const vector::data_chunk_t& chunk_left,
+                                                                 const vector::data_chunk_t& chunk_right,
+                                                                 size_t index_left,
+                                                                 size_t index_right) override {
                 if (error_) {
                     return *error_;
                 }
                 if (!re_) {
-                    return false; // NULL pattern
+                    return types::tri_bool_t::unknown; // NULL pattern: `x LIKE NULL` is UNKNOWN
                 }
                 auto subject = subject_(chunk_left, chunk_right, index_left, index_right);
                 if (subject.has_error()) {
-                    return subject.convert_error<bool>();
+                    return subject.convert_error<types::tri_bool_t>();
                 }
                 if (subject.value().is_null()) {
-                    return false;
+                    return types::tri_bool_t::unknown; // NULL subject: UNKNOWN, not FALSE
                 }
                 const auto& subject_val = subject.value();
                 // Non-string subject (`int_col LIKE 'p'` — the validator does not type-check regex):
@@ -163,7 +177,7 @@ namespace components::operators::predicates {
                     return core::error_t{core::error_code_t::comparison_failure,
                                          std::pmr::string{"incorrect argument type for regex", resource_}};
                 }
-                return re_->match(subject_val.value<std::string_view>());
+                return types::tri_of(re_->match(subject_val.value<std::string_view>()));
             }
 
             std::pmr::memory_resource* resource_;
@@ -211,21 +225,23 @@ namespace components::operators::predicates {
                 , cache_(resource) {}
 
         private:
-            core::result_wrapper_t<bool> check_impl(const vector::data_chunk_t& chunk_left,
-                                                    const vector::data_chunk_t& chunk_right,
-                                                    size_t index_left,
-                                                    size_t index_right) override {
+            core::result_wrapper_t<types::tri_bool_t> check_impl(const vector::data_chunk_t& chunk_left,
+                                                                 const vector::data_chunk_t& chunk_right,
+                                                                 size_t index_left,
+                                                                 size_t index_right) override {
                 auto left_val = left_getter_(chunk_left, chunk_right, index_left, index_right);
                 if (left_val.has_error()) {
-                    return left_val.convert_error<bool>();
-                }
-                if (left_val.value().is_null()) {
-                    return false;
+                    return left_val.convert_error<types::tri_bool_t>();
                 }
                 const auto& arr_param = parameters_->parameters.at(param_id_);
-                // Empty sub-query list: `x = ANY(empty)` is false, `x <> ALL(empty)` is true (loop-exhausted).
+                // Empty sub-query list: `x = ANY(empty)` is FALSE, `x <> ALL(empty)` is TRUE
+                // (loop-exhausted) — a total answer even for a NULL x, so checked first.
                 if (arr_param.is_null()) {
-                    return !is_any_;
+                    return is_any_ ? types::tri_bool_t::no : types::tri_bool_t::yes;
+                }
+                // A NULL subject makes every element comparison UNKNOWN, so the whole fold is UNKNOWN.
+                if (left_val.value().is_null()) {
+                    return types::tri_bool_t::unknown;
                 }
                 const auto& subject_val = left_val.value();
                 // Non-string subject (`int_col LIKE ANY(...)` — the validator does not type-check
@@ -256,7 +272,7 @@ namespace components::operators::predicates {
                     } else {
                         auto casted = element.cast_as(subject_val.type(), session_tz_);
                         if (casted.has_error()) {
-                            return casted.convert_error<bool>();
+                            return casted.convert_error<types::tri_bool_t>();
                         }
                         if (casted.value().is_null()) {
                             has_null_element = true;
@@ -276,19 +292,19 @@ namespace components::operators::predicates {
                         matched = !matched;
                     }
                     if (is_any_ && matched) {
-                        return true;
+                        return types::tri_bool_t::yes;
                     }
                     if (!is_any_ && !matched) {
-                        return false;
+                        return types::tri_bool_t::no;
                     }
                 }
-                // Loop exhausted with no decisive element. For `x [NOT] LIKE ALL(S)` a NULL element
-                // makes the still-undecided row UNKNOWN, not TRUE, so it must be dropped. ANY is
-                // unaffected: no match is FALSE, and UNKNOWN drops the row too.
-                if (!is_any_ && has_null_element) {
-                    return false;
+                // Loop exhausted with no decisive element. A NULL pattern element made a
+                // comparison UNKNOWN, so the fold is UNKNOWN for ANY and ALL alike — the row is
+                // dropped either way, and NOT cannot resurrect it.
+                if (has_null_element) {
+                    return types::tri_bool_t::unknown;
                 }
-                return !is_any_;
+                return is_any_ ? types::tri_bool_t::no : types::tri_bool_t::yes;
             }
 
             // Compile-once: look the element pattern up in the cache (heterogeneous string_view
@@ -334,56 +350,60 @@ namespace components::operators::predicates {
         , nested_(std::move(nested))
         , nested_type_(nested_type) {}
 
-    core::result_wrapper_t<std::vector<bool>>
+    core::result_wrapper_t<std::vector<types::tri_bool_t>>
     simple_predicate::batch_check_impl(const vector::data_chunk_t& left,
                                        const vector::data_chunk_t& right,
                                        const vector::indexing_vector_t& left_indices,
                                        const vector::indexing_vector_t& right_indices,
                                        uint64_t count) {
+        using types::tri_bool_t;
         switch (nested_type_) {
             case expressions::compare_type::union_and: {
-                std::vector<bool> result(count, true);
+                // 3VL AND: identity is TRUE; FALSE dominates, else UNKNOWN if any child is UNKNOWN.
+                std::vector<tri_bool_t> result(count, tri_bool_t::yes);
                 for (const auto& child : nested_) {
                     auto child_res = child->batch_check(left, right, left_indices, right_indices, count);
                     if (child_res.has_error()) {
                         return child_res;
                     }
                     for (uint64_t k = 0; k < count; ++k) {
-                        result[k] = result[k] && child_res.value()[k];
+                        result[k] = types::tri_and(result[k], child_res.value()[k]);
                     }
                 }
                 return result;
             }
             case expressions::compare_type::union_or: {
-                std::vector<bool> result(count, false);
+                // 3VL OR: identity is FALSE; TRUE dominates, else UNKNOWN if any child is UNKNOWN.
+                std::vector<tri_bool_t> result(count, tri_bool_t::no);
                 for (const auto& child : nested_) {
                     auto child_res = child->batch_check(left, right, left_indices, right_indices, count);
                     if (child_res.has_error()) {
                         return child_res;
                     }
                     for (uint64_t k = 0; k < count; ++k) {
-                        result[k] = result[k] || child_res.value()[k];
+                        result[k] = types::tri_or(result[k], child_res.value()[k]);
                     }
                 }
                 return result;
             }
             case expressions::compare_type::union_not: {
+                // 3VL NOT: TRUE<->FALSE, UNKNOWN unchanged (so NOT does not resurrect a NULL row).
                 auto result = nested_.front()->batch_check(left, right, left_indices, right_indices, count);
                 if (result.has_error()) {
                     return result;
                 }
-                for (size_t i = 0; i < result.value().size(); ++i) {
-                    result.value()[i] = !result.value()[i];
+                for (auto& v : result.value()) {
+                    v = types::tri_not(v);
                 }
                 return result;
             }
             default:
                 // fallback to row-by-row via func_
-                std::vector<bool> result(count);
+                std::vector<tri_bool_t> result(count);
                 for (uint64_t k = 0; k < count; ++k) {
                     if (auto res = func_(left, right, left_indices.get_index(k), right_indices.get_index(k));
                         res.has_error()) {
-                        return res.convert_error<std::vector<bool>>();
+                        return res.convert_error<std::vector<tri_bool_t>>();
                     } else {
                         result[k] = res.value();
                     }
@@ -392,31 +412,47 @@ namespace components::operators::predicates {
         }
     }
 
-    core::result_wrapper_t<bool> simple_predicate::check_impl(const vector::data_chunk_t& chunk_left,
-                                                              const vector::data_chunk_t& chunk_right,
-                                                              size_t index_left,
-                                                              size_t index_right) {
+    core::result_wrapper_t<types::tri_bool_t> simple_predicate::check_impl(const vector::data_chunk_t& chunk_left,
+                                                                           const vector::data_chunk_t& chunk_right,
+                                                                           size_t index_left,
+                                                                           size_t index_right) {
+        using types::tri_bool_t;
         switch (nested_type_) {
-            case expressions::compare_type::union_and:
+            case expressions::compare_type::union_and: {
+                // 3VL AND: FALSE dominates (short-circuit); a later FALSE can still override an
+                // accumulated UNKNOWN, so only FALSE ends the fold early.
+                tri_bool_t acc = tri_bool_t::yes;
                 for (const auto& predicate : nested_) {
-                    if (auto res = predicate->check(chunk_left, chunk_right, index_left, index_right);
-                        res.has_error() || !res.value()) {
+                    auto res = predicate->check(chunk_left, chunk_right, index_left, index_right);
+                    if (res.has_error()) {
                         return res;
                     }
-                }
-                return true;
-            case expressions::compare_type::union_or:
-                for (const auto& predicate : nested_) {
-                    if (auto res = predicate->check(chunk_left, chunk_right, index_left, index_right);
-                        res.has_error() || res.value()) {
-                        return res;
+                    acc = types::tri_and(acc, res.value());
+                    if (acc == tri_bool_t::no) {
+                        return acc;
                     }
                 }
-                return false;
+                return acc;
+            }
+            case expressions::compare_type::union_or: {
+                // 3VL OR: TRUE dominates (short-circuit); only TRUE ends the fold early.
+                tri_bool_t acc = tri_bool_t::no;
+                for (const auto& predicate : nested_) {
+                    auto res = predicate->check(chunk_left, chunk_right, index_left, index_right);
+                    if (res.has_error()) {
+                        return res;
+                    }
+                    acc = types::tri_or(acc, res.value());
+                    if (acc == tri_bool_t::yes) {
+                        return acc;
+                    }
+                }
+                return acc;
+            }
             case expressions::compare_type::union_not: {
                 auto res = nested_.front()->check(chunk_left, chunk_right, index_left, index_right);
                 if (!res.has_error()) {
-                    res.value() = !res.value();
+                    res.value() = types::tri_not(res.value());
                 }
                 return res;
             }
@@ -495,27 +531,27 @@ namespace components::operators::predicates {
                      session_tz](const vector::data_chunk_t& chunk_left,
                                  const vector::data_chunk_t& chunk_right,
                                  size_t index_left,
-                                 size_t index_right) -> core::result_wrapper_t<bool> {
+                                 size_t index_right) -> core::result_wrapper_t<types::tri_bool_t> {
                         auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
                         if (left_val.has_error()) {
-                            return left_val.convert_error<bool>();
+                            return left_val.convert_error<types::tri_bool_t>();
                         }
                         const auto& arr_param = parameters->parameters.at(param_id);
                         // Empty sub-query list: compact_to_array_value returns the NA-null
                         // sentinel for a zero-row `x [NOT] IN (SELECT ...)`. PostgreSQL:
-                        // `x = ANY(empty)` is false (IN () matches nothing) and
-                        // `x <> ALL(empty)` is true (NOT IN () matches everything) — exactly
+                        // `x = ANY(empty)` is FALSE (IN () matches nothing) and
+                        // `x <> ALL(empty)` is TRUE (NOT IN () matches everything) — exactly
                         // the loop-exhausted result, so short-circuit before dereferencing
                         // the (null) array's children. This precedes the NULL-left check
                         // below: over an empty set the answer is total regardless of x, so
                         // even a NULL x yields `NULL NOT IN (empty)` = TRUE / `NULL IN (empty)` = FALSE.
                         if (arr_param.is_null()) {
-                            return !is_any;
+                            return is_any ? types::tri_bool_t::no : types::tri_bool_t::yes;
                         }
-                        // A NULL left value can neither match nor mismatch any element: UNKNOWN for
-                        // every comparison -> the row is dropped for both IN and ANY/ALL in a WHERE.
+                        // A NULL left operand makes every element comparison UNKNOWN, so the whole
+                        // ANY / ALL is UNKNOWN.
                         if (left_val.value().is_null()) {
-                            return false;
+                            return types::tri_bool_t::unknown;
                         }
                         const auto& arr = arr_param.children();
                         // Three-valued (SQL NULL) membership: a NULL element (or one whose cast to the left
@@ -529,7 +565,7 @@ namespace components::operators::predicates {
                             }
                             auto rhs_rw = element.cast_as(left_val.value().type(), session_tz);
                             if (rhs_rw.has_error()) {
-                                return rhs_rw.convert_error<bool>();
+                                return rhs_rw.convert_error<types::tri_bool_t>();
                             }
                             if (rhs_rw.value().is_null()) {
                                 has_null_element = true;
@@ -560,23 +596,24 @@ namespace components::operators::predicates {
                                     break;
                             }
                             if (cmp.has_error()) {
-                                return cmp;
+                                return cmp.convert_error<types::tri_bool_t>();
                             }
                             if (is_any && cmp.value()) {
-                                return true;
+                                return types::tri_bool_t::yes;
                             }
                             if (!is_any && !cmp.value()) {
-                                return false;
+                                return types::tri_bool_t::no;
                             }
                         }
-                        // Loop exhausted with no decisive element. For `x op ALL(S)` (NOT IN is
-                        // `x <> ALL(S)`) a NULL element makes the still-undecided row UNKNOWN, not TRUE,
-                        // so it must be dropped — `x NOT IN (SELECT ... with a NULL)` yields no rows.
-                        // ANY / IN is unaffected: no match is FALSE, and UNKNOWN drops the row too.
-                        if (!is_any && has_null_element) {
-                            return false;
+                        // Loop exhausted with no decisive element. A NULL element (or one whose
+                        // cast yielded NULL) made a comparison UNKNOWN, so the fold is UNKNOWN for
+                        // ANY and ALL alike: `x = ANY(S with a NULL)` on a miss is UNKNOWN, not
+                        // FALSE, and `x <> ALL(S with a NULL)` (NOT IN) is UNKNOWN, not TRUE --
+                        // either way the row is dropped, and NOT cannot resurrect it.
+                        if (has_null_element) {
+                            return types::tri_bool_t::unknown;
                         }
-                        return !is_any;
+                        return is_any ? types::tri_bool_t::no : types::tri_bool_t::yes;
                     })};
             }
             case compare_type::regex: {
@@ -610,34 +647,42 @@ namespace components::operators::predicates {
                                              make_regex_comparator(resource, function_registry, expr, parameters))};
             }
             case compare_type::all_false:
-                return {new simple_predicate(
-                    resource,
-                    [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t) { return false; })};
+                return {new simple_predicate(resource,
+                                             [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
+                                                 -> core::result_wrapper_t<types::tri_bool_t> {
+                                                 return types::tri_bool_t::no;
+                                             })};
             case compare_type::is_null: {
+                // IS NULL / IS NOT NULL are themselves total predicates (never UNKNOWN): they ask
+                // about validity directly and answer a definite TRUE / FALSE.
                 return {new simple_predicate(
                     resource,
                     [column_path = std::get<expressions::key_t>(expr->left()).path()](
                         const vector::data_chunk_t& chunk_left,
                         const vector::data_chunk_t&,
                         size_t index_left,
-                        size_t) { return !chunk_left.at(column_path)->validity().row_is_valid(index_left); })};
+                        size_t) -> core::result_wrapper_t<types::tri_bool_t> {
+                        return types::tri_of(!chunk_left.at(column_path)->validity().row_is_valid(index_left));
+                    })};
             }
             case compare_type::is_not_null: {
-                return {new simple_predicate(resource,
-                                             [column_path = std::get<expressions::key_t>(expr->left()).path()](
-                                                 const vector::data_chunk_t& chunk_left,
-                                                 const vector::data_chunk_t&,
-                                                 size_t index_left,
-                                                 size_t) -> core::result_wrapper_t<bool> {
-                                                 return chunk_left.at(column_path)->validity().row_is_valid(index_left);
-                                             })};
+                return {new simple_predicate(
+                    resource,
+                    [column_path = std::get<expressions::key_t>(expr->left()).path()](
+                        const vector::data_chunk_t& chunk_left,
+                        const vector::data_chunk_t&,
+                        size_t index_left,
+                        size_t) -> core::result_wrapper_t<types::tri_bool_t> {
+                        return types::tri_of(chunk_left.at(column_path)->validity().row_is_valid(index_left));
+                    })};
             }
             case compare_type::all_true:
             default:
-                return {
-                    new simple_predicate(resource,
-                                         [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
-                                             -> core::result_wrapper_t<bool> { return true; })};
+                return {new simple_predicate(resource,
+                                             [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
+                                                 -> core::result_wrapper_t<types::tri_bool_t> {
+                                                 return types::tri_bool_t::yes;
+                                             })};
         }
     }
 

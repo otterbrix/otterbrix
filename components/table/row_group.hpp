@@ -69,8 +69,7 @@ namespace components::table {
         // Evaluate an expression_filter_t (WHERE f(col) OP const) for one row: materialize the
         // referenced columns into a row-wide chunk (each at its original storage column index) and
         // run the attached per-row evaluator. `error` carries a pin OOM or an evaluation failure.
-        // The evaluator itself folds an UNKNOWN (NULL-operand) result into false, so this
-        // returns yes/no only.
+        // Three-valued: an UNKNOWN (NULL-operand) evaluation flows through as unknown.
         filter_match_t check_expression_predicate(int64_t row_id,
                                                   const expression_filter_t& filter,
                                                   expression_filter_layout_cache_t& expression_layouts,

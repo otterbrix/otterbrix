@@ -92,7 +92,9 @@ namespace components::operators {
                 }
                 const auto& mask = results.value();
                 for (uint64_t rj = 0; rj < B.size(); ++rj) {
-                    if (mask[rj]) {
+                    // A join emits a pair only when the ON predicate is definitely TRUE; a NULL join
+                    // key yields UNKNOWN, which does not match.
+                    if (types::selects(mask[rj])) {
                         builder.emit_matched(probe, li, B, rj);
                         matched = true;
                         if (mark_matched) {

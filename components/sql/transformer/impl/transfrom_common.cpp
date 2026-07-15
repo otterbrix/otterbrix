@@ -287,6 +287,10 @@ namespace components::sql::transform {
                     }
                 }
 
+                // FILTER (WHERE p): lower to a CASE over each argument (or COUNT(CASE ...) for a
+                // bare aggregate) so only qualifying rows reach the aggregate.
+                args = apply_aggregate_filter(func->agg_filter, std::move(args), names, plan);
+
                 // Create aggregate with auto-generated alias
                 // TODO: default aggregate aliases should come from function registry, not hardcoded here
                 std::string auto_alias = "__agg_" + funcname + "_" + std::to_string(aggregate_counter_++);
@@ -1456,6 +1460,47 @@ namespace components::sql::transform {
         return expr;
     }
 
+    std::pmr::vector<param_storage>
+    transformer::apply_aggregate_filter(Node* agg_filter,
+                                        std::pmr::vector<param_storage> args,
+                                        const name_collection_t& names,
+                                        logical_plan::execution_plan_t* plan) {
+        if (!agg_filter) {
+            return args;
+        }
+        // Wrap one aggregate argument `x` into `CASE WHEN p THEN x END`. The predicate is
+        // re-transformed per argument so each CASE owns an independent condition tree (constant
+        // folding mutates compare nodes in place, so a shared one would be unsafe); aggregates
+        // almost always take a single argument, so the duplication is immaterial.
+        auto wrap = [&](param_storage result) -> param_storage {
+            auto cond = transform_predicate(agg_filter, names, plan);
+            if (has_error()) {
+                return result;
+            }
+            auto case_expr =
+                make_scalar_expression(resource_,
+                                       scalar_type::case_expr,
+                                       expressions::key_t{resource_,
+                                                          "__aggfilter_" + std::to_string(aggregate_counter_++)});
+            case_expr->append_param(cond);              // WHEN p
+            case_expr->append_param(std::move(result)); // THEN <arg>   (no ELSE -> NULL when p not TRUE)
+            return expressions::expression_ptr(case_expr);
+        };
+
+        if (args.empty()) {
+            // count(*) / a parameterless aggregate: count the rows where p by counting the non-NULL
+            // results of CASE WHEN p THEN 1 END.
+            auto one = plan->parameters->add_parameter(static_cast<int64_t>(1));
+            std::pmr::vector<param_storage> filtered(resource_);
+            filtered.emplace_back(wrap(one));
+            return filtered;
+        }
+        for (auto& arg : args) {
+            arg = wrap(std::move(arg));
+        }
+        return args;
+    }
+
     void transformer::transform_select_case_expr(CaseExpr* node,
                                                  const char* alias,
                                                  const name_collection_t& names,
@@ -1500,6 +1545,9 @@ namespace components::sql::transform {
                         }
                     }
                 }
+                // FILTER (WHERE p): lower to a CASE over each argument (or COUNT(CASE ...) for a
+                // bare aggregate) so only qualifying rows reach the aggregate.
+                args = apply_aggregate_filter(func->agg_filter, std::move(args), names, plan);
                 std::string alias = "__having_" + funcname + "_" + std::to_string(aggregate_counter_++);
                 auto agg_expr = make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, alias});
                 for (auto& arg : args) {

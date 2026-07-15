@@ -365,7 +365,8 @@ namespace components::table {
         if (!result.validity().row_is_valid(0)) {
             element_is_null = true;
         } else {
-            const auto& elements = result.value(0).children();
+            auto array_value = result.value(0);
+            const auto& elements = array_value.children();
             element_is_null = element_index >= elements.size() || elements[element_index].is_null();
         }
         const bool matches = want_null ? element_is_null : !element_is_null;

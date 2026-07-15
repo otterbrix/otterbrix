@@ -333,6 +333,36 @@ TEST_CASE("integration::cpp::restart_consistency::delete_then_compact", "[restar
     check_restart_consistency(g);
 }
 
+// The OTHER compaction site: VACUUM (cleanup_versions + compact), not the commit-time
+// maybe_cleanup. Kept distinct because the deletes stay below the 30% auto-cleanup threshold, so
+// ONLY the explicit VACUUM renumbers. Same failure mode as delete_then_compact if VACUUM omits its
+// PHYSICAL_COMPACT epoch marker: the post-VACUUM DELETE/UPDATE replay against the pre-VACUUM numbering.
+TEST_CASE("integration::cpp::restart_consistency::vacuum_then_restart", "[restart]") {
+    group_t g;
+    g.name = "vacuum_then_restart";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (a bigint, v bigint)$S;",
+               "INSERT INTO rcdb.t (a, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);",
+               // 20% dead: BELOW the 30% commit-compaction threshold, so maybe_cleanup does NOT
+               // pre-empt — only the explicit VACUUM renumbers the survivors.
+               "DELETE FROM rcdb.t WHERE a IN (1, 2);",
+               "VACUUM;",
+               // Captured against the POST-VACUUM numbering; replay must re-run the VACUUM compaction
+               // (via its epoch marker) before applying these or they land on the wrong rows.
+               "DELETE FROM rcdb.t WHERE a = 5;",
+               "UPDATE rcdb.t SET v = 99 WHERE a = 8;"};
+    g.probes = {
+        {"state",
+         {},
+         {{"survivors", "SELECT * FROM rcdb.t;"},
+          {"post_vacuum_delete_stuck", "SELECT * FROM rcdb.t WHERE a = 5;"},
+          {"post_vacuum_update_stuck", "SELECT v FROM rcdb.t WHERE a = 8;"},
+          {"no_resurrection", "SELECT * FROM rcdb.t WHERE a <= 2;"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
 // ---------------------------------------------------------------------------
 // Type fidelity. The .otbx column record stores a bare uint8 logical_type, so
 // everything a type extension carries -- decimal width/scale, array size, list

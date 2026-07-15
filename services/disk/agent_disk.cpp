@@ -2145,7 +2145,7 @@ namespace services::disk {
         co_return checkpoint_result_t{min_prev_id, has_in_memory};
     }
 
-    agent_disk_t::unique_future<void> agent_disk_t::vacuum_inner(session_id_t /*session*/,
+    agent_disk_t::unique_future<void> agent_disk_t::vacuum_inner(session_id_t session,
                                                                  uint64_t lowest_active_start_time,
                                                                  uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::vacuum_inner: {} entries in local slice", pool_idx_, storages_.size());
@@ -2155,15 +2155,35 @@ namespace services::disk {
             }
             auto& table = entry->table_storage.table();
             table.cleanup_versions(lowest_active_start_time);
-            // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid (its
-            // stored absolute position indexes the un-swapped collection; the atomic swap would
-            // shift rows out from under it — R17). Reclaim is deferred to a later vacuum round.
+            // Cursor gate: skip compact while a streaming fetch-next cursor is open (or a mutating
+            // one retained past drain, I-2) on this oid — its stored absolute position indexes the
+            // un-swapped collection; the atomic swap would shift rows out from under it (R17), or
+            // renumber rows out from under an in-flight DELETE/UPDATE's captured ids. Reclaim is
+            // deferred to a later vacuum round.
             if (has_active_scan_for_oid(oid)) {
                 continue;
             }
             // MVCC-gated: a no-op when any version stamp is above the watermark
             // (concurrent snapshot / in-flight commit still needs the history).
+            const auto total = table.row_group()->total_rows();
             table.compact(compact_watermark);
+
+            // Numbering-epoch boundary (I-2), identical discipline to maybe_cleanup_inner: emit ONLY
+            // when this VACUUM compaction actually renumbered (total shrank), so replay re-runs the
+            // SAME dense renumber at this log point and every later positional record resolves against
+            // the post-VACUUM numbering. Fire-and-forget on the table's own DML WAL stream
+            // (compact_wal_db_oid) — see the ordering/durability argument at maybe_cleanup_inner.
+            if (table.row_group()->total_rows() < total &&
+                manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+                const auto db_oid = entry->compact_wal_db_oid();
+                [[maybe_unused]] auto _cf = actor_zeta::send(manager_wal_addr_,
+                                                             &wal::manager_wal_replicate_t::write_physical_compact,
+                                                             session,
+                                                             oid,
+                                                             uint64_t{0}, // txn_id: system write
+                                                             compact_watermark,
+                                                             db_oid);
+            }
         }
         co_return;
     }

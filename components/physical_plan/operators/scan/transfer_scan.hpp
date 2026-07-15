@@ -27,6 +27,15 @@ namespace components::operators {
         // Storage-chunk column indices the scan projects (empty ⇒ all columns), so a downstream
         // group/select sees the SAME projected column layout it expects.
         const std::vector<size_t>& projected_cols() const noexcept { return projected_cols_; }
+        components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
+
+        // I-2: mark this scan as the id-source of a whole-table DELETE/UPDATE (no WHERE ⇒
+        // create_plan_match lowers the target to a transfer_scan). Same contract as
+        // full_scan::mark_mutating — the OPEN fetch asks the owning agent to retain the cursor
+        // past drain so compaction of table_oid defers across the capture->apply window. A
+        // transfer_scan reading an INSERT..SELECT / CTAS source (not a mutation target) leaves it
+        // false.
+        void mark_mutating() noexcept { mutating_ = true; }
 
         // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
         // role()==source drives the streaming push/finalize pipeline. The FIRST source_next OPENs a
@@ -80,6 +89,7 @@ namespace components::operators {
         bool drained_{false};
         bool emitted_any_{false};
         bool guard_types_loaded_{false};
+        bool mutating_{false}; // I-2: whole-table DELETE/UPDATE id-source ⇒ agent retains the cursor
         uint64_t cursor_id_{0};
         std::pmr::vector<types::complex_logical_type> guard_types_{resource_};
     };

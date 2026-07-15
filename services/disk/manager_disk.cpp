@@ -75,6 +75,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_drop_aborted>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::release_scans_for_session>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -527,6 +528,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_drop_aborted, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::release_scans_for_session>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::release_scans_for_session, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -683,6 +688,29 @@ namespace services::disk {
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] =
                 actor_zeta::otterbrix::send(agent_ptr->address(), &agent_disk_t::storage_drop_aborted_inner, txn_id);
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent_ptr.get());
+            }
+            agent_futures.emplace_back(std::move(fut));
+        }
+        for (auto& f : agent_futures) {
+            co_await std::move(f);
+        }
+        co_return;
+    }
+
+    manager_disk_t::unique_future<void> manager_disk_t::release_scans_for_session(session_id_t session) {
+        // I-2 txn-abort sweep. The retained pin is keyed by (oid, session) on the owning agent,
+        // but the caller only has the session, so fan out to EVERY agent and let each erase its
+        // own slice's cursors for that session. Mirrors storage_drop_aborted's broadcast.
+        trace(log_, "manager_disk::release_scans_for_session , session : {}", session.data());
+
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(agents_.size());
+        for (auto& agent_ptr : agents_) {
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
+                                                                  &agent_disk_t::release_scans_for_session_inner,
+                                                                  session);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }

@@ -332,7 +332,8 @@ namespace services::disk {
                                        std::unique_ptr<components::table::table_filter_t> filter,
                                        int64_t limit,
                                        std::vector<size_t> projected_cols,
-                                       components::table::transaction_data txn);
+                                       components::table::transaction_data txn,
+                                       bool mutating);
 
         // storage_reduce_inner — the aggregate-pushdown REDUCE, a dedicated protocol
         //   leg (NOT a scan mode): runs the whole GROUP BY over this agent's OWN slice via
@@ -472,6 +473,17 @@ namespace services::disk {
         //   the matching entries so on_horizon_advanced never reclaims the live .otbx.
         unique_future<void> storage_drop_aborted_inner(uint64_t txn_id);
 
+        // release_scans_for_session_inner — I-2 statement/txn-end sweep. When a transaction
+        //   ABORTS, any mutating (DELETE/UPDATE) scan cursor it left RETAINED past drain
+        //   (awaiting_apply) will never get its storage_delete_rows/storage_update apply — the
+        //   captured ids are being discarded — so the retained pin would keep deferring
+        //   compaction of that oid until the session's next mutating open (sweep-on-open) or
+        //   forever. operator_abort_transaction fans this out to every agent; each ERASES all of
+        //   the aborting session's cursors, making the design's "cleared at apply OR txn abort"
+        //   deterministic. The aborting session's query pipeline has already torn down, so no live
+        //   cursor of it can still be fetched — erasing them is safe.
+        unique_future<void> release_scans_for_session_inner(session_id_t session);
+
         // GC-slice push-back into dropped_storages_. Not a mailbox handler. Called
         // pre-scheduler-start by base_spaces catalog rebuild and at runtime by
         // mark_storage_dropped_many_inner (single-threaded on the agent at both sites).
@@ -576,6 +588,7 @@ namespace services::disk {
                                                             &agent_disk_t::on_horizon_advanced_inner,
                                                             &agent_disk_t::storage_dropped_committed_inner,
                                                             &agent_disk_t::storage_drop_aborted_inner,
+                                                            &agent_disk_t::release_scans_for_session_inner,
                                                             &agent_disk_t::drop_storage_many_inner,
                                                             &agent_disk_t::append_pg_catalog_row_inner,
                                                             &agent_disk_t::delete_pg_catalog_rows_inner,
@@ -645,8 +658,38 @@ namespace services::disk {
             components::table::transaction_data txn{0, 0};    // MVCC snapshot for the whole scan
             int64_t matched_limit{-1};                        // post-filter matched-row cap (-1 == unbounded)
             uint64_t matched_emitted{0};                      // running matched rows handed out (enforces matched_limit)
+            // I-2 (no-renumber-under-capture): a DML scan (DELETE/UPDATE) captures physical
+            // row_ids during this scan and applies the mutation LATER, from a different
+            // actor. A compaction of table_oid between capture and apply would renumber the
+            // rows out from under the captured ids. `mutating` marks such a scan; its cursor
+            // is RETAINED in active_scans_ past drain (awaiting_apply) so has_active_scan_for_oid
+            // -- the gate the compact sites already consult -- keeps deferring compaction for
+            // the whole capture->apply window. The apply handler
+            // (storage_delete_rows_inner / storage_update_inner) erases it once the mutation
+            // lands. `session` matches the erase to the right statement when several DML
+            // statements target the same oid concurrently.
+            bool mutating{false};
+            bool awaiting_apply{false};                       // drained, but its mutation has not applied yet
+            session_id_t session{};
         };
         std::pmr::unordered_map<uint64_t, active_scan_t> active_scans_;
+
+        // I-2 release: erase every retained (drained, awaiting-apply) mutating cursor on
+        // `oid` opened by `session`, called from the DML apply handlers once the mutation
+        // has landed. Also sweeps a session's OWN stale retained cursors on a fresh mutating
+        // open (a per-session statement runs to completion before the next), which bounds an
+        // aborted statement's retained cursor to at most one leak per session. Agent-thread
+        // only (active_scans_ is agent-owned; the mailbox serializes every access).
+        void release_mutating_scans(components::catalog::oid_t oid, session_id_t session) noexcept {
+            for (auto it = active_scans_.begin(); it != active_scans_.end();) {
+                const auto& scan = it->second;
+                if (scan.mutating && scan.awaiting_apply && scan.table_oid == oid && scan.session == session) {
+                    it = active_scans_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
         // Monotonic per-agent cursor-id counter, combined with the session at mint time so the id
         // is (session, counter) per R16. 0 is reserved for the OPEN request sentinel.
         uint64_t next_scan_cursor_id_{1};

@@ -68,7 +68,11 @@ namespace services::planner::impl {
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         std::move(returning)));
-            plan->set_children(create_plan_match(context, node_match, limit));
+            // I-2: the predicate scan is this DELETE's physical-id source — mark it mutating so the
+            // owning agent defers compaction of table_oid across its capture->apply window.
+            auto match_scan = create_plan_match(context, node_match, limit);
+            mark_mutation_target_scan(match_scan, table_oid);
+            plan->set_children(std::move(match_scan));
 
             return plan;
         }
@@ -84,12 +88,18 @@ namespace services::planner::impl {
                                                                                     std::move(returning),
                                                                                     *expr,
                                                                                     limit.limit()));
+        // I-2: the target-table scan (LEFT child) sources the row_ids this DELETE applies; mark ONLY
+        // it mutating. The USING source (RIGHT child) is a read even when it scans the same oid, so
+        // it stays non-mutating — one mutating cursor per (oid, session) (HOLE B invariant).
+        auto target_scan = boost::intrusive_ptr(
+            new components::operators::full_scan(context.resource,
+                                                 context.log.clone(),
+                                                 table_oid,
+                                                 nullptr,
+                                                 components::logical_plan::limit_t::unlimit()));
+        target_scan->mark_mutating();
         plan->set_children(
-            boost::intrusive_ptr(new components::operators::full_scan(context.resource,
-                                                                      context.log.clone(),
-                                                                      table_oid,
-                                                                      nullptr,
-                                                                      components::logical_plan::limit_t::unlimit())),
+            std::move(target_scan),
             create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
         return plan;
     }

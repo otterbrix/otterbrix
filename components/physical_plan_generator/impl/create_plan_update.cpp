@@ -59,7 +59,11 @@ namespace services::planner::impl {
                                                                                         node_update->updates(),
                                                                                         node_update->upsert(),
                                                                                         std::move(returning)));
-            plan->set_children(create_plan_match(context, node_match, limit));
+            // I-2: mark the predicate scan (this UPDATE's physical-id source) mutating so the owning
+            // agent defers compaction of table_oid across its capture->apply window.
+            auto match_scan = create_plan_match(context, node_match, limit);
+            mark_mutation_target_scan(match_scan, table_oid);
+            plan->set_children(std::move(match_scan));
 
             return plan;
         }
@@ -74,12 +78,17 @@ namespace services::planner::impl {
                                                                                     std::move(returning),
                                                                                     node_match->expressions()[0],
                                                                                     limit.limit()));
+        // I-2: mark ONLY the target-table scan (LEFT child); the FROM source (RIGHT child) stays a
+        // read even on the same oid — one mutating cursor per (oid, session) (HOLE B invariant).
+        auto target_scan = boost::intrusive_ptr(
+            new components::operators::full_scan(context.resource,
+                                                 context.log.clone(),
+                                                 table_oid,
+                                                 nullptr,
+                                                 components::logical_plan::limit_t::unlimit()));
+        target_scan->mark_mutating();
         plan->set_children(
-            boost::intrusive_ptr(new components::operators::full_scan(context.resource,
-                                                                      context.log.clone(),
-                                                                      table_oid,
-                                                                      nullptr,
-                                                                      components::logical_plan::limit_t::unlimit())),
+            std::move(target_scan),
             create_plan(context, function_registry, node_source, components::logical_plan::limit_t::unlimit(), params));
         return plan;
     }

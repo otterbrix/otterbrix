@@ -236,6 +236,21 @@ namespace components::operators {
             }
         }
 
+        // (4) I-2 scan-cursor sweep. A DELETE/UPDATE whose scan drained and captured physical
+        //     ids but whose apply never landed (this txn is aborting) leaves a mutating cursor
+        //     RETAINED on the owning agent (awaiting_apply); it would keep deferring compaction of
+        //     that oid until the session's next mutating open. Erase all of this session's cursors
+        //     now so reclaim deferral ends deterministically at abort ("cleared at apply OR txn
+        //     abort"). Session-keyed, one broadcast — unconditional (any statement in the txn may
+        //     have opened one), cheap on the rare abort path. The captured ids are discarded with
+        //     the txn, so nothing depends on the cursor surviving.
+        if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            auto [_rs, rsf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::release_scans_for_session,
+                                               ctx->session);
+            co_await std::move(rsf);
+        }
+
         output_ = nullptr;
         mark_executed();
         co_return;

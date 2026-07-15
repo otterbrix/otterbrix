@@ -490,6 +490,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_drop_aborted_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::release_scans_for_session_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::release_scans_for_session_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::drop_storage_many_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::drop_storage_many_inner, msg);
                 break;
@@ -1001,6 +1005,12 @@ namespace services::disk {
                                        components::catalog::oid_t table_oid,
                                        components::vector::vector_t row_ids,
                                        std::unique_ptr<components::vector::data_chunk_t> data) {
+        // I-2 prompt clear: this UPDATE's capture->apply window on (table_oid, session) closes
+        // here -- the operator has handed its captured physical ids to this handler. The storage
+        // mutation below lands before the single WAL co_await, so releasing the retained pin now
+        // cannot let a compaction slip in ahead of the apply (this agent runs both). Harmless
+        // no-op if the oid is not owned here / no pin was retained.
+        release_mutating_scans(table_oid, ctx.session);
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -1084,6 +1094,10 @@ namespace services::disk {
                                             components::catalog::oid_t table_oid,
                                             components::vector::vector_t row_ids,
                                             uint64_t count) {
+        // I-2 prompt clear: this DELETE's capture->apply window on (table_oid, session) closes
+        // here (symmetric with storage_update_inner). The delete_rows mark below lands before the
+        // single WAL co_await, so releasing the retained pin now is race-free on this agent thread.
+        release_mutating_scans(table_oid, ctx.session);
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -1388,7 +1402,8 @@ namespace services::disk {
                                                  std::unique_ptr<components::table::table_filter_t> filter,
                                                  int64_t limit,
                                                  std::vector<size_t> projected_cols,
-                                                 components::table::transaction_data txn) {
+                                                 components::table::transaction_data txn,
+                                                 bool mutating) {
         // Drained sentinel: an EMPTY chunk (cardinality 0). The executor breaks on size 0 and never
         // pushes it, so the schema is irrelevant (the source operator carries its own projected
         // empty-guard).
@@ -1399,6 +1414,25 @@ namespace services::disk {
                 components::vector::DEFAULT_VECTOR_CAPACITY);
             empty->set_cardinality(0);
             return fetch_batch_t{std::move(empty), reply_cursor_id};
+        };
+        // I-2 natural-drain retirement. A cursor is RETAINED past drain (awaiting_apply) — so
+        // has_active_scan_for_oid keeps deferring compaction of table_oid across the capture->apply
+        // window — ONLY when it is a mutating (DELETE/UPDATE) scan that actually HANDED OUT rows
+        // (matched_emitted > 0): those rows' physical ids are now in flight to the mutation
+        // operator, which applies from a later mailbox turn. A mutating scan that matched NOTHING
+        // (matched_emitted == 0) captured no id, so there is no renumber hazard — it is GC'd
+        // immediately, which is what stops a 0-match DELETE/UPDATE from leaking a pin that never
+        // gets an apply to release it. A plain read cursor is always GC'd. The apply handler
+        // (storage_delete_rows_inner / storage_update_inner) or sweep-on-open erases a retained
+        // pin. Use ONLY on natural drain: an error/DROP mid scan aborts the statement (no apply
+        // follows), so those paths hard-erase.
+        auto retire_on_drain = [](std::pmr::unordered_map<uint64_t, active_scan_t>& scans,
+                                  std::pmr::unordered_map<uint64_t, active_scan_t>::iterator cit) {
+            if (cit->second.mutating && cit->second.matched_emitted > 0) {
+                cit->second.awaiting_apply = true;
+            } else {
+                scans.erase(cit);
+            }
         };
 
         if (cursor_id == 0) {
@@ -1414,8 +1448,19 @@ namespace services::disk {
                       static_cast<unsigned>(table_oid));
                 co_return make_drained(0);
             }
+            // I-2 sweep-on-open: a fresh DML scan on this (oid, session) first clears this
+            // session's OWN stale retained pins on this oid. A session runs its statements
+            // serially, so any awaiting-apply pin left by a prior statement on this oid can
+            // only be a leak (its mutation errored before finalize / aborted before apply).
+            // This bounds such a leak to at most one per (session, oid) and is the backstop
+            // for the rare path the prompt apply/commit clears miss.
+            if (mutating) {
+                release_mutating_scans(table_oid, session);
+            }
             active_scan_t scan{};
             scan.table_oid = table_oid;
+            scan.mutating = mutating;
+            scan.session = session;
             // Raw scan cursor: position-only, re-seeks per fetch. `limit` is the (offset+limit)
             // head cap the source pushed down; with a filter it is a POST-filter matched-row
             // cap (the legacy scan_batched applied it post-hoc), so it bounds matched rows
@@ -1443,10 +1488,11 @@ namespace services::disk {
         }
         auto& scan = cit->second;
 
-        // Position exhausted or matched-row limit already met: GC and reply drained.
+        // Position exhausted or matched-row limit already met: retire (retain-if-mutating) and reply
+        // drained.
         if (scan.pos.drained ||
             (scan.matched_limit >= 0 && scan.matched_emitted >= static_cast<uint64_t>(scan.matched_limit))) {
-            active_scans_.erase(cit);
+            retire_on_drain(active_scans_, cit);
             co_return make_drained(cursor_id);
         }
 
@@ -1490,8 +1536,9 @@ namespace services::disk {
         scan.matched_emitted += batch->size();
 
         if (batch->size() == 0) {
-            // No rows this round (drained, or a boundary batch trimmed to 0): GC and reply drained.
-            active_scans_.erase(cit);
+            // No rows this round (drained, or a boundary batch trimmed to 0): retire
+            // (retain-if-mutating) and reply drained.
+            retire_on_drain(active_scans_, cit);
             co_return make_drained(cursor_id);
         }
         co_return fetch_batch_t{std::move(batch), cursor_id};
@@ -2237,6 +2284,21 @@ namespace services::disk {
                       static_cast<unsigned>(it->oid),
                       txn_id);
                 it = dropped_storages_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        co_return;
+    }
+
+    agent_disk_t::unique_future<void> agent_disk_t::release_scans_for_session_inner(session_id_t session) {
+        // I-2 txn-abort sweep: erase every one of the aborting session's cursors on this agent.
+        // Its query pipeline has torn down, so no cursor of it will be fetched or applied again;
+        // a retained mutating pin left by a DELETE/UPDATE whose apply never came would otherwise
+        // keep deferring compaction of its oid. Agent-thread only (active_scans_ is agent-owned).
+        for (auto it = active_scans_.begin(); it != active_scans_.end();) {
+            if (it->second.session == session) {
+                it = active_scans_.erase(it);
             } else {
                 ++it;
             }

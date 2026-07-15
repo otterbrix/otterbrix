@@ -243,4 +243,38 @@ namespace services::planner::impl {
                                                                                  node->expressions()[0]));
     }
 
+    void mark_mutation_target_scan(const components::operators::operator_ptr& root,
+                                   components::catalog::oid_t target_oid) {
+        using components::operators::operator_type;
+        // Descend the LEFT spine: create_plan_match lowers a DML target to either a bare
+        // full_scan / index_scan / transfer_scan, or that scan under a single-child wrapper
+        // (operator_match_t for a non-pure-compare predicate), which is always the left child.
+        // The USING/FROM source (when present) is the operator_delete/update's RIGHT child, so it
+        // is never on this spine — that is what keeps the single-mutating-scan invariant (HOLE B).
+        for (auto op = root; op != nullptr; op = op->left()) {
+            switch (op->type()) {
+                case operator_type::full_scan: {
+                    auto* fs = static_cast<components::operators::full_scan*>(op.get());
+                    if (fs->table_oid() == target_oid) {
+                        fs->mark_mutating();
+                    }
+                    return;
+                }
+                case operator_type::transfer_scan: {
+                    auto* ts = static_cast<components::operators::transfer_scan*>(op.get());
+                    if (ts->table_oid() == target_oid) {
+                        ts->mark_mutating();
+                    }
+                    return;
+                }
+                case operator_type::index_scan:
+                    // One-shot fetch, no cursor; index_scan only runs on INDEXED tables, which are
+                    // excluded from every compaction site — nothing renumbers under its captured ids.
+                    return;
+                default:
+                    break;
+            }
+        }
+    }
+
 } // namespace services::planner::impl

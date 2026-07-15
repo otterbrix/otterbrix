@@ -137,7 +137,8 @@ namespace components::operators {
                                      std::unique_ptr<components::table::table_filter_t>(nullptr),
                                      int64_t{-1}, // unbounded — index every row
                                      std::vector<size_t>{}, // empty == read all columns
-                                     ctx->txn);
+                                     ctx->txn,
+                                     /*mutating=*/false); // read-only backfill (builds the index)
                 auto fetch_result = co_await std::move(fbf);
                 if (fetch_result.has_error()) {
                     set_error(fetch_result.error());

@@ -316,7 +316,8 @@ namespace components::operators {
                                              std::move(filter),
                                              scan_limit,
                                              projected_cols_,
-                                             ctx->txn);
+                                             ctx->txn,
+                                             mutating_);
             auto fetch_result = co_await std::move(sf);
             if (fetch_result.has_error()) {
                 set_error(fetch_result.error());
@@ -329,6 +330,8 @@ namespace components::operators {
         }
 
         // ADVANCE: read one more batch from the open cursor (filter dropped — the agent owns it).
+        // mutating_ is an OPEN-time attribute (the agent reads it only when minting the cursor); it
+        // is forwarded here purely for call-site uniformity.
         auto [_s, sf] = actor_zeta::send(ctx->disk_address,
                                          &services::disk::manager_disk_t::storage_fetch_next_batch,
                                          ctx->session,
@@ -337,7 +340,8 @@ namespace components::operators {
                                          std::unique_ptr<table::table_filter_t>(nullptr),
                                          int64_t{-1},
                                          projected_cols_,
-                                         ctx->txn);
+                                         ctx->txn,
+                                         mutating_);
         auto fetch_result = co_await std::move(sf);
         if (fetch_result.has_error()) {
             set_error(fetch_result.error());

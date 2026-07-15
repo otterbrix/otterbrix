@@ -602,6 +602,13 @@ namespace services::disk {
         /// un-marking the DROP so on_horizon_advanced never removes the .otbx.
         unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
 
+        /// I-2 txn-abort sweep. operator_abort_transaction sends this; the manager fans
+        /// release_scans_for_session_inner(session) out to EVERY agent so each erases the
+        /// aborting session's scan cursors — in particular a mutating (DELETE/UPDATE) pin left
+        /// retained past drain whose apply never came — making compaction deferral end at abort
+        /// rather than lingering to the session's next mutating open on the oid.
+        unique_future<void> release_scans_for_session(session_id_t session);
+
         /// Bootstrap helper — base_spaces wires dispatcher address before
         /// scheduler.start, and the manager fans it out to every agent so
         /// per-slice on_horizon_advanced_inner can fire
@@ -660,7 +667,8 @@ namespace services::disk {
                                  std::unique_ptr<components::table::table_filter_t> filter,
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
-                                 components::table::transaction_data txn);
+                                 components::table::transaction_data txn,
+                                 bool mutating);
         // Aggregate-pushdown REDUCE: transparent router to the owning agent's
         // storage_reduce_inner — one reply carrying ALL final aggregated rows (see
         // disk_contract for the protocol + the single-owner invariant).
@@ -760,7 +768,8 @@ namespace services::disk {
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped_many,
                                                        &manager_disk_t::storage_dropped_committed,
-                                                       &manager_disk_t::storage_drop_aborted>;
+                                                       &manager_disk_t::storage_drop_aborted,
+                                                       &manager_disk_t::release_scans_for_session>;
 
     private:
         // Disk storage helpers — used only by bootstrap / io / recovery paths

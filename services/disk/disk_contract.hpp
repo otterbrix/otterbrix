@@ -221,7 +221,11 @@ namespace services::disk {
                                  std::unique_ptr<components::table::table_filter_t> filter,
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
-                                 components::table::transaction_data txn);
+                                 components::table::transaction_data txn,
+                                 // I-2: true for a DELETE/UPDATE scan whose cursor must be
+                                 // retained past drain (until the mutation applies) so it keeps
+                                 // deferring compaction of table_oid. false for read scans.
+                                 bool mutating);
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         actor_zeta::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
         storage_fetch(session_id_t session,
@@ -308,6 +312,10 @@ namespace services::disk {
         // un-marking the DROP so on_horizon_advanced never reclaims the still-live .otbx.
         actor_zeta::unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
 
+        // I-2 txn-abort sweep — erase the aborting session's retained scan cursors (see
+        // manager_disk_t::release_scans_for_session).
+        actor_zeta::unique_future<void> release_scans_for_session(session_id_t session);
+
         using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::flush,
                                                             &disk_contract::checkpoint_all,
                                                             &disk_contract::vacuum_all,
@@ -350,7 +358,8 @@ namespace services::disk {
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped_many,
                                                             &disk_contract::storage_dropped_committed,
-                                                            &disk_contract::storage_drop_aborted>;
+                                                            &disk_contract::storage_drop_aborted,
+                                                            &disk_contract::release_scans_for_session>;
 
         disk_contract() = delete;
     };

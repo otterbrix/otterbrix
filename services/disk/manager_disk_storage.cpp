@@ -363,7 +363,8 @@ namespace services::disk {
                                              std::unique_ptr<components::table::table_filter_t> filter,
                                              int64_t limit,
                                              std::vector<size_t> projected_cols,
-                                             components::table::transaction_data txn) {
+                                             components::table::transaction_data txn,
+                                             bool mutating) {
         // Transparent router: the agent reply carries the batch + minted/advanced cursor_id
         // (and any scan_error); forward the wrapper unchanged so the scan source operator
         // turns it into an error cursor on has_error() and keeps the cursor id otherwise. The
@@ -379,7 +380,8 @@ namespace services::disk {
                                                                   std::move(filter),
                                                                   limit,
                                                                   projected_cols,
-                                                                  txn);
+                                                                  txn,
+                                                                  mutating);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

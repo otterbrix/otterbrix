@@ -69,7 +69,8 @@ namespace components::operators {
                                              std::unique_ptr<table::table_filter_t>(nullptr),
                                              scan_limit,
                                              projected_cols_,
-                                             ctx->txn);
+                                             ctx->txn,
+                                             mutating_);
             auto fetch_result = co_await std::move(sf);
             if (fetch_result.has_error()) {
                 set_error(fetch_result.error());
@@ -90,7 +91,8 @@ namespace components::operators {
                                          std::unique_ptr<table::table_filter_t>(nullptr),
                                          int64_t{-1},
                                          projected_cols_,
-                                         ctx->txn);
+                                         ctx->txn,
+                                         mutating_);
         auto fetch_result = co_await std::move(sf);
         if (fetch_result.has_error()) {
             set_error(fetch_result.error());

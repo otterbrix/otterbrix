@@ -1802,6 +1802,26 @@ namespace services::dispatcher {
                                 }
                                 const std::string prefix = se->key().as_string();
                                 const std::string prefix_slash = prefix + "/";
+                                // A jsonb operator 'base OP path' works on the columns of
+                                // ONE table — the base. In a join the two sides share
+                                // subtree names (both l and m may carry "d/e"), so the
+                                // base's side is what disambiguates: without it the loop
+                                // matched columns from both sides and every produced
+                                // get_field became ambiguous ("path not found"). The array
+                                // delete form keeps its side on the params, not key().
+                                components::expressions::side_t op_side = se->key().side();
+                                if (se->key().is_null()) {
+                                    for (const auto& p : se->params()) {
+                                        if (std::holds_alternative<components::expressions::key_t>(p)) {
+                                            op_side = std::get<components::expressions::key_t>(p).side();
+                                            break;
+                                        }
+                                    }
+                                }
+                                auto on_op_side = [&](const type_from_t& sc) {
+                                    return op_side == side_t::undefined || sc.side == side_t::undefined ||
+                                           sc.side == op_side;
+                                };
                                 // Delete may carry several prefixes: key() plus any
                                 // key_t params (the multi-key form `jsonb - text[]`).
                                 // A column survives only if it is under NONE of them.
@@ -1828,7 +1848,7 @@ namespace services::dispatcher {
                                 // (output_name, source_alias) pairs
                                 std::vector<std::pair<std::string, std::string>> cols;
                                 for (const auto& sc : incoming_schema) {
-                                    if (!sc.type.has_alias()) {
+                                    if (!sc.type.has_alias() || !on_op_side(sc)) {
                                         continue;
                                     }
                                     std::string alias(sc.type.alias());
@@ -1859,6 +1879,9 @@ namespace services::dispatcher {
                                 for (size_t j = 0; j < cols.size(); j++) {
                                     components::expressions::key_t out_key(resource, cols[j].first.c_str());
                                     components::expressions::key_t src_key(resource, cols[j].second.c_str());
+                                    // Carry the base's side so the shared subtree name
+                                    // resolves back to the side the operator named.
+                                    src_key.set_side(op_side);
                                     exprs.insert(
                                         exprs.begin() + static_cast<ptrdiff_t>(ei + j),
                                         make_scalar_expression(resource, scalar_type::get_field, out_key, src_key));

@@ -44,6 +44,10 @@
 //       subtree, not just a single key.
 //   [E] existence over a missing key is absent (false), not a hard error: a truly
 //       absent key folds to constant false and never poisons a '?|' any-of.
+//   [D] table-valued expand/delete are well-behaved: expanding a path that matches
+//       no column is a "path not found" error (not a silently vanished select
+//       item), and inside a join expand and delete resolve against the side the
+//       operator named (not blindly across both, which was ambiguous).
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -961,11 +965,12 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_over_navigation_is_a_n
     CHECK(i64(cur, "v", 0) == 20);
 }
 
-// Inside a join, scalar navigation is side-aware but EXPANSION is not: it
-// resolves the path against one schema only, so the moment both joined tables
-// carry the same subtree name it fails with "path not found" — for a path that
-// exists on both sides. Key deletion inside a join is broken outright.
-TEST_CASE("integration::cpp::test_jsonb_support::bug_expand_inside_join_is_side_blind") {
+// [D] Inside a join a jsonb operator names one table (its base), and the base's
+// side disambiguates a subtree name both joined tables carry. Expansion and key
+// deletion used to be side-blind — they matched columns from both sides, so every
+// produced column was ambiguous ("path not found") — while scalar navigation was
+// already side-aware. Now all three resolve to the side the operator named.
+TEST_CASE("integration::cpp::test_jsonb_support::expand_inside_join_is_side_aware") {
     auto config = make_test_config("/tmp/test_jsonb_matrix/join_expand");
     test_spaces space(config);
     auto* d = space.dispatcher();
@@ -976,19 +981,31 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_expand_inside_join_is_side_
                 ->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.m (k, mv, d.e, d.f) VALUES (1, 10, 11, 12), (2, 20, 22, 23);")->is_success());
 
-    // Scalar navigation resolves each side correctly — this is the part that works.
+    // Scalar navigation resolves each side correctly — this always worked.
     CHECK(i64_set(exec(d, "SELECT m #>> 'd.e' AS v FROM jp.l JOIN jp.m ON l.k = m.k;"), "v") ==
           std::set<int64_t>{11, 22});
     CHECK(i64_set(exec(d, "SELECT l #>> 'd.e' AS v FROM jp.l JOIN jp.m ON l.k = m.k;"), "v") ==
           std::set<int64_t>{111, 222});
 
-    // Expansion of the very same subtree fails, from either side.
-    // correct: two columns e, f holding 11,12 / 22,23 (resp. 111,112 / 222,223).
-    CHECK_FALSE(exec(d, "SELECT m -> 'd' FROM jp.l JOIN jp.m ON l.k = m.k;")->is_success());
-    CHECK_FALSE(exec(d, "SELECT l -> 'd' FROM jp.l JOIN jp.m ON l.k = m.k;")->is_success());
+    // Expansion of the shared subtree now works from either side, picking that
+    // side's values into the two rerooted columns e, f.
+    auto me = exec(d, "SELECT m -> 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
+    REQUIRE(me->is_success());
+    CHECK(aliases(me) == std::set<std::string>{"e", "f"});
+    CHECK(i64_set(me, "e") == std::set<int64_t>{11, 22});
+    CHECK(i64_set(me, "f") == std::set<int64_t>{12, 23});
 
-    // Key deletion inside a join cannot resolve any column at all.
-    CHECK_FALSE(exec(d, "SELECT m - 'd' FROM jp.l JOIN jp.m ON l.k = m.k;")->is_success());
+    auto le = exec(d, "SELECT l -> 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
+    REQUIRE(le->is_success());
+    CHECK(i64_set(le, "e") == std::set<int64_t>{111, 222});
+    CHECK(i64_set(le, "f") == std::set<int64_t>{112, 223});
+
+    // Key deletion resolves against the named side too: m minus subtree d keeps
+    // exactly m's remaining columns (k, mv), not l's.
+    auto md = exec(d, "SELECT m - 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
+    REQUIRE(md->is_success());
+    CHECK(aliases(md) == std::set<std::string>{"k", "mv"});
+    CHECK(i64_set(md, "mv") == std::set<int64_t>{10, 20});
 }
 
 // Expansion DOES work inside a join as long as the subtree name belongs to only

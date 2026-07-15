@@ -23,6 +23,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_null_three_valued_logic.cpp
         test_null_arithmetic.cpp
         test_null_aggregates.cpp
+        test_null_deep_path.cpp
         test_production_scenarios.cpp
         test_join.cpp
         test_join_raw.cpp

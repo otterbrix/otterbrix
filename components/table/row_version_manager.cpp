@@ -283,10 +283,20 @@ namespace components::table {
                 constant->insert_id = same_inserted_id ? insert_id : inserted[0];
                 constant->delete_id = min_delete_id;
                 result = std::move(constant);
+                return true;
             }
-            // else: partial deletes — still allow cleanup (version info no longer needed
-            //       because all versions are visible to all active transactions)
+            // Partial deletes: some rows live, some deleted. This chunk_vector_info's per-row
+            // delete marks are the ONLY record of which rows are tombstoned — a null vector_info
+            // reads as "all rows live", so signalling cleanup here (the caller replaces the slot
+            // with the unset `result`, i.e. nullptr) resurrects every deleted row in the vector
+            // (issue #567). KEEP the info: compact() physically reclaims the dead rows and rebuilds
+            // fresh, delete-free version metadata, so the version-history GC this pass would have
+            // done is merely deferred to the compaction — never a correctness requirement. Only a
+            // FULL vector reaches here (the caller skips sub-capacity ones).
+            return false;
         }
+        // No deletes: an all-live, all-committed vector needs no version metadata at all, so
+        // dropping it (null result) is correct — a null vector_info already means "all rows live".
         return true;
     }
 

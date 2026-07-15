@@ -161,6 +161,49 @@ TEST_CASE("components::table::mvcc::cleanup_versions") {
     REQUIRE(count == 10);
 }
 
+// Issue #567. cleanup_versions over a FULL (DEFAULT_VECTOR_CAPACITY) vector holding COMMITTED
+// PARTIAL deletes must not drop that vector's version info: its per-row delete marks are the only
+// record of which rows are tombstoned, and a null vector_info reads as "all rows live", so dropping
+// it resurrects the deleted rows. The caller only cleans FULL vectors, so the pre-existing 10-row
+// cleanup test (a sub-capacity vector) never reached this branch.
+TEST_CASE("components::table::mvcc::cleanup_versions_keeps_partial_deletes_in_full_vector") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    // Vector 0 (rows 0..DEFAULT_VECTOR_CAPACITY-1) must be exactly full; a few rows spill into
+    // vector 1 so the delete+cleanup below acts on a genuinely full vector.
+    constexpr uint64_t full = DEFAULT_VECTOR_CAPACITY;
+    constexpr uint64_t spill = 476;
+    append_rows(*table, env, 0, full);
+    append_rows(*table, env, static_cast<int64_t>(full), spill);
+    REQUIRE(scan_count(*table, env) == full + spill);
+
+    // Commit a partial delete of the full vector (its first 200 rows).
+    transaction_manager_t mgr(&env.resource);
+    auto session = components::session::session_id_t::generate_uid();
+    auto& txn = mgr.begin_transaction(session);
+    constexpr uint64_t ndel = 200;
+    std::pmr::vector<complex_logical_type> id_type(&env.resource);
+    id_type.emplace_back(logical_type::BIGINT);
+    auto row_ids_chunk = data_chunk_t(&env.resource, id_type, ndel);
+    for (uint64_t i = 0; i < ndel; i++) {
+        row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(i));
+    }
+    row_ids_chunk.set_cardinality(ndel);
+    auto txn_id = txn.data().transaction_id;
+    table_delete_state del_state(&env.resource);
+    table->delete_rows(del_state, row_ids_chunk.data[0], ndel, txn_id);
+    auto commit_id = mgr.commit(session);
+    mgr.publish(commit_id);
+    table->commit_all_deletes(txn_id, commit_id);
+    REQUIRE(scan_count(*table, env) == full + spill - ndel);
+
+    // With no active txns the deletes are visible-to-all and old enough, so cleanup_versions
+    // processes vector 0. It must keep the tombstones: the count stays the same, not resurrect.
+    table->cleanup_versions(mgr.lowest_active_start_time());
+    REQUIRE(scan_count(*table, env) == full + spill - ndel);
+}
+
 TEST_CASE("components::table::mvcc::multiple_txn_appends") {
     test_env env;
     auto table = make_int_table(env);

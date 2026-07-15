@@ -263,11 +263,23 @@ namespace components::vector {
             // X & 1 = X
             return;
         }
+        // Two distinct sizes matter here, and conflating them corrupts memory:
+        //  * this mask's buffer must stay sized to entry_count(count_) words -- the invariant every
+        //    other method relies on (copy-ctor/operator= read exactly that many). count_ may be the
+        //    inflated reset() default (DEFAULT_VECTOR_CAPACITY), so we must NOT shrink the buffer to
+        //    the combined row count, or a later copy would over-read THIS buffer.
+        //  * we may only READ entry_count(count) words from `other`: it was built for `count` rows,
+        //    so reading entry_count(count_) words from it would overrun ITS (smaller) buffer.
+        const auto self_entries = validity_data_t::entry_count(count_);
+        const auto other_entries = validity_data_t::entry_count(count);
         if (all_valid()) {
-            // 1 & Y = Y
-            validity_data_ = std::make_shared<validity_data_t>(resource_,
-                                                               other.validity_mask_,
-                                                               validity_data_t::entry_count(count_));
+            // 1 & Y = Y over the first `count` rows; rows in [count, count_) have no operand data
+            // and stay valid (the all-ones fill from the count-only constructor).
+            auto data = std::make_shared<validity_data_t>(resource_, self_entries);
+            for (size_t i = 0; i < other_entries; i++) {
+                data->data()[i] = other.validity_mask_[i];
+            }
+            validity_data_ = std::move(data);
             validity_mask_ = validity_data_->data();
             return;
         }
@@ -276,13 +288,13 @@ namespace components::vector {
             return;
         }
 
-        validity_data_ =
-            std::make_shared<validity_data_t>(resource_, validity_mask_, validity_data_t::entry_count(count_));
+        // Copy-on-write: validity_data_ may be shared, so clone before mutating. Keep the full
+        // entry_count(count_)-word buffer, then AND in only the entry_count(count) words `other`
+        // actually holds.
+        validity_data_ = std::make_shared<validity_data_t>(resource_, validity_mask_, self_entries);
         validity_mask_ = validity_data_->data();
-
-        auto entry_count = validity_data_t::entry_count(count);
-        for (size_t i = 0; i < entry_count; i++) {
-            data()[i] = data()[i] & other.data()[i];
+        for (size_t i = 0; i < other_entries; i++) {
+            validity_mask_[i] &= other.validity_mask_[i];
         }
     }
 

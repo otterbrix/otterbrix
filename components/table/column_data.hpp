@@ -5,6 +5,7 @@
 #include "column_state.hpp"
 #include "segment_tree.hpp"
 #include "update_segment.hpp"
+#include <components/types/tri_bool.hpp>
 
 namespace components::table {
 
@@ -23,27 +24,14 @@ namespace components::table {
         TRUE_OR_NULL = 3,
         FALSE_OR_NULL = 4
     };
-    // SQL three-valued logic. A value comparison against a NULL operand is UNKNOWN, not
-    // FALSE: the two differ under NOT (`NOT UNKNOWN` is UNKNOWN, while `NOT FALSE` is TRUE),
-    // so a filter tree that collapses UNKNOWN into FALSE lets NOT resurrect NULL rows.
-    // Only rows that evaluate to `yes` are selected.
-    enum class filter_match_t : uint8_t
-    {
-        no = 0,
-        yes = 1,
-        unknown = 2
-    };
+    // The storage-scan filter answers in SQL three-valued logic. filter_match_t is the table
+    // component's spelling of the shared types::tri_bool_t vocabulary (tri_bool.hpp), so the scan
+    // filter and the in-memory predicate evaluator share one definition of TRUE/FALSE/UNKNOWN and
+    // cannot drift. A value comparison against a NULL operand is UNKNOWN, not FALSE: the two differ
+    // under NOT, so collapsing UNKNOWN into FALSE would let NOT resurrect NULL rows.
+    using filter_match_t = types::tri_bool_t;
 
-    constexpr filter_match_t filter_match_not(filter_match_t v) {
-        switch (v) {
-            case filter_match_t::yes:
-                return filter_match_t::no;
-            case filter_match_t::no:
-                return filter_match_t::yes;
-            default:
-                return filter_match_t::unknown;
-        }
-    }
+    inline constexpr filter_match_t filter_match_not(filter_match_t v) noexcept { return types::tri_not(v); }
 
     constexpr uint64_t MAX_ROW_ID = 1ULL << 55; // 2^55
 

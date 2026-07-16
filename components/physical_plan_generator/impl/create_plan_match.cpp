@@ -171,7 +171,11 @@ namespace services::planner::impl {
                     return match_operator;
                 }
             } else {
-                return boost::intrusive_ptr(new components::operators::operator_match_t(nullptr, log_t{}, expr, limit));
+                // The sourceless no-table match still owns pmr members (stream_types_ is
+                // constructed from resource_), so it needs a real resource: a null one
+                // violates polymorphic_allocator's nonnull contract at construction.
+                return boost::intrusive_ptr(
+                    new components::operators::operator_match_t(context.resource, context.log.clone(), expr, limit));
             }
         }
     } // namespace

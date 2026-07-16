@@ -477,33 +477,16 @@ TEST_CASE("integration::cpp::multi_database_isolation::unqualified_names_preserv
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    // Unqualified handling must be UNCHANGED by the isolation fix (the
-    // relname-only scan is preserved for empty dbnames; no session
-    // default-database substitution exists). What "unchanged" means today:
-    // unqualified CREATE TABLE succeeds (pg_class row with
-    // relnamespace=INVALID), but unqualified DML against it fails validation
-    // ("collection does not exist") because gather_plan_resolve_index drops
-    // metadata whose namespace is INVALID — a pre-existing gap on main
-    // (verified on unpatched b3eb02ba), tracked separately as part of the
-    // default-database/search-path design task.
+    // Unqualified CREATE TABLE keeps working (the relname-only scan is
+    // preserved for empty dbnames). Unqualified DML behavior is a known gap
+    // tracked in issue #574 and deliberately NOT asserted here.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t1 (id BIGINT);")->is_success());
     }
-    {
-        auto session = otterbrix::session_id_t();
-        auto c = dispatcher->execute_sql(session, "INSERT INTO t1 (id) VALUES (7);");
-        REQUIRE(c->is_error()); // pre-existing: identical failure on unpatched main
-    }
-    {
-        auto session = otterbrix::session_id_t();
-        auto c = dispatcher->execute_sql(session, "SELECT * FROM t1;");
-        REQUIRE(c->is_error()); // pre-existing: same tbl_md gate as INSERT
-    }
 
-    // Intended behavior change pinned: a table created UNQUALIFIED
-    // (relnamespace = INVALID) is NOT reachable through a database-qualified
-    // name — previously the relname-only scan leak-matched it.
+    // A table created UNQUALIFIED (relnamespace = INVALID) is not reachable
+    // through a database-qualified name.
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db1;")->is_success());

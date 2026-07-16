@@ -1900,3 +1900,170 @@ TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_r
     REQUIRE(as_key(rcmp->left()).path().size() == 1);
     REQUIRE(as_key(rcmp->left()).path()[0] == 2); // t2.id, merged index 2 (>= left_width)
 }
+
+// ================================================================
+// TRANSITIVE EQUI-PREDICATE PROPAGATION (inner join).
+//
+// t1 = {a, k}, t2 = {b, k2}, joined `ON t1.k = t2.k2` (an equi-pair). The
+// merged schema is [t1.a=0, t1.k=1, t2.b=2, t2.k2=3], left_width=2. The ON keys
+// are stamped SIDE-LOCAL (validate_key resolves each against its own side: left
+// key path=1, right key path=1), which is what promote_cross_join and the real
+// validator produce.
+//
+// `WHERE t1.k = 5` filters ONE equi-key column. On a matched inner-join row
+// t1.k == t2.k2, so the same literal holds on the partner: the optimizer
+// SYNTHESIZES `t2.k2 = 5` and routes it (via the existing merged-path bucketer +
+// relocalizer) below t2's scan — in ADDITION to the original t1.k=5 below t1.
+// The synthesized key must NAME the partner column (k2) and localize to t2's
+// right-local index (1). The whole WHERE (t1.k=5 + derived t2.k2=5) pushes, so
+// the bare join is exposed.
+// ================================================================
+TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_equi_propagation") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(int64_t(5));
+
+    auto left = join_scan(&resource, {"a", "k"});
+    auto right = join_scan(&resource, {"b", "k2"});
+    auto join = make_node_join(&resource, pdb(), prel(), join_type::inner);
+    join->append_child(left);
+    join->append_child(right);
+    // ON t1.k (left-local 1) = t2.k2 (right-local 1)  -- side-local paths.
+    join->append_expression(make_compare_expression(&resource,
+                                                     compare_type::eq,
+                                                     pruned_key(&resource, "k", 1, side_t::left),
+                                                     pruned_key(&resource, "k2", 1, side_t::right)));
+
+    // WHERE t1.k = 5  (merged index 1, left).
+    auto where =
+        make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "k", 1, side_t::left), p5);
+
+    auto outer = make_node_aggregate(&resource, pdb(), prel());
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource, pdb(), prel(), where));
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+
+    // Whole WHERE (original + derived) consumed → the bare join is exposed.
+    REQUIRE(out == join);
+
+    // t1.k = 5 pushed below t1's scan.
+    REQUIRE(join->children()[0]->type() == node_type::aggregate_t);
+    REQUIRE(join->children()[0]->children().size() == 2);
+    REQUIRE(join->children()[0]->children()[0] == left);
+    auto lm = join->children()[0]->children()[1];
+    REQUIRE(lm->type() == node_type::match_t);
+    auto* lcmp = static_cast<compare_expression_t*>(lm->expressions()[0].get());
+    REQUIRE(lcmp->type() == compare_type::eq);
+    REQUIRE(is_key(lcmp->left()));
+    REQUIRE(as_key(lcmp->left()).as_string() == "k");
+    REQUIRE(as_key(lcmp->left()).path()[0] == 1);
+    REQUIRE(is_parameter(lcmp->right()));
+    REQUIRE(as_parameter(lcmp->right()) == p5);
+
+    // DERIVED t2.k2 = 5 pushed below t2's scan — names the PARTNER column,
+    // re-localized to t2's right-local index 1, reusing the SAME parameter.
+    REQUIRE(join->children()[1]->type() == node_type::aggregate_t);
+    REQUIRE(join->children()[1]->children().size() == 2);
+    REQUIRE(join->children()[1]->children()[0] == right);
+    auto rm = join->children()[1]->children()[1];
+    REQUIRE(rm->type() == node_type::match_t);
+    auto* rc = static_cast<compare_expression_t*>(rm->expressions()[0].get());
+    REQUIRE(rc->type() == compare_type::eq);
+    REQUIRE(is_key(rc->left()));
+    REQUIRE(as_key(rc->left()).as_string() == "k2");
+    REQUIRE(as_key(rc->left()).path().size() == 1);
+    REQUIRE(as_key(rc->left()).path()[0] == 1);
+    REQUIRE(is_parameter(rc->right()));
+    REQUIRE(as_parameter(rc->right()) == p5);
+}
+
+// ================================================================
+// Transitive propagation carries ANY comparison op through the equality:
+// `WHERE t1.k > 5` on an equi-key derives `t2.k2 > 5` (a matched row has
+// t1.k == t2.k2, so the same range predicate holds on the partner).
+// ================================================================
+TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_range_propagation") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(int64_t(5));
+
+    auto left = join_scan(&resource, {"a", "k"});
+    auto right = join_scan(&resource, {"b", "k2"});
+    auto join = make_node_join(&resource, pdb(), prel(), join_type::inner);
+    join->append_child(left);
+    join->append_child(right);
+    join->append_expression(make_compare_expression(&resource,
+                                                     compare_type::eq,
+                                                     pruned_key(&resource, "k", 1, side_t::left),
+                                                     pruned_key(&resource, "k2", 1, side_t::right)));
+
+    // WHERE t1.k > 5
+    auto where =
+        make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "k", 1, side_t::left), p5);
+
+    auto outer = make_node_aggregate(&resource, pdb(), prel());
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource, pdb(), prel(), where));
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+
+    REQUIRE(out == join);
+
+    // DERIVED t2.k2 > 5 (same op) below t2's scan.
+    REQUIRE(join->children()[1]->type() == node_type::aggregate_t);
+    REQUIRE(join->children()[1]->children().size() == 2);
+    REQUIRE(join->children()[1]->children()[0] == right);
+    auto rm = join->children()[1]->children()[1];
+    REQUIRE(rm->type() == node_type::match_t);
+    auto* rc = static_cast<compare_expression_t*>(rm->expressions()[0].get());
+    REQUIRE(rc->type() == compare_type::gt);
+    REQUIRE(is_key(rc->left()));
+    REQUIRE(as_key(rc->left()).as_string() == "k2");
+    REQUIRE(as_key(rc->left()).path()[0] == 1);
+    REQUIRE(is_parameter(rc->right()));
+    REQUIRE(as_parameter(rc->right()) == p5);
+}
+
+// ================================================================
+// OUTER-join safety: propagation is UNSOUND on the null-padded side. For
+// `t1 LEFT JOIN t2 ON t1.k = t2.k2 WHERE t1.k = 5`, a preserved left row with
+// no t2 match has t2.k2 = NULL; deriving `t2.k2 = 5` and pushing it below t2
+// would wrongly drop such rows. The derivation is gated to INNER/CROSS, so
+// NOTHING is synthesized here — t2's scan stays UNFILTERED. (t1.k=5 still
+// pushes below t1, the row-preserving side.)
+// ================================================================
+TEST_CASE("optimizer::pushdown_filter::left_join_no_transitive_propagation") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(int64_t(5));
+
+    auto left = join_scan(&resource, {"a", "k"});
+    auto right = join_scan(&resource, {"b", "k2"});
+    auto join = make_node_join(&resource, pdb(), prel(), join_type::left);
+    join->append_child(left);
+    join->append_child(right);
+    join->append_expression(make_compare_expression(&resource,
+                                                     compare_type::eq,
+                                                     pruned_key(&resource, "k", 1, side_t::left),
+                                                     pruned_key(&resource, "k2", 1, side_t::right)));
+
+    auto where =
+        make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "k", 1, side_t::left), p5);
+
+    auto outer = make_node_aggregate(&resource, pdb(), prel());
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource, pdb(), prel(), where));
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+
+    // t1.k=5 pushes below t1 (left preserved); the whole WHERE consumed → bare join.
+    REQUIRE(out == join);
+    REQUIRE(join->children()[0]->type() == node_type::aggregate_t);
+    REQUIRE(join->children()[0]->children().size() == 2);
+    REQUIRE(join->children()[0]->children()[0] == left);
+    REQUIRE(join->children()[0]->children()[1]->type() == node_type::match_t);
+
+    // NO derived predicate on the null-padded right side — t2's scan is untouched.
+    REQUIRE(join->children()[1] == right);
+}

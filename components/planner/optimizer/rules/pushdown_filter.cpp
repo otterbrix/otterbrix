@@ -491,6 +491,192 @@ namespace components::planner::optimizer {
             return width;
         }
 
+        // --- transitive equi-predicate propagation --------------------------------
+        //
+        // Given an equi-join `... ON a.x = b.y` and a WHERE predicate on ONE of the
+        // join-key columns, the SAME predicate holds on the equality partner: on a
+        // matched row a.x == b.y, so `a.x OP c` <=> `b.y OP c`. Synthesizing the
+        // partner predicate here (BEFORE bucketing) lets the existing merged-path
+        // bucketer route it to the OTHER side's scan (the classic star-schema win: a
+        // literal on the fact join key reaches every joined dimension).
+        //
+        // Soundness rests on INNER/CROSS-only: on a null-padded outer side a preserved
+        // row has partner == NULL, so `partner OP c` would wrongly drop it — the caller
+        // gates the whole derivation on the join being inner/cross.
+
+        // Only these comparison ops transport across an equality. IS NULL / IS NOT NULL
+        // (excluded — they do not transport through `=`), LIKE/regex, ANY/ALL and the
+        // union connectives are all rejected: they are not simple key-vs-const
+        // predicates or do not preserve under substitution of an equal value.
+        bool is_transportable_compare(compare_type t) {
+            switch (t) {
+                case compare_type::eq:
+                case compare_type::ne:
+                case compare_type::gt:
+                case compare_type::lt:
+                case compare_type::gte:
+                case compare_type::lte:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        // An equi-join key pair carried on the join ON condition. The ON keys are
+        // stamped SIDE-LOCAL (validate_key resolves each against its own side's schema;
+        // promote_cross_join re-localizes the same way), so the left key's local index
+        // equals its MERGED index (the left child spans the merged prefix) and the
+        // right key's merged index is left_width + its local index. We keep each side's
+        // full key (name + side + local path) so a synthesized partner predicate NAMES
+        // the partner column and rides the existing merged-path bucketer + relocalizer
+        // unchanged: a right partner is stamped at its merged index and relocalize_keys
+        // later subtracts left_width back to the right-local index.
+        struct equi_pair_t {
+            key_t left_key;
+            key_t right_key;
+            size_t left_merged;
+            size_t right_merged;
+        };
+
+        // Extract an equi-pair from one ON conjunct `eq(key, key)` with both operands a
+        // single top-level column on opposite sides. Mirrors hash_join's
+        // detect_equi_columns (side-local paths + side()), returning the pair in the
+        // join's merged coordinate space. nullopt for anything else (non-eq, const
+        // operand, nested-field path, same-side).
+        std::optional<equi_pair_t> equi_pair_from_conjunct(const expression_ptr& on_conj, size_t left_width) {
+            if (!on_conj || on_conj->group() != expression_group::compare) {
+                return std::nullopt;
+            }
+            auto* cmp = static_cast<compare_expression_t*>(on_conj.get());
+            if (cmp->type() != compare_type::eq || !is_key(cmp->left()) || !is_key(cmp->right())) {
+                return std::nullopt;
+            }
+            const auto& a = as_key(cmp->left());
+            const auto& b = as_key(cmp->right());
+            if (a.path().size() != 1 || b.path().size() != 1) {
+                return std::nullopt;
+            }
+            if (a.side() == side_t::left && b.side() == side_t::right) {
+                return equi_pair_t{a, b, a.path()[0], left_width + b.path()[0]};
+            }
+            if (a.side() == side_t::right && b.side() == side_t::left) {
+                return equi_pair_t{b, a, b.path()[0], left_width + a.path()[0]};
+            }
+            return std::nullopt;
+        }
+
+        std::pmr::vector<equi_pair_t>
+        collect_equi_pairs(std::pmr::memory_resource* resource, const expression_ptr& on_expr, size_t left_width) {
+            std::pmr::vector<equi_pair_t> pairs{resource};
+            for (const auto& c : split_conjuncts(resource, on_expr)) {
+                if (auto p = equi_pair_from_conjunct(c, left_width)) {
+                    pairs.push_back(std::move(*p));
+                }
+            }
+            return pairs;
+        }
+
+        // A WHERE conjunct of the transportable shape `key OP param` / `param OP key`,
+        // where key is a single top-level column and the other operand a bound
+        // parameter. `col` points into the conjunct (valid while it lives).
+        struct key_const_conj_t {
+            const key_t* col;
+            core::parameter_id_t param;
+            bool key_on_left;
+            compare_type op;
+        };
+
+        std::optional<key_const_conj_t> as_key_const_conjunct(const expression_ptr& conj) {
+            if (!conj || conj->group() != expression_group::compare) {
+                return std::nullopt;
+            }
+            auto* cmp = static_cast<compare_expression_t*>(conj.get());
+            if (!is_transportable_compare(cmp->type())) {
+                return std::nullopt;
+            }
+            if (is_key(cmp->left()) && is_parameter(cmp->right())) {
+                const auto& k = as_key(cmp->left());
+                if (k.path().size() != 1) {
+                    return std::nullopt;
+                }
+                return key_const_conj_t{&k, as_parameter(cmp->right()), true, cmp->type()};
+            }
+            if (is_parameter(cmp->left()) && is_key(cmp->right())) {
+                const auto& k = as_key(cmp->right());
+                if (k.path().size() != 1) {
+                    return std::nullopt;
+                }
+                return key_const_conj_t{&k, as_parameter(cmp->left()), false, cmp->type()};
+            }
+            return std::nullopt;
+        }
+
+        // Does the conjunct set already assert `<merged column> OP param`? Used to
+        // suppress a duplicate derivation (the partner filter was written explicitly).
+        bool conjunct_set_has(const std::pmr::vector<expression_ptr>& conjuncts,
+                              size_t merged_idx,
+                              compare_type op,
+                              core::parameter_id_t param) {
+            for (const auto& c : conjuncts) {
+                auto kc = as_key_const_conjunct(c);
+                if (kc && kc->op == op && kc->param == param && kc->col->path()[0] == merged_idx) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // One pass (no fixpoint) over the ORIGINAL WHERE conjuncts: for each
+        // transportable `key OP param` whose key is an equi-pair column, synthesize the
+        // same predicate on the partner column (in merged coordinates) and append it.
+        void derive_transitive_conjuncts(std::pmr::memory_resource* resource,
+                                         const std::pmr::vector<equi_pair_t>& pairs,
+                                         std::pmr::vector<expression_ptr>& conjuncts) {
+            if (pairs.empty()) {
+                return;
+            }
+            std::pmr::vector<expression_ptr> derived{resource};
+            const size_t n = conjuncts.size();
+            for (size_t i = 0; i < n; ++i) {
+                auto kc = as_key_const_conjunct(conjuncts[i]);
+                if (!kc) {
+                    continue;
+                }
+                const size_t m = kc->col->path()[0];
+                for (const auto& pr : pairs) {
+                    const key_t* partner_on_key = nullptr;
+                    size_t partner_merged = 0;
+                    if (m == pr.left_merged) {
+                        partner_on_key = &pr.right_key;
+                        partner_merged = pr.right_merged;
+                    } else if (m == pr.right_merged) {
+                        partner_on_key = &pr.left_key;
+                        partner_merged = pr.left_merged;
+                    } else {
+                        continue;
+                    }
+                    if (partner_merged == m) {
+                        continue; // degenerate self-equi
+                    }
+                    if (conjunct_set_has(conjuncts, partner_merged, kc->op, kc->param) ||
+                        conjunct_set_has(derived, partner_merged, kc->op, kc->param)) {
+                        continue; // partner predicate already present — avoid duplicates
+                    }
+                    // Copy the ON partner key (name + side) and stamp its MERGED path so
+                    // the existing bucketer routes it and relocalize_keys localizes it
+                    // below the partner scan. Reuse the SAME parameter (no value clone).
+                    key_t partner = *partner_on_key;
+                    std::pmr::vector<size_t> p{resource};
+                    p.push_back(partner_merged);
+                    partner.set_path(std::move(p));
+                    derived.push_back(kc->key_on_left
+                                          ? make_compare_expression(resource, kc->op, partner, kc->param)
+                                          : make_compare_expression(resource, kc->op, kc->param, partner));
+                }
+            }
+            conjuncts.insert(conjuncts.end(), derived.begin(), derived.end());
+        }
+
         node_ptr pushdown_filter_impl(std::pmr::memory_resource* resource, node_ptr node) {
             if (!node) {
                 return node;
@@ -713,6 +899,20 @@ namespace components::planner::optimizer {
                         left_width_known;
 
                     auto conjuncts = split_conjuncts(resource, match_child->expressions()[0]);
+
+                    // Transitive equi-predicate propagation. INNER/CROSS only: on a
+                    // null-padded outer side the partner is NULL, so deriving a partner
+                    // predicate would wrongly drop preserved rows. Needs a known
+                    // left_width to place the partner in merged coordinates (and to
+                    // interpret the side-local ON right-key path). Synthesized conjuncts
+                    // are appended to `conjuncts` so the bucketing below routes each to
+                    // its partner side exactly like an explicit single-table filter.
+                    if ((jt == join_type::inner || jt == join_type::cross) && left_width_known &&
+                        !join->expressions().empty()) {
+                        auto pairs = collect_equi_pairs(resource, join->expressions().front(), left_width);
+                        derive_transitive_conjuncts(resource, pairs, conjuncts);
+                    }
+
                     std::pmr::vector<expression_ptr> left_bucket{resource}, right_bucket{resource}, residual{resource};
                     for (const auto& conj : conjuncts) {
                         // Classify by the validator's stamped merged path (side-based),

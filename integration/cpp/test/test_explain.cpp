@@ -802,3 +802,114 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
         REQUIRE(join_pos < first_filter);
     }
 }
+
+// ============================================================================
+// TRANSITIVE EQUI-PREDICATE PROPAGATION — end-to-end (disk.on=true).
+//
+// `t1 JOIN t2 ON t1.k = t2.k WHERE t1.k = 5` implies `t2.k = 5` on every matched
+// row, so the optimizer SYNTHESIZES that partner predicate and pushes it below
+// t2's scan too — in addition to the original `t1.k = 5` below t1.
+//
+// Correctness harness: t2 holds a row with k=7 that matches NO t1 row and is only
+// excludable via the join. The derived `t2.k = 5` pushes the filter EARLIER but
+// must NOT change the result set. We prove that two ways: (a) the exact expected
+// join rows come back, and (b) writing the partner predicate EXPLICITLY
+// (`... AND t2.k = 5`) yields an IDENTICAL result — the derivation is semantically
+// transparent. EXPLAIN then shows a Filter below BOTH scans for the inner join
+// (the derived predicate reached t2) but below ONLY t1 for a LEFT join (the
+// derivation is suppressed on the null-padded side — soundness).
+// ============================================================================
+namespace {
+    size_t count_occurrences(const std::string& hay, const std::string& needle) {
+        size_t n = 0;
+        for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + needle.size())) {
+            ++n;
+        }
+        return n;
+    }
+} // namespace
+
+TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation") {
+    auto config =
+        test_helpers::make_test_config("/tmp/test_explain/transitive_equi", /*disk_on=*/true, /*wal_on=*/false);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    using test_helpers::exec;
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id2 bigint, k bigint, v bigint);")->is_success());
+    // t1.k in {5,5,9}; t2.k in {5,5,7}. The t2 row with k=7 matches NO t1 row and is
+    // only excludable via the join; the t1 row with k=9 is filtered by the WHERE.
+    REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (1,5),(2,5),(3,9);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.t2 (id2, k, v) VALUES (10,5,100),(11,5,200),(12,7,300);")->is_success());
+
+    const std::string inner =
+        "SELECT t1.id, t2.id2 FROM db.t1 JOIN db.t2 ON t1.k = t2.k WHERE t1.k = 5 ORDER BY t1.id, t2.id2";
+
+    INFO("parity: derived t2.k=5 does not change the result set");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, inner + ";");
+        REQUIRE(cur->is_success());
+        // t1 (k=5): {1,2}; t2 (k=5): {10,11}; inner join -> 2x2 = 4 rows; t2.k=7 never matches.
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 10);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 11);
+        REQUIRE(cur->value(0, 2).value<int64_t>() == 2);
+        REQUIRE(cur->value(1, 2).value<int64_t>() == 10);
+        REQUIRE(cur->value(0, 3).value<int64_t>() == 2);
+        REQUIRE(cur->value(1, 3).value<int64_t>() == 11);
+    }
+
+    INFO("parity: writing the partner predicate explicitly yields the IDENTICAL result");
+    {
+        // The optimizer's derived `t2.k = 5` must equal what the user could write by hand.
+        const std::string with_partner =
+            "SELECT t1.id, t2.id2 FROM db.t1 JOIN db.t2 ON t1.k = t2.k WHERE t1.k = 5 AND t2.k = 5 "
+            "ORDER BY t1.id, t2.id2";
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, with_partner + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 3).value<int64_t>() == 11);
+    }
+
+    INFO("EXPLAIN (inner): a Filter rides BOTH scans — the derived predicate reached t2");
+    {
+        // Plan (top-down):
+        //   Project -> Sort -> Hash Join -> [Filter -> Seq Scan on t1], [Filter -> Seq Scan on t2]
+        // WITHOUT the transitive derivation the WHERE only touches t1, so t2 would be a
+        // bare Seq Scan (one Filter total). The DERIVED `t2.k = 5` adds the SECOND Filter.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN " + inner + ";");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "Seq Scan on t1"));
+        REQUIRE(contains(t, "Seq Scan on t2"));
+        REQUIRE(count_occurrences(t, "Seq Scan") == 2);
+        REQUIRE(count_occurrences(t, "Filter") == 2); // one per side — the derived predicate reached t2
+        // Every Filter sits BELOW the join (no residual predicate above it).
+        REQUIRE(t.find("Hash Join") < t.find("Filter"));
+    }
+
+    const std::string outer =
+        "SELECT t1.id, t2.id2 FROM db.t1 LEFT JOIN db.t2 ON t1.k = t2.k WHERE t1.k = 5 ORDER BY t1.id, t2.id2";
+    INFO("EXPLAIN (LEFT): the derivation is suppressed on the null-padded side — only t1 filtered");
+    {
+        // Plan (top-down):
+        //   Project -> Sort -> Hash Join -> [Filter -> Seq Scan on t1], [Seq Scan on t2]
+        // A LEFT join preserves unmatched left rows with a NULL-padded right side, so
+        // deriving `t2.k = 5` would be UNSOUND. It is gated out — t2 stays a bare scan.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN " + outer + ";");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "Seq Scan on t1"));
+        REQUIRE(contains(t, "Seq Scan on t2"));
+        REQUIRE(count_occurrences(t, "Filter") == 1); // ONLY t1 — no derived predicate on t2
+    }
+}

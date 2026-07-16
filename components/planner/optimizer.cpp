@@ -2,6 +2,7 @@
 
 #include "optimizer/rules/column_pruning.hpp"
 #include "optimizer/rules/constant_folding.hpp"
+#include "optimizer/rules/drop_redundant_distinct.hpp"
 #include "optimizer/rules/hash_join.hpp"
 #include "optimizer/rules/promote_cross_join.hpp"
 #include "optimizer/rules/pushdown_aggregate.hpp"
@@ -27,6 +28,13 @@ namespace components::planner {
         if (parameters) {
             optimizer::fold_constants(resource, node, parameters);
         }
+        // Clear a DISTINCT that a GROUP BY already makes redundant (group keys ⊆
+        // projection / DISTINCT ON columns) so no operator_distinct "Unique" pass is
+        // built. Runs on the freshly validated tree, BEFORE the pushdown/pruning rules:
+        // it only reads the group-output ordinals validate_schema stamped and flips the
+        // is_distinct flag, so it neither depends on nor disturbs the later rules — and
+        // clearing it early lets column_pruning / pushdown_limit see the simpler plan.
+        node = optimizer::drop_redundant_distinct(resource, std::move(node));
         // Promote comma-join CROSS joins to INNER before pushdown_filter: its join
         // branch wraps the join's children in fresh, unstamped aggregates whose
         // output_types() is empty (validation already ran), which would collapse the

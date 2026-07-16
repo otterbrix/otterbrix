@@ -913,3 +913,103 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
         REQUIRE(count_occurrences(t, "Filter") == 1); // ONLY t1 — no derived predicate on t2
     }
 }
+
+// DISTINCT-under-GROUP-BY subsumption: a GROUP BY already emits rows distinct on its
+// key columns, so a DISTINCT over a projection that is a SUPERSET of those keys is
+// redundant. The optimizer clears it (no "Unique" operator_distinct pass), otherwise
+// the "Unique" label stays. The rendered "Unique" label is the observable proxy for the
+// operator_distinct that the drop_redundant_distinct rule removes.
+TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
+    auto config = test_create_config("/tmp/test_explain/distinct_under_group_by");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.t(a int, b int);")->is_success());
+    }
+    {
+        // Distinct (a,b) combos: (1,10),(1,20),(2,10) -> 3. Groups on a: {1,2} -> 2.
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(s, "INSERT INTO TestDatabase.t (a, b) VALUES (1,10),(1,10),(1,20),(2,10),(2,10);")
+                    ->is_success());
+    }
+
+    // Positive: group keys == projection ({a,b} ⊆ {a,b}) -> DISTINCT cleared.
+    INFO("DISTINCT a,b GROUP BY a,b: DISTINCT is redundant -> no Unique, still 3 rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto plan =
+            dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a, b FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(plan->is_success());
+        REQUIRE_FALSE(contains(plan_text(plan), "Unique"));
+
+        auto s2 = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s2, "SELECT DISTINCT a, b FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    // Positive (subset direction): group keys ⊊ projection ({a} ⊆ {a, count}). The
+    // extra projected column is an AGGREGATE, so each group is still one row -> DISTINCT
+    // redundant. This is the executable form of the task's `DISTINCT a,b GROUP BY a`
+    // (a bare non-grouped, non-aggregated `b` is rejected as un-grouped SQL).
+    INFO("DISTINCT a, COUNT(*) GROUP BY a: group ⊊ projection -> no Unique, 2 rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto plan = dispatcher->execute_sql(
+            s, "EXPLAIN SELECT DISTINCT a, COUNT(*) AS c FROM TestDatabase.t GROUP BY a;");
+        REQUIRE(plan->is_success());
+        REQUIRE_FALSE(contains(plan_text(plan), "Unique"));
+
+        auto s2 = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(s2, "SELECT DISTINCT a, COUNT(*) AS c FROM TestDatabase.t GROUP BY a;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    // NEGATIVE (the trap): group keys ⊄ projection ({a,b} ⊄ {a}). Groups (1,10),(1,20)
+    // both project a=1, so DISTINCT a really removes a duplicate -> MUST be kept.
+    INFO("TRAP: DISTINCT a GROUP BY a,b: DISTINCT is NOT redundant -> Unique kept, 2 rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto plan =
+            dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(plan->is_success());
+        REQUIRE(contains(plan_text(plan), "Unique"));
+
+        auto s2 = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s2, "SELECT DISTINCT a FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // distinct a: {1,2}; without the trap-kept DISTINCT it would be 3
+
+        // Positive control: the SAME projection/keys WITHOUT DISTINCT keeps all 3 groups.
+        auto s3 = otterbrix::session_id_t();
+        auto cur_no_distinct = dispatcher->execute_sql(s3, "SELECT a FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(cur_no_distinct->is_success());
+        REQUIRE(cur_no_distinct->size() == 3);
+    }
+
+    // Negative: no GROUP BY at all -> DISTINCT must never be touched.
+    INFO("DISTINCT a (no GROUP BY): untouched -> Unique kept, 2 rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto plan = dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a FROM TestDatabase.t;");
+        REQUIRE(plan->is_success());
+        REQUIRE(contains(plan_text(plan), "Unique"));
+
+        auto s2 = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s2, "SELECT DISTINCT a FROM TestDatabase.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}

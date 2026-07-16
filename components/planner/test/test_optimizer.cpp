@@ -22,6 +22,7 @@
 #include <components/physical_plan_generator/impl/create_plan_match.hpp>
 #include <components/physical_plan_generator/impl/index_selection_helpers.hpp>
 #include <components/planner/optimizer.hpp>
+#include <components/planner/optimizer/rules/drop_redundant_distinct.hpp>
 #include <components/planner/optimizer/rules/hash_join.hpp>
 #include <components/planner/optimizer/rules/promote_cross_join.hpp>
 #include <components/planner/optimizer/rules/pushdown_filter.hpp>
@@ -2066,4 +2067,139 @@ TEST_CASE("optimizer::pushdown_filter::left_join_no_transitive_propagation") {
 
     // NO derived predicate on the null-padded right side — t2's scan is untouched.
     REQUIRE(join->children()[1] == right);
+}
+
+// ================================================================
+// drop_redundant_distinct: clear a DISTINCT a GROUP BY already makes
+// redundant (group keys ⊆ projection / DISTINCT ON columns). These build the
+// post-validate shape directly (group keys as leading group_field entries; select
+// get_field columns carrying their resolved group-output ordinal in key.path()) and
+// call the rule in isolation.
+// ================================================================
+namespace {
+    using components::logical_plan::make_node_group;
+    using components::logical_plan::make_node_select;
+    using components::logical_plan::node_aggregate_t;
+
+    // A get_field projection column resolved to group-output ordinal `pos`.
+    scalar_expression_ptr drd_proj_col(std::pmr::memory_resource* r, const std::string& name, size_t pos) {
+        auto se = make_scalar_expression(r, scalar_type::get_field, key(r, name));
+        se->key().path().push_back(pos);
+        return se;
+    }
+
+    key drd_on_key(std::pmr::memory_resource* r, const std::string& name, size_t pos) {
+        key k(r, name);
+        k.path().push_back(pos);
+        return k;
+    }
+
+    node_group_ptr drd_group(std::pmr::memory_resource* r, const std::vector<std::string>& keys, bool with_count) {
+        std::vector<expression_ptr> exprs;
+        for (const auto& k : keys) {
+            exprs.push_back(make_scalar_expression(r, scalar_type::group_field, key(r, k)));
+        }
+        if (with_count) {
+            auto cnt = make_aggregate_expression(r, "count", key(r, "c"));
+            cnt->append_param(key(r, "v"));
+            exprs.push_back(expression_ptr(cnt));
+        }
+        return make_node_group(r, core::dbname_t{database_name}, core::relname_t{collection_name}, exprs);
+    }
+
+    node_aggregate_ptr drd_agg(std::pmr::memory_resource* r,
+                               const node_group_ptr& group,
+                               const node_select_ptr& select) {
+        auto agg = make_node_aggregate(r, core::dbname_t{database_name}, core::relname_t{collection_name});
+        agg->set_distinct(true);
+        if (group) {
+            agg->append_child(group);
+        }
+        if (select) {
+            agg->append_child(select);
+        }
+        return agg;
+    }
+
+    bool drd_is_distinct_after(std::pmr::memory_resource* r, const node_aggregate_ptr& agg) {
+        auto out = components::planner::optimizer::drop_redundant_distinct(r, agg);
+        return static_cast<node_aggregate_t*>(out.get())->is_distinct();
+    }
+} // namespace
+
+// Positive: group keys == projection ({a,b} ⊆ {a,b}) -> cleared.
+TEST_CASE("optimizer::drop_redundant_distinct::plain_keys_equal_projection") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto group = drd_group(&resource, {"a", "b"}, /*with_count=*/false);
+    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
+    select->append_expression(drd_proj_col(&resource, "a", 0));
+    select->append_expression(drd_proj_col(&resource, "b", 1));
+    REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, select)));
+}
+
+// Positive (subset direction — the task's `DISTINCT a,b GROUP BY a`): group {a} ⊆
+// projection {a,b}. group keys are the leading output ordinal {0}; projection covers it.
+TEST_CASE("optimizer::drop_redundant_distinct::plain_keys_subset_of_projection") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto group = drd_group(&resource, {"a"}, /*with_count=*/false);
+    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
+    select->append_expression(drd_proj_col(&resource, "a", 0));
+    select->append_expression(drd_proj_col(&resource, "b", 1));
+    REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, select)));
+}
+
+// Positive (executable subset form): group {a} ⊆ non-aggregate projection {a}; the
+// extra projected column is an aggregate (count) at output ordinal 1.
+TEST_CASE("optimizer::drop_redundant_distinct::plain_subset_with_aggregate_projection") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto group = drd_group(&resource, {"a"}, /*with_count=*/true);
+    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
+    select->append_expression(drd_proj_col(&resource, "a", 0));
+    select->append_expression(drd_proj_col(&resource, "count", 1)); // agg result column
+    REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, select)));
+}
+
+// NEGATIVE (the trap): group {a,b} ⊄ projection {a}. Two groups (a,b1),(a,b2) both
+// project a -> DISTINCT a is NOT redundant and MUST be kept.
+TEST_CASE("optimizer::drop_redundant_distinct::plain_trap_group_not_subset") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto group = drd_group(&resource, {"a", "b"}, /*with_count=*/false);
+    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
+    select->append_expression(drd_proj_col(&resource, "a", 0));
+    REQUIRE(drd_is_distinct_after(&resource, drd_agg(&resource, group, select)));
+}
+
+// Negative: no GROUP BY (no group_t child) -> DISTINCT untouched.
+TEST_CASE("optimizer::drop_redundant_distinct::no_group_by_untouched") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto select = make_node_select(&resource, core::dbname_t{database_name}, core::relname_t{collection_name});
+    select->append_expression(drd_proj_col(&resource, "a", 0));
+    REQUIRE(drd_is_distinct_after(&resource, drd_agg(&resource, node_group_ptr{}, select)));
+}
+
+// DISTINCT ON positive: group keys ⊆ ON columns ({a,b} ⊆ {a,b}) -> cleared.
+TEST_CASE("optimizer::drop_redundant_distinct::distinct_on_keys_subset") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto group = drd_group(&resource, {"a", "b"}, /*with_count=*/false);
+    auto agg = drd_agg(&resource, group, node_select_ptr{});
+    std::pmr::vector<key> on(&resource);
+    on.push_back(drd_on_key(&resource, "a", 0));
+    on.push_back(drd_on_key(&resource, "b", 1));
+    agg->set_distinct_on_keys(std::move(on));
+    auto out = components::planner::optimizer::drop_redundant_distinct(&resource, agg);
+    auto* a = static_cast<node_aggregate_t*>(out.get());
+    REQUIRE_FALSE(a->is_distinct());
+    REQUIRE(a->distinct_on_keys().empty()); // dead ON list dropped
+}
+
+// DISTINCT ON trap: group keys ⊄ ON columns ({a,b} ⊄ {a}) -> kept.
+TEST_CASE("optimizer::drop_redundant_distinct::distinct_on_keys_not_subset") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto group = drd_group(&resource, {"a", "b"}, /*with_count=*/false);
+    auto agg = drd_agg(&resource, group, node_select_ptr{});
+    std::pmr::vector<key> on(&resource);
+    on.push_back(drd_on_key(&resource, "a", 0));
+    agg->set_distinct_on_keys(std::move(on));
+    auto out = components::planner::optimizer::drop_redundant_distinct(&resource, agg);
+    REQUIRE(static_cast<node_aggregate_t*>(out.get())->is_distinct());
 }

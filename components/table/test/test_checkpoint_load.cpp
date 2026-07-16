@@ -1008,3 +1008,81 @@ TEST_CASE("checkpoint_load: shared partial block survives reopen after table gro
 
     cleanup_test_file();
 }
+
+// A compact frees the disk blocks of the collection it replaces. When that
+// collection was LOADED from the durable root — exactly what WAL replay does:
+// load the .otbx, replay a PHYSICAL_COMPACT, replay the post-compact appends —
+// the freed ids are the root's own blocks. They must NOT be handed out again
+// before the next header swap: the append write-through would overwrite
+// root-referenced blocks in place, and a crash before the next checkpoint
+// leaves the root pointing at clobbered blocks with no .prev to fall back to.
+TEST_CASE("checkpoint_load: compact on a loaded table must not recycle root-referenced blocks") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    cleanup_test_file();
+
+    test_env_t env;
+    // Enough rows that both the compact's rebuild and the post-compact append
+    // fill whole 256 KiB segments, forcing real block write-throughs.
+    constexpr uint64_t NUM_ROWS = 40000;
+
+    meta_block_pointer_t table_pointer;
+
+    // Phase 1: build + checkpoint the durable root.
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("value", logical_type::BIGINT);
+        auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "test_table");
+
+        append_int64_data(*table, &env.resource, NUM_ROWS);
+        table_pointer = full_checkpoint(*table, bm);
+    }
+
+    // Phase 2: the replay window. Load from the root, compact (frees the root's
+    // blocks), append (write-through fills segments and allocates blocks), then
+    // "crash" — no checkpoint, the root never advances.
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.load_existing_database().has_error());
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
+
+        REQUIRE(loaded->compact(std::numeric_limits<uint64_t>::max()));
+        append_int64_data_with_fn(*loaded, &env.resource, NUM_ROWS, [](uint64_t i) {
+            return -1 - static_cast<int64_t>(i);
+        });
+    }
+
+    // Phase 3: reopen from the same root: the checkpointed rows must read back
+    // intact.
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.load_existing_database().has_error());
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
+
+        uint64_t scanned = 0;
+        loaded->scan_table_segment(0, NUM_ROWS, [&](data_chunk_t& chunk) {
+            for (uint64_t i = 0; i < chunk.size(); i++) {
+                auto val = chunk.data[0].value(i);
+                REQUIRE(val.value<int64_t>() == static_cast<int64_t>(scanned + i));
+            }
+            scanned += chunk.size();
+        });
+        REQUIRE(scanned == NUM_ROWS);
+    }
+
+    cleanup_test_file();
+}

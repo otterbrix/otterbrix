@@ -145,6 +145,7 @@ namespace components::table::storage {
             block_id = max_block_++;
         }
         used_blocks_.insert(block_id);
+        allocated_since_swap_.insert(block_id);
         return block_id;
     }
 
@@ -164,12 +165,20 @@ namespace components::table::storage {
         std::lock_guard lock(allocation_lock_);
         used_blocks_.erase(block_id);
         modified_blocks_.erase(block_id);
-        free_list_.insert(block_id);
+        // A block allocated after the last header swap is referenced by no durable root
+        // and is reusable immediately. Anything else may still be referenced by the
+        // current root: quarantine it until the next swap (see quarantined_blocks_).
+        if (allocated_since_swap_.count(block_id) != 0) {
+            free_list_.insert(block_id);
+        } else {
+            quarantined_blocks_.insert(block_id);
+        }
     }
 
     void single_file_block_manager_t::mark_as_used(uint64_t block_id) {
         std::lock_guard lock(allocation_lock_);
         free_list_.erase(block_id);
+        quarantined_blocks_.erase(block_id);
         used_blocks_.insert(block_id);
     }
 
@@ -260,6 +269,15 @@ namespace components::table::storage {
         uint64_t other_slot = (slot == SECTOR_SIZE) ? (2 * SECTOR_SIZE) : SECTOR_SIZE;
         handle_->write(&write_header, sizeof(write_header), other_slot);
         handle_->sync();
+
+        // The swap is durable: no durable root references the blocks freed since the
+        // previous swap, so they become allocatable.
+        {
+            std::lock_guard lock(allocation_lock_);
+            free_list_.insert(quarantined_blocks_.begin(), quarantined_blocks_.end());
+            quarantined_blocks_.clear();
+            allocated_since_swap_.clear();
+        }
     }
 
     void single_file_block_manager_t::file_sync() {
@@ -278,16 +296,43 @@ namespace components::table::storage {
     // --- Free List Persistence ---
 
     meta_block_pointer_t single_file_block_manager_t::serialize_free_list() {
-        if (free_list_.empty()) {
+        // Serialize the post-swap allocatable set: free_list_ PLUS the quarantined
+        // blocks — the header this list is written for is the new durable root, which
+        // no longer references any quarantined block, so a reload from it may reuse
+        // them.
+        //
+        // Pull BOTH sets out of circulation for the duration of the write: the
+        // metadata_writer allocates its chain blocks via free_block_id, and a chain
+        // block must never appear in the list it stores — after a reload it would be
+        // handed out as free while the durable header still points its free_list
+        // chain at it, so a crash after that reuse would boot from a clobbered
+        // chain. With the sets emptied the writer can only mint fresh ids.
+        std::vector<uint64_t> free_ids, quarantined_ids;
+        {
+            std::lock_guard lock(allocation_lock_);
+            free_ids.assign(free_list_.begin(), free_list_.end());
+            quarantined_ids.assign(quarantined_blocks_.begin(), quarantined_blocks_.end());
+            free_list_.clear();
+            quarantined_blocks_.clear();
+        }
+        if (free_ids.empty() && quarantined_ids.empty()) {
             return meta_block_pointer_t{}; // INVALID_INDEX
         }
         metadata_manager_t meta_mgr(*this);
         metadata_writer_t writer(meta_mgr);
-        writer.write<uint64_t>(free_list_.size());
-        for (auto block_id : free_list_) {
+        writer.write<uint64_t>(free_ids.size() + quarantined_ids.size());
+        for (auto block_id : free_ids) {
+            writer.write<uint64_t>(block_id);
+        }
+        for (auto block_id : quarantined_ids) {
             writer.write<uint64_t>(block_id);
         }
         writer.flush();
+        {
+            std::lock_guard lock(allocation_lock_);
+            free_list_.insert(free_ids.begin(), free_ids.end());
+            quarantined_blocks_.insert(quarantined_ids.begin(), quarantined_ids.end());
+        }
         return writer.get_block_pointer();
     }
 

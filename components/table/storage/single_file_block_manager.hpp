@@ -113,6 +113,18 @@ namespace components::table::storage {
 
         std::mutex allocation_lock_;
         std::set<uint64_t> free_list_;
+        // Blocks freed since the last header swap that the CURRENT durable root may still
+        // reference. Not allocatable: handing one out would let an append write-through
+        // overwrite root-referenced bytes in place, and a crash before the next swap (live,
+        // or during WAL replay — which compacts the just-loaded root's own collection)
+        // would leave the root pointing at clobbered blocks with no .prev to fall back to.
+        // write_header() (the swap's durability point) drains them into free_list_; the
+        // serialized free list includes them, because the header being written no longer
+        // references them.
+        std::set<uint64_t> quarantined_blocks_;
+        // Blocks handed out since the last header swap: no durable root references these,
+        // so on free they may return straight to free_list_ instead of quarantine.
+        std::set<uint64_t> allocated_since_swap_;
         std::set<uint64_t> used_blocks_;
         std::set<uint64_t> modified_blocks_;
         uint64_t max_block_{0};

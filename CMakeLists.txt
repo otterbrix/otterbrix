@@ -108,8 +108,11 @@ if (ENABLE_TSAN)
     # gcc's -Wmaybe-uninitialized false-positives on coroutine frame teardown
     # under -fsanitize=thread (actor-zeta future awaiters); keep it a warning
     # here so -Werror doesn't block the TSAN build. Same for -Wtsan: actor-zeta
-    # headers use atomic_thread_fence, which TSAN cannot model.
-    add_compile_options(-Wno-error=maybe-uninitialized -Wno-error=tsan)
+    # headers use atomic_thread_fence, which TSAN cannot model. gcc-only: clang
+    # has neither option and -Werror turns the unknown-option warning fatal.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        add_compile_options(-Wno-error=maybe-uninitialized -Wno-error=tsan)
+    endif()
 endif()
 
 if (ENABLE_UBSAN)

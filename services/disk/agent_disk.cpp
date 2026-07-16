@@ -2237,10 +2237,49 @@ namespace services::disk {
                                                    otbx_path,
                                                    std::filesystem::copy_options::overwrite_existing,
                                                    restore_error);
+                        if (restore_error) {
+                            // A failed copy (ENOSPC/EACCES — plausibly the same condition
+                            // that broke the sidecar) leaves the INTACT new fold in place,
+                            // which loads cleanly under the stale sidecar and double-applies.
+                            // rename moves no data blocks, so it can succeed where the copy
+                            // cannot, and the still-in-place old sidecar matches .prev's
+                            // content — promoting .prev IS the old consistent state.
+                            std::error_code rename_ec;
+                            std::filesystem::rename(prev_path, otbx_path, rename_ec);
+                            if (rename_ec) {
+                                error(log_,
+                                      "agent_disk[{}]::checkpoint_inner oid={}: restore failed twice "
+                                      "(copy: {}, rename: {}) — the folded .otbx may double-apply on "
+                                      "the next open",
+                                      pool_idx_,
+                                      static_cast<unsigned>(tbl_oid),
+                                      restore_error.message(),
+                                      rename_ec.message());
+                            }
+                        }
                     } else {
                         // First checkpoint of this table: no prior state to restore — absent
                         // .otbx means "never checkpointed", which replays the full WAL.
                         std::filesystem::remove(otbx_path, restore_error);
+                        if (restore_error) {
+                            // An intact first fold with NO sidecar replays the full WAL onto
+                            // the folded base — move it aside so the opener sees "never
+                            // checkpointed".
+                            auto aside_path = otbx_path;
+                            aside_path += ".failed";
+                            std::error_code rename_ec;
+                            std::filesystem::rename(otbx_path, aside_path, rename_ec);
+                            if (rename_ec) {
+                                error(log_,
+                                      "agent_disk[{}]::checkpoint_inner oid={}: could not remove or "
+                                      "move aside the unstamped first fold (remove: {}, rename: {}) — "
+                                      "it may double-apply on the next open",
+                                      pool_idx_,
+                                      static_cast<unsigned>(tbl_oid),
+                                      restore_error.message(),
+                                      rename_ec.message());
+                            }
+                        }
                     }
                     std::abort();
                 }

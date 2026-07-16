@@ -1192,8 +1192,89 @@ namespace components::sql::transform {
             }
         }
 
+        // Correlated EXISTS / NOT EXISTS in WHERE -> LATERAL semi- / anti-join.
+        // A sole-predicate `WHERE EXISTS (SELECT ... WHERE inner.k = outer.k)` is the
+        // canonical SEMI join (emit each outer row iff the inner side has >=1 match);
+        // `WHERE NOT EXISTS (...)` is the ANTI join (emit iff the inner side has none).
+        // These were previously unsupported (the flatten path cannot resolve the outer
+        // column). We speculatively transform the EXISTS body with lateral correlation
+        // scope active: if it references an outer column (correlations captured), the
+        // outer FROM source becomes the join's left child and the inner sub-plan its
+        // right child, re-rooted under a fresh container aggregate. An UNCORRELATED
+        // EXISTS keeps the existing (single-pass) flatten path. Only a correct plan can
+        // result: a mis-detected correlation either errors (as today) or runs a
+        // slower-but-correct per-row lateral join — never a wrong answer.
+        bool where_consumed_by_semi_anti = false;
+        if (node.whereClause && agg) {
+            SubLink* exists_sub = nullptr;
+            logical_plan::join_type semi_anti_type = logical_plan::join_type::invalid;
+            if (nodeTag(node.whereClause) == T_SubLink) {
+                auto* sl = pg_ptr_cast<SubLink>(node.whereClause);
+                if (sl->subLinkType == EXISTS_SUBLINK) {
+                    exists_sub = sl;
+                    semi_anti_type = logical_plan::join_type::semi;
+                }
+            } else if (nodeTag(node.whereClause) == T_A_Expr) {
+                // `NOT EXISTS (...)` parses as A_Expr(AEXPR_NOT, rexpr = SubLink[EXISTS]).
+                auto* ae = pg_ptr_cast<A_Expr>(node.whereClause);
+                if (ae->kind == AEXPR_NOT && ae->rexpr && nodeTag(ae->rexpr) == T_SubLink) {
+                    auto* sl = pg_ptr_cast<SubLink>(ae->rexpr);
+                    if (sl->subLinkType == EXISTS_SUBLINK) {
+                        exists_sub = sl;
+                        semi_anti_type = logical_plan::join_type::anti;
+                    }
+                }
+            }
+            if (exists_sub && exists_sub->subselect && nodeTag(exists_sub->subselect) == T_SelectStmt) {
+                auto join =
+                    logical_plan::make_node_join(resource_, core::dbname_t{}, core::relname_t{}, semi_anti_type);
+                join->set_lateral(true);
+                join->append_child(agg); // outer / left = the FROM source (single-table or FROM-join)
+                auto inner_agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+
+                const std::size_t saved_subq = plan->sub_queries.size();
+
+                // Expose the outer scope so a correlated inner column lowers to a
+                // correlation parameter (see try_lateral_correlate); mirrors join_dfs's
+                // FROM-clause LATERAL path.
+                auto* prev_outer = lateral_outer_names_;
+                auto* prev_join = lateral_join_;
+                auto* prev_plan = lateral_plan_;
+                auto prev_map = std::move(lateral_correlation_map_);
+                lateral_correlation_map_.clear();
+                lateral_outer_names_ = &names;
+                lateral_join_ = join.get();
+                lateral_plan_ = plan;
+                inner_agg->append_child(transform_select(*pg_ptr_cast<SelectStmt>(exists_sub->subselect), plan));
+                lateral_outer_names_ = prev_outer;
+                lateral_join_ = prev_join;
+                lateral_plan_ = prev_plan;
+                lateral_correlation_map_ = std::move(prev_map);
+                if (has_error()) {
+                    return nullptr;
+                }
+
+                // Route to the semi/anti join when the body is correlated. If it was
+                // uncorrelated but its speculative transform already appended nested
+                // sub-queries, keep the (correct, per-row) lateral join rather than
+                // re-transform it into a duplicate; the common uncorrelated case (no
+                // side effects) discards the speculative build and falls through.
+                const bool correlated = !join->correlations().empty();
+                if (correlated || plan->sub_queries.size() != saved_subq) {
+                    join->append_child(inner_agg);
+                    // ON = all_true: the inner sub-plan already filters via the bound
+                    // correlation parameters, so the existence of any inner row is the match.
+                    join->append_expression(make_compare_expression(resource_, compare_type::all_true));
+                    auto container = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    container->append_child(join);
+                    agg = container;
+                    where_consumed_by_semi_anti = true;
+                }
+            }
+        }
+
         // where
-        if (node.whereClause) {
+        if (node.whereClause && !where_consumed_by_semi_anti) {
             expression_ptr expr = transform_predicate(node.whereClause, names, plan);
             if (has_error()) {
                 return nullptr;

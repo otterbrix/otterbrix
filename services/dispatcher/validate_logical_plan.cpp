@@ -1889,11 +1889,16 @@ namespace services::dispatcher {
                         };
                         std::set<column_key> seen_cols;
                         for (const auto& col : incoming_schema) {
-                            column_key key{col.result_alias, std::string(col.type.alias()), col.type.type(), col.side};
+                            // A projected constant (e.g. `SELECT 1`) has no alias/extension;
+                            // complex_logical_type::alias() asserts on that, so guard it. An
+                            // alias-less column keys on the empty string, which is correct for
+                            // this duplicate-name check.
+                            std::string col_alias = col.type.has_alias() ? std::string(col.type.alias()) : std::string{};
+                            column_key key{col.result_alias, col_alias, col.type.type(), col.side};
                             if (!seen_cols.insert(std::move(key)).second) {
                                 return core::error_t(
                                     core::error_code_t::schema_error,
-                                    std::pmr::string{"column '" + col.type.alias() +
+                                    std::pmr::string{"column '" + col_alias +
                                                          "' has multiple types; use explicit type selection",
                                                      resource});
                             }
@@ -2563,8 +2568,15 @@ namespace services::dispatcher {
                     return expr_res;
                 }
 
+                // Semi-/anti-join output is the LEFT (outer) schema ONLY — the right side
+                // contributes only existence (matched / not-matched), never columns. Every
+                // other join type merges both sides.
                 // TODO: merge using join type, because some join types allow duplicate names in result, while others do not
-                result = impl::merge_schemas(resource, std::move(left_schema.value()), std::move(right_schema.value()));
+                if (join_node->type() == join_type::semi || join_node->type() == join_type::anti) {
+                    result = std::move(left_schema.value());
+                } else {
+                    result = impl::merge_schemas(resource, std::move(left_schema.value()), std::move(right_schema.value()));
+                }
                 break;
             }
             // For now next 3 nodes do not support returning clause:

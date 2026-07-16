@@ -14,7 +14,14 @@ namespace components::logical_plan {
         full,
         left,
         right,
-        cross
+        cross,
+        // Semi- / anti-join: emit each LEFT (outer) row AT MOST ONCE. `semi` keeps an
+        // outer row iff the right (inner) side has >=1 matching row; `anti` keeps it
+        // iff the right side has NO matching row. The output schema is the LEFT schema
+        // only (no right columns). Produced by the transformer for a correlated
+        // EXISTS (semi) / NOT EXISTS (anti) in WHERE, lowered as a LATERAL join.
+        semi,
+        anti
     };
 
     class node_join_t final : public node_t {

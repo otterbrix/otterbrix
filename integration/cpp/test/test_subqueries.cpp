@@ -340,6 +340,121 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
 }
 
 // ---------------------------------------------------------------------------
+// Correlated EXISTS / NOT EXISTS routed to a semi- / anti-join
+//
+// A correlated `WHERE EXISTS (SELECT ... WHERE inner.k = outer.k)` is the
+// canonical SEMI join (emit each outer row at most once, iff the inner side
+// produces >=1 row for it); the NOT EXISTS form is the ANTI join (emit each
+// outer row iff the inner side produces zero rows). These were previously
+// unsupported (the SubLink flatten path cannot resolve the outer column); they
+// now lower to a LATERAL semi/anti join that binds the correlation per outer
+// row and re-runs the inner sub-plan.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
+    auto config = test_create_config("/tmp/test_subqueries/correlated_exists_semi_anti");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    INFO("correlated EXISTS -> semi-join: departments with a >85000 earner");
+    {
+        // Only Engineering has an employee earning > 85000 (Alice = 90000) -> 1 row.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 85000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
+    }
+
+    INFO("correlated NOT EXISTS -> anti-join: departments with no >50000 earner");
+    {
+        // HR: Eve(45000), Frank(40000) -- neither exceeds 50000 -> 1 row.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE NOT EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 50000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "HR");
+    }
+
+    INFO("correlated EXISTS -> semi-join: every dept has employees (all rows)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+
+    INFO("correlated NOT EXISTS -> anti-join: inner never matches (all rows)");
+    {
+        // No department has an employee earning > 999999 -> NOT EXISTS true for all -> 5 rows.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE NOT EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 999999"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+
+    INFO("correlated EXISTS -> anti-join: inner always matches (no rows)");
+    {
+        // Every department has an employee earning > 30000 -> NOT EXISTS false for all -> 0 rows.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE NOT EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 30000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("EXPLAIN: correlated EXISTS lowers to a join (Nested Loop), not a Filter");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "EXPLAIN SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 85000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(contains(plan_text(cur), "Nested Loop"));
+    }
+}
+
+// NOTE: NOT IN is deliberately NOT routed to an anti-join — a plain anti-join
+// cannot reproduce SQL three-valued logic (a single NULL in the subquery makes
+// `x NOT IN (S)` never TRUE, yielding zero rows), so it stays on the existing
+// membership-test path. A regression guard for the NULL case is intentionally
+// omitted here because that path currently ABORTS on a NULL subquery element
+// (pre-existing, unrelated to this change) — see the task report.
+
+// ---------------------------------------------------------------------------
 // Subqueries in SELECT list and in FROM (derived tables)
 // ---------------------------------------------------------------------------
 

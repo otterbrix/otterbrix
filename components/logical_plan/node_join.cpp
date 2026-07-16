@@ -17,6 +17,10 @@ namespace components::logical_plan {
                 return "right";
             case join_type::cross:
                 return "cross";
+            case join_type::semi:
+                return "semi";
+            case join_type::anti:
+                return "anti";
             default:
                 return "invalid";
         }

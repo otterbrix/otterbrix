@@ -129,8 +129,11 @@ namespace services::planner::impl {
                     break;
                 case join_type::cross:
                 case join_type::invalid:
-                    // Defensive guard (the optimizer never stamps hash on these): return
-                    // nullptr -> executor surfaces the error (rule 9: no throw here).
+                case join_type::semi:
+                case join_type::anti:
+                    // Defensive guard: hash is never stamped on cross/invalid, and semi/anti
+                    // are only ever produced as LATERAL joins (handled above). Return nullptr
+                    // -> executor surfaces the error (rule 9: no throw here).
                     return nullptr;
             }
             // Physical roles: probe = left_, build = right_. When swapped the
@@ -173,7 +176,10 @@ namespace services::planner::impl {
             case join_type::full:
                 break;
             case join_type::invalid:
-                // Defensive guard (validation guarantees this never fires): return nullptr ->
+            case join_type::semi:
+            case join_type::anti:
+                // Defensive guard: validation guarantees invalid never fires, and semi/anti
+                // are only ever produced as LATERAL joins (handled above). Return nullptr ->
                 // executor surfaces the error (rule 9: no throw on the operator-build path).
                 return nullptr;
         }

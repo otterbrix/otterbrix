@@ -94,7 +94,9 @@ namespace components::vector {
         if (!validity_mask_) {
             resize(resource_, count_);
         }
-        validity_mask_[row_idx] = true;
+        uint64_t entry_idx, idx_in_entry;
+        entry_index(row_idx, entry_idx, idx_in_entry);
+        validity_mask_[entry_idx] |= (uint64_t(1) << uint64_t(idx_in_entry));
     }
 
     void validity_mask_t::set_all_invalid(uint64_t count) {

@@ -192,3 +192,22 @@ TEST_CASE("validity_mask_t: slice() at non-zero offset on a pointer-constructed 
     REQUIRE(ptr_mask.data() != buffer); // sliced into a private allocation
     REQUIRE(buffer[0] == components::vector::validity_data_t::MAX_ENTRY);
 }
+
+TEST_CASE("validity_mask_t: set_valid flips one row bit, not a whole entry", "[validity-mask]") {
+    // set_valid takes a ROW index; writing validity_mask_[row_idx] would treat
+    // it as an entry index — stomping 64 unrelated rows (and, for row_idx past
+    // the entry count, memory beyond the mask: revert_append passes raw bit
+    // positions within a segment).
+    auto resource = core::pmr::otterbrix_resource();
+    validity_mask_t mask(&resource, uint64_t{256});
+    mask.set_invalid(uint64_t{1});
+    mask.set_invalid(uint64_t{2});
+
+    mask.set_valid(uint64_t{2});
+
+    REQUIRE(mask.row_is_valid(2));
+    REQUIRE_FALSE(mask.row_is_valid(1));
+    for (uint64_t row = 3; row < 256; row++) {
+        REQUIRE(mask.row_is_valid(row));
+    }
+}

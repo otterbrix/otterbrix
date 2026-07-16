@@ -714,12 +714,23 @@ namespace services::disk {
                             // A fixed ARRAY column reconciles a length mismatch against the
                             // column DEFAULT (truncate / pad-with-default); other columns use
                             // the plain value cast.
-                            auto reconciled = array_target
-                                                  ? components::table::reconcile_to_fixed_array(resource(),
-                                                                                                src_vec.value(row),
-                                                                                                table_columns[i],
-                                                                                                session_tz)
-                                                  : src_vec.value(row).cast_as(target_type, session_tz);
+                            // A fixed ARRAY reconciles length; other columns take the plain value cast.
+                            // No error channel in this coroutine — a non-castable value degrades to NULL
+                            // (the cast's pre-existing NA fallback) rather than aborting.
+                            components::types::logical_value_t reconciled{
+                                resource(),
+                                components::types::complex_logical_type{components::types::logical_type::NA}};
+                            if (array_target) {
+                                reconciled = components::table::reconcile_to_fixed_array(resource(),
+                                                                                        src_vec.value(row),
+                                                                                        table_columns[i],
+                                                                                        session_tz);
+                            } else {
+                                auto casted = src_vec.value(row).cast_as(target_type, session_tz);
+                                if (!casted.has_error()) {
+                                    reconciled = std::move(casted.value());
+                                }
+                            }
                             // reconcile_to_fixed_array yields a NULL value only when a NOT NULL
                             // fixed ARRAY column receives a too-short value with no default to
                             // pad from. operator_check_constraint already rejects this with a
@@ -2301,7 +2312,11 @@ namespace services::disk {
                         components::vector::vector_t casted(resource(), target_type, local.size());
                         for (uint64_t r = 0; r < local.size(); r++) {
                             if (src_vec.validity().row_is_valid(r)) {
-                                casted.set_value(r, src_vec.value(r).cast_as(target_type, ctx.session_tz));
+                                // Both sides are numeric / STRING_LITERAL (guarded above) and the row is
+                                // non-null, so the cast can not fail.
+                                auto casted_val = src_vec.value(r).cast_as(target_type, ctx.session_tz);
+                                assert(!casted_val.has_error() && "numeric/string column cast can not fail");
+                                casted.set_value(r, casted_val.value());
                             } else {
                                 casted.validity().set_invalid(r);
                             }

@@ -1443,7 +1443,12 @@ namespace services::dispatcher {
                                         column.type().type() == logical_type::STRING_LITERAL)) {
                                 components::vector::vector_t new_column(resource, *it, chunk.capacity());
                                 for (size_t i = 0; i < chunk.size(); i++) {
-                                    auto val = column.value(i).cast_as(*it, session_tz);
+                                    auto casted = column.value(i).cast_as(*it, session_tz);
+                                    if (casted.has_error()) {
+                                        result = casted.error();
+                                        return false;
+                                    }
+                                    const auto& val = casted.value();
                                     if (val.type().type() == logical_type::NA) {
                                         result = core::error_t(
                                             core::error_code_t::schema_error,
@@ -1464,7 +1469,12 @@ namespace services::dispatcher {
                                 if (it->type() == logical_type::STRUCT) {
                                     components::vector::vector_t new_column(resource, *it, chunk.capacity());
                                     for (size_t i = 0; i < chunk.size(); i++) {
-                                        auto val = column.value(i).cast_as(*it, session_tz);
+                                        auto casted = column.value(i).cast_as(*it, session_tz);
+                                        if (casted.has_error()) {
+                                            result = casted.error();
+                                            return false;
+                                        }
+                                        const auto& val = casted.value();
                                         if (val.type().type() == logical_type::NA) {
                                             result = core::error_t(
                                                 core::error_code_t::schema_error,

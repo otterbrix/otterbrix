@@ -29,13 +29,20 @@ namespace components::index {
             case logical_type::TINYINT:
             case logical_type::SMALLINT:
             case logical_type::INTEGER:
-            case logical_type::BIGINT:
-                return key.cast_as(complex_logical_type(logical_type::BIGINT), local_timezone);
+            case logical_type::BIGINT: {
+                // The switch guarantees a non-null integer key, so the cast can not fail.
+                auto casted = key.cast_as(complex_logical_type(logical_type::BIGINT), local_timezone);
+                assert(!casted.has_error() && "integer index key cast can not fail");
+                return std::move(casted.value());
+            }
             case logical_type::UTINYINT:
             case logical_type::USMALLINT:
             case logical_type::UINTEGER:
-            case logical_type::UBIGINT:
-                return key.cast_as(complex_logical_type(logical_type::UBIGINT), local_timezone);
+            case logical_type::UBIGINT: {
+                auto casted = key.cast_as(complex_logical_type(logical_type::UBIGINT), local_timezone);
+                assert(!casted.has_error() && "integer index key cast can not fail");
+                return std::move(casted.value());
+            }
             default:
                 return key;
         }

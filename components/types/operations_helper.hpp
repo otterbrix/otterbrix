@@ -3,7 +3,9 @@
 #include "types.hpp"
 
 #include <boost/math/special_functions/factorials.hpp>
+#include <cassert>
 #include <core/operations_helper.hpp>
+#include <cstdlib>
 #include <optional>
 
 namespace components::types {
@@ -136,7 +138,14 @@ namespace components::types {
             // case physical_type::NA:
             //     return callback.template operator()<std::nullptr_t>(std::forward<Args>(args)...);
             default:
-                throw std::logic_error("simple_physical_type_switch got a physical type that it can not handle");
+                // Rule 2/9: a true invariant violation must never throw (it aborts messily through the
+                // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
+                // compare / void in components/vector/*.cpp) operates on already-validated vector physical
+                // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
+                // guarded before it ever dispatches here (logical_value_t::cast_as returns a
+                // conversion_failure error for a non-castable physical type instead of entering the switch).
+                assert(false && "simple_physical_type_switch: unhandled physical type");
+                std::abort();
         }
     }
 
@@ -175,7 +184,14 @@ namespace components::types {
             // case physical_type::NA:
             //     return double_callback.template operator()<TypeLeft, std::nullptr_t>(std::forward<Args>(args)...);
             default:
-                throw std::logic_error("simple_physical_type_switch got a physical type that it can not handle");
+                // Rule 2/9: a true invariant violation must never throw (it aborts messily through the
+                // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
+                // compare / void in components/vector/*.cpp) operates on already-validated vector physical
+                // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
+                // guarded before it ever dispatches here (logical_value_t::cast_as returns a
+                // conversion_failure error for a non-castable physical type instead of entering the switch).
+                assert(false && "simple_physical_type_switch: unhandled physical type");
+                std::abort();
         }
     }
 
@@ -214,7 +230,14 @@ namespace components::types {
             // case physical_type::NA:
             //     return simple_physical_type_switch<DoubleCallback, std::nullptr_t>(type_right, std::forward<Args>(args)...);
             default:
-                throw std::logic_error("simple_physical_type_switch got a physical type that it can not handle");
+                // Rule 2/9: a true invariant violation must never throw (it aborts messily through the
+                // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
+                // compare / void in components/vector/*.cpp) operates on already-validated vector physical
+                // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
+                // guarded before it ever dispatches here (logical_value_t::cast_as returns a
+                // conversion_failure error for a non-castable physical type instead of entering the switch).
+                assert(false && "simple_physical_type_switch: unhandled physical type");
+                std::abort();
         }
     }
 

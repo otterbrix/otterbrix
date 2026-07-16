@@ -262,12 +262,21 @@ namespace components::operators {
                                 has_null_element = true;
                                 continue;
                             }
-                            auto coerced = val.type() == col_type ? val : val.cast_as(col_type, session_tz);
-                            if (coerced.is_null()) {
+                            if (val.type() == col_type) {
+                                leaves.emplace_back(
+                                    std::make_unique<table::constant_filter_t>(inner_op, val, indices));
+                                continue;
+                            }
+                            auto coerced = val.cast_as(col_type, session_tz);
+                            if (coerced.has_error()) {
+                                return coerced.convert_error<std::unique_ptr<table::table_filter_t>>();
+                            }
+                            if (coerced.value().is_null()) {
                                 has_null_element = true;
                                 continue;
                             }
-                            leaves.emplace_back(std::make_unique<table::constant_filter_t>(inner_op, coerced, indices));
+                            leaves.emplace_back(
+                                std::make_unique<table::constant_filter_t>(inner_op, coerced.value(), indices));
                         }
                     }
                 }
@@ -448,10 +457,13 @@ namespace components::operators {
                 }
                 if (!param_value.is_null() && param_value.type() != col_type) {
                     auto coerced = param_value.cast_as(col_type, session_tz);
-                    if (!coerced.is_null()) {
+                    if (coerced.has_error()) {
+                        return coerced.convert_error<std::unique_ptr<table::table_filter_t>>();
+                    }
+                    if (!coerced.value().is_null()) {
                         return std::unique_ptr<table::table_filter_t>(
                             std::make_unique<table::constant_filter_t>(expression->type(),
-                                                                       std::move(coerced),
+                                                                       std::move(coerced.value()),
                                                                        std::move(indices)));
                     }
                 }

@@ -390,10 +390,15 @@ namespace components::table {
                     auto lval = lvec.value(0);
                     auto rval = rvec.value(0);
                     if (lval.type() != rval.type()) {
-                        rval = rval.cast_as(lval.type(), core::date::timezone_offset_t{});
-                        if (rval.is_null()) {
+                        auto casted = rval.cast_as(lval.type(), core::date::timezone_offset_t{});
+                        if (casted.has_error()) {
+                            error = casted.error();
                             return false;
                         }
+                        if (casted.value().is_null()) {
+                            return false;
+                        }
+                        rval = std::move(casted.value());
                     }
                     return compare_matches(lval.compare(rval), cc->filter_type);
                 }

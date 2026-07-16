@@ -334,6 +334,51 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
     }
 }
 
+// A CASE-WHEN whose condition compares a NULL column value used to hit
+// evaluate_row_condition's type-mismatch cast branch (the NULL resolves to an
+// NA-typed value), where cast_as previously threw std::logic_error -> SIGABRT.
+// Now cast_as returns an error and the condition is guarded: a NULL operand makes
+// the comparison UNKNOWN, so the row falls through to ELSE. The query must succeed.
+TEST_CASE("integration::cpp::correctness_bugs::case_condition_null_operand") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/case_condition_null_operand");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.z (id INT, score INT);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        // id=2 has a NULL score -> its CASE condition operand is NULL.
+        REQUIRE(dispatcher
+                    ->execute_sql(session, "INSERT INTO t.z (id, score) VALUES (1, 72), (2, NULL), (3, 50);")
+                    ->is_success());
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        // `score = 72` for the NULL row is UNKNOWN -> ELSE branch. Before the fix this
+        // aborted the process; now it succeeds and returns the ELSE value.
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT id, CASE WHEN score = 72 THEN 1 ELSE 0 END AS hit FROM t.z ORDER BY id;");
+        INFO("CASE null-operand error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->value(1, 0).value<int32_t>() == 1); // id=1: 72 = 72 -> 1
+        REQUIRE(cur->value(1, 1).value<int32_t>() == 0); // id=2: NULL = 72 -> UNKNOWN -> ELSE 0
+        REQUIRE(cur->value(1, 2).value<int32_t>() == 0); // id=3: 50 = 72 -> 0
+    }
+}
+
 TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
     auto config = test_create_config("/tmp/test_correctness_bugs/enum_scan_predicate");
     test_clear_directory(config);

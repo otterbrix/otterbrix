@@ -102,12 +102,18 @@ namespace components::operators::predicates {
                     }
                 }
                 auto cast_right = right_val.value().cast_as(left_val.value().type(), session_tz);
-                if (!cast_right.is_null()) {
-                    return evaluate_comp<COMP>(resource, left_val.value(), cast_right);
+                if (cast_right.has_error()) {
+                    return cast_right.convert_error<bool>();
+                }
+                if (!cast_right.value().is_null()) {
+                    return evaluate_comp<COMP>(resource, left_val.value(), cast_right.value());
                 }
                 auto cast_left = left_val.value().cast_as(right_val.value().type(), session_tz);
-                if (!cast_left.is_null()) {
-                    return evaluate_comp<COMP>(resource, cast_left, right_val.value());
+                if (cast_left.has_error()) {
+                    return cast_left.convert_error<bool>();
+                }
+                if (!cast_left.value().is_null()) {
+                    return evaluate_comp<COMP>(resource, cast_left.value(), right_val.value());
                 }
                 return false;
             };
@@ -216,10 +222,14 @@ namespace components::operators::predicates {
                     if (types::is_string(element.type().type())) {
                         pattern = element.value<std::string_view>();
                     } else {
-                        coerced = element.cast_as(subject_val.type(), session_tz_);
-                        if (coerced->is_null()) {
+                        auto casted = element.cast_as(subject_val.type(), session_tz_);
+                        if (casted.has_error()) {
+                            return casted.convert_error<bool>();
+                        }
+                        if (casted.value().is_null()) {
                             continue;
                         }
+                        coerced = std::move(casted.value());
                         pattern = coerced->value<std::string_view>();
                     }
                     auto* re = compiled_for(pattern);
@@ -490,11 +500,15 @@ namespace components::operators::predicates {
                                 has_null_element = true;
                                 continue;
                             }
-                            auto rhs = element.cast_as(left_val.value().type(), session_tz);
-                            if (rhs.is_null()) {
+                            auto rhs_rw = element.cast_as(left_val.value().type(), session_tz);
+                            if (rhs_rw.has_error()) {
+                                return rhs_rw.convert_error<bool>();
+                            }
+                            if (rhs_rw.value().is_null()) {
                                 has_null_element = true;
                                 continue;
                             }
+                            const auto& rhs = rhs_rw.value();
                             core::result_wrapper_t<bool> cmp{false};
                             switch (inner_op) {
                                 case compare_type::eq:

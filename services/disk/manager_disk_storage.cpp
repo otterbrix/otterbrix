@@ -1,5 +1,7 @@
 #include "manager_disk_impl.hpp"
 
+#include <cassert>
+
 namespace services::disk {
 
     using namespace core::filesystem;
@@ -75,7 +77,11 @@ namespace services::disk {
                     components::vector::vector_t casted(resource(), target_type, local.size());
                     for (uint64_t row = 0; row < local.size(); row++) {
                         if (src_vec.validity().row_is_valid(row)) {
-                            casted.set_value(row, src_vec.value(row).cast_as(target_type, session_tz));
+                            // Both sides are numeric / STRING_LITERAL (guarded above) and the row is
+                            // non-null, so the cast can not fail.
+                            auto casted_val = src_vec.value(row).cast_as(target_type, session_tz);
+                            assert(!casted_val.has_error() && "numeric/string column cast can not fail");
+                            casted.set_value(row, casted_val.value());
                         } else {
                             casted.validity().set_invalid(row);
                         }

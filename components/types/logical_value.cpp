@@ -13,6 +13,34 @@ namespace components::types {
     namespace {
         template<typename T>
         inline constexpr bool ext_is_signed_v = std::is_signed_v<T> || std::is_same_v<T, int128_t>;
+
+        // The scalar CAST path dispatches through (double_)simple_physical_type_switch, which only handles
+        // this fixed set of physical types. A source/target physical type outside it (realistically
+        // physical_type::NA — a NULL/untyped value — or a nested/complex type that reached the scalar
+        // switch) previously hit the switch's `default:` and threw std::logic_error, which aborts through
+        // the executor's noexcept coroutine. cast_as consults this before dispatching and returns a
+        // conversion_failure error instead.
+        constexpr bool is_scalar_castable_physical_type(physical_type pt) noexcept {
+            switch (pt) {
+                case physical_type::BOOL:
+                case physical_type::UINT8:
+                case physical_type::INT8:
+                case physical_type::UINT16:
+                case physical_type::INT16:
+                case physical_type::UINT32:
+                case physical_type::INT32:
+                case physical_type::UINT64:
+                case physical_type::INT64:
+                case physical_type::UINT128:
+                case physical_type::INT128:
+                case physical_type::FLOAT:
+                case physical_type::DOUBLE:
+                case physical_type::STRING:
+                    return true;
+                default:
+                    return false;
+            }
+        }
     }
 
     logical_value_t::~logical_value_t() { destroy_heap(); }
@@ -335,8 +363,8 @@ namespace components::types {
         }
     };
 
-    logical_value_t logical_value_t::cast_as(const complex_logical_type& type,
-                                             core::date::timezone_offset_t session_tz) const {
+    core::result_wrapper_t<logical_value_t> logical_value_t::cast_as(const complex_logical_type& type,
+                                                                     core::date::timezone_offset_t session_tz) const {
         if (type_ == type) {
             return logical_value_t(*this);
         }
@@ -345,6 +373,18 @@ namespace components::types {
             // ideally use something like this
             // return logicaL_value<type.type()>{value<type_.type()>()};
             // but type is not a constexpr, so here is a huge switch:
+
+            // Guard the un-handleable case BEFORE dispatching: a NA source (a NULL value) or any physical
+            // type the scalar switch can not handle would otherwise trip its `default:` invariant abort.
+            // Surface it through the project's error mechanism instead (Rule 2/9: no exceptions).
+            if (!is_scalar_castable_physical_type(type.to_physical_type()) ||
+                !is_scalar_castable_physical_type(type_.to_physical_type())) {
+                std::string message = "cannot cast logical_type " +
+                                      std::to_string(static_cast<int>(type_.type())) + " to logical_type " +
+                                      std::to_string(static_cast<int>(type.type()));
+                return core::error_t{core::error_code_t::conversion_failure,
+                                     std::pmr::string{message.c_str(), resource_}};
+            }
 
             return double_simple_physical_type_switch<cast_callback_t>(type.to_physical_type(),
                                                                        type_.to_physical_type(),
@@ -444,7 +484,11 @@ namespace components::types {
             std::vector<logical_value_t> fields;
             fields.reserve(children().size());
             for (size_t i = 0; i < children().size(); i++) {
-                fields.emplace_back(children()[i].cast_as(type.child_types()[i], session_tz));
+                auto casted = children()[i].cast_as(type.child_types()[i], session_tz);
+                if (casted.has_error()) {
+                    return casted.error();
+                }
+                fields.emplace_back(std::move(casted.value()));
             }
 
             return create_struct(resource_, type, fields);
@@ -461,7 +505,11 @@ namespace components::types {
             std::vector<logical_value_t> elems;
             elems.reserve(src.size());
             for (const auto& child : src) {
-                elems.emplace_back(child.cast_as(target_elem_type, session_tz));
+                auto casted = child.cast_as(target_elem_type, session_tz);
+                if (casted.has_error()) {
+                    return casted.error();
+                }
+                elems.emplace_back(std::move(casted.value()));
             }
             return create_array(resource_, target_elem_type, elems);
         } else if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
@@ -472,7 +520,11 @@ namespace components::types {
             std::vector<logical_value_t> elems;
             elems.reserve(children().size());
             for (const auto& child : children()) {
-                elems.emplace_back(child.cast_as(target_elem_type, session_tz));
+                auto casted = child.cast_as(target_elem_type, session_tz);
+                if (casted.has_error()) {
+                    return casted.error();
+                }
+                elems.emplace_back(std::move(casted.value()));
             }
             return create_list(resource_, target_elem_type, elems);
         } else if (type.type() == logical_type::ENUM) {
@@ -1027,8 +1079,10 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return sum(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                       value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+            auto lhs = value1.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            auto rhs = value2.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            assert(!lhs.has_error() && !rhs.has_error() && "numeric promotion cast can not fail");
+            return sum(lhs.value(), rhs.value());
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1144,8 +1198,10 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return subtract(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                            value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+            auto lhs = value1.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            auto rhs = value2.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            assert(!lhs.has_error() && !rhs.has_error() && "numeric promotion cast can not fail");
+            return subtract(lhs.value(), rhs.value());
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1272,8 +1328,10 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return mult(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                        value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+            auto lhs = value1.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            auto rhs = value2.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            assert(!lhs.has_error() && !rhs.has_error() && "numeric promotion cast can not fail");
+            return mult(lhs.value(), rhs.value());
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1372,8 +1430,10 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return divide(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                          value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+            auto lhs = value1.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            auto rhs = value2.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            assert(!lhs.has_error() && !rhs.has_error() && "numeric promotion cast can not fail");
+            return divide(lhs.value(), rhs.value());
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1458,8 +1518,10 @@ namespace components::types {
         if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
             is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return modulus(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                           value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+            auto lhs = value1.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            auto rhs = value2.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            assert(!lhs.has_error() && !rhs.has_error() && "numeric promotion cast can not fail");
+            return modulus(lhs.value(), rhs.value());
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();

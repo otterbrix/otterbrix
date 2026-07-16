@@ -105,11 +105,21 @@ namespace components::table {
         for (uint64_t i = 0; i < target_size; ++i) {
             if (i < src.size()) {
                 // Within the provided value: cast the element to the target type. Over-long
-                // values are truncated implicitly (the loop stops at target_size).
-                elems.emplace_back(src[i].cast_as(elem_type, session_tz));
+                // values are truncated implicitly (the loop stops at target_size). A NULL element
+                // stays NULL (an NA source can not be cast to the element type) — same shape as the
+                // nullable-pad slot below.
+                if (src[i].is_null()) {
+                    elems.emplace_back(logical_value_t{resource, complex_logical_type{logical_type::NA}});
+                } else {
+                    auto casted = src[i].cast_as(elem_type, session_tz);
+                    assert(!casted.has_error() && "array element cast to declared element type can not fail");
+                    elems.emplace_back(std::move(casted.value()));
+                }
             } else if (default_elems && i < default_elems->size()) {
                 // Short value: pad slot i from the column DEFAULT at the same position.
-                elems.emplace_back((*default_elems)[i].cast_as(elem_type, session_tz));
+                auto casted = (*default_elems)[i].cast_as(elem_type, session_tz);
+                assert(!casted.has_error() && "array default element cast can not fail");
+                elems.emplace_back(std::move(casted.value()));
             } else if (!column.is_not_null()) {
                 // Nullable column with no usable default: pad with NULL.
                 elems.emplace_back(logical_value_t{resource, complex_logical_type{logical_type::NA}});

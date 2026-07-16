@@ -254,7 +254,7 @@ namespace services::planner::impl {
         // full_scan / index_scan / transfer_scan, or that scan under a single-child wrapper
         // (operator_match_t for a non-pure-compare predicate), which is always the left child.
         // The USING/FROM source (when present) is the operator_delete/update's RIGHT child, so it
-        // is never on this spine — that is what keeps the single-mutating-scan invariant (HOLE B).
+        // is never on this spine — that is what keeps the single-mutating-scan invariant.
         for (auto op = root; op != nullptr; op = op->left()) {
             switch (op->type()) {
                 case operator_type::full_scan: {

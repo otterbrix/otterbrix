@@ -301,7 +301,7 @@ namespace services::disk {
                              std::unique_ptr<components::vector::data_chunk_t> data);
 
         // storage_delete_rows_inner — single-OID DELETE mutation, and the owner of its
-        //   WAL record (I-1), for the same single-writer reason storage_update_inner owns
+        //   WAL record, for the same single-writer reason storage_update_inner owns
         //   UPDATE's: minting the wal_id from any other actor would decouple wal_id order
         //   from apply order, so a same-oid compaction (also at this agent) could renumber
         //   rows out from under the captured ids, and replay (walking the WAL in id order)
@@ -476,7 +476,7 @@ namespace services::disk {
         //   On a real renumber (total_rows shrank), a fire-and-forget PHYSICAL_COMPACT epoch
         //   marker is written to the WAL AFTER the in-memory swap, so recovery re-runs the same
         //   dense renumber at this log point (INV-RECLAIM-1). `session` is the committing session,
-        //   also used to clear its own retained I-2 pins on this oid before the gate check.
+        //   also used to clear its own retained mutating-scan pins on this oid before the gate check.
         unique_future<void>
         maybe_cleanup_inner(components::catalog::oid_t table_oid, uint64_t compact_watermark, session_id_t session);
 
@@ -507,7 +507,7 @@ namespace services::disk {
         //   the matching entries so on_horizon_advanced never reclaims the live .otbx.
         unique_future<void> storage_drop_aborted_inner(uint64_t txn_id);
 
-        // release_scans_for_session_inner — I-2 statement/txn-end sweep. When a transaction
+        // release_scans_for_session_inner — statement/txn-end sweep. When a transaction
         //   ABORTS, any mutating (DELETE/UPDATE) scan cursor it left RETAINED past drain
         //   (awaiting_apply) will never get its storage_delete_rows/storage_update apply — the
         //   captured ids are being discarded — so the retained pin would keep deferring
@@ -693,7 +693,7 @@ namespace services::disk {
             components::table::transaction_data txn{0, 0};    // MVCC snapshot for the whole scan
             int64_t matched_limit{-1};                        // post-filter matched-row cap (-1 == unbounded)
             uint64_t matched_emitted{0};                      // running matched rows handed out (enforces matched_limit)
-            // I-2 (no-renumber-under-capture): a DML scan (DELETE/UPDATE) captures physical
+            // No-renumber-under-capture: a DML scan (DELETE/UPDATE) captures physical
             // row_ids during this scan and applies the mutation LATER, from a different
             // actor. A compaction of table_oid between capture and apply would renumber the
             // rows out from under the captured ids. `mutating` marks such a scan; its cursor
@@ -709,7 +709,7 @@ namespace services::disk {
         };
         std::pmr::unordered_map<uint64_t, active_scan_t> active_scans_;
 
-        // I-2 release: erase every retained (drained, awaiting-apply) mutating cursor on
+        // Pin release: erase every retained (drained, awaiting-apply) mutating cursor on
         // `oid` opened by `session`, called from the DML apply handlers once the mutation
         // has landed. Also sweeps a session's OWN stale retained cursors on a fresh mutating
         // open (a per-session statement runs to completion before the next), which bounds an

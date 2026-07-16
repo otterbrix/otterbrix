@@ -10,7 +10,7 @@ set(${PROJECT_NAME}_SOURCES
     test_fk_composite.cpp
     test_fk_scan_by_keys_semijoin.cpp
     test_pushdown_reduce.cpp
-    test_i2_compaction_gate.cpp
+    test_compaction_gate.cpp
     test_ddl_methods.cpp
     test_wal_catalog.cpp
     test_mvcc_ddl.cpp

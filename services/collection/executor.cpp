@@ -1708,7 +1708,7 @@ namespace services::collection::executor {
                 }
             }
 
-            // I-2: a mutating scan retained past drain (awaiting_apply) is normally
+            // A mutating scan retained past drain (awaiting_apply) is normally
             // released by the storage apply — which this failed statement will never
             // send (the failure landed between drain and apply). The txn-abort
             // OPERATOR does not run on the statement-failure path, and an autocommit

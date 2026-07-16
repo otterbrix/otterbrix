@@ -161,7 +161,7 @@ namespace services::disk {
         // `ctx.database_oid` if set, else main_database. This is deliberately NOT the table's catalog
         // db (where the .otbx checkpoint lives under ${db}/${tbl}/): the executor does not propagate
         // the catalog db onto the DML execution context, so user-table DML resolves to main_database.
-        // The PHYSICAL_COMPACT epoch marker (I-2) MUST ride THIS same stream, so it is truncated and
+        // The PHYSICAL_COMPACT epoch marker MUST ride THIS same stream, so it is truncated and
         // replayed atomically with the DML it orders — a marker stranded in a different db's WAL is
         // truncated independently and lost on restart, resurrecting the compacted-away rows. INVALID
         // until the first DML emit; every compactable state needs at least one prior DML emit on this
@@ -662,7 +662,7 @@ namespace services::disk {
         /// un-marking the DROP so on_horizon_advanced never removes the .otbx.
         unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
 
-        /// I-2 txn-abort sweep. operator_abort_transaction sends this; the manager fans
+        /// Txn-abort sweep. operator_abort_transaction sends this; the manager fans
         /// release_scans_for_session_inner(session) out to EVERY agent so each erases the
         /// aborting session's scan cursors — in particular a mutating (DELETE/UPDATE) pin left
         /// retained past drain whose apply never came — making compaction deferral end at abort

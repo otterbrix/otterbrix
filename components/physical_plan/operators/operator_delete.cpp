@@ -347,7 +347,7 @@ namespace components::operators {
         // (storage_delete_rows, then the index mirror) lives in the NAMED coroutine
         // lambda `op`, which yields a flush_outcome_t; record_flush() then does the
         // COMMON post-storage bookkeeping (constraint accumulation when a parent
-        // constraint sits above the DML). The disk agent owns the WAL record now (I-1),
+        // constraint sits above the DML). The disk agent owns the WAL record now,
         // exactly as it does for INSERT and UPDATE: storage_delete_rows_inner writes the
         // PHYSICAL_DELETE after the mutation, inside its mailbox turn, so the wal_id is
         // minted in apply order and no same-oid compaction can slip between the mark and
@@ -366,7 +366,7 @@ namespace components::operators {
                 const size_t modified_size = modified_->size();
 
                 // storage_delete_rows — mark the rows deleted under this txn (MVCC) AND
-                // write the PHYSICAL_DELETE record (agent-owned, I-1).
+                // write the PHYSICAL_DELETE record (agent-owned).
                 vector_t row_ids(res, types::logical_type::BIGINT, modified_size);
                 for (size_t i = 0; i < modified_size; i++) {
                     row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
@@ -456,7 +456,7 @@ namespace components::operators {
             co_return;
         }
 
-        // I-2 zero-apply release. This FINAL drive flushed nothing — either the DML
+        // Zero-apply release. This FINAL drive flushed nothing — either the DML
         // matched zero rows, or the matched count was an exact multiple of the flush
         // threshold so the last mid-pump flush drained the buffer. Either way the
         // apply that releases the retained mutating scan pin (release_mutating_scans

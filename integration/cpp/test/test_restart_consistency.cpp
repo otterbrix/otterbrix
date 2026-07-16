@@ -749,7 +749,7 @@ TEST_CASE("integration::cpp::restart_consistency::timezone", "[restart]") {
 }
 
 // ---------------------------------------------------------------------------
-// I-2 zero-apply release. A DELETE/UPDATE under a non-pushable predicate reads
+// Zero-apply release. A DELETE/UPDATE under a non-pushable predicate reads
 // through a bare mutating full_scan whose retained cursor is normally released
 // by the storage apply (storage_delete_rows / storage_update). When ZERO rows
 // match, no apply is ever sent — the operator must release the pin itself at

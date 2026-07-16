@@ -259,7 +259,7 @@ namespace components::operators {
             }
         }
 
-        // (4) I-2 scan-cursor sweep. A DELETE/UPDATE whose scan drained and captured physical
+        // (4) Mutating-scan cursor sweep. A DELETE/UPDATE whose scan drained and captured physical
         //     ids but whose apply never landed (this txn is aborting) leaves a mutating cursor
         //     RETAINED on the owning agent (awaiting_apply); it would keep deferring compaction of
         //     that oid until the session's next mutating open. Erase all of this session's cursors

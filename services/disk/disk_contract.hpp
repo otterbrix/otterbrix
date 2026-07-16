@@ -222,7 +222,7 @@ namespace services::disk {
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn,
-                                 // I-2: true for a DELETE/UPDATE scan whose cursor must be
+                                 // true for a DELETE/UPDATE scan whose cursor must be
                                  // retained past drain (until the mutation applies) so it keeps
                                  // deferring compaction of table_oid. false for read scans.
                                  bool mutating);
@@ -321,7 +321,7 @@ namespace services::disk {
         // un-marking the DROP so on_horizon_advanced never reclaims the still-live .otbx.
         actor_zeta::unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
 
-        // I-2 txn-abort sweep — erase the aborting session's retained scan cursors (see
+        // Txn-abort sweep — erase the aborting session's retained scan cursors (see
         // manager_disk_t::release_scans_for_session).
         actor_zeta::unique_future<void> release_scans_for_session(session_id_t session);
 

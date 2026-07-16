@@ -20,7 +20,7 @@ namespace services::planner::impl {
     components::operators::operator_ptr create_plan_having(const context_storage_t& context,
                                                            const components::logical_plan::node_ptr& node);
 
-    // I-2: descend `root`'s left spine to the physical scan that SOURCES the target table's
+    // Descend `root`'s left spine to the physical scan that SOURCES the target table's
     // physical row_ids for an enclosing DELETE/UPDATE and mark exactly that ONE scan mutating,
     // so the owning disk agent retains its streaming cursor past drain (has_active_scan_for_oid
     // then keeps deferring compaction across the capture->apply window). Marking a SINGLE scan

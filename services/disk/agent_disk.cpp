@@ -1073,7 +1073,7 @@ namespace services::disk {
                                        components::catalog::oid_t table_oid,
                                        components::vector::vector_t row_ids,
                                        std::unique_ptr<components::vector::data_chunk_t> data) {
-        // I-2 prompt clear: this UPDATE's capture->apply window on (table_oid, session) closes
+        // Prompt pin clear: this UPDATE's capture->apply window on (table_oid, session) closes
         // here -- the operator has handed its captured physical ids to this handler. The storage
         // mutation below lands before the single WAL co_await, so releasing the retained pin now
         // cannot let a compaction slip in ahead of the apply (this agent runs both). Harmless
@@ -1162,7 +1162,7 @@ namespace services::disk {
                                             components::catalog::oid_t table_oid,
                                             components::vector::vector_t row_ids,
                                             uint64_t count) {
-        // I-2 prompt clear: this DELETE's capture->apply window on (table_oid, session) closes
+        // Prompt pin clear: this DELETE's capture->apply window on (table_oid, session) closes
         // here (symmetric with storage_update_inner). The delete_rows mark below lands before the
         // single WAL co_await, so releasing the retained pin now is race-free on this agent thread.
         release_mutating_scans(table_oid, ctx.session);
@@ -1189,7 +1189,7 @@ namespace services::disk {
                                ? entry->storage->delete_rows(row_ids, count, ctx.txn.transaction_id)
                                : entry->storage->delete_rows(row_ids, count);
 
-        // WAL AFTER the mutation, but INSIDE this handler (I-1) -- exactly as
+        // WAL AFTER the mutation, but INSIDE this handler -- exactly as
         // storage_update_inner does. The handler holds the mailbox across its single
         // co_await, so no other same-oid mutation OR compaction can run between the
         // storage mark and the record that names it. Every physical record for this oid
@@ -1483,7 +1483,7 @@ namespace services::disk {
             empty->set_cardinality(0);
             return fetch_batch_t{std::move(empty), reply_cursor_id};
         };
-        // I-2 natural-drain retirement. A cursor is RETAINED past drain (awaiting_apply) — so
+        // Natural-drain retirement. A cursor is RETAINED past drain (awaiting_apply) — so
         // has_active_scan_for_oid keeps deferring compaction of table_oid across the capture->apply
         // window — ONLY when it is a mutating (DELETE/UPDATE) scan that actually HANDED OUT rows
         // (matched_emitted > 0): those rows' physical ids are now in flight to the mutation
@@ -1516,7 +1516,7 @@ namespace services::disk {
                       static_cast<unsigned>(table_oid));
                 co_return make_drained(0);
             }
-            // I-2 sweep-on-open: a fresh DML scan on this (oid, session) first clears this
+            // Sweep-on-open: a fresh DML scan on this (oid, session) first clears this
             // session's OWN stale retained pins on this oid. A session runs its statements
             // serially, so any awaiting-apply pin left by a prior statement on this oid can
             // only be a leak (its mutation errored before finalize / aborted before apply).
@@ -2108,7 +2108,7 @@ namespace services::disk {
                 continue;
             }
 
-            // Numbering-epoch boundary (I-2), same shrink-gated fire-and-forget discipline as
+            // Numbering-epoch boundary, same shrink-gated fire-and-forget discipline as
             // maybe_cleanup_inner / vacuum_inner. This compact renumbers whether or not the fold
             // below lands; on the fold-FAILURE path (deferred round) the old sidecar stays and the
             // marker is the ONLY durable record of the epoch — without it, every later positional
@@ -2307,7 +2307,7 @@ namespace services::disk {
             auto& table = entry->table_storage.table();
             table.cleanup_versions(lowest_active_start_time);
             // Cursor gate: skip compact while a streaming fetch-next cursor is open (or a mutating
-            // one retained past drain, I-2) on this oid — its stored absolute position indexes the
+            // one retained past drain) on this oid — its stored absolute position indexes the
             // un-swapped collection; the atomic swap would shift rows out from under it (R17), or
             // renumber rows out from under an in-flight DELETE/UPDATE's captured ids. Reclaim is
             // deferred to a later vacuum round.
@@ -2319,7 +2319,7 @@ namespace services::disk {
             const auto total = table.row_group()->total_rows();
             table.compact(compact_watermark);
 
-            // Numbering-epoch boundary (I-2), identical discipline to maybe_cleanup_inner: emit ONLY
+            // Numbering-epoch boundary, identical discipline to maybe_cleanup_inner: emit ONLY
             // when this VACUUM compaction actually renumbered (total shrank), so replay re-runs the
             // SAME dense renumber at this log point and every later positional record resolves against
             // the post-VACUUM numbering. Fire-and-forget on the table's own DML WAL stream
@@ -2359,7 +2359,7 @@ namespace services::disk {
             co_return;
         }
 
-        // I-2: maybe_cleanup only CONSULTS the mutating gate; it never releases it. A DELETE/UPDATE's
+        // maybe_cleanup only CONSULTS the mutating gate; it never releases it. A DELETE/UPDATE's
         // pin is dropped by its own apply (storage_delete_rows_inner / storage_update_inner), the
         // txn-abort broadcast (release_scans_for_session), or the next mutating open's sweep — all of
         // which precede this committing session's commit fan-out, so by the time we run here the
@@ -2376,7 +2376,7 @@ namespace services::disk {
         auto deleted = total - committed;
 
         // Cursor gate: skip compact while a streaming fetch-next cursor is open (or a mutating one
-        // retained past drain, I-2) on this oid — its stored absolute position indexes the
+        // retained past drain) on this oid — its stored absolute position indexes the
         // un-swapped collection; the atomic swap would shift rows out from under it (R17), or
         // renumber rows out from under an in-flight DELETE/UPDATE's captured ids. SKIP, never
         // block: reclaim is deferred to a later commit, and a subsequent delete-carrying commit
@@ -2409,7 +2409,7 @@ namespace services::disk {
             // row_group.
             table.compact(compact_watermark);
 
-            // Log the numbering-epoch boundary (I-2). Emit ONLY when the compaction actually
+            // Log the numbering-epoch boundary. Emit ONLY when the compaction actually
             // renumbered (total_rows shrank) — a watermark-gated no-op or a tail-only drop that
             // did not move a survivor needs no marker. Fire-and-forget (see the identical
             // discipline at storage_append_inner's ADD_COLUMN emit): the in-memory swap already
@@ -2528,7 +2528,7 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::release_scans_for_session_inner(session_id_t session) {
-        // I-2 txn-abort sweep: erase every one of the aborting session's cursors on this agent.
+        // Txn-abort sweep: erase every one of the aborting session's cursors on this agent.
         // Its query pipeline has torn down, so no cursor of it will be fetched or applied again;
         // a retained mutating pin left by a DELETE/UPDATE whose apply never came would otherwise
         // keep deferring compaction of its oid. Agent-thread only (active_scans_ is agent-owned).

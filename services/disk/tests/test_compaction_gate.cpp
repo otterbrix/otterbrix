@@ -1,9 +1,9 @@
-// I-2 (no-renumber-under-capture) compaction gate — agent-level lifecycle tests.
+// No-renumber-under-capture compaction gate — agent-level lifecycle tests.
 //
 // A DELETE/UPDATE captures physical row_ids during its scan and applies the mutation
 // from a LATER mailbox turn. If a commit-time (maybe_cleanup) or VACUUM compaction
 // renumbered the survivors between capture and apply, the captured ids would name the
-// WRONG rows. I-2 defers compaction of an oid while a MUTATING scan cursor is in flight
+// WRONG rows. The gate defers compaction of an oid while a MUTATING scan cursor is in flight
 // on it — open, or drained-but-awaiting-apply — reusing the
 // has_active_scan_for_oid gate that the three compact sites already consult.
 //
@@ -146,7 +146,7 @@ namespace {
 
 // Baseline: a table with >30% committed-dead rows compacts on maybe_cleanup, reclaiming the
 // dead rows so the physical total shrinks. Establishes the observable the gate tests rely on.
-TEST_CASE("i2_gate::baseline_maybe_cleanup_reclaims_committed_dead") {
+TEST_CASE("compaction_gate::baseline_maybe_cleanup_reclaims_committed_dead") {
     fixture fx;
     const auto oid = make_table(fx, catalog::FIRST_USER_OID);
     append_n(fx, oid, 20);
@@ -159,10 +159,10 @@ TEST_CASE("i2_gate::baseline_maybe_cleanup_reclaims_committed_dead") {
     REQUIRE(total_rows(fx, oid) == 12); // compacted: the 8 dead rows reclaimed
 }
 
-// The core I-2 property: a MUTATING scan cursor retained past drain defers compaction across
+// The core gate property: a MUTATING scan cursor retained past drain defers compaction across
 // its whole capture->apply window; the mutation-apply (storage_delete_rows) releases the pin,
 // after which compaction proceeds.
-TEST_CASE("i2_gate::mutating_cursor_defers_compaction_until_apply") {
+TEST_CASE("compaction_gate::mutating_cursor_defers_compaction_until_apply") {
     fixture fx;
     const auto oid = make_table(fx, catalog::FIRST_USER_OID);
     const auto s = session_id_t::generate_uid();
@@ -186,7 +186,7 @@ TEST_CASE("i2_gate::mutating_cursor_defers_compaction_until_apply") {
 
 // A plain read (non-mutating) cursor is GC'd at drain — it must NOT retain
 // past drain, so it never defers commit-time reclaim.
-TEST_CASE("i2_gate::read_cursor_is_not_retained") {
+TEST_CASE("compaction_gate::read_cursor_is_not_retained") {
     fixture fx;
     const auto oid = make_table(fx, catalog::FIRST_USER_OID);
     const auto s = session_id_t::generate_uid();
@@ -199,10 +199,10 @@ TEST_CASE("i2_gate::read_cursor_is_not_retained") {
     REQUIRE(total_rows(fx, oid) == 12); // compacted — a drained read cursor holds no gate
 }
 
-// HOLE A2: a mutating scan that matched NOTHING captured no id, so it must be erased at drain
+// A mutating scan that matched NOTHING captured no id, so it must be erased at drain
 // (not retained) — otherwise a 0-match DELETE/UPDATE would leak a pin no apply ever releases.
 // A limit-0 fetch drains with matched_emitted == 0, exercising the retire_on_drain erase branch.
-TEST_CASE("i2_gate::zero_match_mutating_cursor_does_not_leak") {
+TEST_CASE("compaction_gate::zero_match_mutating_cursor_does_not_leak") {
     fixture fx;
     const auto oid = make_table(fx, catalog::FIRST_USER_OID);
     const auto s = session_id_t::generate_uid();
@@ -217,7 +217,7 @@ TEST_CASE("i2_gate::zero_match_mutating_cursor_does_not_leak") {
 
 // The apply-release is SESSION-scoped: two sessions each retain a mutating pin on the same oid;
 // one session applying releases ONLY its own pin, so the other session's pin keeps deferring.
-TEST_CASE("i2_gate::apply_release_is_session_scoped") {
+TEST_CASE("compaction_gate::apply_release_is_session_scoped") {
     fixture fx;
     const auto oid = make_table(fx, catalog::FIRST_USER_OID);
     const auto s1 = session_id_t::generate_uid();
@@ -243,7 +243,7 @@ TEST_CASE("i2_gate::apply_release_is_session_scoped") {
 // Sweep-on-open backstop: a leaked retained pin (a mutating scan whose apply never came — the
 // error/abort-before-finalize path) is cleared when the SAME (oid, session) opens its next
 // mutating scan, bounding such a leak to at most one per (oid, session).
-TEST_CASE("i2_gate::sweep_on_open_clears_leaked_pin") {
+TEST_CASE("compaction_gate::sweep_on_open_clears_leaked_pin") {
     fixture fx;
     const auto oid = make_table(fx, catalog::FIRST_USER_OID);
     const auto s = session_id_t::generate_uid();
@@ -264,11 +264,11 @@ TEST_CASE("i2_gate::sweep_on_open_clears_leaked_pin") {
     REQUIRE(total_rows(fx, oid) == 11); // compacted after a single release
 }
 
-// HOLE D — the txn-abort sweep. A DELETE/UPDATE whose scan drained and captured ids but whose
+// The txn-abort sweep. A DELETE/UPDATE whose scan drained and captured ids but whose
 // apply never landed (the txn aborts) leaves a retained mutating pin. release_scans_for_session
 // (fanned out by operator_abort_transaction) erases the aborting session's cursors, so reclaim
 // deferral ends deterministically at abort rather than lingering to the next mutating open.
-TEST_CASE("i2_gate::abort_sweep_releases_retained_pin") {
+TEST_CASE("compaction_gate::abort_sweep_releases_retained_pin") {
     fixture fx;
     const auto oid = make_table(fx, catalog::FIRST_USER_OID);
     const auto s = session_id_t::generate_uid();
@@ -286,7 +286,7 @@ TEST_CASE("i2_gate::abort_sweep_releases_retained_pin") {
 
 // The abort sweep is session-scoped: aborting one session must not clear a DIFFERENT session's
 // in-flight mutating pin (which is still legitimately deferring compaction).
-TEST_CASE("i2_gate::abort_sweep_is_session_scoped") {
+TEST_CASE("compaction_gate::abort_sweep_is_session_scoped") {
     fixture fx;
     const auto oid = make_table(fx, catalog::FIRST_USER_OID);
     const auto s1 = session_id_t::generate_uid();
@@ -310,7 +310,7 @@ TEST_CASE("i2_gate::abort_sweep_is_session_scoped") {
 // maybe_cleanup ran, closing the row-id numbering epoch on restart. base_spaces replay calls it on
 // a PHYSICAL_COMPACT record; here we drive it directly (a plain synchronous bootstrap method, not a
 // mailbox handler). compact(UINT64_MAX) is never MVCC-gated in the quiescent replay window.
-TEST_CASE("i2_gate::direct_compact_sync_replays_the_renumber") {
+TEST_CASE("compaction_gate::direct_compact_sync_replays_the_renumber") {
     fixture fx;
     const auto oid = make_table(fx, catalog::FIRST_USER_OID);
     append_n(fx, oid, 20);

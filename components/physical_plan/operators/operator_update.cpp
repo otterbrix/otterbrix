@@ -509,7 +509,7 @@ namespace components::operators {
             co_return;
         }
 
-        // I-2 zero-apply release. This FINAL drive flushed nothing — either the UPDATE
+        // Zero-apply release. This FINAL drive flushed nothing — either the UPDATE
         // matched zero rows, or the matched count was an exact multiple of the flush
         // threshold so the last mid-pump flush drained the buffer. Either way the apply
         // that releases the retained mutating scan pin (release_mutating_scans at

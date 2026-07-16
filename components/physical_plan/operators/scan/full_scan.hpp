@@ -36,7 +36,7 @@ namespace components::operators {
         const std::vector<size_t>& projected_cols() const noexcept { return projected_cols_; }
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-        // I-2: mark this scan as the id-source of a DELETE/UPDATE. The DML planner calls this so
+        // Mark this scan as the id-source of a DELETE/UPDATE. The DML planner calls this so
         // the OPEN fetch tells the owning agent to RETAIN the cursor past drain (awaiting_apply) —
         // has_active_scan_for_oid then keeps deferring compaction of table_oid across the whole
         // capture->apply window, so a commit-time / VACUUM compaction can never renumber the rows
@@ -104,7 +104,7 @@ namespace components::operators {
         bool opened_{false};
         bool drained_{false};
         bool emitted_any_{false};
-        bool mutating_{false}; // I-2: DELETE/UPDATE id-source ⇒ agent retains the cursor past drain
+        bool mutating_{false}; // DELETE/UPDATE id-source ⇒ agent retains the cursor past drain
         uint64_t cursor_id_{0};
         std::pmr::vector<types::complex_logical_type> guard_types_{resource_};
     };

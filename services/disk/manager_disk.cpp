@@ -705,7 +705,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::release_scans_for_session(session_id_t session) {
-        // I-2 txn-abort sweep. The retained pin is keyed by (oid, session) on the owning agent,
+        // Txn-abort sweep. The retained pin is keyed by (oid, session) on the owning agent,
         // but the caller only has the session, so fan out to EVERY agent and let each erase its
         // own slice's cursors for that session. Mirrors storage_drop_aborted's broadcast.
         trace(log_, "manager_disk::release_scans_for_session , session : {}", session.data());

@@ -68,7 +68,7 @@ namespace services::planner::impl {
                                                                                         context.log.clone(),
                                                                                         table_oid,
                                                                                         std::move(returning)));
-            // I-2: the predicate scan is this DELETE's physical-id source — mark it mutating so the
+            // The predicate scan is this DELETE's physical-id source — mark it mutating so the
             // owning agent defers compaction of table_oid across its capture->apply window.
             auto match_scan = create_plan_match(context, node_match, limit);
             mark_mutation_target_scan(match_scan, table_oid);
@@ -88,9 +88,9 @@ namespace services::planner::impl {
                                                                                     std::move(returning),
                                                                                     *expr,
                                                                                     limit.limit()));
-        // I-2: the target-table scan (LEFT child) sources the row_ids this DELETE applies; mark ONLY
+        // The target-table scan (LEFT child) sources the row_ids this DELETE applies; mark ONLY
         // it mutating. The USING source (RIGHT child) is a read even when it scans the same oid, so
-        // it stays non-mutating — one mutating cursor per (oid, session) (HOLE B invariant).
+        // it stays non-mutating — one mutating cursor per (oid, session).
         auto target_scan = boost::intrusive_ptr(
             new components::operators::full_scan(context.resource,
                                                  context.log.clone(),

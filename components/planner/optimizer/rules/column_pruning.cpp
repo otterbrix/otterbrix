@@ -9,6 +9,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_group.hpp>
@@ -166,6 +167,74 @@ namespace components::planner::optimizer {
                             return false;
                     }
                 }
+            }
+            return true;
+        }
+
+        // Collect the scan columns a plain-SELECT $select projection reads. A plain SELECT
+        // (no GROUP BY) carries a select_t — NOT a group_t — so process_aggregate must read
+        // it to prune. Returns false to DISABLE projection (read ALL columns) whenever any
+        // visible column is not a plain get_field/constant we can statically map to one
+        // storage column: a star_expand (SELECT * / t.*), an arithmetic / CASE / COALESCE /
+        // function projection, an aggregate, or an unresolved path. Conservative by design —
+        // a MISSED column would under-read and corrupt results, so anything not fully
+        // enumerable falls back to reading every column (always correct).
+        bool collect_cols_from_select(const logical_plan::node_ptr& select_node, std::vector<size_t>& cols) {
+            for (const auto& expr : select_node->expressions()) {
+                if (!expr)
+                    continue;
+                if (expr->group() != expressions::expression_group::scalar) {
+                    return false; // aggregate / compare / function projection — not enumerable here
+                }
+                const auto* se = static_cast<const SExpr*>(expr.get());
+                switch (se->type()) {
+                    case expressions::scalar_type::constant:
+                        continue; // a literal reads no scan column
+                    case expressions::scalar_type::get_field:
+                        break;
+                    default:
+                        return false; // star_expand / arithmetic / case_when / coalesce / ...
+                }
+                // get_field input field: params.front() when aliased (SELECT a AS x),
+                // else the key itself carries the storage path (mirrors build_pushed_spec).
+                const KeyT* field = nullptr;
+                if (!se->params().empty()) {
+                    if (!std::holds_alternative<KeyT>(se->params().front())) {
+                        return false; // computed input — not a plain column
+                    }
+                    field = &std::get<KeyT>(se->params().front());
+                } else {
+                    field = &se->key();
+                }
+                if (field->path().empty()) {
+                    return false; // unresolved projection — read all
+                }
+                size_t idx = field->path()[0];
+                if (idx == SIZE_MAX) {
+                    return false;
+                }
+                cols.push_back(idx);
+            }
+            return true;
+        }
+
+        // Collect the scan columns an ORDER BY reads. For a PLAIN select the sort runs over
+        // the scan, so its keys are scan columns that must be present. Returns false to
+        // DISABLE projection on any key we cannot resolve to a single storage column
+        // (positional / output-alias / expression sort keys) — reading all is always safe.
+        bool collect_cols_from_sort(const logical_plan::node_ptr& sort_node, std::vector<size_t>& cols) {
+            for (const auto& expr : sort_node->expressions()) {
+                if (!expr)
+                    continue;
+                if (expr->group() != expressions::expression_group::sort) {
+                    return false;
+                }
+                const auto* se = static_cast<const expressions::sort_expression_t*>(expr.get());
+                const auto& p = se->key().path();
+                if (p.empty() || p[0] == SIZE_MAX) {
+                    return false;
+                }
+                cols.push_back(p[0]);
             }
             return true;
         }
@@ -361,41 +430,66 @@ namespace components::planner::optimizer {
                 return;
             }
 
-            // Collect columns referenced by this aggregate's own group (SELECT list +
-            // aggregate params) and match (WHERE).
+            // Collect the scan columns this aggregate's own pipeline stages read: a GROUP BY
+            // ($group) or plain projection ($select), plus WHERE ($match), ORDER BY ($sort)
+            // and DISTINCT ON. Exactly one of $group / $select is the output enumerator.
             std::vector<size_t> raw_cols;
             bool can_project = true;
-            logical_plan::node_ptr group_child, match_child, data_child;
+            logical_plan::node_ptr group_child, select_child, match_child, sort_child, data_child;
 
             for (const auto& child : agg_node->children()) {
                 switch (child->type()) {
                     case logical_plan::node_type::group_t:
                         group_child = child;
                         break;
+                    case logical_plan::node_type::select_t:
+                        select_child = child;
+                        break;
                     case logical_plan::node_type::match_t:
                         match_child = child;
                         break;
-                    case logical_plan::node_type::limit_t:
                     case logical_plan::node_type::sort_t:
+                        sort_child = child;
+                        break;
+                    case logical_plan::node_type::limit_t:
                     case logical_plan::node_type::having_t:
                         break;
                     default:
-                        // join_t, aggregate_t (subquery), data_t, etc.
+                        // join_t, aggregate_t (subquery), data_t, union_t, etc.
                         data_child = child;
                         break;
                 }
             }
 
-            // Projection is safe only when the aggregate has a group_t child that enumerates
-            // the output columns (SELECT list + aggregate params). Otherwise the aggregate is
-            // a bare raw scan that must return all columns to the caller.
-            if (!group_child) {
-                can_project = false;
-            }
-
-            if (can_project && group_child) {
+            // Projection needs an enumerator of the output columns:
+            //   * GROUP BY  ($group) enumerates every scan column the aggregation touches
+            //     (GROUP BY keys + aggregate args). $select / $sort / $having ABOVE a GROUP BY
+            //     address the grouped OUTPUT, not scan columns, so they are NOT collected.
+            //   * A plain projection ($select, no $group) enumerates the projected scan
+            //     columns; ORDER BY and DISTINCT ON then ALSO read scan columns, so they are
+            //     collected too.
+            // A bare scan (neither $group nor $select — e.g. SELECT *) must return ALL columns.
+            const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(agg_node.get());
+            if (group_child) {
                 if (!collect_cols_from_node(group_child, raw_cols))
                     can_project = false;
+            } else if (select_child) {
+                if (!collect_cols_from_select(select_child, raw_cols))
+                    can_project = false;
+                if (can_project && sort_child && !collect_cols_from_sort(sort_child, raw_cols))
+                    can_project = false;
+                if (can_project) {
+                    for (const auto& k : agg->distinct_on_keys()) {
+                        const auto& p = k.path();
+                        if (p.empty() || p[0] == SIZE_MAX) {
+                            can_project = false;
+                            break;
+                        }
+                        raw_cols.push_back(p[0]);
+                    }
+                }
+            } else {
+                can_project = false; // SELECT * / bare scan — read all columns
             }
             if (can_project && match_child) {
                 for (const auto& expr : match_child->expressions()) {

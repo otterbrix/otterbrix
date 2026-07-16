@@ -633,6 +633,19 @@ namespace components::vector::vector_ops {
               uint64_t source_offset,
               uint64_t target_offset,
               uint64_t copy_count) {
+        // A projected-out (placeholder) source column carries type info but NO data buffer:
+        // data_chunk_t's projected constructor allocates real buffers only for the
+        // column_pruning-selected storage columns and leaves the rest as placeholders
+        // (data_ == nullptr, no auxiliary) that no operator is meant to read. A generic
+        // full-chunk copier (operator_sort's row gather, distinct, join) still iterates
+        // every column, so copying such a slot would dereference a null data pointer.
+        // Skipping is semantically correct — the target slot is likewise a non-projected
+        // column downstream never reads. A real (materialized) column always has either a
+        // data buffer or an auxiliary buffer, so this never suppresses a live copy.
+        if (source.get_vector_type() == vector_type::FLAT && source.data() == nullptr && !source.auxiliary()) {
+            return;
+        }
+
         indexing_vector_t owned_indexing(source.resource(), 0, copy_count);
         const indexing_vector_t* indexing_ptr = &indexing;
 

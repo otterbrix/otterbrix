@@ -1,5 +1,6 @@
 #include "optimizer.hpp"
 
+#include "optimizer/rules/column_pruning.hpp"
 #include "optimizer/rules/constant_folding.hpp"
 #include "optimizer/rules/hash_join.hpp"
 #include "optimizer/rules/promote_cross_join.hpp"
@@ -54,6 +55,17 @@ namespace components::planner {
         if (can_push_to_agent) {
             node = optimizer::pushdown_aggregate(resource, std::move(node));
         }
+
+        // Column pruning runs LAST — after pushdown_filter has relocalized any
+        // single-table filters below the join and rewrite_hash_joins has settled the
+        // join shape (equi-key stamp + localized ON keys). Running it earlier would
+        // race those restructurings, which shift merged schemas and the per-side
+        // column indices this rule splits on (the reason it was disabled). At this
+        // point key.side()/key.path() are final, so process_join's per-side split and
+        // ON-key remap read the same localized indices rewrite_hash_joins detected.
+        // UNGATED: projected_cols is a scan projection HINT (empty = read all), valid
+        // in in-memory mode too — it needs no owning agent, only the resolved paths.
+        optimizer::prune_columns(node);
 
         return node;
     }

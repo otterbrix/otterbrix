@@ -886,3 +886,53 @@ TEST_CASE("integration::cpp::restart_consistency::rollback_does_not_wedge_compac
     REQUIRE(user_table_compacted);
 }
 
+
+// Restart-of-restart: wal ids allocated AFTER a replay must continue above the
+// replayed maximum, and the second generation's positional records must resolve
+// against the numbering the first replay rebuilt — a third open then replays
+// BOTH generations in order and lands on the same state.
+TEST_CASE("integration::cpp::restart_consistency::second_restart_continues_wal_ids", "[restart]") {
+    for (const bool disk : {false, true}) {
+        const auto dir = data_root() / (disk ? "second_restart_disk" : "second_restart_mem");
+        auto config = test_create_config(dir);
+        test_clear_directory(config);
+        config.disk.on = disk;
+        config.wal.on = true;
+
+        auto exec = [](otterbrix::wrapper_dispatcher_t* d, const std::string& sql) {
+            otterbrix::session_id_t s;
+            auto cur = d->execute_sql(s, sql);
+            INFO(sql);
+            REQUIRE(cur);
+            REQUIRE_FALSE(cur->is_error());
+            return cur;
+        };
+
+        { // generation 1
+            test_spaces space(config);
+            auto* d = space.dispatcher();
+            exec(d, "CREATE DATABASE rcdb;");
+            exec(d, "CREATE TABLE rcdb.t (a bigint, v bigint);");
+            exec(d, "INSERT INTO rcdb.t (a, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);");
+            exec(d, "DELETE FROM rcdb.t WHERE a = 5;");
+        }
+        { // generation 2: writes on top of the replayed state
+            test_spaces space(config);
+            auto* d = space.dispatcher();
+            exec(d,
+                 "INSERT INTO rcdb.t (a, v) VALUES (11,11),(12,12),(13,13),(14,14),(15,15),"
+                 "(16,16),(17,17),(18,18),(19,19),(20,20);");
+            exec(d, "UPDATE rcdb.t SET v = 99 WHERE a = 8;");
+            exec(d, "DELETE FROM rcdb.t WHERE a = 15;");
+            REQUIRE(exec(d, "SELECT * FROM rcdb.t;")->size() == 18);
+        }
+        { // generation 3: both generations replay in order
+            test_spaces space(config);
+            auto* d = space.dispatcher();
+            REQUIRE(exec(d, "SELECT * FROM rcdb.t;")->size() == 18);
+            REQUIRE(exec(d, "SELECT * FROM rcdb.t WHERE a = 5;")->size() == 0);
+            REQUIRE(exec(d, "SELECT * FROM rcdb.t WHERE a = 15;")->size() == 0);
+            REQUIRE(exec(d, "SELECT v FROM rcdb.t WHERE a = 8 AND v = 99;")->size() == 1);
+        }
+    }
+}

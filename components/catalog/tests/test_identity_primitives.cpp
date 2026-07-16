@@ -43,3 +43,46 @@ TEST_CASE("catalog::identity::qualified_name_equality_matches_ordering") {
     REQUIRE_FALSE(b < a);
     REQUIRE_FALSE(a == c);
 }
+
+// table_id namespace layout: the database is the FIRST namespace part
+// whenever one exists — consumers (check_namespace_exists,
+// check_collection_exists, the executor's type-search-path builder) read
+// the database through database().
+TEST_CASE("catalog::identity::table_id_two_part_database_first") {
+    core::pmr::otterbrix_resource resource;
+    const table_id tid(&resource, qualified_name_t("db", "tbl"));
+    REQUIRE(tid.get_namespace().size() == 1);
+    REQUIRE(tid.database() == "db");
+    REQUIRE(std::string_view(tid.table_name()) == "tbl");
+}
+
+TEST_CASE("catalog::identity::table_id_three_part_database_first") {
+    core::pmr::otterbrix_resource resource;
+    const table_id tid(&resource, qualified_name_t("db", "sch", "tbl"));
+    REQUIRE(tid.database() == "db");
+    REQUIRE(std::string_view(tid.table_name()) == "tbl");
+}
+
+TEST_CASE("catalog::identity::table_id_four_part_database_first") {
+    core::pmr::otterbrix_resource resource;
+    const table_id tid(&resource, qualified_name_t("9f8e-uid", "db", "sch", "tbl"));
+    REQUIRE(tid.database() == "db");
+    REQUIRE(std::string_view(tid.table_name()) == "tbl");
+}
+
+TEST_CASE("catalog::identity::table_id_no_empty_namespace_parts") {
+    core::pmr::otterbrix_resource resource;
+    // uid present, schema absent: no empty placeholder part may appear.
+    const table_id tid(&resource, qualified_name_t("9f8e-uid", "db", "", "tbl"));
+    for (const auto& part : tid.get_namespace()) {
+        REQUIRE_FALSE(part.empty());
+    }
+    REQUIRE(tid.database() == "db");
+}
+
+TEST_CASE("catalog::identity::table_id_unqualified_has_no_database") {
+    core::pmr::otterbrix_resource resource;
+    const table_id tid(&resource, qualified_name_t("", "tbl"));
+    REQUIRE(tid.get_namespace().empty());
+    REQUIRE(tid.database().empty());
+}

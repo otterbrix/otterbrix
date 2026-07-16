@@ -63,6 +63,11 @@ namespace services::disk {
     // compact already ran. Exercises the deferred-round epoch-fence path that
     // real flush-pin exhaustion would take.
     void arm_checkpoint_fold_failure(components::catalog::oid_t table_oid) noexcept;
+    // Test-only fault injection: the NEXT storage_append_inner materialize of
+    // `table_oid` fails as if the table-layer append returned out_of_memory —
+    // in the window where a durable-record-without-placement would corrupt the
+    // repeat-history replay.
+    void arm_append_materialize_failure(components::catalog::oid_t table_oid) noexcept;
 #endif
 
     // Forward-declared (full definitions in manager_disk.hpp). agent_disk_t's slice

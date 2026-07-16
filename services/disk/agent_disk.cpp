@@ -25,6 +25,7 @@ namespace services::disk {
     namespace {
         std::atomic<uint64_t> g_pushdown_reply_rows{0};
         std::atomic<uint64_t> g_checkpoint_fold_fail_oid{0};
+        std::atomic<uint64_t> g_append_materialize_fail_oid{0};
     } // namespace
     uint64_t pushdown_reply_rows() noexcept {
         return g_pushdown_reply_rows.load(std::memory_order_relaxed);
@@ -34,6 +35,9 @@ namespace services::disk {
     }
     void arm_checkpoint_fold_failure(components::catalog::oid_t table_oid) noexcept {
         g_checkpoint_fold_fail_oid.store(static_cast<uint64_t>(table_oid), std::memory_order_relaxed);
+    }
+    void arm_append_materialize_failure(components::catalog::oid_t table_oid) noexcept {
+        g_append_materialize_fail_oid.store(static_cast<uint64_t>(table_oid), std::memory_order_relaxed);
     }
 #endif
 
@@ -835,104 +839,83 @@ namespace services::disk {
             }
         }
 
-        // 5. WAL-first: allocate the start_row WITHOUT materializing, write WAL,
-        //    then materialize. total_rows() is the next append position (the standard
-        //    append computes the same value). No other same-oid handler runs between
-        //    this read and the s->append below (mailbox-atomic handler), so the value
-        //    is stable.
+        // 5. Materialize, then log. A durable PHYSICAL_INSERT must IMPLY placement:
+        //    replay repeats history for uncommitted records (places them, then
+        //    retires them dead), so a record surviving a failed materialize would
+        //    place phantom rows and shift the replayed row-id space under every
+        //    later positional record. The materialize is a synchronous local call
+        //    and the emit happens in the same mailbox-atomic handler, so wal_id
+        //    order still equals apply order. txn_id==0 (replay/legacy) appends
+        //    write no WAL.
         const auto actual_count = data->size();
-        const uint64_t start_row = s->total_rows();
+        const bool write_wal =
+            txn.transaction_id != 0 && manager_wal_addr_ != actor_zeta::address_t::empty_address();
 
-        // 5a. WAL records (WAL-first), only for a real transaction. Replay filters
-        //     uncommitted txns, so a txn_id==0 (legacy / replay) append writes no WAL.
-        if (txn.transaction_id != 0 && manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+        // 5a. Schema-growth record BEFORE the dependent rows AND before the
+        //     materialize: the live add_column already happened and survives a
+        //     failed statement, so its record must survive a failed materialize
+        //     too. The payload is a 0-row chunk whose columns ARE the new columns
+        //     (alias-tagged types); replay rebuilds the column defs and re-applies
+        //     add_column ahead of the PHYSICAL_INSERT.
+        //
+        //     Issued fire-and-forget (the future is intentionally dropped): we
+        //     MUST NOT co_await it here. This handler already co_awaits the
+        //     PHYSICAL_INSERT future below; a SECOND sequential cross-actor
+        //     co_await on the same agent coroutine triggers the cooperative_actor
+        //     lost-wakeup (the await re-suspends after the first resume, the
+        //     producer's flag-based readiness never unblocks the parked mailbox,
+        //     and resume_impl returns early on the blocked-check before reaching
+        //     the awaited-continuation drain — see docs/actor-zeta-lost-wakeup.md,
+        //     "the coroutine re-suspended after resume on the next co_await").
+        //     That hung the engine on the first schema-growth INSERT.
+        //
+        //     Durability + ordering are preserved without the await: both records
+        //     target the SAME single WAL worker, whose mailbox is FIFO, and the
+        //     manager allocates wal_id synchronously in send order, so the
+        //     ADD_COLUMN record (lower wal_id) is durably written ahead of its
+        //     dependent PHYSICAL_INSERT (higher wal_id). When the INSERT future
+        //     below resolves, the worker has necessarily already processed the
+        //     earlier ADD_COLUMN message. Replay applies records in ascending
+        //     wal_id order, so the column re-add precedes the row replay.
+        if (write_wal && !wal_added_columns.empty()) {
             const auto db_oid = entry->wal_stream_db_oid(ctx.database_oid);
-
-            // 5a-i. Schema-growth record BEFORE the rows that depend on it. The
-            //       payload is a 0-row chunk whose columns ARE the new columns
-            //       (alias-tagged types); replay rebuilds the column defs and
-            //       re-applies add_column ahead of the PHYSICAL_INSERT.
-            //
-            //       Issued fire-and-forget (the future is intentionally dropped): we
-            //       MUST NOT co_await it here. This handler already co_awaits the
-            //       PHYSICAL_INSERT future below; a SECOND sequential cross-actor
-            //       co_await on the same agent coroutine triggers the cooperative_actor
-            //       lost-wakeup (the await re-suspends after the first resume, the
-            //       producer's flag-based readiness never unblocks the parked mailbox,
-            //       and resume_impl returns early on the blocked-check before reaching
-            //       the awaited-continuation drain — see docs/actor-zeta-lost-wakeup.md,
-            //       "the coroutine re-suspended after resume on the next co_await").
-            //       That hung the engine on the first schema-growth INSERT.
-            //
-            //       Durability + ordering are preserved without the await: both records
-            //       target the SAME single WAL worker, whose mailbox is FIFO, and the
-            //       manager allocates wal_id synchronously in send order, so the
-            //       ADD_COLUMN record (lower wal_id) is durably written ahead of its
-            //       dependent PHYSICAL_INSERT (higher wal_id). When the INSERT future
-            //       below resolves, the worker has necessarily already processed the
-            //       earlier ADD_COLUMN message. Replay applies records in ascending
-            //       wal_id order, so the column re-add precedes the row replay.
-            if (!wal_added_columns.empty()) {
-                std::pmr::vector<components::types::complex_logical_type> col_types(resource());
-                col_types.reserve(wal_added_columns.size());
-                for (const auto& col : wal_added_columns) {
-                    auto t = col.type();
-                    t.set_alias(col.name());
-                    col_types.push_back(t);
-                }
-                auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
-                schema_chunk->set_cardinality(0);
-                [[maybe_unused]] auto _sc = actor_zeta::send(manager_wal_addr_,
-                                                             &wal::manager_wal_replicate_t::write_physical_add_column,
-                                                             ctx.session,
-                                                             table_oid,
-                                                             std::move(schema_chunk),
-                                                             static_cast<std::uint64_t>(wal_added_columns.size()),
-                                                             txn.transaction_id,
-                                                             db_oid);
+            std::pmr::vector<components::types::complex_logical_type> col_types(resource());
+            col_types.reserve(wal_added_columns.size());
+            for (const auto& col : wal_added_columns) {
+                auto t = col.type();
+                t.set_alias(col.name());
+                col_types.push_back(t);
             }
-
-            // 5a-ii. PHYSICAL_INSERT carrying the FINAL preprocessed chunk + the
-            //        reserved start_row + count. Replay re-appends sequentially (it
-            //        ignores physical_row_start for placement) but CREATE INDEX
-            //        backfill-from-WAL uses start_row as the row-id base, so it must
-            //        equal the materialized start_row — which it does (computed above
-            //        and materialized below in the same atomic handler). This is the
-            //        ONE co_await of this handler (see 5a-i): awaiting it also confirms
-            //        the FIFO-earlier ADD_COLUMN record was durably written.
-            components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
-            data->copy(wal_chunk, 0);
-            std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
-            wal_chunks.emplace_back(std::move(wal_chunk));
-            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
-                                             &wal::manager_wal_replicate_t::write_physical_insert,
-                                             ctx.session,
-                                             table_oid,
-                                             std::move(wal_chunks),
-                                             start_row,
-                                             actual_count,
-                                             txn.transaction_id,
-                                             db_oid);
-            const auto wal_id = co_await std::move(wf);
-            note_applied_wal_id(table_oid, wal_id);
-            if (wal_id == wal::id_t{}) {
-                trace(log_,
-                      "agent_disk[{}]::storage_append_inner: physical_insert WAL returned zero id for oid={}",
-                      pool_idx_,
-                      static_cast<unsigned>(table_oid));
-            }
+            auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
+            schema_chunk->set_cardinality(0);
+            [[maybe_unused]] auto _sc = actor_zeta::send(manager_wal_addr_,
+                                                         &wal::manager_wal_replicate_t::write_physical_add_column,
+                                                         ctx.session,
+                                                         table_oid,
+                                                         std::move(schema_chunk),
+                                                         static_cast<std::uint64_t>(wal_added_columns.size()),
+                                                         txn.transaction_id,
+                                                         db_oid);
         }
 
-        // 5b. Materialize — the canonical write. Lands at total_rows() == start_row.
-        //     The txn path can surface a write_conflict (concurrent DDL re-rooted the
-        //     table) or out_of_memory (row-group/segment alloc) as a value; this is a plain
-        //     synchronous local call (no co_await), so reading the wrapper adds NO second
-        //     cross-actor await — the single co_await above (PHYSICAL_INSERT) stays this
-        //     handler's only one (a second sequential cross-actor await would risk a
-        //     lost-wakeup hang). The WAL record was already written; on a materialize failure
-        //     the txn aborts and storage_revert_appends unwinds it.
+        // 5b. Materialize — the canonical write. The txn path can surface a
+        //     write_conflict (concurrent DDL re-rooted the table) or out_of_memory
+        //     (row-group/segment alloc) as a value; this is a plain synchronous
+        //     local call (no co_await), so reading the wrapper adds NO second
+        //     cross-actor await — the single co_await below (PHYSICAL_INSERT) stays
+        //     this handler's only one (a second sequential cross-actor await would
+        //     risk a lost-wakeup hang). On failure nothing has been logged: the
+        //     statement fails with zero rows placed and zero rows recorded.
         uint64_t materialized_start;
         if (txn.transaction_id != 0) {
+#ifdef DEV_MODE
+            if (g_append_materialize_fail_oid.load(std::memory_order_relaxed) == static_cast<uint64_t>(table_oid)) {
+                g_append_materialize_fail_oid.store(0, std::memory_order_relaxed);
+                co_return core::result_wrapper_t<std::pair<uint64_t, uint64_t>>(
+                    core::error_t(core::error_code_t::out_of_memory,
+                                  std::pmr::string{"injected materialize failure", resource()}));
+            }
+#endif
             auto append_r = s->append(*data, txn);
             if (append_r.has_error()) {
                 trace(log_,
@@ -945,8 +928,38 @@ namespace services::disk {
         } else {
             materialized_start = s->append(*data);
         }
-        assert(materialized_start == start_row &&
-               "WAL-first append: materialized start_row diverged from the reserved start_row");
+
+        // 5c. PHYSICAL_INSERT carrying the FINAL preprocessed chunk + the
+        //     materialized start_row + count. Replay re-appends sequentially (it
+        //     ignores physical_row_start for placement) but CREATE INDEX
+        //     backfill-from-WAL uses start_row as the row-id base, so the record
+        //     carries the row-id the materialize actually placed. This is the ONE
+        //     co_await of this handler (see 5a): awaiting it also confirms the
+        //     FIFO-earlier ADD_COLUMN record was durably written.
+        if (write_wal) {
+            const auto db_oid = entry->wal_stream_db_oid(ctx.database_oid);
+            components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
+            data->copy(wal_chunk, 0);
+            std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
+            wal_chunks.emplace_back(std::move(wal_chunk));
+            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
+                                             &wal::manager_wal_replicate_t::write_physical_insert,
+                                             ctx.session,
+                                             table_oid,
+                                             std::move(wal_chunks),
+                                             materialized_start,
+                                             actual_count,
+                                             txn.transaction_id,
+                                             db_oid);
+            const auto wal_id = co_await std::move(wf);
+            note_applied_wal_id(table_oid, wal_id);
+            if (wal_id == wal::id_t{}) {
+                trace(log_,
+                      "agent_disk[{}]::storage_append_inner: physical_insert WAL returned zero id for oid={}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid));
+            }
+        }
         co_return std::make_pair(materialized_start, actual_count);
     }
 

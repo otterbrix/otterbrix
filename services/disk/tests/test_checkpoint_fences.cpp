@@ -23,6 +23,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <services/disk/agent_disk.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/wal_reader.hpp>
 
@@ -270,6 +271,56 @@ TEST_CASE("services::disk::checkpoint::failed_fold_after_compact_emits_epoch_mar
             }
         }
         REQUIRE(marker_found);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// A durable PHYSICAL_INSERT must imply placement. Replay repeats history for
+// uncommitted records (places them, then retires them dead), so a record that
+// survived a failed materialize would place phantom rows and shift the
+// replayed row-id space under every later positional record on the table.
+// The agent therefore materializes BEFORE it logs: a failed materialize fails
+// the statement with zero rows placed and zero rows recorded.
+TEST_CASE("services::disk::append::failed_materialize_leaves_no_wal_record") {
+    auto dir = fence_test_dir() + "/failed_materialize";
+    std::filesystem::remove_all(dir);
+    {
+        fence_fixture fx(dir);
+        const catalog::oid_t oid = catalog::FIRST_USER_OID + 7401;
+        make_disk_table(fx, oid);
+
+        append_committed(fx, oid, 0, 5);
+
+        arm_append_materialize_failure(oid);
+        {
+            std::pmr::vector<types::complex_logical_type> ct{&fx.resource};
+            ct.emplace_back(types::logical_type::BIGINT);
+            components::vector::data_chunk_t chunk{&fx.resource, ct, 3};
+            chunk.set_cardinality(3);
+            for (int64_t i = 0; i < 3; ++i) {
+                chunk.set_value(0, static_cast<size_t>(i), types::logical_value_t{&fx.resource, i});
+            }
+            std::pmr::vector<components::vector::data_chunk_t> chunks{&fx.resource};
+            chunks.emplace_back(std::move(chunk));
+            components::execution_context_t ctx{session_id_t{}, live_txn(), {}};
+            ctx.table_oid = oid;
+            auto r = fx.invoke(&manager_disk_t::storage_append, ctx, oid, std::move(chunks));
+            REQUIRE(r.has_error());
+        }
+        REQUIRE(total_rows(fx, oid) == 5);
+
+        // The next successful append lands exactly where the failed one would
+        // have — and its record says so.
+        append_committed(fx, oid, 5, 5);
+
+        std::vector<services::wal::record_t> inserts;
+        for (auto& r : physical_records_for(fx, oid)) {
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
+                inserts.push_back(std::move(r));
+            }
+        }
+        REQUIRE(inserts.size() == 2);
+        REQUIRE(inserts[1].physical_row_start == 5);
     }
     std::filesystem::remove_all(dir);
 }

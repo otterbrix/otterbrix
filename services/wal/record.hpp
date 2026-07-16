@@ -72,6 +72,13 @@ namespace services::wal {
         uint64_t physical_row_count{0};
         core::date::timezone_offset_t session_tz{};
 
+        // Repeat-history flag, set by wal_reader (never serialized): false for a
+        // PLACEMENT record (PHYSICAL_INSERT / PHYSICAL_UPDATE) whose txn has no
+        // COMMIT marker. Its rows occupied physical row-ids in the live run (abort
+        // reverts marks, not placement), so replay must place them too — and then
+        // retire them committed-dead, since the txn never became visible.
+        bool txn_committed{true};
+
         // Error tracking
         bool is_corrupt{false};
 

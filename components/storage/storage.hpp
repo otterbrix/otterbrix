@@ -151,6 +151,9 @@ namespace components::storage {
             return delete_rows(row_ids, count);
         }
         virtual void commit_append(uint64_t /*commit_id*/, int64_t /*row_start*/, uint64_t /*count*/) {}
+        // Abort-side counterpart of commit_append: re-stamp the range committed-dead.
+        // Abort reverts marks, never placement (see data_table_t::abort_append).
+        virtual void abort_append(int64_t /*row_start*/, uint64_t /*count*/) {}
         virtual void revert_append(int64_t /*row_start*/, uint64_t /*count*/) {}
         virtual void commit_all_deletes(uint64_t /*txn_id*/, uint64_t /*commit_id*/) {}
         virtual void revert_all_deletes(uint64_t /*txn_id*/) {}

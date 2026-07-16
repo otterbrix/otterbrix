@@ -727,6 +727,44 @@ namespace services::disk {
         co_return;
     }
 
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_abort_appends(execution_context_t /*ctx*/,
+                                          std::vector<components::pg_catalog_append_range_t> ranges) {
+        // Same partition-by-agent fanout as storage_revert_appends, but the agent
+        // inner re-stamps the ranges committed-dead instead of unwinding placement.
+        if (!agents_.empty()) {
+            std::pmr::vector<std::pmr::vector<components::pg_catalog_append_range_t>> per_agent{resource()};
+            per_agent.reserve(agents_.size());
+            for (std::size_t i = 0; i < agents_.size(); ++i) {
+                per_agent.emplace_back();
+            }
+            for (const auto& r : ranges) {
+                if (r.count == 0)
+                    continue;
+                const std::size_t pool_idx = pool_idx_for_oid(r.table_oid, agents_.size());
+                per_agent[pool_idx].push_back(r);
+            }
+            std::pmr::vector<unique_future<void>> agent_futures{resource()};
+            agent_futures.reserve(per_agent.size());
+            for (std::size_t i = 0; i < per_agent.size(); ++i) {
+                if (per_agent[i].empty())
+                    continue;
+                auto& agent = agents_[i];
+                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                      &agent_disk_t::storage_abort_appends_inner,
+                                                                      std::move(per_agent[i]));
+                if (needs_sched) {
+                    scheduler_disk_->enqueue(agent.get());
+                }
+                agent_futures.emplace_back(std::move(fut));
+            }
+            for (auto& f : agent_futures) {
+                co_await std::move(f);
+            }
+        }
+        co_return;
+    }
+
     manager_disk_t::unique_future<void> manager_disk_t::storage_revert_deletes(execution_context_t ctx,
                                                                                std::vector<catalog::oid_t> tables) {
         // Abort-path mirror of storage_publish_deletes: same partition-by-agent

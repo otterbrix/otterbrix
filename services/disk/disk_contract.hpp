@@ -265,6 +265,15 @@ namespace services::disk {
         actor_zeta::unique_future<void>
         storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
 
+        // Abort-side retire of base-table appends: re-stamp the ranges committed-dead
+        // IN PLACE (data_table_t::abort_append). Placement is untouched — a placed row
+        // keeps its physical id until a compact, so positional WAL records written
+        // after the abort replay against the same numbering the live run used — and
+        // the dead stamps unblock the compaction gates the pending insert stamps
+        // would otherwise trip forever.
+        actor_zeta::unique_future<void>
+        storage_abort_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
+
         // MVCC delete-revert (abort path). The mirror of storage_publish_deletes:
         // instead of stamping this txn's pending delete marks with a commit_id, the
         // owning agent un-stamps them back to NOT_DELETED_ID via
@@ -341,6 +350,7 @@ namespace services::disk {
                                                             &disk_contract::storage_publish_commits,
                                                             &disk_contract::storage_publish_deletes,
                                                             &disk_contract::storage_revert_appends,
+                                                            &disk_contract::storage_abort_appends,
                                                             &disk_contract::storage_revert_deletes,
                                                             // resolve + invalidation pull
                                                             &disk_contract::resolve_namespace,

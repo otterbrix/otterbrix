@@ -1628,22 +1628,37 @@ namespace services::collection::executor {
         auto revert_failed_txn = [this, session, resolve_txn, &session_ctx](
                                      [[maybe_unused]] executor_t* self,
                                      execute_result_t& exec_result) -> executor_t::unique_future<void> {
-            // Storage revert: fold DML append ranges + pg_catalog append ranges
-            // into a single storage_revert_appends (each range carries its own
-            // table_oid; the handler routes per-range).
-            std::vector<components::pg_catalog_append_range_t> revert_ranges;
-            revert_ranges.reserve(exec_result.dml_appends.size() + exec_result.pg_catalog_appends.size());
+            // Storage retire/revert, split by table kind. Base-table DML appends are
+            // retired committed-dead IN PLACE (storage_abort_appends): a placed row
+            // keeps its physical id until a compact, so the positional WAL records
+            // this failed statement's siblings already wrote — and their replay —
+            // keep resolving against the numbering the live run used, while the dead
+            // stamps keep the compaction gates unblocked. pg_catalog appends keep the
+            // physical unwind (storage_revert_appends): catalog rows ride the swap
+            // protocol, not positional replay.
+            std::vector<components::pg_catalog_append_range_t> abort_ranges;
+            abort_ranges.reserve(exec_result.dml_appends.size());
             for (const auto& app : exec_result.dml_appends) {
-                revert_ranges.push_back(
+                abort_ranges.push_back(
                     components::pg_catalog_append_range_t{app.table_oid, app.row_start, app.row_count});
 #ifdef DEV_MODE
                 // Test-observability: count each base-table DML append range we
-                // physically revert here. A constraint (CHECK/FK) that errors AFTER
-                // the DML appended its rows must reach this point with a non-empty
-                // dml_appends so the leaked physical slot is reverted (see header).
+                // retire here. A constraint (CHECK/FK) that errors AFTER the DML
+                // appended its rows must reach this point with a non-empty
+                // dml_appends so the leaked pending stamps are retired (see header).
                 g_dml_appends_reverted.fetch_add(1, std::memory_order_relaxed);
 #endif
             }
+            if (!abort_ranges.empty() && disk_address_ != actor_zeta::address_t::empty_address()) {
+                components::execution_context_t abort_ctx{session, resolve_txn, {}};
+                auto [_aa, aaf] = actor_zeta::send(disk_address_,
+                                                   &services::disk::manager_disk_t::storage_abort_appends,
+                                                   abort_ctx,
+                                                   std::move(abort_ranges));
+                co_await std::move(aaf);
+            }
+            std::vector<components::pg_catalog_append_range_t> revert_ranges;
+            revert_ranges.reserve(exec_result.pg_catalog_appends.size());
             for (auto& pgc : exec_result.pg_catalog_appends) {
                 revert_ranges.push_back(std::move(pgc));
             }

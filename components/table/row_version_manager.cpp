@@ -78,6 +78,15 @@ namespace components::table {
         insert_id = commit_id;
     }
 
+    void chunk_constant_info::abort_append(uint64_t /*start*/, uint64_t /*end*/) {
+        // A constant chunk carries ONE insert stamp — every row belongs to the
+        // aborting transaction — so a sub-range abort retires the whole vector.
+        // Rows outside the range are the same txn's other append ranges: retiring
+        // them a call early only moves them from pending-invisible to dead-invisible.
+        insert_id = 0;
+        delete_id = 0;
+    }
+
     bool chunk_constant_info::has_deletes() const {
         bool is_deleted = insert_id >= TRANSACTION_ID_START || delete_id < TRANSACTION_ID_START;
         return is_deleted;
@@ -240,6 +249,26 @@ namespace components::table {
         for (uint64_t i = start; i < end; i++) {
             inserted[i] = commit_id;
         }
+    }
+
+    void chunk_vector_info::abort_append(uint64_t start, uint64_t end) {
+        if (same_inserted_id) {
+            // Materialize per-row stamps first: only [start, end) aborts NOW. Other
+            // rows of this vector may belong to a different range of the same txn
+            // (aborted by a separate call) — flipping the shared insert_id to 0
+            // would make them insert-visible with no delete mark in the interim.
+            same_inserted_id = false;
+            for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
+                inserted[i] = insert_id;
+            }
+        }
+        // {insert 0, delete 0}: deleted before every snapshot's start time, counted
+        // as committed-dead, and below every compaction watermark.
+        for (uint64_t i = start; i < end; i++) {
+            inserted[i] = 0;
+            deleted[i] = 0;
+        }
+        any_deleted = true;
     }
 
     bool chunk_vector_info::cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const {
@@ -487,6 +516,39 @@ namespace components::table {
                                 : vector::DEFAULT_VECTOR_CAPACITY;
             auto& info = *vector_info_[vector_idx];
             info.commit_append(commit_id, vstart, vend);
+        }
+    }
+
+    void row_version_manager_t::abort_append(uint64_t row_group_start, uint64_t count) {
+        if (count == 0) {
+            return;
+        }
+        uint64_t row_group_end = row_group_start + count;
+
+        std::lock_guard lock(version_lock_);
+        has_changes_ = true;
+        uint64_t start_vector_idx = row_group_start / vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t end_vector_idx = (row_group_end - 1) / vector::DEFAULT_VECTOR_CAPACITY;
+        fill_vector_info(end_vector_idx);
+        for (uint64_t vector_idx = start_vector_idx; vector_idx <= end_vector_idx; vector_idx++) {
+            uint64_t vstart = vector_idx == start_vector_idx
+                                  ? row_group_start - start_vector_idx * vector::DEFAULT_VECTOR_CAPACITY
+                                  : 0;
+            uint64_t vend = vector_idx == end_vector_idx
+                                ? row_group_end - end_vector_idx * vector::DEFAULT_VECTOR_CAPACITY
+                                : vector::DEFAULT_VECTOR_CAPACITY;
+            if (!vector_info_[vector_idx]) {
+                // An absent slot reads as "every row committed-live" (see
+                // indexing_vector). Inline-published autocommit flushes reach that
+                // state before their statement can still fail: publish commits the
+                // rows and cleanup_append may then drop the fully-committed info.
+                // Materialize the committed-live baseline the absent slot stood
+                // for (fresh chunk_vector_info: inserted 0 / no deletes), so the
+                // dead stamps have somewhere to land.
+                vector_info_[vector_idx] = std::make_unique<chunk_vector_info>(
+                    start_ + static_cast<int64_t>(vector_idx * vector::DEFAULT_VECTOR_CAPACITY));
+            }
+            vector_info_[vector_idx]->abort_append(vstart, vend);
         }
     }
 

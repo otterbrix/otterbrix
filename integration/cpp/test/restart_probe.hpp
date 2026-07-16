@@ -165,7 +165,11 @@ namespace restart_rc {
         // persisted into the catalog does. Putting these in `setup` would test nothing:
         // the control run would keep them in-process while a real reopen loses them.
         std::vector<std::string> session_setup;
-        std::vector<std::string> setup; // DDL+DML, run once, pre-restart, on a fresh db
+        // DDL+DML, run once, pre-restart, on a fresh db. Each statement runs on its own
+        // session (autocommit). An entry prefixed "@txn " runs on ONE session shared by
+        // every @txn entry of the group — transactions are keyed by session id, so this
+        // is how a BEGIN/.../ROLLBACK or BEGIN/.../COMMIT sequence is expressed.
+        std::vector<std::string> setup;
         std::vector<probe_t> probes;    // run identically in every phase
         // Setup SQL this engine cannot execute today. Listed here, a failure is a known
         // gap rather than a silent pass; not listed, it fails the group.
@@ -646,8 +650,16 @@ namespace restart_rc {
                               int key,
                               storage_mode mode,
                               result_sink& sink) {
+            const otterbrix::session_id_t txn_session; // shared by every "@txn " entry
             for (const auto& sql : group.setup) {
-                sink.emit("setup: " + sanitize(expand(sql, key, mode)), observe(dispatcher, sql, key, mode));
+                constexpr std::string_view txn_prefix = "@txn ";
+                if (sql.rfind(txn_prefix, 0) == 0) {
+                    const auto stripped = sql.substr(txn_prefix.size());
+                    sink.emit("setup: " + sanitize(expand(stripped, key, mode)),
+                              observe(dispatcher, stripped, key, mode, &txn_session));
+                } else {
+                    sink.emit("setup: " + sanitize(expand(sql, key, mode)), observe(dispatcher, sql, key, mode));
+                }
             }
             if (mode == storage_mode::disk_checkpoint) {
                 sink.emit("setup: CHECKPOINT", observe(dispatcher, "CHECKPOINT;", key, mode));

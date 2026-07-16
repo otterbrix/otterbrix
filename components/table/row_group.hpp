@@ -69,6 +69,7 @@ namespace components::table {
         void append_version_info(transaction_data txn, uint64_t count);
 
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
+        void abort_append(uint64_t row_group_start, uint64_t count);
         void revert_append(uint64_t row_group_start);
 
         uint64_t delete_rows(uint64_t vector_idx, int64_t rows[], uint64_t count);

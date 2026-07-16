@@ -91,6 +91,11 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
+        // Abort-side counterpart of commit_append: re-stamp the range committed-dead
+        // ({insert 0, delete 0}). Abort reverts marks, never placement — a placed row
+        // keeps its physical id until a compact, so positional WAL records written
+        // after the abort resolve identically live and on replay.
+        void abort_append(int64_t row_start, uint64_t count);
         void revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);

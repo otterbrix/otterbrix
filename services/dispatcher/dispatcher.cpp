@@ -778,13 +778,13 @@ namespace services::dispatcher {
             txn_t->drain_pg_catalog_pending(out.swap_appends, out.pg_catalog_delete_tables);
             auto backfills_discarded = txn_t->drain_pg_attribute_commit_id_backfills();
             (void) backfills_discarded;
-            // Drain the parked base appends only to collect the UNIQUE table
-            // oids they touched: the abort operator fans out
-            // manager_index_t::revert_insert per oid to drop this txn's PENDING
-            // in-memory index entries (parity with executor.cpp's failed-DML
-            // revert). The ranges themselves are discarded — their physical row
-            // slots ride in the pg_catalog/base storage_revert path, and the
-            // index revert keys per (table_oid, txn_id), not per range. The base
+            // Drain the parked base appends for TWO consumers: the unique table
+            // oids feed manager_index_t::revert_insert (drops this txn's PENDING
+            // in-memory index entries; keyed per (table_oid, txn_id)), and the
+            // ranges themselves feed storage_abort_appends, which re-stamps the
+            // aborted rows committed-dead in place — placement stays (positional
+            // WAL records depend on it), but the pending insert stamps must not
+            // survive or they wedge every compaction gate forever. The base
             // DELETE ranges are collected the same way: only their UNIQUE table
             // oids matter, so the abort operator can fan out
             // manager_index_t::revert_delete per oid to clear this txn's PENDING
@@ -796,6 +796,7 @@ namespace services::dispatcher {
             auto drained_appends = txn_t->drain_base_appends();
             for (const auto& r : drained_appends) {
                 out.base_append_tables.insert(r.table_oid);
+                out.base_appends.push_back(r);
             }
             auto drained_deletes = txn_t->drain_base_deletes();
             for (const auto& d : drained_deletes) {

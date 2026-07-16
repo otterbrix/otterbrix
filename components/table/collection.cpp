@@ -267,6 +267,21 @@ namespace components::table {
         }
     }
 
+    void collection_t::abort_append(int64_t row_start, uint64_t count) {
+        for (auto& rg : row_groups_->segments()) {
+            auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
+            if (rg.start >= row_start + static_cast<int64_t>(count))
+                break;
+            if (rg_end <= row_start)
+                continue;
+            auto local_start = static_cast<uint64_t>(std::max(int64_t{0}, row_start - rg.start));
+            auto local_end =
+                std::min(rg.count.load(), static_cast<uint64_t>(row_start + static_cast<int64_t>(count) - rg.start));
+            auto local_count = local_end - local_start;
+            rg.abort_append(local_start, local_count);
+        }
+    }
+
     void collection_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
         for (auto& rg : row_groups_->segments()) {
             rg.commit_all_deletes(txn_id, commit_id);

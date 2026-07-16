@@ -40,11 +40,9 @@ namespace services::wal {
                                                      std::set<std::uint64_t>* committed_out = nullptr);
 
     private:
-        /// Read all records from segment files in a single database directory.
-        /// committed_out, when non-null, receives this database's committed txn ids.
-        std::vector<record_t> read_database_segments(const std::filesystem::path& db_dir,
-                                                     id_t after_wal_id,
-                                                     std::set<std::uint64_t>* committed_out);
+        /// Read all records (unfiltered) from segment files in a single database
+        /// directory, honoring the per-database CRC chain-break stop.
+        std::vector<record_t> read_database_raw(const std::filesystem::path& db_dir, id_t after_wal_id);
 
         configuration::config_wal config_;
         log_t log_;

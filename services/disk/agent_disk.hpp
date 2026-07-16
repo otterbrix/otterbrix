@@ -263,6 +263,15 @@ namespace services::disk {
         unique_future<void>
         storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges);
 
+        // storage_abort_appends_inner — retire an aborted txn's base-table append
+        //   ranges committed-dead in place (abort_append). Placement is untouched: a
+        //   placed row keeps its physical id until a compact, so positional WAL
+        //   records written after the abort replay against the same numbering the
+        //   live run used — and the dead stamps unblock every compaction gate the
+        //   pending insert stamps would otherwise trip forever.
+        unique_future<void>
+        storage_abort_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges);
+
         // storage_update_inner — single-OID UPDATE mutation against the agent twin, and
         //   the owner of its WAL record, for the same reason storage_append_inner owns
         //   INSERT's: an MVCC update APPENDS its new rows, so it consumes row-ids, and
@@ -584,6 +593,7 @@ namespace services::disk {
                                                             &agent_disk_t::storage_publish_deletes_inner,
                                                             &agent_disk_t::storage_revert_deletes_inner,
                                                             &agent_disk_t::storage_revert_appends_inner,
+                                                            &agent_disk_t::storage_abort_appends_inner,
                                                             &agent_disk_t::storage_update_inner,
                                                             &agent_disk_t::storage_delete_rows_inner,
                                                             &agent_disk_t::storage_fetch_inner,

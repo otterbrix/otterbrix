@@ -168,6 +168,23 @@ namespace services::disk {
         // is always set by the time maybe_cleanup / VACUUM would emit the marker.
         components::catalog::oid_t wal_route_db_oid = components::catalog::INVALID_OID;
 
+        // Pin-on-first-record WAL stream for this table's physical records. EVERY record for
+        // one table must ride ONE per-database WAL worker: workers flush independently, so
+        // records split across workers lose prefix durability — a later positional record can
+        // be durable while an earlier placement record (an uncommitted txn's append, flushed
+        // only by a later fsync of ITS OWN file) is not, and repeat-history replay then
+        // applies the positional record against the wrong numbering. The ctx database oid can
+        // legitimately differ per statement (some operators fall back to main_database), so
+        // the FIRST record decides and every later one follows.
+        [[nodiscard]] components::catalog::oid_t wal_stream_db_oid(components::catalog::oid_t ctx_db) noexcept {
+            if (wal_route_db_oid == components::catalog::INVALID_OID) {
+                wal_route_db_oid = ctx_db != components::catalog::INVALID_OID
+                                       ? ctx_db
+                                       : components::catalog::well_known_oid::main_database;
+            }
+            return wal_route_db_oid;
+        }
+
         // The db_oid the PHYSICAL_COMPACT epoch marker must ride: the WAL stream the table's DML
         // actually used (wal_route_db_oid), falling back to main_database — the SAME fallback the DML
         // paths use for an INVALID ctx.database_oid, so the marker lands with the DML it orders.
@@ -746,6 +763,10 @@ namespace services::disk {
 
         unique_future<void> storage_revert_appends(execution_context_t ctx,
                                                    std::vector<components::pg_catalog_append_range_t> ranges);
+        // Retire an aborted txn's base-table append ranges committed-dead in place
+        // (abort_append) — placement untouched, stamps dead. See agent inner.
+        unique_future<void> storage_abort_appends(execution_context_t ctx,
+                                                  std::vector<components::pg_catalog_append_range_t> ranges);
 
         unique_future<void> storage_revert_deletes(execution_context_t ctx,
                                                    std::vector<components::catalog::oid_t> tables);
@@ -776,6 +797,7 @@ namespace services::disk {
                                                        &manager_disk_t::storage_publish_commits,
                                                        &manager_disk_t::storage_publish_deletes,
                                                        &manager_disk_t::storage_revert_appends,
+                                                       &manager_disk_t::storage_abort_appends,
                                                        &manager_disk_t::storage_revert_deletes,
                                                        // resolve + invalidation pull
                                                        &manager_disk_t::resolve_namespace,

@@ -306,6 +306,8 @@ namespace components::storage {
             table_.commit_append(commit_id, row_start, count);
         }
 
+        void abort_append(int64_t row_start, uint64_t count) override { table_.abort_append(row_start, count); }
+
         void revert_append(int64_t row_start, uint64_t count) override { table_.revert_append(row_start, count); }
 
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id) override {

@@ -106,6 +106,11 @@ namespace services::dispatcher {
     struct txn_abort_drain_t {
         components::table::transaction_data txn{0, 0};
         std::vector<components::pg_catalog_append_range_t> swap_appends{};
+        // The aborting txn's base-table append RANGES. The abort operator retires
+        // them committed-dead via storage_abort_appends — abort reverts marks, not
+        // placement, and a pending insert stamp left behind would wedge every
+        // compaction gate (has_version_above) forever.
+        std::vector<components::table::dml_append_range_t> base_appends{};
         std::set<components::catalog::oid_t> base_append_tables{};
         std::set<components::catalog::oid_t> base_delete_tables{};
         std::set<components::catalog::oid_t> pg_catalog_delete_tables{};

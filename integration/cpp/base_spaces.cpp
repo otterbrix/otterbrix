@@ -249,8 +249,25 @@ namespace otterbrix {
                                     }
                                 }
                                 // TODO: load timezone from settings?
+                                // Repeat history: an uncommitted txn's INSERT still
+                                // occupied these row-ids live, so place the rows at the
+                                // same slots, then retire them committed-dead — the txn
+                                // never became visible. The dead range is the record's
+                                // own base: replay placement equals live placement by
+                                // induction over the per-oid record sequence.
+                                int64_t dead_base = static_cast<int64_t>(r->physical_row_start);
                                 for (auto& chunk : r->physical_data) {
+                                    const uint64_t placed = chunk.size(); // direct_append_sync returns the START row
                                     disk_ptr->direct_append_sync(table_oid, chunk, {});
+                                    if (!r->txn_committed && placed > 0) {
+                                        std::pmr::vector<int64_t> dead_ids(r->physical_row_ids.get_allocator().resource());
+                                        dead_ids.reserve(placed);
+                                        for (uint64_t i = 0; i < placed; ++i) {
+                                            dead_ids.push_back(dead_base + static_cast<int64_t>(i));
+                                        }
+                                        disk_ptr->direct_delete_sync(table_oid, dead_ids, placed);
+                                    }
+                                    dead_base += static_cast<int64_t>(placed);
                                 }
                             }
                             break;
@@ -311,6 +328,29 @@ namespace otterbrix {
                             const bool in_place =
                                 r->record_type == services::wal::wal_record_type::PHYSICAL_UPDATE_INPLACE ||
                                 table_oid < components::catalog::FIRST_USER_OID;
+                            if (!r->txn_committed) {
+                                // Repeat history for an uncommitted UPDATE: its new-row
+                                // appends occupied row-ids live (the tombstones were
+                                // reverted at abort, the placement was not). Place the
+                                // new rows at the record's append base and retire them
+                                // dead; do NOT tombstone the old rows. In-place records
+                                // never reach here (system-oid only, always committed).
+                                int64_t dead_base = static_cast<int64_t>(r->physical_row_start);
+                                for (auto& chunk : r->physical_data) {
+                                    const uint64_t placed = chunk.size(); // direct_append_sync returns the START row
+                                    disk_ptr->direct_append_sync(table_oid, chunk, {});
+                                    if (placed > 0) {
+                                        std::pmr::vector<int64_t> dead_ids(r->physical_row_ids.get_allocator().resource());
+                                        dead_ids.reserve(placed);
+                                        for (uint64_t i = 0; i < placed; ++i) {
+                                            dead_ids.push_back(dead_base + static_cast<int64_t>(i));
+                                        }
+                                        disk_ptr->direct_delete_sync(table_oid, dead_ids, placed);
+                                    }
+                                    dead_base += static_cast<int64_t>(placed);
+                                }
+                                break;
+                            }
                             if (!r->physical_data.empty()) {
                                 // physical_row_ids is flat across the batch; slice it per
                                 // chunk in vector order to match each chunk's rows.

@@ -815,6 +815,35 @@ TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
 // Abort retires appended rows IN PLACE: {insert 0, delete 0} — invisible to every
 // snapshot, counted committed-dead, reclaimable — while the rows keep their
 // physical ids (positional WAL records and their replay depend on placement).
+TEST_CASE("components::table::mvcc::abort_append_dead_in_place") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    // A committed base so the aborted rows sit between live neighbours.
+    append_rows(*table, env, 0, 5);
+
+    transaction_manager_t mgr(&env.resource);
+    auto session = components::session::session_id_t::generate_uid();
+    auto& txn = mgr.begin_transaction(session);
+    append_rows_txn(*table, env, 100, 10, txn.data());
+
+    // More committed rows after: the aborted range must not swallow them.
+    append_rows(*table, env, 200, 5);
+
+    mgr.abort(session);
+    table->abort_append(5, 10);
+
+    // Placement intact, contents dead.
+    REQUIRE(table->row_group()->total_rows() == 20);
+    REQUIRE(scan_count(*table, env) == 10);
+
+    // The dead stamps are below every watermark: compaction proceeds and
+    // reclaims exactly the aborted rows.
+    REQUIRE(table->compact(std::numeric_limits<uint64_t>::max()));
+    REQUIRE(table->row_group()->total_rows() == 10);
+    REQUIRE(scan_count(*table, env) == 10);
+}
+
 // Version slots are row-group-LOCAL. The scan's cumulative vector_index and the
 // delete path's collection-absolute row ids used to be forwarded into the slot
 // array unconverted, so for every row group after the first the lookups read —

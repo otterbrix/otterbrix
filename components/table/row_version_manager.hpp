@@ -83,6 +83,13 @@ namespace components::table {
                                          uint64_t max_count) = 0;
         virtual bool fetch(const transaction_data& transaction, int64_t row) = 0;
         virtual void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) = 0;
+        // Abort-side counterpart of commit_append: re-stamp [start, end) as
+        // committed-dead ({insert 0, delete 0}) — visible to no snapshot, counted
+        // as committed-dead, and below every compaction watermark. Abort reverts
+        // marks, never placement (a placed row must keep its physical id until a
+        // compact, or later positional WAL records and their replay diverge), so
+        // this is how an aborted txn's appended rows are retired.
+        virtual void abort_append(uint64_t start, uint64_t end) = 0;
         virtual uint64_t committed_deleted_count(uint64_t max_count) = 0;
         // True when ANY stamp in [0, max_count) is not yet visible-to-all under
         // `watermark`: a pending txn id (>= TRANSACTION_ID_START) or a committed
@@ -118,6 +125,7 @@ namespace components::table {
                                  uint64_t max_count) override;
         bool fetch(const transaction_data& transaction, int64_t row) override;
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
+        void abort_append(uint64_t start, uint64_t end) override;
         uint64_t committed_deleted_count(uint64_t max_count) override;
         bool has_version_above(uint64_t watermark, uint64_t max_count) const override;
         bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const override;
@@ -148,6 +156,7 @@ namespace components::table {
                                  uint64_t max_count) override;
         bool fetch(const transaction_data& transaction, int64_t row) override;
         void commit_append(uint64_t commit_id, uint64_t start, uint64_t end) override;
+        void abort_append(uint64_t start, uint64_t end) override;
         bool cleanup(uint64_t lowest_transaction, std::unique_ptr<chunk_info>& result) const override;
         uint64_t committed_deleted_count(uint64_t max_count) override;
         bool has_version_above(uint64_t watermark, uint64_t max_count) const override;
@@ -217,6 +226,7 @@ namespace components::table {
                                  uint64_t row_group_start,
                                  uint64_t row_group_end);
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
+        void abort_append(uint64_t row_group_start, uint64_t count);
         void revert_append(uint64_t start_row);
         void cleanup_append(uint64_t lowest_active_transaction, uint64_t row_group_start, uint64_t count);
 

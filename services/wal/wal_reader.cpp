@@ -31,18 +31,53 @@ namespace services::wal {
             return merged;
         }
 
+        // Pass A: read EVERY database stream raw and union the commit markers.
+        // A COMMIT marker is a global fact keyed by txn id — a txn's PHYSICAL
+        // records and its COMMIT marker can land in DIFFERENT per-database
+        // streams (the agent routes each record by ctx.database_oid with a
+        // main_database fallback), so no stream may be filtered against only its
+        // own markers: that mis-classifies committed work as uncommitted.
+        std::vector<record_t> all_records;
+        std::set<uint64_t> committed_txns;
         for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
             if (!entry.is_directory()) {
                 continue;
             }
-
-            auto db_name = entry.path().filename().string();
-            trace(log_, "wal_reader::read_committed_records , scanning database '{}'", db_name);
-
-            // committed_out collects the union of committed txn ids across all
-            // databases (read_database_segments inserts this db's ids into it).
-            auto db_records = read_database_segments(entry.path(), after_wal_id, committed_out);
+            trace(log_,
+                  "wal_reader::read_committed_records , scanning database '{}'",
+                  entry.path().filename().string());
+            auto db_records = read_database_raw(entry.path(), after_wal_id);
             for (auto& r : db_records) {
+                if (r.is_commit_marker() && r.is_valid()) {
+                    committed_txns.insert(r.transaction_id);
+                }
+                all_records.push_back(std::move(r));
+            }
+        }
+        if (committed_out != nullptr) {
+            committed_out->insert(committed_txns.begin(), committed_txns.end());
+        }
+
+        // Pass B: keep committed-txn records, system records, and — repeat
+        // history — the PLACEMENT records (PHYSICAL_INSERT / PHYSICAL_UPDATE) of
+        // uncommitted txns on user tables, flagged txn_committed=false. An
+        // uncommitted txn's appends occupied physical row-ids in the live run
+        // (abort reverts marks, not placement), so every later positional record
+        // was captured against a numbering that includes them; replay must place
+        // them too (and retire them dead) or those records misresolve. Uncommitted
+        // catalog records stay filtered: catalog rows ride the swap protocol and
+        // are physically unwound at abort.
+        merged.reserve(all_records.size());
+        for (auto& r : all_records) {
+            if (!r.is_valid()) {
+                continue;
+            }
+            if (r.transaction_id == 0 || committed_txns.count(r.transaction_id) > 0) {
+                merged.push_back(std::move(r));
+            } else if ((r.record_type == wal_record_type::PHYSICAL_INSERT ||
+                        r.record_type == wal_record_type::PHYSICAL_UPDATE) &&
+                       r.table_oid >= components::catalog::FIRST_USER_OID) {
+                r.txn_committed = false;
                 merged.push_back(std::move(r));
             }
         }
@@ -61,9 +96,7 @@ namespace services::wal {
     // apply the 2-pass committed-transaction filter.
     // -----------------------------------------------------------------------
 
-    std::vector<record_t> wal_reader_t::read_database_segments(const std::filesystem::path& db_dir,
-                                                               id_t after_wal_id,
-                                                               std::set<std::uint64_t>* committed_out) {
+    std::vector<record_t> wal_reader_t::read_database_raw(const std::filesystem::path& db_dir, id_t after_wal_id) {
         // Discover segment files. WAL segments are named wal_<db>_NNNNNN.
         std::vector<std::filesystem::path> segments;
 
@@ -108,37 +141,7 @@ namespace services::wal {
             }
         }
 
-        // Pass 1: collect committed transaction IDs from COMMIT records.
-        std::set<uint64_t> committed_txns;
-        for (const auto& r : all_records) {
-            if (r.is_commit_marker() && r.is_valid()) {
-                committed_txns.insert(r.transaction_id);
-            }
-        }
-
-        // Export this database's committed txn ids into the caller's union set.
-        // The filter below is unchanged (still keyed on the local committed_txns)
-        // so the returned records stay byte-identical.
-        if (committed_out != nullptr) {
-            committed_out->insert(committed_txns.begin(), committed_txns.end());
-        }
-
-        // Pass 2: keep only records belonging to committed transactions.
-        std::vector<record_t> result;
-        result.reserve(all_records.size());
-
-        for (auto& r : all_records) {
-            if (!r.is_valid()) {
-                continue;
-            }
-            // Records with txn_id==0 are "system" records (always included).
-            // Physical and commit records are included if their txn is committed.
-            if (r.transaction_id == 0 || committed_txns.count(r.transaction_id) > 0) {
-                result.push_back(std::move(r));
-            }
-        }
-
-        return result;
+        return all_records;
     }
 
 } // namespace services::wal

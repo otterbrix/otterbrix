@@ -58,6 +58,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commits>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_deletes>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_abort_appends>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>,
@@ -457,6 +458,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_appends, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_abort_appends>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_abort_appends, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>: {

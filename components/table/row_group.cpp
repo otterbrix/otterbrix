@@ -580,6 +580,15 @@ namespace components::table {
         }
     }
 
+    void row_group_t::abort_append(uint64_t row_group_start, uint64_t count) {
+        // get_or_create, not version_info(): the rows being retired may already be
+        // committed with their version info cleaned away (inline-published flushes
+        // of a statement that failed later), and a missing info reads as
+        // "all rows live" — silently skipping would leak the rows.
+        get_or_create_version_info().abort_append(row_group_start, count);
+        // No current_version_ bump: nothing became visible.
+    }
+
     void row_group_t::revert_append(uint64_t row_group_start) {
         auto vinfo = version_info();
         if (vinfo) {

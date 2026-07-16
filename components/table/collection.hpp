@@ -75,6 +75,7 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
+        void abort_append(int64_t row_start, uint64_t count);
         void revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);

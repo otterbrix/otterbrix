@@ -38,6 +38,7 @@ namespace components::operators {
         // physically removed (they were created mid-txn and never committed).
         std::vector<components::catalog::oid_t> dropped_storage_oids;
         std::vector<components::catalog::oid_t> created_storage_oids;
+        std::vector<components::table::dml_append_range_t> base_appends;
         std::vector<components::table::created_index_t> created_indexes;
         // Null-sender guard: with no dispatcher to talk to there is no txn to
         // drain or abort — leave the locals empty.
@@ -48,6 +49,7 @@ namespace components::operators {
             services::dispatcher::txn_abort_drain_t drain = co_await std::move(drf);
             txn_data = drain.txn;
             swap_appends = std::move(drain.swap_appends);
+            base_appends = std::move(drain.base_appends);
             base_append_tables = std::move(drain.base_append_tables);
             base_delete_tables = std::move(drain.base_delete_tables);
             pg_catalog_delete_tables = std::move(drain.pg_catalog_delete_tables);
@@ -65,6 +67,27 @@ namespace components::operators {
                                              swap_ctx,
                                              std::move(swap_appends));
             co_await std::move(rf);
+        }
+
+        // Retire the txn's base-table appends committed-dead IN PLACE. Abort
+        // reverts marks, never placement: the rows keep their physical ids (so
+        // positional WAL records written after this abort replay against the same
+        // numbering the live run used), but their pending insert stamps must not
+        // survive — a pending stamp trips has_version_above at every compaction
+        // site (commit-time, VACUUM, checkpoint) forever.
+        if (txn_data.transaction_id != 0 && !base_appends.empty() &&
+            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            std::vector<components::pg_catalog_append_range_t> abort_ranges;
+            abort_ranges.reserve(base_appends.size());
+            for (const auto& r : base_appends) {
+                abort_ranges.push_back(components::pg_catalog_append_range_t{r.table_oid, r.row_start, r.row_count});
+            }
+            components::execution_context_t abort_ctx{ctx->session, txn_data, {}};
+            auto [_aa, aaf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::storage_abort_appends,
+                                               abort_ctx,
+                                               std::move(abort_ranges));
+            co_await std::move(aaf);
         }
 
         // Index revert: drop this txn's PENDING in-memory index entries for every

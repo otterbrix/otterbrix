@@ -368,6 +368,37 @@ TEST_CASE("integration::cpp::restart_consistency::vacuum_then_restart", "[restar
     check_restart_consistency(g);
 }
 
+// An aborted transaction's INSERTs occupy physical row-ids in the live run --
+// ROLLBACK reverts marks, not placement -- but replay filters uncommitted
+// records, so every committed append after the abort lands lower on replay and
+// every positional DELETE/UPDATE recorded after the abort resolves against the
+// wrong rows (until the next compact marker closes the numbering epoch).
+TEST_CASE("integration::cpp::restart_consistency::aborted_insert_shifts_replay_numbering", "[restart]") {
+    group_t g;
+    g.name = "aborted_insert_numbering";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (a bigint, v bigint)$S;",
+               "@txn BEGIN;",
+               "@txn INSERT INTO rcdb.t (a, v) VALUES (100,100),(101,101),(102,102),(103,103),(104,104),"
+               "(105,105),(106,106),(107,107),(108,108),(109,109);",
+               "@txn ROLLBACK;",
+               // Committed rows land at physical ids ABOVE the ten aborted-but-placed rows.
+               "INSERT INTO rcdb.t (a, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);",
+               // Positional records captured against the shifted (post-abort) numbering.
+               "DELETE FROM rcdb.t WHERE a = 5;",
+               "UPDATE rcdb.t SET v = 99 WHERE a = 8;"};
+    g.probes = {
+        {"state",
+         {},
+         {{"survivors", "SELECT * FROM rcdb.t;"},
+          {"deleted_stays_deleted", "SELECT * FROM rcdb.t WHERE a = 5;"},
+          {"update_sticks", "SELECT v FROM rcdb.t WHERE a = 8;"},
+          {"aborted_rows_stay_gone", "SELECT * FROM rcdb.t WHERE a >= 100;"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
 // ---------------------------------------------------------------------------
 // Type fidelity. The .otbx column record stores a bare uint8 logical_type, so
 // everything a type extension carries -- decimal width/scale, array size, list
@@ -714,6 +745,65 @@ TEST_CASE("integration::cpp::restart_consistency::exact_threshold_dml_releases_c
     }
 
     auto log = initialization_logger("exact_threshold_pin", dir.string() + "/");
+    services::wal::wal_reader_t reader(config.wal, log);
+    const auto records = reader.read_committed_records(services::wal::id_t{0});
+    bool user_table_compacted = false;
+    for (const auto& r : records) {
+        if (r.record_type == services::wal::wal_record_type::PHYSICAL_COMPACT &&
+            r.table_oid >= components::catalog::FIRST_USER_OID) {
+            user_table_compacted = true;
+        }
+    }
+    REQUIRE(user_table_compacted);
+}
+
+// A ROLLBACK'd INSERT must not wedge compaction. Abort reverts marks, not
+// placement, so the aborted rows keep sitting in the table — but if their
+// insert stamps stay PENDING (>= 2^62), has_version_above() trips forever and
+// every compaction site (commit-time, VACUUM, checkpoint) refuses the table
+// from then on. The aborted rows must be re-stamped committed-dead at abort:
+// invisible to every snapshot, reclaimable, and counted as dead. Observable:
+// VACUUM after the rollback still compacts and emits its PHYSICAL_COMPACT
+// marker.
+TEST_CASE("integration::cpp::restart_consistency::rollback_does_not_wedge_compaction", "[restart]") {
+    const auto dir = data_root() / "rollback_compaction";
+    auto config = test_create_config(dir);
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = true;
+
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto run = [&](const std::string& sql, const otterbrix::session_id_t* s = nullptr) {
+            otterbrix::session_id_t own;
+            auto cur = dispatcher->execute_sql(s != nullptr ? *s : own, sql);
+            INFO(sql);
+            REQUIRE(cur);
+            REQUIRE_FALSE(cur->is_error());
+            return cur;
+        };
+        run("CREATE DATABASE rcdb;");
+        run("CREATE TABLE rcdb.t (id BIGINT);");
+        run("INSERT INTO rcdb.t (id) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),"
+            "(10),(11),(12),(13),(14),(15),(16),(17),(18),(19);");
+        {
+            const otterbrix::session_id_t txn;
+            run("BEGIN;", &txn);
+            run("INSERT INTO rcdb.t (id) VALUES (100),(101),(102),(103),(104);", &txn);
+            run("ROLLBACK;", &txn);
+        }
+        // 4/20 committed-dead (20%): below the commit-time threshold, so only the
+        // explicit VACUUM compacts — if the aborted rows' stamps let it.
+        run("DELETE FROM rcdb.t WHERE id < 4;");
+        run("VACUUM;");
+        run("INSERT INTO rcdb.t (id) VALUES (999);");
+        run("DELETE FROM rcdb.t WHERE id = 999;");
+        auto cur = run("SELECT * FROM rcdb.t;");
+        REQUIRE(cur->size() == 16);
+    }
+
+    auto log = initialization_logger("rollback_compaction", dir.string() + "/");
     services::wal::wal_reader_t reader(config.wal, log);
     const auto records = reader.read_committed_records(services::wal::id_t{0});
     bool user_table_compacted = false;

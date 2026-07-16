@@ -385,6 +385,10 @@ namespace components::table {
         row_groups_->commit_append(commit_id, row_start, count);
     }
 
+    void data_table_t::abort_append(int64_t row_start, uint64_t count) {
+        row_groups_->abort_append(row_start, count);
+    }
+
     void data_table_t::revert_append(int64_t row_start, uint64_t count) {
         row_groups_->revert_append(row_start, count);
     }

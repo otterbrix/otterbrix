@@ -446,6 +446,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_revert_appends_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_abort_appends_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_abort_appends_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_update_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_update_inner, msg);
                 break;
@@ -838,12 +842,7 @@ namespace services::disk {
         // 5a. WAL records (WAL-first), only for a real transaction. Replay filters
         //     uncommitted txns, so a txn_id==0 (legacy / replay) append writes no WAL.
         if (txn.transaction_id != 0 && manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
-            const auto db_oid = (ctx.database_oid != components::catalog::INVALID_OID)
-                                    ? ctx.database_oid
-                                    : components::catalog::well_known_oid::main_database;
-            // Remember the WAL stream this table's DML rides so a later PHYSICAL_COMPACT marker
-            // rides the SAME one (I-2); see collection_storage_entry_t::compact_wal_db_oid.
-            entry->wal_route_db_oid = db_oid;
+            const auto db_oid = entry->wal_stream_db_oid(ctx.database_oid);
 
             // 5a-i. Schema-growth record BEFORE the rows that depend on it. The
             //       payload is a 0-row chunk whose columns ARE the new columns
@@ -1031,6 +1030,25 @@ namespace services::disk {
         co_return;
     }
 
+    agent_disk_t::unique_future<void>
+    agent_disk_t::storage_abort_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges) {
+        for (const auto& r : ranges) {
+            if (r.count == 0) {
+                continue;
+            }
+            auto slice_it = storages_.find(r.table_oid);
+            if (slice_it == storages_.end()) {
+                continue;
+            }
+            auto& entry = slice_it->second;
+            if (entry == nullptr || entry->storage == nullptr) {
+                continue;
+            }
+            entry->storage->abort_append(r.start_row, r.count);
+        }
+        co_return;
+    }
+
     agent_disk_t::unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
     agent_disk_t::storage_update_inner(execution_context_t ctx,
                                        components::catalog::oid_t table_oid,
@@ -1087,10 +1105,7 @@ namespace services::disk {
         // (write_conflict / out_of_memory) is returned above and never logged, and UPDATE
         // has no revert_appends-style unwind to undo a record it already wrote.
         if (ctx.txn.transaction_id != 0 && manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
-            const auto db_oid = ctx.database_oid != components::catalog::INVALID_OID
-                                    ? ctx.database_oid
-                                    : components::catalog::well_known_oid::main_database;
-            entry->wal_route_db_oid = db_oid; // COMPACT marker rides the same stream (I-2)
+            const auto db_oid = entry->wal_stream_db_oid(ctx.database_oid);
             components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
             data->copy(wal_chunk, 0);
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
@@ -1164,10 +1179,7 @@ namespace services::disk {
         // MANDATORY: this must remain the handler's ONLY cross-actor co_await (actor-zeta
         // lost-wakeup, see storage_append_inner / storage_update_inner).
         if (ctx.txn.transaction_id != 0 && manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
-            const auto db_oid = ctx.database_oid != components::catalog::INVALID_OID
-                                    ? ctx.database_oid
-                                    : components::catalog::well_known_oid::main_database;
-            entry->wal_route_db_oid = db_oid; // COMPACT marker rides the same stream (I-2)
+            const auto db_oid = entry->wal_stream_db_oid(ctx.database_oid);
             std::pmr::vector<int64_t> wal_row_ids(resource());
             wal_row_ids.reserve(count);
             for (uint64_t i = 0; i < count; ++i) {

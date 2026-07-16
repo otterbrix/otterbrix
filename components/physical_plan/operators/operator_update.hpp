@@ -16,6 +16,7 @@ namespace components::operators {
     // RETURNING projection error) must leave this counter untouched. Process-global
     // + relaxed: coarse instrumentation, mirroring create_index_backfill_batches().
     uint64_t update_storage_update_sends() noexcept;
+    void arm_update_fail_before_apply() noexcept;
 #endif
 
     class operator_update final : public read_write_operator_t {

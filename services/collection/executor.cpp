@@ -1708,6 +1708,21 @@ namespace services::collection::executor {
                 }
             }
 
+            // I-2: a mutating scan retained past drain (awaiting_apply) is normally
+            // released by the storage apply — which this failed statement will never
+            // send (the failure landed between drain and apply). The txn-abort
+            // OPERATOR does not run on the statement-failure path, and an autocommit
+            // statement's session dies with the statement, so no later sweep-on-open
+            // can match the pin either. Release the session's retained cursors with
+            // the same broadcast the abort operator uses; otherwise compaction AND
+            // checkpointing of the target table defer for the process lifetime.
+            if (disk_address_ != actor_zeta::address_t::empty_address()) {
+                auto [_rp, rpf] = actor_zeta::send(disk_address_,
+                                                   &services::disk::manager_disk_t::release_scans_for_session,
+                                                   session);
+                co_await std::move(rpf);
+            }
+
             auto [_ab, abf] =
                 actor_zeta::send(parent_address_, &services::dispatcher::manager_dispatcher_t::txn_abort_msg, session);
             co_await std::move(abf);

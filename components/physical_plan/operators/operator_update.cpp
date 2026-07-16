@@ -16,10 +16,15 @@ namespace components::operators {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_update_storage_update_sends{0};
+        // One-shot fault injection: fail the statement in the drain->apply window —
+        // after the mutating scan retired awaiting-apply, before storage_update is
+        // sent — the same window a RETURNING projection error fails in.
+        std::atomic<bool> g_update_fail_before_apply{false};
     } // namespace
     uint64_t update_storage_update_sends() noexcept {
         return g_update_storage_update_sends.load(std::memory_order_relaxed);
     }
+    void arm_update_fail_before_apply() noexcept { g_update_fail_before_apply.store(true, std::memory_order_relaxed); }
 #endif
 
     operator_update::operator_update(std::pmr::memory_resource* resource,
@@ -408,6 +413,11 @@ namespace components::operators {
                 //    table-layer MVCC update as a value; surface it as a clean error so
                 //    the txn aborts gracefully.
 #ifdef DEV_MODE
+                if (g_update_fail_before_apply.exchange(false, std::memory_order_relaxed)) {
+                    co_return dml_detail::flush_outcome_t{
+                        core::error_t(core::error_code_t::arithmetics_failure,
+                                      std::pmr::string{"injected pre-apply failure", res})};
+                }
                 g_update_storage_update_sends.fetch_add(1, std::memory_order_relaxed);
 #endif
                 auto [_u, uf] = actor_zeta::send(ctx->disk_address,

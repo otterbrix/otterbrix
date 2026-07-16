@@ -29,6 +29,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/log/log.hpp>
+#include <components/physical_plan/operators/operator_update.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal_reader.hpp>
 
@@ -818,6 +819,69 @@ TEST_CASE("integration::cpp::restart_consistency::exact_threshold_dml_releases_c
     }
 
     auto log = initialization_logger("exact_threshold_pin", dir.string() + "/");
+    services::wal::wal_reader_t reader(config.wal, log);
+    const auto records = reader.read_committed_records(services::wal::id_t{0});
+    bool user_table_compacted = false;
+    for (const auto& r : records) {
+        if (r.record_type == services::wal::wal_record_type::PHYSICAL_COMPACT &&
+            r.table_oid >= components::catalog::FIRST_USER_OID) {
+            user_table_compacted = true;
+        }
+    }
+    REQUIRE(user_table_compacted);
+}
+
+// A statement that FAILS between drain and apply must not wedge compaction.
+// The mutating scan retired awaiting-apply when it drained; the failure lands
+// before storage_update, so the apply that normally releases the pin never
+// fires, the txn-abort OPERATOR does not run on the statement-failure path,
+// and the autocommit session dies with the statement (no later sweep-on-open
+// can match). Only the executor's failure-revert can release the pin.
+// Injection: DEV_MODE one-shot fault in operator_update's final drive, the
+// same window a RETURNING projection error fails in. Observable: VACUUM after
+// the failed statement still compacts and emits its PHYSICAL_COMPACT marker.
+TEST_CASE("integration::cpp::restart_consistency::failed_statement_releases_compaction_pin", "[restart]") {
+    const auto dir = data_root() / "failed_stmt_pin";
+    auto config = test_create_config(dir);
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = true;
+
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto run = [&](const std::string& sql) {
+            auto cur = test_helpers::exec(dispatcher, sql);
+            INFO(sql);
+            REQUIRE(cur);
+            REQUIRE_FALSE(cur->is_error());
+            return cur;
+        };
+        run("CREATE DATABASE rcdb;");
+        run("CREATE TABLE rcdb.t (id BIGINT);");
+        run("INSERT INTO rcdb.t (id) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),"
+            "(10),(11),(12),(13),(14),(15),(16),(17),(18),(19);");
+        // 20% dead: below the 30% commit-time threshold, so only VACUUM compacts.
+        run("DELETE FROM rcdb.t WHERE id < 4;");
+        // Non-pushable (column-vs-column) predicate matching every live row: the
+        // bare mutating scan drains fully and retires awaiting-apply, then the
+        // injected fault fails the statement before storage_update.
+        components::operators::arm_update_fail_before_apply();
+        {
+            auto cur = test_helpers::exec(dispatcher, "UPDATE rcdb.t SET id = id + 100 WHERE id >= id;");
+            REQUIRE(cur);
+            REQUIRE(cur->is_error());
+        }
+        run("VACUUM;");
+        // A committed write pair after the VACUUM: the FULL-sync COMMIT flushes
+        // every preceding WAL record (including the compact marker) durably.
+        run("INSERT INTO rcdb.t (id) VALUES (999);");
+        run("DELETE FROM rcdb.t WHERE id = 999;");
+        auto cur = run("SELECT * FROM rcdb.t;");
+        REQUIRE(cur->size() == 16);
+    }
+
+    auto log = initialization_logger("failed_stmt_pin", dir.string() + "/");
     services::wal::wal_reader_t reader(config.wal, log);
     const auto records = reader.read_committed_records(services::wal::id_t{0});
     bool user_table_compacted = false;

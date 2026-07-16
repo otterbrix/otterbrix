@@ -1758,3 +1758,145 @@ TEST_CASE("optimizer::pushdown_filter::union_residual_stays_above_for_non_mappab
         REQUIRE(as_key(cmp->left()).as_string() == "a");
     }
 }
+
+// ================================================================
+// Filter pushdown below a JOIN when the filtered column NAME collides
+// with a same-named column on the OTHER join side.
+//
+// Both t1 and t2 expose "id" and "k" (merged schema [t1.id=0, t1.k=1,
+// t2.id=2, t2.k=3], left_width=2). `WHERE t1.id=5 AND t2.id=7` — the bare
+// name "id" is on BOTH sides, so the old NAME-based bucketing (is `id` a
+// subset of one side's alias set?) put BOTH conjuncts in the residual
+// above the join, never reaching the scans. The validator stamps each
+// key's merged path (t1.id->0, t2.id->2); bucketing by path()[0] vs
+// left_width routes t1.id below t1 and t2.id below t2.
+//
+// A scan carries its columns in output_types() (has_output_types() true,
+// so left_width is known); keys carry a stamped merged path (pruned_key),
+// exactly the post-validate_schema shape.
+// ================================================================
+namespace {
+    // aggregate_t{db,rel} scan carrying its columns ONLY in output_types()
+    // (the disk-scan shape). has_output_types() is true, so pushdown reads a
+    // known left_width off children()[0].
+    node_aggregate_ptr join_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
+        auto agg = make_node_aggregate(r, pdb(), prel());
+        std::pmr::vector<components::types::complex_logical_type> out(r);
+        for (const char* c : cols) {
+            out.emplace_back(components::types::logical_type::BIGINT, c);
+        }
+        agg->set_output_types(std::move(out));
+        return agg;
+    }
+} // namespace
+
+TEST_CASE("optimizer::pushdown_filter::join_shared_column_name_buckets_by_side") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(int64_t(5));
+    auto p7 = params->add_parameter(int64_t(7));
+
+    // t1 = {id, k}, t2 = {id, k}: "id" and "k" collide across sides.
+    auto left = join_scan(&resource, {"id", "k"});
+    auto right = join_scan(&resource, {"id", "k"});
+    auto join = make_node_join(&resource, pdb(), prel(), join_type::inner);
+    join->append_child(left);
+    join->append_child(right);
+    // ON t1.k (merged 1) = t2.k (merged 3)
+    join->append_expression(make_compare_expression(&resource,
+                                                     compare_type::eq,
+                                                     pruned_key(&resource, "k", 1, side_t::left),
+                                                     pruned_key(&resource, "k", 3, side_t::right)));
+
+    // WHERE t1.id = 5 AND t2.id = 7  (bare name "id" collides).
+    auto c1 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 0, side_t::left), p5);
+    auto c2 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 2, side_t::right), p7);
+    auto where = make_compare_union_expression(&resource, compare_type::union_and);
+    where->append_child(c1);
+    where->append_child(c2);
+
+    auto outer = make_node_aggregate(&resource, pdb(), prel());
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource, pdb(), prel(), where));
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+
+    // Whole WHERE consumed → the bare join is exposed (no residual match above it).
+    REQUIRE(out == join);
+    // t1.id=5 pushed below t1's scan.
+    REQUIRE(join->children()[0]->type() == node_type::aggregate_t);
+    REQUIRE(join->children()[0]->children().size() == 2);
+    REQUIRE(join->children()[0]->children()[0] == left);
+    REQUIRE(join->children()[0]->children()[1]->type() == node_type::match_t);
+    // t2.id=7 pushed below t2's scan.
+    REQUIRE(join->children()[1]->type() == node_type::aggregate_t);
+    REQUIRE(join->children()[1]->children().size() == 2);
+    REQUIRE(join->children()[1]->children()[0] == right);
+    REQUIRE(join->children()[1]->children()[1]->type() == node_type::match_t);
+}
+
+// ================================================================
+// Outer-join safety under the SAME name collision: a LEFT join null-pads
+// the RIGHT side, so a filter on the right (null-padded) side must STAY in
+// the residual above the join even though its bare name "id" collides. The
+// left-side conjunct still pushes. This proves the side-based classifier
+// does not weaken the row-preserving guard (can_push_right == false for a
+// LEFT join).
+// ================================================================
+TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_residual") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(int64_t(5));
+    auto p7 = params->add_parameter(int64_t(7));
+
+    auto left = join_scan(&resource, {"id", "k"});
+    auto right = join_scan(&resource, {"id", "k"});
+    auto join = make_node_join(&resource, pdb(), prel(), join_type::left);
+    join->append_child(left);
+    join->append_child(right);
+    join->append_expression(make_compare_expression(&resource,
+                                                     compare_type::eq,
+                                                     pruned_key(&resource, "k", 1, side_t::left),
+                                                     pruned_key(&resource, "k", 3, side_t::right)));
+
+    // WHERE t1.id = 5 AND t2.id = 7 : t1.id pushes; t2.id is on the null-padded side.
+    auto c1 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 0, side_t::left), p5);
+    auto c2 = make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "id", 2, side_t::right), p7);
+    auto where = make_compare_union_expression(&resource, compare_type::union_and);
+    where->append_child(c1);
+    where->append_child(c2);
+
+    auto outer = make_node_aggregate(&resource, pdb(), prel());
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource, pdb(), prel(), where));
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+
+    // Residual (t2.id=7) survives → the outer aggregate is kept, join as child[0].
+    REQUIRE(out == outer);
+    REQUIRE(out->children()[0] == join);
+
+    // t1.id=5 pushed below t1's scan.
+    REQUIRE(join->children()[0]->type() == node_type::aggregate_t);
+    REQUIRE(join->children()[0]->children().size() == 2);
+    REQUIRE(join->children()[0]->children()[0] == left);
+    REQUIRE(join->children()[0]->children()[1]->type() == node_type::match_t);
+
+    // Right (null-padded) side NOT wrapped — the filter did NOT push.
+    REQUIRE(join->children()[1] == right);
+
+    // The residual match above the join holds ONLY t2.id=7.
+    node_ptr residual_match;
+    for (const auto& c : out->children()) {
+        if (c->type() == node_type::match_t) {
+            residual_match = c;
+        }
+    }
+    REQUIRE(residual_match != nullptr);
+    REQUIRE(residual_match->expressions().size() == 1);
+    auto* rcmp = static_cast<compare_expression_t*>(residual_match->expressions()[0].get());
+    REQUIRE(rcmp->type() == compare_type::eq);
+    REQUIRE(is_key(rcmp->left()));
+    REQUIRE(as_key(rcmp->left()).path().size() == 1);
+    REQUIRE(as_key(rcmp->left()).path()[0] == 2); // t2.id, merged index 2 (>= left_width)
+}

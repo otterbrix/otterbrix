@@ -113,6 +113,156 @@ namespace components::planner::optimizer {
             return result;
         }
 
+        // --- side classification by the validator's stamped merged path -----------
+        //
+        // A join's WHERE keys are stamped by validate_schema against the join's MERGED
+        // schema: a left-child column sits in the merged prefix [0, left_width), a
+        // right-child column in [left_width, left_width + right_width). So path()[0]
+        // alone tells which side a column belongs to — the SAME range test
+        // promote_cross_join uses. side() cannot be used: the validator stamps
+        // side=left on EVERY unqualified join-WHERE key (it resolves them against the
+        // merged schema), so an unqualified right-side column carries side=left with a
+        // right-range path. Correctness of the range test rests on the validator
+        // rejecting genuinely ambiguous duplicate bare names, so a resolvable name maps
+        // to exactly one merged column (validate_logical_plan.cpp).
+        void
+        collect_referenced_path_roots(const expression_ptr& expr, std::vector<size_t>& roots, bool& has_key, bool& has_unstamped);
+
+        void collect_path_root_from_param(const param_storage& param,
+                                          std::vector<size_t>& roots,
+                                          bool& has_key,
+                                          bool& has_unstamped) {
+            if (is_key(param)) {
+                const auto& k = as_key(param);
+                has_key = true;
+                if (k.path().empty()) {
+                    has_unstamped = true; // an unvalidated plan — caller falls back to names
+                } else {
+                    roots.push_back(k.path()[0]);
+                }
+            } else if (is_expr(param)) {
+                collect_referenced_path_roots(as_expr(param), roots, has_key, has_unstamped);
+            }
+        }
+
+        // Mirrors collect_referenced_columns' traversal exactly: it visits precisely the
+        // keys that classify a conjunct's side, so every such key's merged path root is
+        // gathered here (and any key lacking a stamped path flips has_unstamped).
+        void collect_referenced_path_roots(const expression_ptr& expr,
+                                            std::vector<size_t>& roots,
+                                            bool& has_key,
+                                            bool& has_unstamped) {
+            if (!expr) {
+                return;
+            }
+            switch (expr->group()) {
+                case expression_group::compare: {
+                    auto* cmp = static_cast<compare_expression_t*>(expr.get());
+                    if (is_union_compare_condition(cmp->type())) {
+                        for (const auto& child : cmp->children()) {
+                            collect_referenced_path_roots(child, roots, has_key, has_unstamped);
+                        }
+                    } else {
+                        collect_path_root_from_param(cmp->left(), roots, has_key, has_unstamped);
+                        collect_path_root_from_param(cmp->right(), roots, has_key, has_unstamped);
+                    }
+                    break;
+                }
+                case expression_group::scalar: {
+                    auto* sc = static_cast<scalar_expression_t*>(expr.get());
+                    for (const auto& param : sc->params()) {
+                        collect_path_root_from_param(param, roots, has_key, has_unstamped);
+                    }
+                    break;
+                }
+                case expression_group::aggregate: {
+                    auto* agg = static_cast<aggregate_expression_t*>(expr.get());
+                    for (const auto& param : agg->params()) {
+                        collect_path_root_from_param(param, roots, has_key, has_unstamped);
+                    }
+                    break;
+                }
+                case expression_group::sort: {
+                    auto* srt = static_cast<sort_expression_t*>(expr.get());
+                    has_key = true;
+                    if (srt->key().path().empty()) {
+                        has_unstamped = true;
+                    } else {
+                        roots.push_back(srt->key().path()[0]);
+                    }
+                    break;
+                }
+                case expression_group::function: {
+                    auto* fn = static_cast<function_expression_t*>(expr.get());
+                    for (const auto& arg : fn->args()) {
+                        collect_path_root_from_param(arg, roots, has_key, has_unstamped);
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+
+        enum class conj_side
+        {
+            left_side,
+            right_side,
+            unclassified
+        };
+
+        // Classify a single-table conjunct to a join side. Primary: the validator's
+        // stamped merged path roots (path()[0] < left_width => left child, else right).
+        // This routes a conjunct whose bare column name ALSO exists on the other side
+        // (e.g. t1.id when t2 also has id) — the name-based test below cannot, because
+        // the name is a subset of BOTH sides' alias sets, so it always fell to residual.
+        // Fallback (an unvalidated plan whose keys carry no path, or an unknown
+        // left_width): the original alias-subset test. A conjunct that references BOTH
+        // sides (or no column) is unclassified => residual.
+        conj_side classify_conjunct(const expression_ptr& conj,
+                                    size_t left_width,
+                                    bool left_width_known,
+                                    const std::set<std::string>& left_cols,
+                                    const std::set<std::string>& right_cols) {
+            std::vector<size_t> roots;
+            bool has_key = false;
+            bool has_unstamped = false;
+            collect_referenced_path_roots(conj, roots, has_key, has_unstamped);
+
+            if (left_width_known && has_key && !has_unstamped) {
+                bool any_left = false;
+                bool any_right = false;
+                for (size_t r : roots) {
+                    if (r < left_width) {
+                        any_left = true;
+                    } else {
+                        any_right = true;
+                    }
+                }
+                if (any_left && !any_right) {
+                    return conj_side::left_side;
+                }
+                if (any_right && !any_left) {
+                    return conj_side::right_side;
+                }
+                return conj_side::unclassified; // straddles both sides
+            }
+
+            // Name-based fallback (validate_schema has not stamped paths on these keys).
+            auto cols = collect_referenced_columns(conj);
+            bool in_left =
+                !cols.empty() && std::includes(left_cols.begin(), left_cols.end(), cols.begin(), cols.end());
+            bool in_right =
+                !cols.empty() && std::includes(right_cols.begin(), right_cols.end(), cols.begin(), cols.end());
+            if (in_left && !in_right) {
+                return conj_side::left_side;
+            }
+            if (in_right && !in_left) {
+                return conj_side::right_side;
+            }
+            return conj_side::unclassified;
+        }
+
         // Re-localize a conjunct's column keys from the join's MERGED coordinate space
         // to the right child's LOCAL space when a right-side single-table filter is
         // pushed below the join. A key's merged path()[0] equals its local index only
@@ -565,14 +715,15 @@ namespace components::planner::optimizer {
                     auto conjuncts = split_conjuncts(resource, match_child->expressions()[0]);
                     std::pmr::vector<expression_ptr> left_bucket{resource}, right_bucket{resource}, residual{resource};
                     for (const auto& conj : conjuncts) {
-                        auto cols = collect_referenced_columns(conj);
-                        bool in_left = !cols.empty() &&
-                                       std::includes(left_cols.begin(), left_cols.end(), cols.begin(), cols.end());
-                        bool in_right = !cols.empty() &&
-                                        std::includes(right_cols.begin(), right_cols.end(), cols.begin(), cols.end());
-                        if (in_left && !in_right && can_push_left) {
+                        // Classify by the validator's stamped merged path (side-based),
+                        // falling back to alias names only when the plan is unvalidated.
+                        // The row-preserving outer-join guard (can_push_left /
+                        // can_push_right) is applied UNCHANGED on top of the result, so a
+                        // filter on a null-padded side still stays in the residual.
+                        conj_side cs = classify_conjunct(conj, left_width, left_width_known, left_cols, right_cols);
+                        if (cs == conj_side::left_side && can_push_left) {
                             left_bucket.push_back(conj);
-                        } else if (in_right && !in_left && can_push_right) {
+                        } else if (cs == conj_side::right_side && can_push_right) {
                             right_bucket.push_back(conj);
                         } else {
                             residual.push_back(conj);

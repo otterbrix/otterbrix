@@ -744,3 +744,61 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
     // Regression: SELECT DISTINCT lowers to operator_distinct, which must render "Unique" (was "Filter").
     REQUIRE(contains(label_of("EXPLAIN SELECT DISTINCT cust FROM TestDatabase.orders;"), "Unique"));
 }
+
+// End-to-end proof (disk.on=true) that a single-table WHERE conjunct whose column
+// NAME also exists on the OTHER join side is pushed to the correct side's Seq Scan
+// — not stranded in a residual Filter above the join. Both t1 and t2 expose "id"
+// and "k"; `WHERE t1.id = 5 AND t2.id = 7` used to bucket by name (id is a subset
+// of BOTH sides) and stay in the residual; it now buckets by the validator's
+// stamped merged path and folds into each side's full_scan (a pushable
+// `column OP constant` becomes a Seq Scan predicate, so NO "Filter" node remains).
+TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
+    auto config = test_helpers::make_test_config("/tmp/test_explain/join_shared_col", /*disk_on=*/true, /*wal_on=*/true);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    using test_helpers::exec;
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    // Both tables carry columns named "id" and "k" (name collision across sides).
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id bigint, k bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (5,1),(5,2),(6,1);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.t2 (id, k) VALUES (7,1),(8,2),(7,3);")->is_success());
+
+    const std::string q =
+        "SELECT a.id, a.k, b.id, b.k FROM db.t1 a JOIN db.t2 b ON a.k = b.k WHERE a.id = 5 AND b.id = 7";
+
+    INFO("parity: the collision-named filters still return the correct join rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, q + ";");
+        REQUIRE(cur->is_success());
+        // t1 filtered id=5 -> (5,1),(5,2); t2 filtered id=7 -> (7,1),(7,3); join on k -> only k=1.
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5); // a.id
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 1); // a.k
+        REQUIRE(cur->value(2, 0).value<int64_t>() == 7); // b.id
+        REQUIRE(cur->value(3, 0).value<int64_t>() == 1); // b.k
+    }
+
+    INFO("EXPLAIN: both per-side filters ride the Seq Scans; no residual Filter remains");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN " + q + ";");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        // The plan is (top-down):
+        //   Project -> Hash Join -> [Filter -> Seq Scan on t1], [Filter -> Seq Scan on t2]
+        // Each side's collision-named predicate rides its own scan BELOW the join. Before
+        // the side-based fix, the name collision (id/k on both sides) left BOTH conjuncts
+        // in a single residual Filter directly ABOVE the Hash Join.
+        REQUIRE(contains(t, "Seq Scan on t1"));
+        REQUIRE(contains(t, "Seq Scan on t2"));
+        const auto join_pos = t.find("Hash Join");
+        const auto first_filter = t.find("Filter");
+        REQUIRE(join_pos != std::string::npos);
+        REQUIRE(first_filter != std::string::npos); // per-side filters are present, below the join
+        // The join precedes every Filter => NO residual Filter above the join (the fix).
+        REQUIRE(join_pos < first_filter);
+    }
+}

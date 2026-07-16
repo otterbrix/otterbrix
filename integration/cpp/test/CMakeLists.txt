@@ -122,3 +122,26 @@ target_link_libraries(profile_arithmetic PRIVATE
         ZLIB::ZLIB
         BZip2::BZip2
 )
+
+# Focused DML + restart micro-benchmark (UPDATE storm + reopen/replay). Standalone
+# so it can be A/B'd against a baseline commit; not registered with ctest.
+add_executable(bench_dml_restart bench_dml_restart.cpp)
+target_link_libraries(bench_dml_restart PRIVATE
+        cpp_otterbrix
+        otterbrix::test_generaty
+        otterbrix::log
+        otterbrix::cursor
+        otterbrix::session
+        otterbrix::services
+        otterbrix::locks
+        spdlog::spdlog
+        Catch2::Catch2
+        absl::crc32c
+        absl::int128
+        benchmark::benchmark
+        actor-zeta::actor-zeta
+        Boost::boost
+        fmt::fmt
+        ZLIB::ZLIB
+        BZip2::BZip2
+)

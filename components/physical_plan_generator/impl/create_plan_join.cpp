@@ -10,6 +10,34 @@
 
 namespace services::planner::impl {
 
+    namespace {
+        // Structural probe of a hash-join input sub-plan for the STATISTICS-FREE
+        // build-side tiebreaker below. `has_join` marks a multi-relation intermediate
+        // (a join result — never a good, size-bounded hash-build target); `has_filter`
+        // marks a pushed-down single-relation WHERE filter (a `match` below the join),
+        // the syntactic proxy for the more-selective / smaller side. Read-only, purely
+        // from the logical plan shape — no catalog / row-count access.
+        struct subplan_shape_t {
+            bool has_join{false};
+            bool has_filter{false};
+        };
+
+        void probe_subplan_shape(const components::logical_plan::node_ptr& n, subplan_shape_t& out) {
+            if (!n) {
+                return;
+            }
+            using components::logical_plan::node_type;
+            if (n->type() == node_type::join_t) {
+                out.has_join = true;
+            } else if (n->type() == node_type::match_t) {
+                out.has_filter = true;
+            }
+            for (const auto& child : n->children()) {
+                probe_subplan_shape(child, out);
+            }
+        }
+    } // namespace
+
     components::operators::operator_ptr
     create_plan_join(const context_storage_t& context,
                      const components::compute::function_registry_t& function_registry,
@@ -96,12 +124,42 @@ namespace services::planner::impl {
             // keeps the default child order. A wrong estimate only picks a
             // slower-but-correct plan.
             bool swap_build_side = false;
+            bool stats_decided = false;
             if (join_node->type() == join_type::inner && left_oid != components::catalog::INVALID_OID &&
                 right_oid != components::catalog::INVALID_OID && left_oid != right_oid) {
                 const auto left_it = context.row_counts.find(left_oid);
                 const auto right_it = context.row_counts.find(right_oid);
-                if (left_it != context.row_counts.end() && right_it != context.row_counts.end() &&
-                    left_it->second < right_it->second) {
+                if (left_it != context.row_counts.end() && right_it != context.row_counts.end()) {
+                    // Both live counts known -> the statistics decide (unchanged behavior).
+                    stats_decided = true;
+                    if (left_it->second < right_it->second) {
+                        swap_build_side = true;
+                    }
+                }
+            }
+
+            // Statistics-free syntactic build-side tiebreaker (heuristic J). Runs ONLY
+            // when the live-count path abstained -- IN-MEMORY mode leaves row_counts
+            // empty, and a join sub-tree / self-join side carries no usable count. It
+            // reorders NOTHING in the logical plan: like the statistics path it merely
+            // sets swap_build_side, and operator_hash_join_t's swapped_ restores the
+            // logical [left, right] output order, so the answer is byte-identical.
+            //
+            // Fires only in the clean single-relation-vs-single-relation case where the
+            // LOGICAL-LEFT input carries a pushed-down local filter and the right does
+            // not: the filtered relation is the more selective / smaller side, so it is
+            // moved onto the hash build (default build is the physical-right child).
+            // If the RIGHT is the filtered side it is already the default build (no swap
+            // needed); if either side is a join sub-tree the orientation is left alone (a
+            // join result is not a size-bounded build target). A wrong syntactic guess
+            // only picks a slower-but-correct plan.
+            if (!stats_decided && join_node->type() == join_type::inner) {
+                subplan_shape_t left_shape;
+                subplan_shape_t right_shape;
+                probe_subplan_shape(node->children().front(), left_shape);
+                probe_subplan_shape(node->children().back(), right_shape);
+                if (!left_shape.has_join && !right_shape.has_join && left_shape.has_filter &&
+                    !right_shape.has_filter) {
                     swap_build_side = true;
                 }
             }

@@ -580,3 +580,86 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
         CHECK(rev_sum == 300); // 100 + 200
     }
 }
+
+// ----------------------------------------------------------------------------
+// Statistics-FREE build-side selection (in-memory mode) — heuristic J.
+//
+// operator_hash_join_t materializes its physical RIGHT child as the hash build.
+// The statistics-based swap in create_plan_join needs live row counts, which
+// execute_plan_full only fetches when an owning disk agent exists — so in
+// IN-MEMORY mode (disk off) `context.row_counts` is empty and that path abstains.
+//
+// A purely SYNTACTIC tiebreaker then decides: when both join inputs are single
+// relations (no join sub-tree on either side) and exactly the LOGICAL-LEFT one
+// carries a pushed-down local WHERE filter (a match below the join), that filtered
+// relation is the more-selective / smaller side, so it is moved onto the hash
+// build. EXPLAIN renders the probe (physical left_) child first and the build
+// (physical right_) child second, so after the swap the UNfiltered `pln` (probe)
+// is rendered BEFORE the filtered `filt` (build). The swap is answer-neutral
+// (swapped_ restores logical [left, right] output order), proven by the rows.
+//
+// RED before the tiebreaker: no swap, so `filt` (default logical-left probe) is
+// rendered first. GREEN after: `pln` first, `filt` (build) second.
+// ----------------------------------------------------------------------------
+TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
+    auto config = test_create_config("/tmp/test_hash_join/syntactic");
+    test_clear_directory(config);
+    config.disk.on = false; // in-memory: no live row counts -> statistics path abstains
+    config.wal.on = false;
+    test_spaces space(config);
+    auto dispatcher = space.dispatcher();
+    auto session = otterbrix::session_id_t();
+
+    const std::string sdb = "synbuilddb";
+    dispatcher->execute_sql(session, "CREATE DATABASE " + sdb + ";");
+    auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
+    REQUIRE(run("CREATE TABLE " + sdb + ".filt ();")->is_success()); // (k, x)
+    REQUIRE(run("CREATE TABLE " + sdb + ".pln ();")->is_success());  // (k, y)
+    REQUIRE(run("INSERT INTO " + sdb + ".filt (k, x) VALUES (1, 5), (2, 9), (3, 5);")->is_success());
+    REQUIRE(run("INSERT INTO " + sdb + ".pln (k, y) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
+
+    auto plan_text = [&](const std::string& sql) {
+        auto c = run("EXPLAIN " + sql);
+        REQUIRE(c->is_success());
+        std::string t;
+        for (size_t r = 0; r < c->size(); ++r) {
+            t += std::string(c->value(0, r).value<std::string_view>());
+            t += '\n';
+        }
+        return t;
+    };
+
+    // `filt` is filtered (x = 5); `pln` is not. `filt` is the logical-LEFT input.
+    const std::string q =
+        "SELECT * FROM " + sdb + ".filt JOIN " + sdb + ".pln ON filt.k = pln.k WHERE filt.x = 5";
+
+    INFO("EXPLAIN: the filtered relation (filt) is the hash BUILD side, rendered AFTER the probe (pln)");
+    {
+        const std::string t = plan_text(q);
+        INFO(t);
+        REQUIRE(t.find("Hash Join") != std::string::npos);
+        const auto pos_filt = t.find("on filt");
+        const auto pos_pln = t.find("on pln");
+        REQUIRE(pos_filt != std::string::npos);
+        REQUIRE(pos_pln != std::string::npos);
+        // Probe (pln) precedes build (filt): pln is rendered first.
+        CHECK(pos_pln < pos_filt);
+    }
+
+    INFO("rows: the build-side swap is answer-neutral");
+    {
+        auto cur = run(q + " ORDER BY filt.k ASC;");
+        REQUIRE(cur->is_success());
+        // filt.x = 5 keeps k in {1, 3}; join on k with pln -> 2 rows.
+        // SELECT * column order = [filt.k, filt.x, pln.k, pln.y].
+        REQUIRE(cur->size() == 2);
+        CHECK(cur->value(0, 0).value<int64_t>() == 1);  // filt.k
+        CHECK(cur->value(1, 0).value<int64_t>() == 5);  // filt.x
+        CHECK(cur->value(2, 0).value<int64_t>() == 1);  // pln.k
+        CHECK(cur->value(3, 0).value<int64_t>() == 10); // pln.y
+        CHECK(cur->value(0, 1).value<int64_t>() == 3);  // filt.k
+        CHECK(cur->value(1, 1).value<int64_t>() == 5);  // filt.x
+        CHECK(cur->value(2, 1).value<int64_t>() == 3);  // pln.k
+        CHECK(cur->value(3, 1).value<int64_t>() == 30); // pln.y
+    }
+}

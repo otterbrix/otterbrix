@@ -23,6 +23,7 @@
 #include <components/physical_plan_generator/impl/index_selection_helpers.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/optimizer/rules/drop_redundant_distinct.hpp>
+#include <components/planner/optimizer/rules/eager_aggregation.hpp>
 #include <components/planner/optimizer/rules/hash_join.hpp>
 #include <components/planner/optimizer/rules/promote_cross_join.hpp>
 #include <components/planner/optimizer/rules/pushdown_filter.hpp>
@@ -2202,4 +2203,163 @@ TEST_CASE("optimizer::drop_redundant_distinct::distinct_on_keys_not_subset") {
     agg->set_distinct_on_keys(std::move(on));
     auto out = components::planner::optimizer::drop_redundant_distinct(&resource, agg);
     REQUIRE(static_cast<node_aggregate_t*>(out.get())->is_distinct());
+}
+
+// ================================================================
+// eager_aggregation rule — pushes a MIN/MAX partial aggregate onto
+// the single join side that owns every group key + aggregate arg,
+// leaving a FINAL merge above the join. Fires only on the provably-
+// sound (duplication-insensitive) MIN/MAX shape. Built here in the
+// post-rewrite_hash_joins state (equi-key stamped) and driven through
+// the rule directly.
+// ================================================================
+namespace {
+    namespace eag {
+        using components::expressions::side_t;
+
+        std::pmr::vector<size_t> path1(std::pmr::memory_resource* r, size_t i) {
+            std::pmr::vector<size_t> p{r};
+            p.push_back(i);
+            return p;
+        }
+
+        node_aggregate_ptr leaf(std::pmr::memory_resource* r,
+                                const char* rel,
+                                components::catalog::oid_t oid,
+                                std::initializer_list<const char*> cols) {
+            auto a = make_node_aggregate(r, core::dbname_t{"db"}, core::relname_t{rel});
+            a->set_table_oid(oid);
+            std::pmr::vector<components::types::complex_logical_type> types(r);
+            for (const char* c : cols) {
+                types.emplace_back(components::types::logical_type::BIGINT, c);
+            }
+            a->set_output_types(std::move(types));
+            return a;
+        }
+
+        key col(std::pmr::memory_resource* r, const char* name, size_t path, side_t side = side_t::undefined) {
+            key k(r, name, side);
+            k.set_path(path1(r, path));
+            return k;
+        }
+
+        // outer aggregate { join[hash,inner]( a=(g,k,x), b=(k) ) ON a.k=b.k,
+        //                   group( group_by g, fn(x)->m ) }
+        // `agg_arg_path` / `key_path` let a caller move the measure or key to the
+        // OTHER (b) side for the cross-side negative test.
+        node_aggregate_ptr make_join_agg(std::pmr::memory_resource* r,
+                                         const std::string& fn,
+                                         bool hash = true,
+                                         size_t key_path = 0,
+                                         size_t agg_arg_path = 2) {
+            auto a = leaf(r, "a", components::catalog::oid_t{100}, {"g", "k", "x"});
+            auto b = leaf(r, "b", components::catalog::oid_t{200}, {"k"});
+            auto join = make_node_join(r, core::dbname_t{}, core::relname_t{}, join_type::inner);
+            join->append_child(a);
+            join->append_child(b);
+            join->append_expression(make_compare_expression(r,
+                                                            compare_type::eq,
+                                                            param_storage{col(r, "k", 1, side_t::left)},
+                                                            param_storage{col(r, "k", 0, side_t::right)}));
+            if (hash) {
+                join->set_equi_columns(1, 0); // left_col=1 (a.k), right_col=0 (b.k); flips algo->hash
+            }
+            auto gexpr = make_scalar_expression(r, scalar_type::group_field, col(r, "g", key_path));
+            auto aexpr = make_aggregate_expression(r, fn, key(r, "m"), col(r, "x", agg_arg_path));
+            aexpr->set_mergeable(true);
+            std::vector<expression_ptr> gxs;
+            gxs.emplace_back(gexpr);
+            gxs.emplace_back(expression_ptr(aexpr));
+            auto group = make_node_group(r, core::dbname_t{}, core::relname_t{}, gxs);
+            auto outer = make_node_aggregate(r, core::dbname_t{}, core::relname_t{});
+            outer->append_child(join);
+            outer->append_child(group);
+            return outer;
+        }
+
+        // The group_t child spliced onto the pushed (left) join side, or nullptr.
+        node_group_t* pushed_partial(const node_ptr& outer) {
+            auto* join = static_cast<node_join_t*>(outer->children()[0].get());
+            for (const auto& c : join->children()[0]->children()) {
+                if (c && c->type() == node_type::group_t) {
+                    return static_cast<node_group_t*>(c.get());
+                }
+            }
+            return nullptr;
+        }
+    } // namespace eag
+} // namespace
+
+TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto outer = eag::make_join_agg(&resource, "min");
+    // RED before the rule: the left join side is a BARE table aggregate (no group).
+    REQUIRE(eag::pushed_partial(outer) == nullptr);
+
+    components::planner::optimizer::eager_aggregation(&resource, outer);
+
+    // GREEN: a partial group is spliced onto side a: [g, k(join key), min(x)].
+    auto* partial = eag::pushed_partial(outer);
+    REQUIRE(partial != nullptr);
+    REQUIRE(partial->expressions().size() == 3);
+    // key columns first: g@local0, k@local1 (join key added); then min(x)@local2.
+    CHECK(partial->expressions()[0]->group() == expression_group::scalar);
+    CHECK(partial->expressions()[1]->group() == expression_group::scalar);
+    CHECK(partial->expressions()[2]->group() == expression_group::aggregate);
+    CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[2].get())->function_name() == "min");
+
+    // Join equi re-stamped: a.k now sits at its partial-output position (1).
+    auto* join = static_cast<node_join_t*>(outer->children()[0].get());
+    CHECK(join->left_col() == 1);
+    CHECK(join->right_col() == 0);
+
+    // FINAL group now reads the partial's output: g@0, MIN over partial-min @2.
+    node_group_t* final_group = nullptr;
+    for (const auto& c : outer->children()) {
+        if (c->type() == node_type::group_t) {
+            final_group = static_cast<node_group_t*>(c.get());
+        }
+    }
+    REQUIRE(final_group != nullptr);
+    auto* final_agg = static_cast<aggregate_expression_t*>(final_group->expressions()[1].get());
+    REQUIRE(final_agg->function_name() == "min"); // MIN(MIN)=MIN — function unchanged
+    REQUIRE(is_key(final_agg->params()[0]));
+    CHECK(as_key(final_agg->params()[0]).path().size() == 1);
+    CHECK(as_key(final_agg->params()[0]).path()[0] == 2);
+}
+
+TEST_CASE("optimizer::eager_aggregation::max_is_pushed") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto outer = eag::make_join_agg(&resource, "max");
+    components::planner::optimizer::eager_aggregation(&resource, outer);
+    auto* partial = eag::pushed_partial(outer);
+    REQUIRE(partial != nullptr);
+    CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[2].get())->function_name() == "max");
+}
+
+TEST_CASE("optimizer::eager_aggregation::sum_is_not_pushed") {
+    auto resource = core::pmr::otterbrix_resource();
+    // SUM over-counts on join duplication and needs a uniqueness proof the plan
+    // lacks -> deliberately excluded.
+    auto outer = eag::make_join_agg(&resource, "sum");
+    components::planner::optimizer::eager_aggregation(&resource, outer);
+    REQUIRE(eag::pushed_partial(outer) == nullptr);
+}
+
+TEST_CASE("optimizer::eager_aggregation::nested_loop_join_is_not_pushed") {
+    auto resource = core::pmr::otterbrix_resource();
+    // No single equi-key (algo stays nested) -> no join column to add to the
+    // partial grouping -> skip.
+    auto outer = eag::make_join_agg(&resource, "min", /*hash=*/false);
+    components::planner::optimizer::eager_aggregation(&resource, outer);
+    REQUIRE(eag::pushed_partial(outer) == nullptr);
+}
+
+TEST_CASE("optimizer::eager_aggregation::cross_side_reference_is_not_pushed") {
+    auto resource = core::pmr::otterbrix_resource();
+    // Group key on the left (a), aggregate argument on the right (b, merged idx 3):
+    // the measure spans both sides -> not pushable to one side -> skip.
+    auto outer = eag::make_join_agg(&resource, "min", /*hash=*/true, /*key_path=*/0, /*agg_arg_path=*/3);
+    components::planner::optimizer::eager_aggregation(&resource, outer);
+    REQUIRE(eag::pushed_partial(outer) == nullptr);
 }

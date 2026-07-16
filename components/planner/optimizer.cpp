@@ -3,6 +3,7 @@
 #include "optimizer/rules/column_pruning.hpp"
 #include "optimizer/rules/constant_folding.hpp"
 #include "optimizer/rules/drop_redundant_distinct.hpp"
+#include "optimizer/rules/eager_aggregation.hpp"
 #include "optimizer/rules/hash_join.hpp"
 #include "optimizer/rules/promote_cross_join.hpp"
 #include "optimizer/rules/pushdown_aggregate.hpp"
@@ -54,6 +55,17 @@ namespace components::planner {
         node = optimizer::pushdown_cte_filter(resource, std::move(node));
         node = optimizer::pushdown_filter(resource, std::move(node));
         node = optimizer::rewrite_hash_joins(resource, std::move(node));
+
+        // Eager (partial) aggregation pushdown through an INNER equi-join: push a
+        // MIN/MAX partial reduce onto the single join side that owns every group key
+        // and aggregate argument, leaving a FINAL merge above the join. Runs AFTER
+        // rewrite_hash_joins (needs the settled single equi-key to re-stamp) and
+        // BEFORE pushdown_aggregate + column_pruning, so the synthesized partial gets
+        // the ordinary single-table lowering (and, when an agent is reachable, the
+        // agent-side reduce) and the join frame-split stays consistent. Only fires on
+        // the provably-sound MIN/MAX shape (see eager_aggregation.hpp) — a false
+        // negative (missed push) is the only failure mode, never a wrong result.
+        node = optimizer::eager_aggregation(resource, std::move(node));
 
         // Stamp a pure COUNT read-cap on the cardinality-preserving source under an
         // effective LIMIT/OFFSET (create_plan_aggregate reads it; the authoritative

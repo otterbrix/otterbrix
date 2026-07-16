@@ -26,7 +26,11 @@ namespace core {
         // Copy `count` objects into the arena and return the stored run.
         T* insert(const T* data, size_t count) {
             T* ptr = allocate(count);
-            std::memcpy(ptr, data, count * sizeof(T));
+            // memcpy's pointer args are declared nonnull even for 0 bytes, and an
+            // empty run legitimately arrives as (nullptr, 0).
+            if (count != 0) {
+                std::memcpy(ptr, data, count * sizeof(T));
+            }
             return ptr;
         }
 

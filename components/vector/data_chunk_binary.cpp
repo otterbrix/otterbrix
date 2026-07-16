@@ -317,12 +317,18 @@ namespace components::vector {
                 write_le32(output, running_offset);
                 output += 4;
                 for (uint32_t row_index = 0; row_index < num_rows; ++row_index) {
-                    std::memcpy(output, views[row_index].data(), views[row_index].size());
-                    output += views[row_index].size();
+                    // An empty view's data() may be null, and memcpy's pointer
+                    // args are declared nonnull even for 0 bytes.
+                    if (views[row_index].size() != 0) {
+                        std::memcpy(output, views[row_index].data(), views[row_index].size());
+                        output += views[row_index].size();
+                    }
                 }
             } else {
-                std::memcpy(output, column.data(), column_data_sizes[column_index]);
-                output += column_data_sizes[column_index];
+                if (column_data_sizes[column_index] != 0) {
+                    std::memcpy(output, column.data(), column_data_sizes[column_index]);
+                    output += column_data_sizes[column_index];
+                }
             }
         }
 
@@ -433,7 +439,11 @@ namespace components::vector {
 
                 column.set_auxiliary(std::move(string_buffer));
             } else {
-                std::memcpy(column.data(), pointer, data_size);
+                // A zero-row column deserializes as 0 bytes and data() may be
+                // null; memcpy's pointer args are declared nonnull even then.
+                if (data_size != 0) {
+                    std::memcpy(column.data(), pointer, data_size);
+                }
             }
             pointer += data_size;
 

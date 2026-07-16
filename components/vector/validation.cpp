@@ -16,9 +16,9 @@ namespace components::vector {
         : data_(new (resource->allocate(sizeof(uint64_t) * size, alignof(uint64_t))) uint64_t[size],
                 core::pmr::array_deleter_t(resource, size, alignof(uint64_t))) {
         if (mask) {
-            for (uint64_t i = 0; i < size; i++) {
-                data_[i] = mask[i];
-            }
+            // mask may view a column-segment block whose validity payload is
+            // not 8-aligned; copy bytewise instead of loading u64s through it.
+            std::memcpy(data_.get(), mask, sizeof(uint64_t) * size);
         }
     }
 
@@ -312,7 +312,11 @@ namespace components::vector {
         if (!validity_mask_) {
             return validity_data_t::MAX_ENTRY;
         }
-        return validity_mask_[entry_idx];
+        // The mask may be a read-only view into a column-segment block, where the
+        // validity payload is not 8-aligned; a direct u64 load is UB there.
+        uint64_t entry;
+        std::memcpy(&entry, validity_mask_ + entry_idx, sizeof(entry));
+        return entry;
     }
 
     void validity_mask_t::copy_indexing(const validity_mask_t& other,

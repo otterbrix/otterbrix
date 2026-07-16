@@ -211,7 +211,11 @@ namespace components::table {
             auto ptr = handle.ptr() + state.head->offset;
             store<uint32_t>(static_cast<uint32_t>(string.size()), ptr);
             ptr += sizeof(uint32_t);
-            memcpy(ptr, string.data(), string.size());
+            // An empty string_view has a null data(); memcpy's pointer args are
+            // declared nonnull even for zero bytes.
+            if (!string.empty()) {
+                memcpy(ptr, string.data(), string.size());
+            }
             state.head->offset += total_length;
             return true;
         }
@@ -520,7 +524,11 @@ namespace components::table {
                     *dictionary_size += static_cast<uint32_t>(required_space);
                     remaining -= required_space;
                     auto dict_pos = end - *dictionary_size;
-                    memcpy(dict_pos, source_data[source_idx].data(), string_length);
+                    // An empty string has a null data(); memcpy's pointer args are
+                    // declared nonnull even for zero bytes.
+                    if (string_length != 0) {
+                        memcpy(dict_pos, source_data[source_idx].data(), string_length);
+                    }
 
                     assert(static_cast<uint64_t>(*dictionary_size) <= segment.block_manager().block_size());
                     result_data[target_idx] = static_cast<int32_t>(*dictionary_size);
@@ -839,8 +847,9 @@ namespace components::table {
 
             static_assert(sizeof(uint64_t) == sizeof(uint64_t), "uint64_t should be 64-bit");
             auto& result_mask = result.validity();
+            // block_offset() is not a multiple of 8, so the validity payload must be
+            // read bytewise: a u64 load through a cast pointer is a misaligned access.
             auto buffer_ptr = state.scan_state->ptr() + segment.block_offset();
-            auto input_data = reinterpret_cast<uint64_t*>(buffer_ptr);
 
             auto result_data = result_mask.data();
 
@@ -853,7 +862,8 @@ namespace components::table {
             while (pos < scan_count) {
                 uint64_t current_result_idx = result_entry;
                 uint64_t offset;
-                uint64_t input_mask = input_data[input_entry];
+                uint64_t input_mask;
+                std::memcpy(&input_mask, buffer_ptr + input_entry * sizeof(uint64_t), sizeof(input_mask));
 
                 if (result_idx < input_idx) {
                     auto shift_amount = input_idx - result_idx;
@@ -908,14 +918,18 @@ namespace components::table {
             auto start = segment.relative_index(state.row_index);
             if (static_cast<uint64_t>(start) % vector::validity_mask_t::BITS_PER_VALUE == 0) {
                 auto& result_mask = result.validity();
+                // Bytewise reads for the same reason as validity_scan_partial: the
+                // payload behind block_offset() is not 8-aligned.
                 auto buffer_ptr = state.scan_state->ptr() + segment.block_offset();
-                auto input_data = reinterpret_cast<uint64_t*>(buffer_ptr);
                 auto result_data = result_mask.data();
                 uint64_t start_offset = static_cast<uint64_t>(start) / vector::validity_mask_t::BITS_PER_VALUE;
                 uint64_t entry_scan_count = (scan_count + vector::validity_mask_t::BITS_PER_VALUE - 1) /
                                             vector::validity_mask_t::BITS_PER_VALUE;
                 for (uint64_t i = 0; i < entry_scan_count; i++) {
-                    auto input_entry = input_data[start_offset + i];
+                    uint64_t input_entry;
+                    std::memcpy(&input_entry,
+                                buffer_ptr + (start_offset + i) * sizeof(uint64_t),
+                                sizeof(input_entry));
                     if (!result_data && input_entry == vector::validity_data_t::MAX_ENTRY) {
                         continue;
                     }

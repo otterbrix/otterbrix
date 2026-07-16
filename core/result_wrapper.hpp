@@ -156,10 +156,16 @@ namespace core {
             : value_(std::forward<Args>(args)...)
             , error_(error_t::no_error()) {}
 
+        // value_{} and not default-init: with trivial_store the store is a bare T,
+        // and a default-initialized primitive is indeterminate — the (defaulted)
+        // copy/move members then read it, which is UB even though callers never
+        // consume value() on the error path.
         result_wrapper_t(const error_t& error)
-            : error_(error) {}
+            : value_{}
+            , error_(error) {}
         result_wrapper_t(error_t&& error)
-            : error_(std::move(error)) {}
+            : value_{}
+            , error_(std::move(error)) {}
 
 #if not defined(NDEBUG)
         result_wrapper_t(const result_wrapper_t& other) requires(std::is_copy_constructible_v<T>)

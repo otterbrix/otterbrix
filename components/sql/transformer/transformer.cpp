@@ -1,8 +1,10 @@
 #include "transformer.hpp"
 #include "utils.hpp"
 
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/sql/parser/extension.hpp>
+#include <components/vector/data_chunk.hpp>
 
 namespace components::sql::transform {
 
@@ -24,6 +26,87 @@ namespace components::sql::transform {
             }
             return {};
         }
+
+        // --- SORT ELIMINATION for a provably-unobservable sub-query ORDER BY ---------------
+        //
+        // A flattened sub-query root is either the aggregate itself (no FROM identity) or a
+        // resolve-wrapping sequence_t (resolves at the front, the aggregate last). Unwrap to
+        // the aggregate; return nullptr when the root is not an aggregate (nothing to strip).
+        // Local mirror of dispatcher::effective_root_node to avoid a components->services dep.
+        logical_plan::node_t* subquery_aggregate_root(const logical_plan::node_ptr& root) {
+            using logical_plan::node_type;
+            if (!root) {
+                return nullptr;
+            }
+            logical_plan::node_t* n = root.get();
+            if (n->type() == node_type::sequence_t) {
+                const auto& kids = n->children();
+                if (kids.empty() || !kids.front() ||
+                    kids.front()->type() != node_type::catalog_resolve_t) {
+                    return nullptr; // planner-style sequence_t, not a transformer resolve wrap
+                }
+                n = nullptr;
+                for (auto it = kids.rbegin(); it != kids.rend(); ++it) {
+                    if (*it && (*it)->type() != node_type::catalog_resolve_t) {
+                        n = it->get();
+                        break;
+                    }
+                }
+            }
+            return (n && n->type() == node_type::aggregate_t) ? n : nullptr;
+        }
+
+        // Remove a bare ORDER BY (a childless sort_t marker in the aggregate's flat pipeline)
+        // when NO limit_t child is present. A LIMIT/OFFSET child makes the sort a top-N: the
+        // ordering is then observable and the sort is kept. No-op if there is no sort child.
+        void strip_bare_sort_child(logical_plan::node_t* agg) {
+            using logical_plan::node_type;
+            auto& kids = agg->children();
+            for (const auto& c : kids) {
+                if (c && c->type() == node_type::limit_t) {
+                    return; // top-N / OFFSET window — the sort feeds an observable order
+                }
+            }
+            for (auto it = kids.begin(); it != kids.end(); ++it) {
+                if (*it && (*it)->type() == node_type::sort_t) {
+                    // The flat aggregate model builds a childless sort marker. If a sort ever
+                    // carried a pipeline child, re-splicing it is out of scope — keep the sort.
+                    if (!(*it)->children().empty()) {
+                        return;
+                    }
+                    kids.erase(it);
+                    return;
+                }
+            }
+        }
+
+        // True when a compacted sub-query result is INDEPENDENT of the order of its rows:
+        // EXISTS (bool), a scalar (single value — or a >1-row error either way), and IN / ANY /
+        // ALL membership (array). Array-EQUALITY (`col = ARRAY(SELECT ...)`) is order-SENSITIVE
+        // (element-wise compare against a positional array) and is deliberately excluded.
+        bool order_insensitive_compaction(const logical_plan::id_result_mapping& m) {
+            if (m.compacter == &components::vector::compact_to_bool_value ||
+                m.compacter == &components::vector::compact_to_single_value) {
+                return true;
+            }
+            return m.compacter == &components::vector::compact_to_array_value && !m.array_equality;
+        }
+
+        // Post-transform pass: for every flattened sub-query whose result is compacted through
+        // an order-insensitive path, strip its bare (limit-less) ORDER BY. sub_query_results[i]
+        // maps 1:1 to sub_queries[i] (the trailing sub_queries entry is the main query and has
+        // no mapping — never touched, so a TOP-LEVEL ORDER BY is preserved).
+        void eliminate_unobservable_subquery_sorts(logical_plan::execution_plan_t& plan) {
+            const std::size_t n = plan.sub_query_results.size();
+            for (std::size_t i = 0; i < n && i < plan.sub_queries.size(); ++i) {
+                if (!order_insensitive_compaction(plan.sub_query_results[i])) {
+                    continue;
+                }
+                if (auto* agg = subquery_aggregate_root(plan.sub_queries[i])) {
+                    strip_bare_sort_child(agg);
+                }
+            }
+        }
     } // namespace
 
     transform_result transformer::transform(Node& node) {
@@ -34,6 +117,9 @@ namespace components::sql::transform {
         if (has_error()) {
             return {resource_, std::move(error_)};
         } else {
+            // Strip a provably-unobservable ORDER BY from every order-insensitively compacted
+            // sub-query (IN / ANY / ALL / EXISTS / scalar) before the plan is finalized.
+            eliminate_unobservable_subquery_sorts(plan);
             return {resource_,
                     std::move(plan),
                     std::move(parameter_map_),

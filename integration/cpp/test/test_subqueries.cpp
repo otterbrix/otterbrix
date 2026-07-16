@@ -89,6 +89,21 @@ namespace {
         }
     }
 
+    // Flatten an EXPLAIN cursor's "QUERY PLAN" column into a single searchable string.
+    std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            auto v = cur->value(0, r);
+            out += std::string(v.value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    }
+
+    bool contains(const std::string& hay, const std::string& needle) {
+        return hay.find(needle) != std::string::npos;
+    }
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -2657,5 +2672,113 @@ TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
         auto cur = run("SELECT NULL FROM db.one UNION SELECT id FROM db.one;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SORT ELIMINATION for a provably-unobservable sub-query ORDER BY.
+//
+// An `ORDER BY` WITHOUT `LIMIT`/`OFFSET` inside a sub-query whose result is
+// COMPACTED (IN / ANY / ALL via compact_to_array_value, EXISTS via
+// compact_to_bool_value, scalar via compact_to_single_value) is dead work: it
+// builds a full blocking sort feeding an order-insensitive membership / exists /
+// single-value test. The transformer strips such a bare sort from the flattened
+// sub-query. HARD guard: a sort carrying a LIMIT/OFFSET (top-N) is OBSERVABLE and
+// MUST stay, and a TOP-LEVEL ORDER BY (the main query) is never touched.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
+    auto config = test_create_config("/tmp/test_subqueries/sort_elimination");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    INFO("IN (SELECT ... ORDER BY) is order-insensitive: identical result, sub-query Sort stripped");
+    {
+        // High-budget departments (budget > 60000): 1,4,5 -> 6 employees, same as without ORDER BY.
+        auto cur = run("SELECT name FROM TestDatabase.Employees "
+                       "WHERE dept_id IN (SELECT id FROM TestDatabase.Departments "
+                       "                  WHERE budget > 60000 ORDER BY id);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 6);
+
+        auto ex = run("EXPLAIN ANALYZE SELECT name FROM TestDatabase.Employees "
+                      "WHERE dept_id IN (SELECT id FROM TestDatabase.Departments "
+                      "                  WHERE budget > 60000 ORDER BY id);");
+        REQUIRE(ex->is_success());
+        const auto t = plan_text(ex);
+        REQUIRE(contains(t, "InitPlan"));   // the sub-query is still flattened + present
+        REQUIRE_FALSE(contains(t, "Sort")); // its bare ORDER BY was eliminated
+    }
+
+    INFO("EXISTS (SELECT ... ORDER BY) is order-insensitive: identical result, sub-query Sort stripped");
+    {
+        // Sub-query has rows -> EXISTS true for every one of the 10 outer rows.
+        auto cur = run("SELECT name FROM TestDatabase.Employees "
+                       "WHERE EXISTS (SELECT id FROM TestDatabase.Departments ORDER BY id);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
+
+        auto ex = run("EXPLAIN ANALYZE SELECT name FROM TestDatabase.Employees "
+                      "WHERE EXISTS (SELECT id FROM TestDatabase.Departments ORDER BY id);");
+        REQUIRE(ex->is_success());
+        const auto t = plan_text(ex);
+        REQUIRE(contains(t, "InitPlan"));
+        REQUIRE_FALSE(contains(t, "Sort"));
+    }
+
+    INFO("ANY (SELECT ... ORDER BY) is order-insensitive: identical result, sub-query Sort stripped");
+    {
+        // salary = ANY (dept-1 salaries {90000,80000}) -> Alice, Bob (2 rows), order-independent.
+        auto cur = run("SELECT name FROM TestDatabase.Employees "
+                       "WHERE salary = ANY (SELECT salary FROM TestDatabase.Employees "
+                       "                    WHERE dept_id = 1 ORDER BY salary);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+
+        auto ex = run("EXPLAIN ANALYZE SELECT name FROM TestDatabase.Employees "
+                      "WHERE salary = ANY (SELECT salary FROM TestDatabase.Employees "
+                      "                    WHERE dept_id = 1 ORDER BY salary);");
+        REQUIRE(ex->is_success());
+        REQUIRE_FALSE(contains(plan_text(ex), "Sort"));
+    }
+
+    INFO("NEGATIVE: scalar (SELECT ... ORDER BY ... LIMIT 1) is a top-N — the Sort is OBSERVABLE and stays");
+    {
+        // Highest salary via ORDER BY salary DESC LIMIT 1 = 90000 -> Alice.
+        auto cur = run("SELECT name FROM TestDatabase.Employees "
+                       "WHERE salary = (SELECT salary FROM TestDatabase.Employees "
+                       "                ORDER BY salary DESC LIMIT 1);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
+
+        auto ex = run("EXPLAIN ANALYZE SELECT name FROM TestDatabase.Employees "
+                      "WHERE salary = (SELECT salary FROM TestDatabase.Employees "
+                      "                ORDER BY salary DESC LIMIT 1);");
+        REQUIRE(ex->is_success());
+        REQUIRE(contains(plan_text(ex), "Sort")); // top-N sort MUST survive
+    }
+
+    INFO("NEGATIVE: a TOP-LEVEL ORDER BY (the main query, not a sub-query) is never touched");
+    {
+        auto cur = run("SELECT name FROM TestDatabase.Employees ORDER BY salary DESC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice"); // highest salary first — order preserved
+
+        auto ex = run("EXPLAIN SELECT name FROM TestDatabase.Employees ORDER BY salary DESC;");
+        REQUIRE(ex->is_success());
+        REQUIRE(contains(plan_text(ex), "Sort"));
     }
 }

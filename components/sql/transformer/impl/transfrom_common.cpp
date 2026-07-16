@@ -11,6 +11,31 @@ using namespace components::expressions;
 
 namespace components::sql::transform {
 
+    namespace {
+        // Logical negation (complement) of a scalar comparison operator: eq<->ne, lt<->gte, gt<->lte.
+        // NOT distributes over an ANY/ALL membership by De Morgan only when the per-element comparison
+        // is itself flipped to its complement (see the AEXPR_NOT membership rewrite below). Returns
+        // compare_type::invalid for an operator with no scalar complement (regex handled separately).
+        compare_type negate_scalar_compare(compare_type op) noexcept {
+            switch (op) {
+                case compare_type::eq:
+                    return compare_type::ne;
+                case compare_type::ne:
+                    return compare_type::eq;
+                case compare_type::lt:
+                    return compare_type::gte;
+                case compare_type::lte:
+                    return compare_type::gt;
+                case compare_type::gt:
+                    return compare_type::lte;
+                case compare_type::gte:
+                    return compare_type::lt;
+                default:
+                    return compare_type::invalid;
+            }
+        }
+    } // namespace
+
     expression_ptr transformer::transform_a_expr_arithmetic(A_Expr* node,
                                                             const name_collection_t& names,
                                                             logical_plan::parameter_node_t* params) {
@@ -695,6 +720,28 @@ namespace components::sql::transform {
                 // guard before right->group() null-derefs.
                 if (has_error() || !right) {
                     return nullptr;
+                }
+                // De Morgan for a negated membership sub-query: `NOT (x op ANY S)` ≡ `x !op ALL S` and
+                // `NOT (x op ALL S)` ≡ `x !op ANY S` (!op = the scalar complement). This preserves the
+                // three-valued NULL semantics: a NULL element of S makes a non-matched outer row UNKNOWN
+                // under BOTH the membership and its negation, so the row is dropped either way — the
+                // classic `x NOT IN (SELECT ... containing a NULL)` correctly yields NO rows. A plain
+                // union_not over the boolean membership would instead see only "false" (NULLs already
+                // folded away) and flip it to true, wrongly keeping the row. Regex (LIKE/ILIKE) ANY/ALL
+                // keeps its own per-element negation (regex_negate) and is left to the union_not wrapper.
+                if (right->group() == expression_group::compare) {
+                    auto& membership = reinterpret_cast<compare_expression_ptr&>(right);
+                    const auto ctype = membership->type();
+                    if ((ctype == compare_type::any || ctype == compare_type::all) &&
+                        membership->inner_op() != compare_type::regex) {
+                        const auto negated = negate_scalar_compare(membership->inner_op());
+                        if (negated != compare_type::invalid) {
+                            membership->set_type(ctype == compare_type::any ? compare_type::all
+                                                                            : compare_type::any);
+                            membership->set_inner_op(negated);
+                            return right;
+                        }
+                    }
                 }
                 auto expr = make_compare_union_expression(resource_, compare_type::union_not);
                 if (expr->group() == right->group()) {

@@ -463,26 +463,36 @@ namespace components::operators::predicates {
                         if (left_val.has_error()) {
                             return left_val.convert_error<bool>();
                         }
-                        if (left_val.value().is_null()) {
-                            return false;
-                        }
                         const auto& arr_param = parameters->parameters.at(param_id);
                         // Empty sub-query list: compact_to_array_value returns the NA-null
                         // sentinel for a zero-row `x [NOT] IN (SELECT ...)`. PostgreSQL:
                         // `x = ANY(empty)` is false (IN () matches nothing) and
                         // `x <> ALL(empty)` is true (NOT IN () matches everything) — exactly
                         // the loop-exhausted result, so short-circuit before dereferencing
-                        // the (null) array's children.
+                        // the (null) array's children. This precedes the NULL-left check
+                        // below: over an empty set the answer is total regardless of x, so
+                        // even a NULL x yields `NULL NOT IN (empty)` = TRUE / `NULL IN (empty)` = FALSE.
                         if (arr_param.is_null()) {
                             return !is_any;
                         }
+                        // A NULL left value can neither match nor mismatch any element: UNKNOWN for
+                        // every comparison -> the row is dropped for both IN and ANY/ALL in a WHERE.
+                        if (left_val.value().is_null()) {
+                            return false;
+                        }
                         const auto& arr = arr_param.children();
+                        // Three-valued (SQL NULL) membership: a NULL element (or one whose cast to the left
+                        // type yields NULL) contributes an UNKNOWN comparison, never a match. Remember that
+                        // one was seen so the ALL / NOT-IN exhausted-loop result below can drop the row.
+                        bool has_null_element = false;
                         for (const auto& element : arr) {
                             if (element.is_null()) {
+                                has_null_element = true;
                                 continue;
                             }
                             auto rhs = element.cast_as(left_val.value().type(), session_tz);
                             if (rhs.is_null()) {
+                                has_null_element = true;
                                 continue;
                             }
                             core::result_wrapper_t<bool> cmp{false};
@@ -517,6 +527,13 @@ namespace components::operators::predicates {
                             if (!is_any && !cmp.value()) {
                                 return false;
                             }
+                        }
+                        // Loop exhausted with no decisive element. For `x op ALL(S)` (NOT IN is
+                        // `x <> ALL(S)`) a NULL element makes the still-undecided row UNKNOWN, not TRUE,
+                        // so it must be dropped — `x NOT IN (SELECT ... with a NULL)` yields no rows.
+                        // ANY / IN is unaffected: no match is FALSE, and UNKNOWN drops the row too.
+                        if (!is_any && has_null_element) {
+                            return false;
                         }
                         return !is_any;
                     })};

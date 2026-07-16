@@ -2897,3 +2897,106 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
         REQUIRE(contains(plan_text(ex), "Sort"));
     }
 }
+// ---------------------------------------------------------------------------
+// Three-valued (NULL) semantics for  x IN / NOT IN (subquery)  when the
+// sub-query result set contains a NULL element.
+//
+// PostgreSQL SQL semantics (membership is three-valued):
+//   x IN (S):
+//     * x = some non-NULL element         -> TRUE  (row kept)
+//     * no non-NULL match, S has a NULL    -> UNKNOWN -> row DROPPED
+//     * no element match, S has no NULL    -> FALSE -> row dropped
+//   x NOT IN (S):
+//     * x = some non-NULL element         -> FALSE -> dropped
+//     * no non-NULL match, S has a NULL    -> UNKNOWN -> row DROPPED (classic surprise)
+//     * no element match, S has no NULL    -> TRUE  -> row KEPT
+//   S empty: IN -> FALSE for all x ; NOT IN -> TRUE for all x.
+//   x itself NULL: UNKNOWN -> dropped (unless S empty for NOT IN, which is TRUE).
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
+    auto config = test_create_config("/tmp/test_subqueries/in_not_in_null_semantics");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    INFO("setup: outer with x in {10,20,30}; needles with a NULL element {10,NULL,30}");
+    {
+        REQUIRE(run("CREATE DATABASE nulldb;")->is_success());
+        REQUIRE(run("CREATE TABLE nulldb.outer (id bigint, x bigint);")->is_success());
+        REQUIRE(run("INSERT INTO nulldb.outer (id, x) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
+        // needles.v = {10, NULL, 30}
+        REQUIRE(run("CREATE TABLE nulldb.needles (id bigint, v bigint);")->is_success());
+        REQUIRE(run("INSERT INTO nulldb.needles (id, v) VALUES (1, 10), (2, NULL), (3, 30);")->is_success());
+        // pure = {10, 30} (no NULL)
+        REQUIRE(run("CREATE TABLE nulldb.pure (id bigint, v bigint);")->is_success());
+        REQUIRE(run("INSERT INTO nulldb.pure (id, v) VALUES (1, 10), (2, 30);")->is_success());
+    }
+
+    INFO("IN with a NULL element: x=10 and x=30 match; x=20 is UNKNOWN -> dropped");
+    {
+        // {10,20,30} IN {10,NULL,30}: 10 -> TRUE, 20 -> UNKNOWN(drop), 30 -> TRUE => 2 rows.
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x IN (SELECT v FROM nulldb.needles);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("NOT IN with a NULL element: yields ZERO rows (no non-matched row survives the NULL)");
+    {
+        // {10,20,30} NOT IN {10,NULL,30}: 10 -> FALSE, 20 -> UNKNOWN(drop), 30 -> FALSE => 0 rows.
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x NOT IN (SELECT v FROM nulldb.needles);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("IN over a no-NULL set is a plain FALSE for the non-member (regression)");
+    {
+        // {10,20,30} IN {10,30}: 10,30 -> TRUE; 20 -> FALSE => 2 rows.
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x IN (SELECT v FROM nulldb.pure);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("NOT IN over a no-NULL set keeps the non-member (regression)");
+    {
+        // {10,20,30} NOT IN {10,30}: only 20 -> TRUE => 1 row (id=2).
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x NOT IN (SELECT v FROM nulldb.pure);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+
+    INFO("IN over an EMPTY sub-query is FALSE for all -> zero rows");
+    {
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x IN (SELECT v FROM nulldb.pure WHERE v > 1000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("NOT IN over an EMPTY sub-query is TRUE for all -> every row");
+    {
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x NOT IN (SELECT v FROM nulldb.pure WHERE v > 1000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("Sub-query is ALL NULLs: IN -> zero rows; NOT IN -> zero rows");
+    {
+        auto in_cur = run("SELECT id FROM nulldb.outer "
+                          "WHERE x IN (SELECT v FROM nulldb.needles WHERE v IS NULL);");
+        REQUIRE(in_cur->is_success());
+        REQUIRE(in_cur->size() == 0);
+
+        auto notin_cur = run("SELECT id FROM nulldb.outer "
+                             "WHERE x NOT IN (SELECT v FROM nulldb.needles WHERE v IS NULL);");
+        REQUIRE(notin_cur->is_success());
+        REQUIRE(notin_cur->size() == 0);
+    }
+}

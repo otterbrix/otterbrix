@@ -228,13 +228,19 @@ namespace components::operators {
                 // Build the per-element leaf filters (regex_filter for LIKE/ILIKE, constant_filter otherwise).
                 // Empty / 0-row sub-query: the array param is the NA-null sentinel; .children() is invalid, so
                 // leave the leaf list empty (an empty OR matches nothing, an empty AND matches everything).
+                //
+                // Three-valued (SQL NULL) membership: a NULL element of S contributes an UNKNOWN comparison,
+                // never a match, so it yields no leaf. Track whether S carried one — the ALL / NOT-IN branch
+                // below must honour it (`x <> ALL(S)` with a NULL in S is UNKNOWN for every non-matching row).
                 std::pmr::vector<std::unique_ptr<table::table_filter_t>> leaves(resource);
+                bool has_null_element = false;
                 if (!arr_param.is_null()) {
                     const auto& arr = arr_param.children();
                     leaves.reserve(arr.size());
                     for (const auto& val : arr) {
                         if (is_regex) {
                             if (val.is_null()) {
+                                has_null_element = true;
                                 continue;
                             }
                             const auto raw = val.value<std::string_view>();
@@ -248,8 +254,17 @@ namespace components::operators {
                             leaves.emplace_back(
                                 std::make_unique<table::regex_filter_t>(std::move(pat), re_icase, indices));
                         } else {
+                            // A NULL element is NA-typed; cast_as() from NA is unhandled and throws
+                            // (operations_helper: simple_physical_type_switch default). Guard it out here —
+                            // it produces no leaf and marks the set NULL-bearing. A non-null element whose
+                            // cast to the column type yields NULL is likewise an UNKNOWN comparison.
+                            if (val.is_null()) {
+                                has_null_element = true;
+                                continue;
+                            }
                             auto coerced = val.type() == col_type ? val : val.cast_as(col_type, session_tz);
                             if (coerced.is_null()) {
+                                has_null_element = true;
                                 continue;
                             }
                             leaves.emplace_back(std::make_unique<table::constant_filter_t>(inner_op, coerced, indices));
@@ -257,6 +272,17 @@ namespace components::operators {
                     }
                 }
                 const bool empty = leaves.empty();
+
+                // x op ALL(S) (NOT IN is `x <> ALL(S)`) when S carries a NULL: no outer row can be TRUE — a
+                // non-null element that violates makes the row FALSE, otherwise the NULL makes it UNKNOWN;
+                // either way the row is dropped, so the whole predicate collapses to a constant FALSE (an
+                // empty OR matches nothing). This is the classic `x NOT IN (SELECT ... with a NULL)` → no
+                // rows. ANY / IN is unaffected: a NULL element only adds UNKNOWN, and for `x op ANY(S)`
+                // UNKNOWN and FALSE both drop the row, so the OR of the non-null leaves already agrees.
+                // (Regex NOT LIKE ANY/ALL keeps its dedicated negation handling below.)
+                if (!is_any && !is_regex && has_null_element) {
+                    return std::unique_ptr<table::table_filter_t>(std::make_unique<table::conjunction_or_filter_t>());
+                }
 
                 // NOT LIKE ANY = OR_p not(match); NOT LIKE ALL = not(any match) = conjunction_not over all
                 // (conjunction_not is true iff no child matches). A negated match must EXCLUDE a NULL subject

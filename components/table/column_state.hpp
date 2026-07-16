@@ -1,5 +1,6 @@
 #pragma once
 #include <components/types/types.hpp>
+#include <core/date/date_types.hpp>
 #include <core/operations_helper.hpp>
 #include <core/regex/regex.hpp>
 #include <core/result_wrapper.hpp>
@@ -11,8 +12,13 @@
 
 #include <components/table/storage/buffer_handle.hpp>
 
+#include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/types/logical_value.hpp>
+
+namespace components::vector {
+    class data_chunk_t;
+} // namespace components::vector
 
 namespace components::table {
     class row_group_t;
@@ -323,6 +329,53 @@ namespace components::table {
 
         std::pmr::vector<uint64_t> left_indices;
         std::pmr::vector<uint64_t> right_indices;
+    };
+
+    // Abstract per-row evaluator behind an expression_filter_t. The concrete implementation
+    // wraps a components::operators::predicates::predicate and lives in the physical_plan layer
+    // (which may depend on table, not the reverse). It is built AGENT-SIDE and attached after the
+    // filter crosses the mailbox: the predicate's value_getter closures capture the agent's memory
+    // resource + function registry, neither of which can travel through a message, so the filter
+    // ships evaluator-less and the owning agent attaches one before the first scan.
+    class expression_evaluator_t {
+    public:
+        virtual ~expression_evaluator_t() = default;
+        // Evaluate the whole compare over `row` at `index`; `row` presents each referenced column
+        // at its ORIGINAL storage column index (path[0]) so the value_getters resolve correctly.
+        virtual core::result_wrapper_t<bool> evaluate(const vector::data_chunk_t& row, size_t index) const = 0;
+    };
+
+    // A comparison whose one operand is a function/arithmetic expression over column(s) and whose
+    // other operand is a bound parameter — e.g. WHERE substring(s,1,3)='abc', WHERE x+1>5. It is not
+    // representable as a constant_filter_t (there is no single column/constant pair), so it is
+    // dispatched by its OWN branch in row_group_t::check_predicate, which materializes the referenced
+    // columns of one row and runs `evaluator`. Discriminated by dynamic_cast: filter_type aliases the
+    // comparison op (eq/gt/...) and therefore collides with constant_filter_t.
+    class expression_filter_t : public table_filter_t {
+    public:
+        expression_filter_t(expressions::compare_expression_ptr expression,
+                            std::pmr::vector<std::pmr::vector<size_t>> column_paths,
+                            std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> parameters,
+                            core::date::timezone_offset_t session_tz)
+            : table_filter_t(expression->type())
+            , expression(std::move(expression))
+            , column_paths(std::move(column_paths))
+            , parameters(std::move(parameters))
+            , session_tz(session_tz) {}
+
+        std::unique_ptr<table_filter_t> copy() const override;
+        bool equals(const table_filter_t& other) const override;
+
+        // The whole leaf compare (both operands). Its type() is `filter_type`.
+        expressions::compare_expression_ptr expression;
+        // Storage column paths referenced by the expression (key paths, path[0] = column index).
+        std::pmr::vector<std::pmr::vector<size_t>> column_paths;
+        // Snapshot of the parameter values the expression references, resolved operator-side.
+        std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> parameters;
+        core::date::timezone_offset_t session_tz;
+        // Attached agent-side (see expression_evaluator_t). Null until then; check_predicate errors
+        // if it is reached without one.
+        std::unique_ptr<expression_evaluator_t> evaluator;
     };
 
     // Dispatch helper used by all storage filter sites. Replaces the

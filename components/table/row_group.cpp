@@ -1,5 +1,6 @@
 #include "row_group.hpp"
 
+#include <algorithm>
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
@@ -238,7 +239,72 @@ namespace components::table {
         return filter->cast<constant_filter_t>().compare(element_value);
     }
 
+    bool row_group_t::check_expression_predicate(int64_t row_id,
+                                                 const expression_filter_t& filter,
+                                                 core::error_t& error) {
+        if (!filter.evaluator) {
+            // Reached the per-row check without an agent-attached evaluator (see
+            // expression_evaluator_t). Fail cleanly instead of dereferencing null (Rule 2: no
+            // exceptions / crash for control flow).
+            error = core::error_t{core::error_code_t::physical_plan_error,
+                                  std::pmr::string{"expression_filter_t reached check_predicate without an evaluator",
+                                                   collection_->resource()}};
+            return false;
+        }
+        auto* res = collection_->resource();
+        // Referenced top-level column indices (path[0]); the chunk must present each such column at
+        // its own index so a value_getter's chunk.at(path) resolves it. Sub-paths (struct.field,
+        // v[i]) are navigated inside the fetched top-level column value, so only path[0] is fetched.
+        std::vector<size_t> referenced;
+        size_t width = 0;
+        for (const auto& path : filter.column_paths) {
+            if (path.empty()) {
+                continue;
+            }
+            size_t top = path.front();
+            width = std::max(width, top + 1);
+            if (std::find(referenced.begin(), referenced.end(), top) == referenced.end()) {
+                referenced.push_back(top);
+            }
+        }
+        // Build a chunk `width` columns wide so data[top] exists for every referenced column, but
+        // (via the projected ctor) allocate real buffers ONLY for the referenced columns — the
+        // padding columns keep index positions stable and are never read. A placeholder type is used
+        // for padding so unreferenced columns are not force-loaded just to learn their type.
+        std::pmr::vector<types::complex_logical_type> chunk_types{res};
+        chunk_types.reserve(width);
+        for (size_t i = 0; i < width; i++) {
+            if (std::find(referenced.begin(), referenced.end(), i) != referenced.end()) {
+                chunk_types.push_back(get_column(i).type());
+            } else {
+                chunk_types.emplace_back(types::logical_type::BOOLEAN);
+            }
+        }
+        vector::data_chunk_t row{res, chunk_types, referenced, 1};
+        column_fetch_state fetch_state;
+        for (size_t top : referenced) {
+            get_column(top).fetch_row(fetch_state, row_id, row.data[top], 0);
+            if (fetch_state.fetch_error.contains_error()) {
+                error = fetch_state.fetch_error;
+                return false;
+            }
+        }
+        row.set_cardinality(1);
+        auto checked = filter.evaluator->evaluate(row, 0);
+        if (checked.has_error()) {
+            error = checked.error();
+            return false;
+        }
+        return checked.value();
+    }
+
     bool row_group_t::check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error) {
+        // An expression_filter_t (WHERE f(col) OP const) aliases a constant comparison filter_type
+        // but has a different layout and its own multi-column evaluation, so intercept it BEFORE the
+        // filter_type switch (which would mis-cast it to constant_filter_t in the default arm).
+        if (auto* expr_filter = dynamic_cast<const expression_filter_t*>(filter)) {
+            return check_expression_predicate(row_id, *expr_filter, error);
+        }
         switch (filter->filter_type) {
             case expressions::compare_type::union_or: {
                 auto& conjunction_or = filter->cast<conjunction_or_filter_t>();
@@ -349,6 +415,12 @@ namespace components::table {
     bool row_group_t::check_zonemap_segments(collection_scan_state& state) {
         auto* f = state.filter();
         if (!f) {
+            return true;
+        }
+        // An expression_filter_t has no single column/constant pair to prune against and its
+        // filter_type aliases a constant comparison — never treat it as a constant_filter_t here
+        // (its layout differs). Let every segment through to the per-row check_predicate.
+        if (dynamic_cast<const expression_filter_t*>(f)) {
             return true;
         }
         // For constant comparison filters, check if any column's zonemap prunes this segment

@@ -4,6 +4,7 @@
 #include <components/logical_plan/node_group.hpp>              // node_group_t::set_pushdown (re-lowering guard)
 #include <components/physical_plan/operators/aggregate/operator_func.hpp> // aggregate::operator_func_t (reduce rebuild)
 #include <components/physical_plan/operators/operator_group.hpp>          // operator_group_t + group_key_t (aggregate-pushdown reduce)
+#include <components/physical_plan/operators/predicates/expression_filter_bridge.hpp> // attach_expression_evaluators (WHERE f(col) pushdown)
 #include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
 #include <components/physical_plan_generator/create_plan.hpp>  // create_plan + function_registry + context_storage_t
 #include <components/vector/cell_equal.hpp> // components::vector::cells_equal (typed FK hash-verify)
@@ -1281,6 +1282,10 @@ namespace services::disk {
             scan.pos.next_row = 0;
             scan.pos.max_row = static_cast<int64_t>(it->second->storage->total_rows());
             scan.filter = std::move(filter);
+            // Attach agent-side per-row evaluators to any expression_filter_t in the shipped filter
+            // (WHERE f(col) OP const): its value_getter closures capture THIS agent's resource +
+            // function registry, which cannot cross the mailbox, so the filter arrived evaluator-less.
+            components::operators::predicates::attach_expression_evaluators(resource(), scan.filter.get());
             scan.projected_cols = std::move(projected_cols);
             scan.txn = txn;
             scan.matched_limit = limit;
@@ -1376,6 +1381,9 @@ namespace services::disk {
         auto it = storages_.find(table_oid);
         const bool no_storage =
             (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr);
+        // A pushed aggregate can carry an expression WHERE too — attach its per-row evaluators here
+        // (same rationale as the raw-scan path: the value_getter closures cannot cross the mailbox).
+        components::operators::predicates::attach_expression_evaluators(resource(), filter.get());
         auto reduced_r = reduce_pushed_aggregate(resource(),
                                                  log_.clone(),
                                                  no_storage ? nullptr : it->second->storage.get(),

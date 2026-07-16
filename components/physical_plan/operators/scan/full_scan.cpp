@@ -1,10 +1,113 @@
 #include "full_scan.hpp"
 
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/function_expression.hpp>
 #include <components/expressions/like_to_regex.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
+
+    namespace {
+        namespace expr = expressions;
+
+        // --- Deep-clone the leaf compare that backs an expression_filter_t onto `resource`. ---
+        // The filter is MOVED to (and destroyed on) the disk agent's thread; if it merely shared the
+        // operator's compare_expression_ptr it would mutate compare_expression_t's thread-UNSAFE
+        // intrusive refcount from two threads (cf. pushed_aggregate_spec.hpp's
+        // no-expression_ptr-across-mailbox rule). An independent deep clone keeps the expression's
+        // ownership single-threaded — the filter is its sole owner end to end.
+        expr::key_t clone_key(std::pmr::memory_resource* r, const expr::key_t& src) {
+            expr::key_t k{r};
+            for (const auto& seg : src.storage()) {
+                // Uses-allocator construction: storage() (a pmr::vector<pmr::string>) propagates r.
+                k.storage().emplace_back(seg.c_str(), seg.size());
+            }
+            std::pmr::vector<size_t> path{r};
+            path.reserve(src.path().size());
+            for (auto idx : src.path()) {
+                path.push_back(idx);
+            }
+            k.set_path(std::move(path));
+            k.set_side(src.side());
+            if (src.has_cast_type()) {
+                k.set_cast_type(src.cast_type());
+            }
+            k.set_variant_select(src.is_variant_select());
+            return k;
+        }
+
+        expr::param_storage clone_param(std::pmr::memory_resource* r, const expr::param_storage& src);
+
+        expr::expression_ptr clone_expr(std::pmr::memory_resource* r, const expr::expression_ptr& src) {
+            if (src->group() == expr::expression_group::scalar) {
+                const auto& s = reinterpret_cast<const expr::scalar_expression_ptr&>(src);
+                auto out = expr::make_scalar_expression(r, s->type(), clone_key(r, s->key()));
+                for (const auto& p : s->params()) {
+                    out->append_param(clone_param(r, p));
+                }
+                return out;
+            }
+            const auto& f = reinterpret_cast<const expr::function_expression_ptr&>(src);
+            auto out = expr::make_function_expression(r, std::string{f->name()});
+            out->add_function_uid(f->function_uid());
+            for (const auto& a : f->args()) {
+                out->args().emplace_back(clone_param(r, a));
+            }
+            return out;
+        }
+
+        expr::param_storage clone_param(std::pmr::memory_resource* r, const expr::param_storage& src) {
+            if (expr::is_key(src)) {
+                return expr::param_storage{clone_key(r, expr::as_key(src))};
+            }
+            if (expr::is_parameter(src)) {
+                return expr::param_storage{expr::as_parameter(src)};
+            }
+            return expr::param_storage{clone_expr(r, expr::as_expr(src))};
+        }
+
+        expr::compare_expression_ptr clone_compare(std::pmr::memory_resource* r,
+                                                   const expr::compare_expression_ptr& src) {
+            auto out =
+                expr::make_compare_expression(r, src->type(), clone_param(r, src->left()), clone_param(r, src->right()));
+            out->set_inner_op(src->inner_op());
+            if (src->do_not_fold()) {
+                out->make_unfoldable();
+            }
+            for (const auto& c : src->children()) {
+                out->append_child(clone_expr(r, c));
+            }
+            return out;
+        }
+
+        // Collect the column key paths the expression references (key -> path; nested scalar/function
+        // -> recurse; parameters need no path). These tell row_group_t::check_predicate which columns
+        // to materialize into the per-row chunk.
+        void collect_paths(const expr::param_storage& p, std::pmr::vector<std::pmr::vector<size_t>>& paths) {
+            if (expr::is_key(p)) {
+                const auto& path = expr::as_key(p).path();
+                // Uses-allocator construction: the outer pmr::vector propagates its resource inward.
+                paths.emplace_back(path.begin(), path.end());
+                return;
+            }
+            if (expr::is_parameter(p)) {
+                return;
+            }
+            const auto& e = expr::as_expr(p);
+            if (e->group() == expr::expression_group::scalar) {
+                const auto& s = reinterpret_cast<const expr::scalar_expression_ptr&>(e);
+                for (const auto& sub : s->params()) {
+                    collect_paths(sub, paths);
+                }
+            } else {
+                const auto& f = reinterpret_cast<const expr::function_expression_ptr&>(e);
+                for (const auto& sub : f->args()) {
+                    collect_paths(sub, paths);
+                }
+            }
+        }
+    } // namespace
 
     core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
     transform_predicate(std::pmr::memory_resource* resource,
@@ -209,6 +312,31 @@ namespace components::operators {
                     std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices)));
             }
             default: {
+                // Shape (B): one operand is a FUNCTION/ARITHMETIC expression over column(s) and the
+                // other a bound parameter — e.g. WHERE substring(s,1,3)='abc', WHERE x+1>5. Not
+                // representable as a constant_filter_t, so ship an expression_filter_t: a deep-cloned
+                // copy of the compare (single-threaded ownership), the referenced column paths, and a
+                // snapshot of the referenced parameter values. The per-row evaluator is built AGENT-SIDE
+                // (its value_getter closures capture the agent's resource + function registry, which
+                // cannot cross the mailbox), mirroring what operator_match does for the in-memory path.
+                if (expressions::is_expr(expression->left()) || expressions::is_expr(expression->right())) {
+                    std::pmr::vector<std::pmr::vector<size_t>> column_paths{resource};
+                    collect_paths(expression->left(), column_paths);
+                    collect_paths(expression->right(), column_paths);
+                    // Snapshot the FULL bound-parameter set (not only the ids collect_refs found): a
+                    // constant literal inside the expression can be lowered to a parameter in ways the
+                    // structural walk does not enumerate, so copy them all — the map is small (per-query
+                    // parameters) and this guarantees every value_getter resolves agent-side.
+                    std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> param_snapshot{resource};
+                    for (const auto& [id, value] : parameters->parameters) {
+                        param_snapshot.emplace(id, value);
+                    }
+                    return std::unique_ptr<table::table_filter_t>(
+                        std::make_unique<table::expression_filter_t>(clone_compare(resource, expression),
+                                                                     std::move(column_paths),
+                                                                     std::move(param_snapshot),
+                                                                     session_tz));
+                }
                 // A disk table_filter_t is `column OP constant` only: the LEFT operand must be a key
                 // and the RIGHT a bound parameter (the param_storage alternative that is neither a key
                 // nor a nested expression). A column-vs-column comparison (right is a key_t) or any

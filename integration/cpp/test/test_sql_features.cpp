@@ -5143,8 +5143,6 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
     }
 }
 
-
-
 // Ф9: WHERE a.x OP a.y (column-vs-column) pushes into the disk scan as a column_column_filter_t
 // (fetch both column values per row and compare). A NULL operand excludes the row (SQL 3-valued logic).
 TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
@@ -5181,4 +5179,125 @@ TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
     { auto cur = run("SELECT id FROM db.t WHERE x = y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
     INFO("NULL operand excluded from x <> y");
     { auto cur = run("SELECT id FROM db.t WHERE x <> y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+}
+
+// A comparison whose one operand is a FUNCTION or ARITHMETIC expression over columns
+// (substring(s,1,3)='abc', x+1>5, length(name)=5) must be PUSHED into the disk scan as an
+// expression_filter_t evaluated per row — not filtered in a separate operator_match above
+// the scan. The pushdown is observable two ways:
+//   (1) EXPLAIN: the plan carries no "Filter" (operator_match) node — the predicate rides
+//       the "Seq Scan". Before the pushdown these predicates lowered to a "Filter" over an
+//       unfiltered scan, so the absence of "Filter" is the red->green signal.
+//   (2) Results: identical rows to the pre-existing in-memory operator_match answer, with a
+//       NULL operand excluded (SQL: f(NULL) OP c is NULL -> the row does not match).
+TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
+    auto plan_text = [](const auto& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            out += std::string(cur->value(0, r).template value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    };
+    auto contains = [](const std::string& hay, const char* needle) {
+        return hay.find(needle) != std::string::npos;
+    };
+
+    auto seed = [](auto* d) {
+        {
+            auto s = otterbrix::session_id_t();
+            d->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t (name string, x bigint, s string);")
+                        ->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t (name, x, s) VALUES "
+                                   "('alice', 1, 'abcdef'), ('bob', 4, 'defabc'), ('carol', 5, 'abcxyz'), "
+                                   "('dave', 10, 'xyzabc');")
+                        ->is_success());
+        }
+        {
+            // A row whose `name` is NULL: length(name) and substring over a NULL are NULL, so
+            // this row must never match a function/arith predicate (NULL operand excluded).
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "INSERT INTO TestDatabase.t (x, s) VALUES (7, 'abczzz');")->is_success());
+        }
+    };
+
+    // --- disk-backed space (the target of the pushdown) ---
+    auto config = test_create_config("/tmp/test_sql_features/expression_filter_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* disk = space.dispatcher();
+    seed(disk);
+
+    // --- in-memory space with identical data: the ground-truth answer ---
+    auto mconfig = test_create_config("/tmp/test_sql_features/expression_filter_pushdown_mem");
+    test_clear_directory(mconfig);
+    mconfig.disk.on = false;
+    mconfig.wal.on = false;
+    test_spaces mspace(mconfig);
+    auto* mem = mspace.dispatcher();
+    seed(mem);
+
+    auto run = [](auto* d, const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        auto cur = d->execute_sql(s, sql);
+        if (!cur->is_success()) {
+            INFO("query failed: " << sql << " :: " << std::string(cur->get_error().what));
+            REQUIRE(cur->is_success());
+        }
+        return cur;
+    };
+
+    struct predicate_case {
+        const char* where;
+        std::size_t expected;
+    };
+    // NB: substring(s,1,3) would be the canonical string-function case, but a schema-qualified
+    // `substring` mis-resolves its name to 'pg_catalog' in validate_logical_plan (a pre-existing
+    // transformer issue, unrelated to this pushdown). length() is also a function operand and
+    // exercises the identical expression_filter_t path.
+    const predicate_case cases[] = {
+        {"x + 1 > 5", 3},       // arithmetic operand; x>4 -> {5,10,7}
+        {"length(name) = 5", 2}, // function operand; {'alice','carol'}; NULL name excluded
+        {"length(name) = 3", 1}, // function operand; {'bob'}
+        {"x * 2 = 20", 1},       // arithmetic operand; {10}
+    };
+
+    for (const auto& c : cases) {
+        const std::string select = std::string("SELECT * FROM TestDatabase.t WHERE ") + c.where + ";";
+        INFO(select);
+
+        // (1) results: disk == in-memory == expected.
+        auto disk_cur = run(disk, select);
+        auto mem_cur = run(mem, select);
+        REQUIRE(disk_cur->size() == c.expected);
+        REQUIRE(mem_cur->size() == c.expected);
+
+        // (2) pushdown: EXPLAIN carries no separate "Filter" node — the predicate is pushed
+        //     into the "Seq Scan". (Before the pushdown these lowered to a "Filter" node.)
+        auto ex = run(disk, std::string("EXPLAIN ") + select);
+        const std::string t = plan_text(ex);
+        REQUIRE(contains(t, "Seq Scan"));
+        REQUIRE_FALSE(contains(t, "Filter"));
+    }
+
+    // NULL operand is excluded: for the NULL-name row, length(name) is NULL, so NULL OP const is
+    // never true. length(name)=5 therefore yields {alice,carol} (2), NOT 3 — the NULL row is
+    // dropped — and disk agrees with the in-memory answer. A predicate no non-null row satisfies
+    // returns 0 (the NULL row does not sneak in).
+    INFO("NULL operand excluded");
+    {
+        REQUIRE(run(disk, "SELECT * FROM TestDatabase.t WHERE length(name) = 5;")->size() ==
+                run(mem, "SELECT * FROM TestDatabase.t WHERE length(name) = 5;")->size());
+        REQUIRE(run(disk, "SELECT * FROM TestDatabase.t WHERE length(name) = 0;")->size() == 0);
+    }
 }

@@ -73,6 +73,39 @@ namespace components::table {
         return result;
     }
 
+    std::unique_ptr<table_filter_t> expression_filter_t::copy() const {
+        // Rebuild the pmr containers on this filter's own resource (pmr copy-construction would
+        // otherwise fall back to the default resource). The attached `evaluator` is intentionally
+        // NOT cloned: copy() is a setup-time operation and the agent rebuilds the evaluator after
+        // the (moved) filter arrives, so a copy is always re-attached before use.
+        auto* res = column_paths.get_allocator().resource();
+        std::pmr::vector<std::pmr::vector<size_t>> paths_copy{res};
+        paths_copy.reserve(column_paths.size());
+        for (const auto& p : column_paths) {
+            // Uses-allocator construction: the outer pmr::vector propagates `res` to the inner one.
+            paths_copy.emplace_back(p.begin(), p.end());
+        }
+        std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> params_copy{res};
+        for (const auto& [id, val] : parameters) {
+            params_copy.emplace(id, val);
+        }
+        return std::make_unique<expression_filter_t>(expression,
+                                                     std::move(paths_copy),
+                                                     std::move(params_copy),
+                                                     session_tz);
+    }
+
+    bool expression_filter_t::equals(const table_filter_t& other) const {
+        if (!table_filter_t::equals(other)) {
+            return false;
+        }
+        const auto* o = dynamic_cast<const expression_filter_t*>(&other);
+        if (!o || !expression || !o->expression) {
+            return false;
+        }
+        return *expression == *o->expression;
+    }
+
     void column_scan_state::initialize(const types::complex_logical_type& type,
                                        const std::vector<storage_index_t>& children) {
         if (type.type() == types::logical_type::VALIDITY) {

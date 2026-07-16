@@ -58,6 +58,11 @@ namespace components::table {
         if (dynamic_cast<const column_column_filter_t*>(&filter)) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
+        // An expression_filter_t (WHERE f(col) OP const) has no single constant to bound a segment's
+        // [min,max] against, and its layout is not a constant_filter_t — never cast it here.
+        if (dynamic_cast<const expression_filter_t*>(&filter)) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
 
         if (filter.filter_type == expressions::compare_type::eq ||
             filter.filter_type == expressions::compare_type::gt ||
@@ -134,6 +139,10 @@ namespace components::table {
         }
         // col-vs-col has no constant bound to prune on (and would mis-cast to constant_filter_t below).
         if (dynamic_cast<const column_column_filter_t*>(&filter)) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        // expression_filter_t is not a constant_filter_t and carries no single bound — no pruning.
+        if (dynamic_cast<const expression_filter_t*>(&filter)) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
 

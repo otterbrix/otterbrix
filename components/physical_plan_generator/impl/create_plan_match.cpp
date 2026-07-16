@@ -3,8 +3,10 @@
 #include "index_selection_helpers.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_having.hpp>
@@ -22,6 +24,50 @@ namespace services::planner::impl {
         bool is_range_compare(expr::compare_type type) {
             return type == expr::compare_type::lt || type == expr::compare_type::lte ||
                    type == expr::compare_type::gt || type == expr::compare_type::gte;
+        }
+
+        // A user-defined function is any resolved function_uid at or beyond the builtin set. The disk
+        // agent rebuilds its filter-evaluation registry with register_default_functions and NOTHING
+        // else (it cannot see the coordinator's UDF registrations), so an expression_filter_t that
+        // references a UDF would look up a null function pointer agent-side and deref it. Keep such
+        // predicates on operator_match (executor-side, full registry). Mirrors pushdown_aggregate's
+        // is_udf_uid; invalid_function_uid (unresolved) is NOT a UDF.
+        bool is_udf_uid(components::compute::function_uid uid) noexcept {
+            return uid != components::compute::invalid_function_uid &&
+                   uid >= components::compute::DEFAULT_FUNCTIONS.size();
+        }
+
+        bool expr_references_udf(const expr::expression_ptr& e);
+
+        bool param_references_udf(const expr::param_storage& p) {
+            return expr::is_expr(p) && expr_references_udf(expr::as_expr(p));
+        }
+
+        bool expr_references_udf(const expr::expression_ptr& e) {
+            if (!e) {
+                return false;
+            }
+            if (e->group() == expr::expression_group::function) {
+                const auto& f = reinterpret_cast<const expr::function_expression_ptr&>(e);
+                if (is_udf_uid(f->function_uid())) {
+                    return true;
+                }
+                for (const auto& a : f->args()) {
+                    if (param_references_udf(a)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if (e->group() == expr::expression_group::scalar) {
+                const auto& s = reinterpret_cast<const expr::scalar_expression_ptr&>(e);
+                for (const auto& a : s->params()) {
+                    if (param_references_udf(a)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         // Check if this compare expression can use an index scan
@@ -94,29 +140,37 @@ namespace services::planner::impl {
             }
 
             // A LEAF compare (not a union AND/OR of sub-compares) is pushable into a disk
-            // table_filter_t ONLY as `column OP constant` — one operand a key_t (the column),
-            // the other a bound parameter_id_t. A column-vs-column comparison (both key_t), an
-            // expression operand, or any other shape is NOT representable as a table_filter_t
-            // and MUST be evaluated by operator_match instead: pushing it into full_scan makes
-            // transform_predicate's std::get<parameter_id_t>(right()) throw (bad_variant_access).
-            // (union compare expressions carry nullptr in the left/right slots — handled above.)
+            // table_filter_t in one of two shapes:
+            //   (A) `column OP constant` — one operand a key_t, the other a bound parameter_id_t;
+            //       lowered to a constant_filter_t.
+            //   (B) `f(column...) OP constant` — one operand a FUNCTION/ARITHMETIC expression over
+            //       column(s), the other a bound parameter_id_t; lowered to an expression_filter_t
+            //       and evaluated per row in the scan (mirrors operator_match's in-memory getter).
+            // A column-vs-column comparison (both key_t) or any other shape is NOT representable and
+            // MUST be evaluated by operator_match instead. (union compare expressions carry nullptr
+            // in the left/right slots — handled above.)
             if (!is_union_compare_condition(comp_expr->type())) {
                 // param_storage is variant<parameter_id_t, key_t, expression_ptr>: a bound
-                // parameter is the alternative that is neither a key nor a nested expression.
-                // "column OP constant" = neither operand a nested expression AND exactly one
-                // operand a key (so the other is a bound parameter). Uses the is_key/is_expr
-                // accessors, not std::holds_alternative (Rule 14: no new std::variant site).
+                // parameter is the alternative that is neither a key nor a nested expression. Uses the
+                // is_key/is_expr/is_parameter accessors, not std::holds_alternative (Rule 14).
                 const bool no_expr = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right());
+                // (A) column OP constant: exactly one operand a key, the other a bound parameter.
                 const bool col_op_const = no_expr && (is_key(comp_expr->left()) != is_key(comp_expr->right()));
-                // Column-vs-column: both operands are columns and it is a plain comparison — a disk
-                // column_column_filter_t fetches both values and compares them per row. (regex / any / all
-                // with two keys are NOT this shape and stay in-memory.)
+                // (B) column-vs-column: both operands columns, a plain comparison -> a column_column_filter_t
+                // (fetch both values, compare per row). regex/any/all with two keys are NOT this shape.
                 const auto t = comp_expr->type();
                 const bool plain_cmp = t == compare_type::eq || t == compare_type::ne || t == compare_type::lt ||
                                        t == compare_type::lte || t == compare_type::gt || t == compare_type::gte;
                 const bool col_op_col =
                     no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
-                if (!col_op_const && !col_op_col) {
+                // (C) f(column...) OP constant: one operand a function/arithmetic expression over column(s),
+                // the other a bound parameter -> an expression_filter_t evaluated per row on the agent. Only
+                // when UDF-free (the disk agent cannot resolve a UDF, see is_udf_uid).
+                const bool expr_op_const =
+                    ((is_expr(comp_expr->left()) && is_parameter(comp_expr->right())) ||
+                     (is_expr(comp_expr->right()) && is_parameter(comp_expr->left()))) &&
+                    !param_references_udf(comp_expr->left()) && !param_references_udf(comp_expr->right());
+                if (!col_op_const && !col_op_col && !expr_op_const) {
                     return false;
                 }
             }

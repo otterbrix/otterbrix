@@ -811,3 +811,67 @@ TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
         }
     }
 }
+
+// Abort retires appended rows IN PLACE: {insert 0, delete 0} — invisible to every
+// snapshot, counted committed-dead, reclaimable — while the rows keep their
+// physical ids (positional WAL records and their replay depend on placement).
+// Version slots are row-group-LOCAL. The scan's cumulative vector_index and the
+// delete path's collection-absolute row ids used to be forwarded into the slot
+// array unconverted, so for every row group after the first the lookups read —
+// and the delete stamps wrote — the wrong slot: pending appends beyond the first
+// row group scanned as committed-live for every snapshot, and delete stamps were
+// invisible to the dead-count/compaction walks. All probes act on row groups
+// past the first (row group size == DEFAULT_VECTOR_CAPACITY here).
+TEST_CASE("components::table::mvcc::version_slots_are_row_group_local") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    constexpr uint64_t cap = DEFAULT_VECTOR_CAPACITY;
+    for (int64_t i = 0; i < 3; i++) {
+        append_rows(*table, env, i * static_cast<int64_t>(cap), cap);
+    }
+    REQUIRE(scan_count(*table, env) == 3 * cap);
+
+    transaction_manager_t mgr(&env.resource);
+
+    // Pending appends land in the fourth row group; a fresh snapshot must not
+    // see them until commit.
+    auto writer_session = components::session::session_id_t::generate_uid();
+    auto& writer = mgr.begin_transaction(writer_session);
+    append_rows_txn(*table, env, 5000, 10, writer.data());
+
+    auto reader_session = components::session::session_id_t::generate_uid();
+    auto& reader = mgr.begin_transaction(reader_session);
+    REQUIRE(scan_count_txn(*table, env, reader.data()) == 3 * cap);
+    mgr.abort(reader_session);
+
+    auto write_cid = mgr.commit(writer_session);
+    mgr.publish(write_cid);
+    table->commit_append(write_cid, 3 * cap, 10);
+    REQUIRE(scan_count(*table, env) == 3 * cap + 10);
+
+    // Committed deletes in the second row group tombstone in place...
+    constexpr uint64_t ndel = 200;
+    auto del_session = components::session::session_id_t::generate_uid();
+    auto& del_txn = mgr.begin_transaction(del_session);
+    std::pmr::vector<complex_logical_type> id_type(&env.resource);
+    id_type.emplace_back(logical_type::BIGINT);
+    auto row_ids_chunk = data_chunk_t(&env.resource, id_type, ndel);
+    for (uint64_t i = 0; i < ndel; i++) {
+        row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(cap + 100 + i));
+    }
+    row_ids_chunk.set_cardinality(ndel);
+    auto del_txn_id = del_txn.data().transaction_id;
+    table_delete_state del_state(&env.resource);
+    table->delete_rows(del_state, row_ids_chunk.data[0], ndel, del_txn_id);
+    auto del_cid = mgr.commit(del_session);
+    mgr.publish(del_cid);
+    table->commit_all_deletes(del_txn_id, del_cid);
+    REQUIRE(scan_count(*table, env) == 3 * cap + 10 - ndel);
+
+    // ...and the dead-count/compaction walks see those stamps: compaction
+    // reclaims exactly the deleted rows.
+    REQUIRE(table->compact(std::numeric_limits<uint64_t>::max()));
+    REQUIRE(table->row_group()->total_rows() == 3 * cap + 10 - ndel);
+    REQUIRE(scan_count(*table, env) == 3 * cap + 10 - ndel);
+}

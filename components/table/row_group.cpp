@@ -810,7 +810,10 @@ namespace components::table {
         // in_flight set is a see-all snapshot covering every committed row.
         transaction_data td(0, 0);
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
-        return indexing_vector(td, index, temp_indexing, count);
+        return indexing_vector(td,
+                               static_cast<uint64_t>(start) / vector::DEFAULT_VECTOR_CAPACITY,
+                               temp_indexing,
+                               count);
     }
 
     uint64_t row_group_t::indexing_vector(transaction_data txn,
@@ -821,7 +824,15 @@ namespace components::table {
         if (!vinfo) {
             return max_count;
         }
-        return vinfo->indexing_vector(txn, vector_idx, indexing_vector, max_count);
+        // Callers address vectors collection-absolute (scan state.vector_index is
+        // cumulative across row groups), but version slots are row-group-local:
+        // the append/commit/abort walks and the chunk start math all anchor at
+        // slot 0. Row groups start vector-aligned, so the offset is exact.
+        assert(static_cast<uint64_t>(start) % vector::DEFAULT_VECTOR_CAPACITY == 0);
+        return vinfo->indexing_vector(txn,
+                                      vector_idx - static_cast<uint64_t>(start) / vector::DEFAULT_VECTOR_CAPACITY,
+                                      indexing_vector,
+                                      max_count);
     }
 
     std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {
@@ -852,14 +863,17 @@ namespace components::table {
     }
 
     void version_delete_state::delete_row(int64_t row_id) {
-        assert(row_id >= 0);
-        uint64_t vector_idx = static_cast<uint64_t>(row_id) / vector::DEFAULT_VECTOR_CAPACITY;
-        uint64_t idx_in_vector = static_cast<uint64_t>(row_id) - vector_idx * vector::DEFAULT_VECTOR_CAPACITY;
+        assert(row_id >= base_row);
+        // Version slots are row-group-local (see row_group_t::indexing_vector);
+        // row ids arrive collection-absolute.
+        uint64_t local_row = static_cast<uint64_t>(row_id - base_row);
+        uint64_t vector_idx = local_row / vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t idx_in_vector = local_row - vector_idx * vector::DEFAULT_VECTOR_CAPACITY;
         if (current_chunk != vector_idx) {
             flush();
 
             current_chunk = vector_idx;
-            chunk_row = vector_idx * vector::DEFAULT_VECTOR_CAPACITY;
+            chunk_row = static_cast<uint64_t>(base_row) + vector_idx * vector::DEFAULT_VECTOR_CAPACITY;
         }
         rows[count++] = static_cast<int64_t>(idx_in_vector);
     }

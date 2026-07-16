@@ -7,6 +7,7 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <filesystem>
+#include <fstream>
 #include <unistd.h>
 
 using namespace services::disk;
@@ -306,6 +307,29 @@ TEST_CASE("services::disk::table_storage::drop_column_disk_is_noop") {
     // DISK-mode: drop_column returns false (out of scope).
     REQUIRE(!ts.drop_column("b"));
     REQUIRE(ts.table().column_count() == 2);
+
+    cleanup_test_dir();
+}
+
+TEST_CASE("services::disk::collection_storage_entry::failed_load_constructs_no_adapter") {
+    // The corrupt-recovery probe constructs a collection_storage_entry_t over a torn
+    // .otbx purely to read construction_failed(). A failed DISK load leaves
+    // table_storage without a table, so the entry must not build the storage adapter
+    // (it binds a data_table_t&) — the null-table state is only legal to observe
+    // through construction_failed().
+    cleanup_test_dir();
+    std::filesystem::create_directories(test_dir());
+    core::pmr::otterbrix_resource resource;
+
+    auto otbx_path = std::filesystem::path(test_dir()) / "torn_table.otbx";
+    {
+        std::ofstream torn(otbx_path, std::ios::binary);
+        torn << "this is not a table file";
+    }
+
+    collection_storage_entry_t entry(&resource, otbx_path);
+    REQUIRE(entry.table_storage.construction_failed());
+    REQUIRE(entry.storage == nullptr);
 
     cleanup_test_dir();
 }

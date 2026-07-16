@@ -216,17 +216,26 @@ namespace services::disk {
         }
 
         /// Disk: create new table.otbx
+        /// A failed DISK create/load (construction_failed()) leaves table_storage without a
+        /// table, so the adapter — which binds a data_table_t& — must not be constructed;
+        /// the caller checks construction_failed() and drops the whole entry.
         collection_storage_entry_t(std::pmr::memory_resource* resource,
                                    std::vector<components::table::column_definition_t> columns,
                                    const std::filesystem::path& otbx_path_in)
             : table_storage(resource, std::move(columns), otbx_path_in)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
+            , storage(table_storage.construction_failed()
+                          ? nullptr
+                          : std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                           resource))
             , otbx_path(otbx_path_in) {}
 
         /// Disk: load existing table.otbx
         collection_storage_entry_t(std::pmr::memory_resource* resource, const std::filesystem::path& otbx_path_in)
             : table_storage(resource, otbx_path_in)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
+            , storage(table_storage.construction_failed()
+                          ? nullptr
+                          : std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                           resource))
             , otbx_path(otbx_path_in) {}
 
         /// Update live in-memory schema: add new column to table_ and recreate the storage adapter.

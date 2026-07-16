@@ -106,9 +106,17 @@ namespace services::planner::impl {
                 // "column OP constant" = neither operand a nested expression AND exactly one
                 // operand a key (so the other is a bound parameter). Uses the is_key/is_expr
                 // accessors, not std::holds_alternative (Rule 14: no new std::variant site).
-                const bool col_op_const = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right()) &&
-                                          (is_key(comp_expr->left()) != is_key(comp_expr->right()));
-                if (!col_op_const) {
+                const bool no_expr = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right());
+                const bool col_op_const = no_expr && (is_key(comp_expr->left()) != is_key(comp_expr->right()));
+                // Column-vs-column: both operands are columns and it is a plain comparison — a disk
+                // column_column_filter_t fetches both values and compares them per row. (regex / any / all
+                // with two keys are NOT this shape and stay in-memory.)
+                const auto t = comp_expr->type();
+                const bool plain_cmp = t == compare_type::eq || t == compare_type::ne || t == compare_type::lt ||
+                                       t == compare_type::lte || t == compare_type::gt || t == compare_type::gte;
+                const bool col_op_col =
+                    no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
+                if (!col_op_const && !col_op_col) {
                     return false;
                 }
             }

@@ -721,8 +721,9 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
     };
 
     REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders;"), "Seq Scan"));
-    // col-vs-col predicate is not storage-pushable, so it lowers to a standalone Filter (operator_match).
-    REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders WHERE id > cust;"), "Filter"));
+    // col-vs-col predicate now pushes into the scan (column_column_filter_t), so it renders as a Seq Scan
+    // with no standalone Filter / operator_match.
+    REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders WHERE id > cust;"), "Seq Scan"));
     REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders ORDER BY id;"), "Sort"));
     REQUIRE(contains(label_of("EXPLAIN SELECT id + cust FROM TestDatabase.orders;"), "Project"));
     REQUIRE(contains(

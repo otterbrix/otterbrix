@@ -280,6 +280,51 @@ namespace components::table {
         mutable std::optional<core::regex_t> compiled_;
     };
 
+    // Map a three-way compare result to a boolean for a comparison filter_type (eq/ne/lt/lte/gt/gte).
+    inline bool compare_matches(types::compare_t comp, expressions::compare_type op) {
+        switch (op) {
+            case expressions::compare_type::eq:
+                return comp == types::compare_t::equals;
+            case expressions::compare_type::ne:
+                return comp != types::compare_t::equals;
+            case expressions::compare_type::lt:
+                return comp == types::compare_t::less;
+            case expressions::compare_type::lte:
+                return comp != types::compare_t::more;
+            case expressions::compare_type::gt:
+                return comp == types::compare_t::more;
+            case expressions::compare_type::gte:
+                return comp != types::compare_t::less;
+            default:
+                return false;
+        }
+    }
+
+    // Column-vs-column disk filter: `a.x OP a.y` evaluated per row (fetch both column values, compare).
+    // filter_type is the comparison (eq/ne/lt/lte/gt/gte). Not zonemap-prunable (no constant bound).
+    // Discriminated by dynamic_cast — its filter_type collides with constant_filter_t.
+    class column_column_filter_t : public table_filter_t {
+    public:
+        column_column_filter_t(expressions::compare_type comparison_type,
+                               std::pmr::vector<uint64_t> left_indices,
+                               std::pmr::vector<uint64_t> right_indices)
+            : table_filter_t(comparison_type)
+            , left_indices(std::move(left_indices))
+            , right_indices(std::move(right_indices)) {}
+
+        std::unique_ptr<table_filter_t> copy() const override {
+            return std::make_unique<column_column_filter_t>(filter_type, left_indices, right_indices);
+        }
+        bool equals(const table_filter_t& other) const override {
+            const auto* o = dynamic_cast<const column_column_filter_t*>(&other);
+            return o && filter_type == o->filter_type && left_indices == o->left_indices &&
+                   right_indices == o->right_indices;
+        }
+
+        std::pmr::vector<uint64_t> left_indices;
+        std::pmr::vector<uint64_t> right_indices;
+    };
+
     // Dispatch helper used by all storage filter sites. Replaces the
     //     `filter->cast<constant_filter_t>().compare(value)` pattern with one that handles
     // set_membership_filter_t too. Constructs a temporary logical_value_t on the set's own
@@ -308,6 +353,10 @@ namespace components::table {
     inline const std::pmr::vector<uint64_t>& table_filter_table_indices(const table_filter_t* filter) {
         if (filter->filter_type == expressions::compare_type::regex) {
             return filter->cast<regex_filter_t>().table_indices;
+        }
+        if (auto* cc = dynamic_cast<const column_column_filter_t*>(filter)) {
+            // col-vs-col is dispatched by its own branch; this guard just avoids a bad constant_filter cast.
+            return cc->left_indices;
         }
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
             return set->table_indices;

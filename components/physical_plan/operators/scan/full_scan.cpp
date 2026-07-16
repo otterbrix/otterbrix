@@ -117,24 +117,18 @@ namespace components::operators {
                 const auto& col_type = types::complex_logical_type::type_from_path(types, path);
                 const auto& arr_param = parameters->parameters.at(param_id);
                 const bool is_any = expression->type() == expressions::compare_type::any;
-                auto filter = is_any ? std::unique_ptr<table::conjunction_filter_t>(
-                                           std::make_unique<table::conjunction_or_filter_t>())
-                                     : std::unique_ptr<table::conjunction_filter_t>(
-                                           std::make_unique<table::conjunction_and_filter_t>());
-                // Empty / 0-row sub-query: the array param is the NA-null sentinel; calling .children() on it
-                // is invalid. Leaving the conjunction empty is exactly the PostgreSQL semantics — an empty OR
-                // matches nothing (`x = ANY(empty)` -> false), an empty AND matches everything
-                // (`x <> ALL(empty)` -> true) — so skip element construction when the array is null.
-                // LIKE/ILIKE ANY|ALL: each element is a pattern -> a regex_filter_t (pmr::string, no
-                // logical_value_t — Rule 1), converting a LIKE glob (regex_like) and matching case-
-                // insensitively for ILIKE. NOT LIKE ANY/ALL never reaches disk (it stays in-memory — a
-                // per-element negation is not expressible as a conjunction of positive filters).
                 const bool is_regex = inner_op == expressions::compare_type::regex;
                 const bool re_like = is_regex && expression->regex_like();
                 const bool re_icase = is_regex && expression->regex_icase();
+                const bool re_negate = is_regex && expression->regex_negate();
+
+                // Build the per-element leaf filters (regex_filter for LIKE/ILIKE, constant_filter otherwise).
+                // Empty / 0-row sub-query: the array param is the NA-null sentinel; .children() is invalid, so
+                // leave the leaf list empty (an empty OR matches nothing, an empty AND matches everything).
+                std::pmr::vector<std::unique_ptr<table::table_filter_t>> leaves(resource);
                 if (!arr_param.is_null()) {
                     const auto& arr = arr_param.children();
-                    filter->child_filters.reserve(arr.size());
+                    leaves.reserve(arr.size());
                     for (const auto& val : arr) {
                         if (is_regex) {
                             if (val.is_null()) {
@@ -148,19 +142,60 @@ namespace components::operators {
                             } else {
                                 pat.assign(raw.begin(), raw.end());
                             }
-                            filter->child_filters.emplace_back(
+                            leaves.emplace_back(
                                 std::make_unique<table::regex_filter_t>(std::move(pat), re_icase, indices));
                         } else {
                             auto coerced = val.type() == col_type ? val : val.cast_as(col_type, session_tz);
                             if (coerced.is_null()) {
                                 continue;
                             }
-                            filter->child_filters.emplace_back(
-                                std::make_unique<table::constant_filter_t>(inner_op, coerced, indices));
+                            leaves.emplace_back(std::make_unique<table::constant_filter_t>(inner_op, coerced, indices));
                         }
                     }
                 }
-                return filter;
+                const bool empty = leaves.empty();
+
+                // NOT LIKE ANY = OR_p not(match); NOT LIKE ALL = not(any match) = conjunction_not over all
+                // (conjunction_not is true iff no child matches). A negated match must EXCLUDE a NULL subject
+                // (SQL: NULL NOT LIKE p = NULL); the disk regex reads a NULL as empty and would otherwise pass,
+                // so guard non-empty negations with is_not_null. (Empty stays unguarded: an empty OR is false,
+                // an empty conjunction_not is vacuously true — matching PostgreSQL over an empty pattern set.)
+                if (re_negate) {
+                    std::unique_ptr<table::table_filter_t> neg;
+                    if (is_any) {
+                        auto or_f = std::make_unique<table::conjunction_or_filter_t>();
+                        for (auto& leaf : leaves) {
+                            auto not_f = std::make_unique<table::conjunction_not_filter_t>();
+                            not_f->child_filters.emplace_back(std::move(leaf));
+                            or_f->child_filters.emplace_back(std::move(not_f));
+                        }
+                        neg = std::move(or_f);
+                    } else {
+                        auto not_f = std::make_unique<table::conjunction_not_filter_t>();
+                        for (auto& leaf : leaves) {
+                            not_f->child_filters.emplace_back(std::move(leaf));
+                        }
+                        neg = std::move(not_f);
+                    }
+                    if (empty) {
+                        return neg;
+                    }
+                    auto guard = std::make_unique<table::conjunction_and_filter_t>();
+                    guard->child_filters.emplace_back(
+                        std::make_unique<table::is_null_filter_t>(expressions::compare_type::is_not_null, indices));
+                    guard->child_filters.emplace_back(std::move(neg));
+                    return std::unique_ptr<table::table_filter_t>(std::move(guard));
+                }
+
+                // Positive: OR (any) / AND (all) of the per-element match filters.
+                auto outer = is_any ? std::unique_ptr<table::conjunction_filter_t>(
+                                          std::make_unique<table::conjunction_or_filter_t>())
+                                    : std::unique_ptr<table::conjunction_filter_t>(
+                                          std::make_unique<table::conjunction_and_filter_t>());
+                for (auto& leaf : leaves) {
+                    outer->child_filters.emplace_back(std::move(leaf));
+                }
+                return outer;
             }
             case expressions::compare_type::invalid:
                 return core::error_t{
@@ -181,6 +216,31 @@ namespace components::operators {
                 // throwing bad_variant_access (create_plan_match routes such predicates to
                 // operator_match; this is a defensive guard for any other caller, and with the asserts
                 // erased in Release it stops a bad_variant_access — Rule 2: no exceptions).
+                // Column-vs-column `a.x OP a.y`: both operands are columns -> a column_column_filter_t that
+                // fetches both values per row and compares (is_pure_compare only accepts a plain comparison).
+                if (expressions::is_key(expression->left()) && expressions::is_key(expression->right())) {
+                    const auto& lp = expressions::as_key(expression->left()).path();
+                    const auto& rp = expressions::as_key(expression->right()).path();
+                    // PostgreSQL rejects an implicit boolean <-> numeric comparison ("operator does not
+                    // exist: boolean = integer"). Mirror the in-memory make_comparator guard so col-vs-col
+                    // pushdown does not silently coerce and compare a bool column against a numeric column.
+                    const auto& lt = types::complex_logical_type::type_from_path(types, lp);
+                    const auto& rt = types::complex_logical_type::type_from_path(types, rp);
+                    const bool l_bool = lt.to_physical_type() == types::physical_type::BOOL;
+                    const bool r_bool = rt.to_physical_type() == types::physical_type::BOOL;
+                    const auto other = l_bool ? rt.type() : lt.type();
+                    if (l_bool != r_bool && types::is_numeric(other)) {
+                        return core::error_t{
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"operator does not exist: boolean = numeric type", resource}};
+                    }
+                    std::pmr::vector<uint64_t> li(lp.begin(), lp.end(), lp.get_allocator().resource());
+                    std::pmr::vector<uint64_t> ri(rp.begin(), rp.end(), rp.get_allocator().resource());
+                    return std::unique_ptr<table::table_filter_t>(
+                        std::make_unique<table::column_column_filter_t>(expression->type(),
+                                                                        std::move(li),
+                                                                        std::move(ri)));
+                }
                 if (!expressions::is_key(expression->left()) || !expressions::is_parameter(expression->right())) {
                     return core::error_t{
                         core::error_code_t::physical_plan_error,

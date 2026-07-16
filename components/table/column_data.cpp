@@ -54,6 +54,10 @@ namespace components::table {
         if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
+        // col-vs-col has no constant bound to prune on (and would mis-cast to constant_filter_t below).
+        if (dynamic_cast<const column_column_filter_t*>(&filter)) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
 
         if (filter.filter_type == expressions::compare_type::eq ||
             filter.filter_type == expressions::compare_type::gt ||
@@ -126,6 +130,10 @@ namespace components::table {
         // See check_zonemap above — set_membership_filter_t needs min(values)/max(values)
         // intersection logic, deferred to M4. Until then, no pruning for IN-list filters.
         if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        // col-vs-col has no constant bound to prune on (and would mis-cast to constant_filter_t below).
+        if (dynamic_cast<const column_column_filter_t*>(&filter)) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
 
@@ -290,8 +298,11 @@ namespace components::table {
         if (count == 0) {
             return 0;
         }
-        assert(!has_updates());
-        return scan_vector(state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
+        // Apply the committed-update overlay (was assert(!has_updates())). This is the base leaf of the
+        // virtual scan_count family, so it makes complex-column fetch_row (array/struct child scans and their
+        // validity children) updates-aware — a late-materialization gather can then read a column that carries
+        // an update overlay. When updates_ is null this is byte-for-byte the old scan_vector path.
+        return scan_count_with_updates(state, result, count);
     }
 
     uint64_t

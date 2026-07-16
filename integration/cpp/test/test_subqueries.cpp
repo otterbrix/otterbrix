@@ -2603,11 +2603,26 @@ TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
-    INFO("NOT LIKE ANY (in-memory): every row fails at least one uppercase pattern");
+    INFO("NOT LIKE ANY (disk conjunction_not): every row fails at least one uppercase pattern");
     {
         auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ANY (SELECT p FROM db.pat);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
+    }
+    // NULL subject: `NULL NOT LIKE p` is NULL -> excluded (the is_not_null guard). Without it the disk
+    // regex reads NULL as empty, negates to true, and would wrongly include the row.
+    REQUIRE(run("INSERT INTO db.t (id, s) VALUES (99, NULL);")->is_success());
+    INFO("NOT LIKE ANY excludes a NULL subject");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4); // still 4 — the NULL row is excluded
+    }
+    INFO("NOT LIKE ALL excludes a NULL subject");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ALL (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4); // apple/Banana/cherry/avocado each fail all patterns; NULL excluded
     }
 }
 

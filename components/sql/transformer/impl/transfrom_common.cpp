@@ -859,13 +859,9 @@ namespace components::sql::transform {
                 // ANY/ALL pushes into the disk scan as a conjunction of per-element filters
                 // (transform_predicate: constant_filter for comparisons, regex_filter for LIKE/ILIKE). The
                 // sub-query array is bound once (the executor runs sub_queries before the main plan), so a
-                // once-built filter is correct for these non-correlated arrays. Comparisons (=, <>, <, ...)
-                // and POSITIVE LIKE/ILIKE ANY|ALL push down; a NEGATED LIKE (NOT LIKE / NOT ILIKE) needs
-                // per-element negation no conjunction of positive filters expresses, so it stays in-memory
-                // (regex_any_predicate).
-                if (inner_op == compare_type::regex && re_negate) {
-                    expr->make_unfoldable();
-                }
+                // once-built filter is correct for these non-correlated arrays. Comparisons, positive AND
+                // negated LIKE/ILIKE ANY|ALL all push down: NOT LIKE ALL -> conjunction_not, NOT LIKE ANY ->
+                // OR of per-element conjunction_not, both guarded by is_not_null (see transform_predicate).
                 return expr;
             }
             case EXPR_SUBLINK: {

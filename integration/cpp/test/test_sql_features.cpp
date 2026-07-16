@@ -5144,3 +5144,41 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
 }
 
 
+
+// Ф9: WHERE a.x OP a.y (column-vs-column) pushes into the disk scan as a column_column_filter_t
+// (fetch both column values per row and compare). A NULL operand excludes the row (SQL 3-valued logic).
+TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
+    auto config = test_create_config("/tmp/test_sql_features/column_vs_column");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto run = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, x bigint, y bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, x, y) VALUES "
+                "(1, 5, 5), (2, 3, 7), (3, 9, 2), (4, 4, 4), (5, 10, 20);")
+                ->is_success());
+
+    INFO("x = y");
+    { auto cur = run("SELECT id FROM db.t WHERE x = y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
+    INFO("x < y");
+    { auto cur = run("SELECT id FROM db.t WHERE x < y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
+    INFO("x > y");
+    { auto cur = run("SELECT id FROM db.t WHERE x > y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 1); }
+    INFO("x <> y");
+    { auto cur = run("SELECT id FROM db.t WHERE x <> y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+    INFO("x >= y");
+    { auto cur = run("SELECT id FROM db.t WHERE x >= y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+
+    REQUIRE(run("INSERT INTO db.t (id, x, y) VALUES (6, 5, NULL);")->is_success());
+    INFO("NULL operand excluded from x = y");
+    { auto cur = run("SELECT id FROM db.t WHERE x = y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
+    INFO("NULL operand excluded from x <> y");
+    { auto cur = run("SELECT id FROM db.t WHERE x <> y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+}

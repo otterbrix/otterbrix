@@ -292,6 +292,45 @@ namespace components::table {
                 return filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;
             }
             default: {
+                // Column-vs-column (`a.x OP a.y`): fetch both column values for this row and compare. A NULL
+                // operand yields false (SQL three-valued logic). Checked before the single-column dispatch
+                // below (a distinct multi-column filter type).
+                if (auto* cc = dynamic_cast<const column_column_filter_t*>(filter)) {
+                    auto resolve = [&](const std::pmr::vector<uint64_t>& path) -> column_data_t* {
+                        column_data_t* c = &get_column(path.front());
+                        for (size_t i = 1; i < path.size(); i++) {
+                            c = static_cast<struct_column_data_t*>(c)->sub_columns[path[i]].get();
+                        }
+                        return c;
+                    };
+                    column_data_t* lcol = resolve(cc->left_indices);
+                    column_data_t* rcol = resolve(cc->right_indices);
+                    column_fetch_state lstate, rstate;
+                    vector::vector_t lvec(lcol->resource(), lcol->type(), 1);
+                    vector::vector_t rvec(rcol->resource(), rcol->type(), 1);
+                    lcol->fetch_row(lstate, row_id, lvec, 0);
+                    if (lstate.fetch_error.contains_error()) {
+                        error = lstate.fetch_error;
+                        return false;
+                    }
+                    rcol->fetch_row(rstate, row_id, rvec, 0);
+                    if (rstate.fetch_error.contains_error()) {
+                        error = rstate.fetch_error;
+                        return false;
+                    }
+                    if (!lvec.validity().row_is_valid(0) || !rvec.validity().row_is_valid(0)) {
+                        return false;
+                    }
+                    auto lval = lvec.value(0);
+                    auto rval = rvec.value(0);
+                    if (lval.type() != rval.type()) {
+                        rval = rval.cast_as(lval.type(), core::date::timezone_offset_t{});
+                        if (rval.is_null()) {
+                            return false;
+                        }
+                    }
+                    return compare_matches(lval.compare(rval), cc->filter_type);
+                }
                 // Works for both constant_filter_t and set_membership_filter_t.
                 const auto& indices = table_filter_table_indices(filter);
                 column_data_t* column = &get_column(indices.front());
@@ -472,23 +511,14 @@ namespace components::table {
                             // directly into the result instead of scanning the whole vector and slicing, so a
                             // wide non-filter column decompresses approved_tuple_count rows, not max_count
                             // (measured ~7x at 0.2% survival on a wide table). Gated on selectivity: below ~20%
-                            // survival the per-row gather wins; above it the bulk select() is competitive and
-                            // is the safe path for the complex-column update overlay (STRUCT/ARRAY/LIST
-                            // fetch_row scans children with the no-updates scan_count). No set_vector_type(FLAT)
-                            // here: result vectors are already FLAT and carry their auxiliary buffer from chunk
-                            // construction; forcing FLAT would reset a constant-size STRUCT buffer (e.g.
-                            // INTERVAL) and crash fetch_row.
-                            // Only simple (fixed-width / string) columns gather: a STRUCT/ARRAY/LIST
-                            // fetch_row scans its children with the no-updates scan_count and asserts when a
-                            // child carries an update overlay, so complex columns take the updates-aware
-                            // eager select(). Also skip a column with its own update overlay.
-                            const auto phys = result.data[out_idx].type().to_physical_type();
-                            const bool simple_col = phys != types::physical_type::STRUCT &&
-                                                    phys != types::physical_type::ARRAY &&
-                                                    phys != types::physical_type::LIST;
-                            const bool late_materialize = filter != nullptr && simple_col &&
-                                                          !col_data.has_updates() &&
-                                                          approved_tuple_count * uint64_t{5} < max_count;
+                            // survival the per-row gather wins; above it the bulk select() is competitive.
+                            // fetch_row is now fully updates-aware for every column kind (base scan_count applies
+                            // the overlay), so STRUCT/ARRAY/LIST and updated columns gather safely too. No
+                            // set_vector_type(FLAT) here: result vectors are already FLAT and carry their
+                            // auxiliary buffer from chunk construction; forcing FLAT would reset a constant-size
+                            // STRUCT buffer (e.g. INTERVAL) and crash fetch_row.
+                            const bool late_materialize =
+                                filter != nullptr && approved_tuple_count * uint64_t{5} < max_count;
                             if (late_materialize) {
                                 const uint64_t base = state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
                                 const uint64_t off = state.column_scans[i].result_offset;

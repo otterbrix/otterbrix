@@ -352,17 +352,20 @@ namespace restart_rc {
             case lt::BLOB:
                 os << '"' << v.value<std::string_view>() << '"';
                 break;
+            // .count(): the raw tick count. gcc 11 (CI) has no ostream inserter for
+            // std::chrono::duration, and the C++20 one would append a unit suffix,
+            // so the count is also the render that is identical across toolchains.
             case lt::DATE:
-                os << v.value<core::date::date_t>().value;
+                os << v.value<core::date::date_t>().value.count();
                 break;
             case lt::TIMESTAMP:
-                os << v.value<core::date::timestamp_t>().value;
+                os << v.value<core::date::timestamp_t>().value.count();
                 break;
             case lt::TIMESTAMP_TZ:
-                os << v.value<core::date::timestamptz_t>().value;
+                os << v.value<core::date::timestamptz_t>().value.count();
                 break;
             case lt::TIME:
-                os << v.value<core::date::time_t>().value;
+                os << v.value<core::date::time_t>().value.count();
                 break;
             case lt::ARRAY:
             case lt::LIST:

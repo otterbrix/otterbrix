@@ -428,6 +428,34 @@ namespace services::dispatcher {
                     variants.push_back(c.type);
                 }
             }
+            if (variants.empty() && key.absent_ok()) {
+                // A jsonb existence key ('?'/'?|'/'?&') that matches no column
+                // exactly. Postgres 3VL, over the flattened representation:
+                //   - an INTERMEDIATE object key (a prefix of one or more stored
+                //     columns, e.g. 'a' with columns a/b, a/c) is PRESENT iff a
+                //     child is non-null -> OR/AND of the per-child null checks;
+                //   - a truly ABSENT key is present for no row -> constant false
+                //     (is_not_null) / true (is_null), so one missing key can never
+                //     poison a '?|' any-of that another key already satisfies.
+                const std::string prefix_slash = name + "/";
+                std::vector<components::expressions::key_t> children;
+                for (const auto& c : schema) {
+                    if (c.type.has_alias() && std::string(c.type.alias()).rfind(prefix_slash, 0) == 0) {
+                        components::expressions::key_t ckey(resource, std::string(c.type.alias()));
+                        ckey.set_side(key.side());
+                        children.push_back(std::move(ckey));
+                    }
+                }
+                if (children.empty()) {
+                    return make_compare_expression(resource, is_nn ? compare_type::all_false : compare_type::all_true);
+                }
+                auto combined =
+                    make_compare_union_expression(resource, is_nn ? compare_type::union_or : compare_type::union_and);
+                for (auto& ckey : children) {
+                    combined->append_child(make_compare_expression(resource, cmp->type(), ckey, cmp->right()));
+                }
+                return combined;
+            }
             if (variants.size() <= 1) {
                 return expr; // single-type (or unknown) — leave as-is
             }
@@ -1321,6 +1349,9 @@ namespace services::dispatcher {
         std::pmr::vector<complex_logical_type> encountered_types{resource};
         std::set<std::string> table_dbnames;
         core::error_t result = core::error_t::no_error();
+        // 'g' once the VALUES target is a schemaless computing table (see the
+        // NA-column drop after chunk reconciliation below).
+        char insert_target_relkind = 0;
 
         auto check_node = [&](node_t* node) {
             // Drop-nodes skip existence + type collection here.
@@ -1339,6 +1370,7 @@ namespace services::dispatcher {
                                            std::pmr::string{"collection does not exist", resource});
                     return false;
                 }
+                insert_target_relkind = tbl->relkind;
                 if (tbl->relkind != 'g') {
                     for (const auto& column : tbl->columns) {
                         encountered_types.emplace_back(column.type);
@@ -1488,6 +1520,21 @@ namespace services::dispatcher {
                                 }
                             }
                         }
+                        // A column still typed NA after reconciliation carries no
+                        // storable type. On a schemaless computing table that is an
+                        // absent key (every row null), not a real column, and handing
+                        // an all-NA column to storage segfaults the append. A declared
+                        // table never reaches here NA — its columns are typed by the
+                        // schema — so drop such columns only for a computing target.
+                        if (insert_target_relkind == 'g') {
+                            auto& cols = chunk.data;
+                            cols.erase(std::remove_if(cols.begin(),
+                                                      cols.end(),
+                                                      [](const components::vector::vector_t& c) {
+                                                          return c.type().type() == logical_type::NA;
+                                                      }),
+                                       cols.end());
+                        }
                     }
                 }
             }
@@ -1578,6 +1625,28 @@ namespace services::dispatcher {
                         default:
                             node_data = child.get();
                             break;
+                    }
+                }
+
+                // Table-valued jsonb operators ('->'/'#>' expand, '-'/'#-' delete)
+                // are lowered to per-column get_field only on the non-GROUP-BY path.
+                // With a GROUP BY (or a bare aggregate, which also routes here) they
+                // are never expanded, so an un-expanded jsonb_expand/jsonb_delete would
+                // reach physical execution and crash. Reject them cleanly instead —
+                // expanding one row into several columns has no meaning under grouping.
+                if (node_group && node_select) {
+                    for (const auto& expr : node_select->expressions()) {
+                        if (expr->group() != expression_group::scalar) {
+                            continue;
+                        }
+                        auto* se = reinterpret_cast<scalar_expression_t*>(expr.get());
+                        if (se->type() == scalar_type::jsonb_expand || se->type() == scalar_type::jsonb_delete) {
+                            return core::error_t(
+                                core::error_code_t::schema_error,
+                                std::pmr::string{"table-valued jsonb operator ('->'/'#>'/'-'/'#-') "
+                                                 "is not supported with GROUP BY or aggregation",
+                                                 resource});
+                        }
                     }
                 }
 
@@ -1774,28 +1843,86 @@ namespace services::dispatcher {
                                 }
                                 const std::string prefix = se->key().as_string();
                                 const std::string prefix_slash = prefix + "/";
+                                // A jsonb operator 'base OP path' works on the columns of
+                                // ONE table — the base. In a join the two sides share
+                                // subtree names (both l and m may carry "d/e"), so the
+                                // base's side is what disambiguates: without it the loop
+                                // matched columns from both sides and every produced
+                                // get_field became ambiguous ("path not found"). The array
+                                // delete form keeps its side on the params, not key().
+                                components::expressions::side_t op_side = se->key().side();
+                                if (se->key().is_null()) {
+                                    for (const auto& p : se->params()) {
+                                        if (std::holds_alternative<components::expressions::key_t>(p)) {
+                                            op_side = std::get<components::expressions::key_t>(p).side();
+                                            break;
+                                        }
+                                    }
+                                }
+                                auto on_op_side = [&](const type_from_t& sc) {
+                                    return op_side == side_t::undefined || sc.side == side_t::undefined ||
+                                           sc.side == op_side;
+                                };
+                                // Delete may carry several prefixes: key() plus any
+                                // key_t params (the multi-key form `jsonb - text[]`).
+                                // A column survives only if it is under NONE of them.
+                                std::vector<std::string> del_prefixes;
+                                if (is_delete) {
+                                    if (!se->key().is_null()) {
+                                        del_prefixes.push_back(prefix);
+                                    }
+                                    for (const auto& p : se->params()) {
+                                        if (std::holds_alternative<components::expressions::key_t>(p)) {
+                                            del_prefixes.push_back(
+                                                std::get<components::expressions::key_t>(p).as_string());
+                                        }
+                                    }
+                                }
+                                auto under_any = [&](const std::string& alias) {
+                                    for (const auto& pfx : del_prefixes) {
+                                        if (alias == pfx || alias.rfind(pfx + "/", 0) == 0) {
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                };
                                 // (output_name, source_alias) pairs
                                 std::vector<std::pair<std::string, std::string>> cols;
                                 for (const auto& sc : incoming_schema) {
-                                    if (!sc.type.has_alias()) {
+                                    if (!sc.type.has_alias() || !on_op_side(sc)) {
                                         continue;
                                     }
                                     std::string alias(sc.type.alias());
-                                    const bool under = alias == prefix || alias.rfind(prefix_slash, 0) == 0;
                                     if (is_delete) {
-                                        if (!under) {
+                                        if (!under_any(alias)) {
                                             cols.emplace_back(alias, alias);
                                         }
-                                    } else if (under) {
+                                    } else if (alias == prefix || alias.rfind(prefix_slash, 0) == 0) {
                                         std::string out = alias == prefix ? prefix.substr(prefix.find_last_of('/') + 1)
                                                                           : alias.substr(prefix_slash.size());
                                         cols.emplace_back(std::move(out), std::move(alias));
                                     }
                                 }
+                                // Expand names a specific object: a key matching no
+                                // column is a "path not found" error, the same as the
+                                // scalar form ('->>'/'#>>'), never a select item that
+                                // silently vanishes and hands the caller fewer columns.
+                                // (Delete-to-empty is legal — it yields the empty object
+                                // '{}' — so this guard is expand-only.)
+                                if (is_expand && cols.empty()) {
+                                    return core::error_t(core::error_code_t::schema_error,
+                                                         std::pmr::string{(std::string{"jsonb expand: path '"} +
+                                                                           prefix + "' matches no column")
+                                                                              .c_str(),
+                                                                          resource});
+                                }
                                 exprs.erase(exprs.begin() + static_cast<ptrdiff_t>(ei));
                                 for (size_t j = 0; j < cols.size(); j++) {
                                     components::expressions::key_t out_key(resource, cols[j].first.c_str());
                                     components::expressions::key_t src_key(resource, cols[j].second.c_str());
+                                    // Carry the base's side so the shared subtree name
+                                    // resolves back to the side the operator named.
+                                    src_key.set_side(op_side);
                                     exprs.insert(
                                         exprs.begin() + static_cast<ptrdiff_t>(ei + j),
                                         make_scalar_expression(resource, scalar_type::get_field, out_key, src_key));

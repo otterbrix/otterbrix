@@ -20,6 +20,13 @@ namespace components::operators {
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
+        // INSERT ... SELECT only: the target column names, in target order. The
+        // streamed SELECT columns are renamed to these before the (name-based)
+        // append, so 'INSERT INTO t (id, a.b) SELECT 5, 55' lands 5,55 in id,a/b
+        // rather than in projection-named columns that leave id/a.b null. Left
+        // empty for INSERT ... VALUES, whose raw-data columns are already named.
+        void set_rename_targets(std::pmr::vector<std::pmr::string> targets) { rename_targets_ = std::move(targets); }
+
         // STREAMING DML (STEP 3b). The insert is a SINK on its input: push() folds
         // each input batch into a bounded accumulator and emits nothing; the executor
         // then drives the async WAL->storage->index commit via await_async_and_resume
@@ -53,6 +60,8 @@ namespace components::operators {
         // Both are materialized into output_ only on the final (is_final) drive.
         chunks_vector_t returning_accum_{resource_};
         uint64_t affected_rows_{0};
+        // Target column names for an INSERT ... SELECT rename (see set_rename_targets).
+        std::pmr::vector<std::pmr::string> rename_targets_{resource_};
     };
 
 } // namespace components::operators

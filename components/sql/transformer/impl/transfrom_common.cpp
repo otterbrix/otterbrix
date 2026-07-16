@@ -1,5 +1,6 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/function_expression.hpp>
+#include <components/expressions/jsonb_path.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/sql/transformer/transformer.hpp>
@@ -163,6 +164,33 @@ namespace components::sql::transform {
                     }
                     return col_ref.field;
                 }
+                // A cast over a scalar jsonb navigation, e.g. (t #>> 'a.c')::bigint:
+                // resolve the navigation to its flattened column key and annotate it,
+                // exactly like a column cast. Without this the cast node fell through
+                // to add_param_value, which tried to fold the navigation A_Expr into a
+                // constant parameter and read uninitialized memory — a per-run garbage
+                // constant, identical on every row.
+                if (cast->arg && nodeTag(cast->arg) == T_A_Expr) {
+                    auto* sub = pg_ptr_cast<A_Expr>(cast->arg);
+                    if (sub->kind == AEXPR_OP && sub->name &&
+                        nodeTag(sub->name->lst.front().data) == T_String &&
+                        is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
+                        auto target_type_res = get_type(resource_, cast->typeName);
+                        if (target_type_res.has_error()) {
+                            error_ = target_type_res.error();
+                            return nullptr;
+                        }
+                        expressions::key_t k{resource_};
+                        if (!resolve_jsonb_scalar_key(sub, names, k)) {
+                            return nullptr;
+                        }
+                        k.set_cast_type(target_type_res.value());
+                        if (cast->variant_select) {
+                            k.set_variant_select(true);
+                        }
+                        return k;
+                    }
+                }
                 return add_param_value(node, plan->parameters.get());
             }
             case T_ParamRef:
@@ -253,13 +281,21 @@ namespace components::sql::transform {
         }
     }
 
+    // Render a jsonb operator's right-hand key/path operand into its textual form.
+    // The operand is always a literal: a bare string/number, a cast of one, or a
+    // ParamRef; a bare column reference (`t -> x`) contributes the column's *name*.
+    // The switch is exhaustive and never dereferences a node as the wrong type —
+    // every unhandled shape reports a clean parse error instead.
     std::string transformer::get_str_value(Node* node) {
         switch (nodeTag(node)) {
-            case T_TypeCast: {
-                auto cast = pg_ptr_cast<TypeCast>(node);
-                bool is_true = std::string(strVal(&pg_ptr_cast<A_Const>(cast->arg)->val)) == "t";
-                return is_true ? "true" : "false";
-            }
+            case T_TypeCast:
+                // A cast key is just its underlying constant rendered as text:
+                // 'x'::text -> "x", 5::bigint -> "5", TRUE -> "t". Recurse so the
+                // operand's real node type drives the conversion. (This arm used to
+                // collapse EVERY cast to the boolean strings "true"/"false", which
+                // both mis-keyed 'x'::text and dereferenced a non-string cast
+                // argument's integer union member as a char* — a segfault.)
+                return get_str_value(pg_ptr_cast<TypeCast>(node)->arg);
             case T_A_Const: {
                 auto value = &(pg_ptr_cast<A_Const>(node)->val);
                 switch (nodeTag(value)) {
@@ -269,13 +305,26 @@ namespace components::sql::transform {
                         return std::to_string(intVal(value));
                     case T_Float:
                         return strVal(value);
+                    case T_Null:
+                        error_ = core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"jsonb key must be a constant value, not NULL", resource_});
+                        return {};
+                    default:
+                        break;
                 }
+                // No fall-through into the ColumnRef arm below: an unexpected
+                // constant kind is a clean error, not a wild reinterpret-cast.
+                break;
             }
             case T_ColumnRef:
-                assert(false);
+                // `t -> col`: the key is the column's own name (its identifier),
+                // not its per-row value. Kept for compatibility with that spelling.
                 return strVal(pg_ptr_cast<ColumnRef>(node)->fields->lst.back().data);
             case T_ParamRef:
                 return "$" + std::to_string(pg_ptr_cast<ParamRef>(node)->number);
+            default:
+                break;
         }
         error_ = core::error_t(core::error_code_t::sql_parse_error,
                                std::pmr::string{"incorrect string value in get_str_value", resource_});
@@ -923,43 +972,13 @@ namespace components::sql::transform {
         if (has_error()) {
             return false;
         }
-        auto push_segment = [&](const std::string& s) {
-            // trim surrounding spaces (PG-style '{a, b}')
-            size_t b = s.find_first_not_of(' ');
-            size_t e = s.find_last_not_of(' ');
-            if (b == std::string::npos) {
-                return;
-            }
-            std::string trimmed = s.substr(b, e - b + 1);
-            segments.emplace_back(std::pmr::string{trimmed.c_str(), resource_});
-        };
         if (jsonb_op_takes_path(op)) {
             // '#>' / '#>>' / '#-' : a whole path. Accept PG array '{a,b}' or dotted 'a.b'.
-            std::string path = key_str;
-            if (path.size() >= 2 && path.front() == '{' && path.back() == '}') {
-                path = path.substr(1, path.size() - 2);
-                size_t start = 0;
-                while (true) {
-                    size_t comma = path.find(',', start);
-                    push_segment(path.substr(start, comma - start));
-                    if (comma == std::string::npos) {
-                        break;
-                    }
-                    start = comma + 1;
-                }
-            } else {
-                size_t start = 0;
-                while (true) {
-                    size_t dot = path.find('.', start);
-                    push_segment(path.substr(start, dot - start));
-                    if (dot == std::string::npos) {
-                        break;
-                    }
-                    start = dot + 1;
-                }
+            for (auto& seg : jsonb_path::split_operand(key_str, resource_)) {
+                segments.emplace_back(std::move(seg));
             }
         } else {
-            // '->' / '->>' : a single key.
+            // '->' / '->>' : a single key, taken verbatim (no splitting).
             segments.emplace_back(std::pmr::string{key_str.c_str(), resource_});
         }
         return true;
@@ -989,14 +1008,7 @@ namespace components::sql::transform {
                 core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{"empty jsonb path", resource_});
             return false;
         }
-        std::pmr::string joined(resource_);
-        for (size_t i = 0; i < segments.size(); ++i) {
-            if (i != 0) {
-                joined += "/";
-            }
-            joined += segments[i];
-        }
-        out_key = expressions::key_t(resource_, std::move(joined), side);
+        out_key = expressions::key_t(resource_, jsonb_path::flatten(segments, resource_), side);
         if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() && names.right_alias.empty()) {
             out_key.set_side(expressions::side_t::left);
         }
@@ -1016,30 +1028,9 @@ namespace components::sql::transform {
                                                     resource_});
             return false;
         }
-        std::pmr::vector<std::pmr::string> segments(resource_);
-        expressions::side_t side = expressions::side_t::undefined;
-        if (!collect_jsonb_path(node, names, segments, side)) {
-            return false;
-        }
-        if (segments.empty()) {
-            error_ =
-                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{"empty jsonb path", resource_});
-            return false;
-        }
-        std::pmr::string joined(resource_);
-        for (size_t i = 0; i < segments.size(); ++i) {
-            if (i != 0) {
-                joined += "/";
-            }
-            joined += segments[i];
-        }
-        out_key = expressions::key_t(resource_, std::move(joined), side);
-        // Single-table queries leave side undefined; pin to left so the value
-        // getter can read it (mirrors transform_a_expr_func).
-        if (out_key.side() == expressions::side_t::undefined && names.right_name.empty() && names.right_alias.empty()) {
-            out_key.set_side(expressions::side_t::left);
-        }
-        return true;
+        // The only difference from a prefix key is the scalar-vs-table guard above;
+        // the flattening itself is identical, so share it.
+        return resolve_jsonb_prefix_key(node, names, out_key);
     }
 
     expression_ptr transformer::transform_jsonb_exists(A_Expr* node,
@@ -1109,13 +1100,13 @@ namespace components::sql::transform {
             use_side = expressions::side_t::left;
         }
         auto build_exists = [&](const std::pmr::string& k) -> compare_expression_ptr {
-            std::pmr::string joined(resource_);
-            for (const auto& seg : prefix) {
-                joined += seg;
-                joined += "/";
-            }
-            joined += k;
-            expressions::key_t key(resource_, std::move(joined), use_side);
+            std::pmr::vector<std::pmr::string> segments(prefix);
+            segments.emplace_back(k);
+            expressions::key_t key(resource_, jsonb_path::flatten(segments, resource_), use_side);
+            // A jsonb existence test: a key that names no column is legally absent
+            // (yields false), and an intermediate object key is present if a child
+            // is — the validator resolves both, so it must not hard-error here.
+            key.set_absent_ok(true);
             auto dummy = params->add_parameter(
                 types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
             return make_compare_expression(params->parameters().resource(), compare_type::is_not_null, key, dummy);

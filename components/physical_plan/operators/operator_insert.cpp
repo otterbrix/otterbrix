@@ -31,6 +31,16 @@ namespace components::operators {
             modified_ = make_operator_write_data(resource());
         }
         if (input.size() > 0) {
+            // INSERT ... SELECT: rename the streamed projection columns to the target
+            // columns (positionally, in target order) so the name-based append routes
+            // each value to the intended column. No-op for VALUES (rename_targets_ is
+            // empty) and for a projection that already carries the target names.
+            if (!rename_targets_.empty()) {
+                const uint64_t n = std::min<uint64_t>(input.column_count(), rename_targets_.size());
+                for (uint64_t i = 0; i < n; ++i) {
+                    input.data[i].set_type_alias(std::string(rename_targets_[i]));
+                }
+            }
             output_->append_chunk(std::move(input));
         }
         return core::error_t::no_error();

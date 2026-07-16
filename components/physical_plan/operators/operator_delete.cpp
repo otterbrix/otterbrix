@@ -354,7 +354,8 @@ namespace components::operators {
         // the record. DELETE appends nothing, so the outcome carries no append range.
         // Durability is the commit's FULL-sync COMMIT record (which flushes all preceding
         // WAL), so no per-op flush is added here.
-        if (modified_ && modified_->size() > 0) {
+        const bool flushing_now = modified_ && modified_->size() > 0;
+        if (flushing_now) {
             const bool mirror_index =
                 ctx->index_address != actor_zeta::address_t::empty_address() && !index_old_chunks_.empty();
 
@@ -453,6 +454,22 @@ namespace components::operators {
         // Mid-pump flush: emit nothing, keep accumulating for the next call.
         if (!is_final) {
             co_return;
+        }
+
+        // I-2 zero-apply release. This FINAL drive flushed nothing — either the DML
+        // matched zero rows, or the matched count was an exact multiple of the flush
+        // threshold so the last mid-pump flush drained the buffer. Either way the
+        // apply that releases the retained mutating scan pin (release_mutating_scans
+        // at storage_delete_rows_inner's top) cannot fire now, and the mid-pump
+        // applies could not release it (the cursor was still open when they landed).
+        // No later statement can sweep the pin either — sessions are minted per
+        // statement — so release explicitly with the same broadcast the abort path
+        // uses, or compaction of the target table defers forever.
+        if (!flushing_now && ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            auto [_rs, rsf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::release_scans_for_session,
+                                               ctx->session);
+            co_await std::move(rsf);
         }
 
         // FINAL: with RETURNING, drain the staged RETURNING accumulator. Without

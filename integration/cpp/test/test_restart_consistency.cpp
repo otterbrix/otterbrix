@@ -27,6 +27,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/catalog/catalog_oids.hpp>
+#include <components/log/log.hpp>
+#include <services/wal/record.hpp>
+#include <services/wal/wal_reader.hpp>
+
 using namespace restart_rc;
 
 namespace {
@@ -604,4 +609,119 @@ TEST_CASE("integration::cpp::restart_consistency::timezone", "[restart]") {
          {"DELETE FROM rcdb.t WHERE id = $K;"}},
     };
     check_restart_consistency(g);
+}
+
+// ---------------------------------------------------------------------------
+// I-2 zero-apply release. A DELETE/UPDATE under a non-pushable predicate reads
+// through a bare mutating full_scan whose retained cursor is normally released
+// by the storage apply (storage_delete_rows / storage_update). When ZERO rows
+// match, no apply is ever sent — the operator must release the pin itself at
+// its final drive. Sessions are minted per statement, so no later statement's
+// sweep-on-open can match this (oid, session): an unreleased pin defers
+// compaction of the table forever. Observable end-to-end: VACUUM after the
+// zero-match DMLs must still compact and emit its PHYSICAL_COMPACT epoch
+// marker into the WAL.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::restart_consistency::zero_match_dml_releases_compaction_pin", "[restart]") {
+    const auto dir = data_root() / "zero_match_pin";
+    auto config = test_create_config(dir);
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = true;
+
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto run = [&](const std::string& sql) {
+            auto cur = test_helpers::exec(dispatcher, sql);
+            INFO(sql);
+            REQUIRE(cur);
+            REQUIRE_FALSE(cur->is_error());
+            return cur;
+        };
+        run("CREATE DATABASE rcdb;");
+        run("CREATE TABLE rcdb.t (id BIGINT);");
+        run("INSERT INTO rcdb.t (id) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),"
+            "(10),(11),(12),(13),(14),(15),(16),(17),(18),(19);");
+        // 20% dead: below the 30% commit-time threshold, so only VACUUM compacts.
+        run("DELETE FROM rcdb.t WHERE id < 4;");
+        // Zero-match DMLs under a non-pushable (column-vs-column) predicate: each
+        // drains a bare mutating scan that captures all 16 live ids, then applies
+        // nothing.
+        run("DELETE FROM rcdb.t WHERE id < id;");
+        run("UPDATE rcdb.t SET id = 0 WHERE id < id;");
+        run("VACUUM;");
+        // A committed write pair after the VACUUM: the FULL-sync COMMIT flushes
+        // every preceding WAL record (including the compact marker) durably, and
+        // the pair leaves the row set unchanged.
+        run("INSERT INTO rcdb.t (id) VALUES (999);");
+        run("DELETE FROM rcdb.t WHERE id = 999;");
+        auto cur = run("SELECT * FROM rcdb.t;");
+        REQUIRE(cur->size() == 16);
+    }
+
+    auto log = initialization_logger("zero_match_pin", dir.string() + "/");
+    services::wal::wal_reader_t reader(config.wal, log);
+    const auto records = reader.read_committed_records(services::wal::id_t{0});
+    bool user_table_compacted = false;
+    for (const auto& r : records) {
+        if (r.record_type == services::wal::wal_record_type::PHYSICAL_COMPACT &&
+            r.table_oid >= components::catalog::FIRST_USER_OID) {
+            user_table_compacted = true;
+        }
+    }
+    REQUIRE(user_table_compacted);
+}
+
+// The other zero-apply-at-final shape: the DML DID match rows, but the matched
+// count is an exact multiple of dml_flush_row_threshold, so the LAST mid-pump
+// flush consumed the whole buffer and the final drive flushes nothing. The
+// mid-pump apply cannot release the pin (the scan cursor is still open when it
+// lands — releasing an active cursor would break the capture window), and the
+// empty final drive sends no apply, so only an explicit final-drive release
+// keeps the pin from leaking.
+TEST_CASE("integration::cpp::restart_consistency::exact_threshold_dml_releases_compaction_pin", "[restart]") {
+    const auto dir = data_root() / "exact_threshold_pin";
+    auto config = test_create_config(dir);
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = true;
+    config.execution.dml_flush_row_threshold = 4;
+
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto run = [&](const std::string& sql) {
+            auto cur = test_helpers::exec(dispatcher, sql);
+            INFO(sql);
+            REQUIRE(cur);
+            REQUIRE_FALSE(cur->is_error());
+            return cur;
+        };
+        run("CREATE DATABASE rcdb;");
+        run("CREATE TABLE rcdb.t (id BIGINT);");
+        run("INSERT INTO rcdb.t (id) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9),"
+            "(10),(11),(12),(13),(14),(15),(16),(17),(18),(19);");
+        // Matches EXACTLY the flush threshold (4): one mid-pump flush drains the
+        // buffer, the final drive has nothing to flush. 4/20 = 20% dead stays
+        // below the 30% commit-time threshold, so only VACUUM compacts.
+        run("DELETE FROM rcdb.t WHERE id < 4;");
+        run("VACUUM;");
+        run("INSERT INTO rcdb.t (id) VALUES (999);");
+        run("DELETE FROM rcdb.t WHERE id = 999;");
+        auto cur = run("SELECT * FROM rcdb.t;");
+        REQUIRE(cur->size() == 16);
+    }
+
+    auto log = initialization_logger("exact_threshold_pin", dir.string() + "/");
+    services::wal::wal_reader_t reader(config.wal, log);
+    const auto records = reader.read_committed_records(services::wal::id_t{0});
+    bool user_table_compacted = false;
+    for (const auto& r : records) {
+        if (r.record_type == services::wal::wal_record_type::PHYSICAL_COMPACT &&
+            r.table_oid >= components::catalog::FIRST_USER_OID) {
+            user_table_compacted = true;
+        }
+    }
+    REQUIRE(user_table_compacted);
 }

@@ -308,7 +308,8 @@ namespace components::operators {
         // single flush.
         const bool is_final = ctx->dml_flush_is_final;
 
-        if (output_ && output_->size() > 0) {
+        const bool flushing_now = output_ && output_->size() > 0;
+        if (flushing_now) {
             // See operator_insert comment on db_oid temporary hardcode. The agent writes
             // this UPDATE's WAL record, so the database oid travels with the context.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
@@ -494,6 +495,22 @@ namespace components::operators {
         // mark executed. Only the final drive finalizes.
         if (!is_final) {
             co_return;
+        }
+
+        // I-2 zero-apply release. This FINAL drive flushed nothing — either the UPDATE
+        // matched zero rows, or the matched count was an exact multiple of the flush
+        // threshold so the last mid-pump flush drained the buffer. Either way the apply
+        // that releases the retained mutating scan pin (release_mutating_scans at
+        // storage_update_inner's top) cannot fire now, and the mid-pump applies could
+        // not release it (the cursor was still open when they landed). No later
+        // statement can sweep the pin either — sessions are minted per statement — so
+        // release explicitly with the same broadcast the abort path uses, or compaction
+        // of the target table defers forever.
+        if (!flushing_now && ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            auto [_rs, rsf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::release_scans_for_session,
+                                               ctx->session);
+            co_await std::move(rsf);
         }
 
         // FINAL. output_ was cleared per flush, so it cannot double as the

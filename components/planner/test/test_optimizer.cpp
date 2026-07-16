@@ -24,6 +24,7 @@
 #include <components/planner/optimizer.hpp>
 #include <components/planner/optimizer/rules/hash_join.hpp>
 #include <components/planner/optimizer/rules/promote_cross_join.hpp>
+#include <components/planner/optimizer/rules/pushdown_filter.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/types/types.hpp>
 #include <services/collection/context_storage.hpp>
@@ -1592,4 +1593,168 @@ TEST_CASE("optimizer::column_pruning::inner_join_splits_columns_per_side") {
 
     REQUIRE(agg_t1->projected_cols() == (std::vector<size_t>{0, 1}));
     REQUIRE(agg_t2->projected_cols() == std::vector<size_t>{0});
+}
+
+// ================================================================
+// Filter pushdown THROUGH a UNION / UNION ALL.
+//
+// A WHERE match above a union_t source is cloned into a node_match above EACH
+// union branch (positional column identity: union output column i == branch
+// column i). The residual (a conjunct a branch does not expose identically)
+// stays above the union. Built through the REAL validate_schema so union +
+// branch output_types()/key paths are exactly what the SQL pipeline stamps.
+//
+// Helper: return a branch's match child (a node_match_t among children[1..]).
+// ================================================================
+namespace {
+    static node_ptr branch_match_child(const node_ptr& branch) {
+        if (!branch || branch->type() != node_type::aggregate_t) {
+            return nullptr;
+        }
+        for (const auto& c : branch->children()) {
+            if (c && c->type() == node_type::match_t) {
+                return c;
+            }
+        }
+        return nullptr;
+    }
+
+    // Build aggregate[ union{all}(raw[left_cols], raw[right_cols]), match(where) ]
+    // and drive validate_schema so the union/branches carry output_types() and the
+    // match keys carry stamped paths.
+    static node_ptr build_union_over_where(std::pmr::memory_resource* r,
+                                           components::logical_plan::parameter_node_t* params,
+                                           std::initializer_list<const char*> left_cols,
+                                           std::initializer_list<const char*> right_cols,
+                                           bool all,
+                                           const expression_ptr& where) {
+        auto scan_l = make_promote_scan(r, left_cols);
+        auto scan_r = make_promote_scan(r, right_cols);
+        auto uni = make_node_union(r, scan_l, scan_r, all);
+        auto outer = make_node_aggregate(r, core::dbname_t{database_name}, core::relname_t{collection_name});
+        outer->append_child(uni);
+        outer->append_child(
+            make_node_match(r, core::dbname_t{database_name}, core::relname_t{collection_name}, where));
+        auto validated = services::dispatcher::validate_schema(r, nullptr, outer.get(), params->parameters());
+        REQUIRE_FALSE(validated.has_error());
+        return outer;
+    }
+} // namespace
+
+TEST_CASE("optimizer::pushdown_filter::union_all_pushes_into_each_branch") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto gt = params->add_parameter(int64_t(5));
+
+    auto where = make_compare_expression(&resource, compare_type::gt, key(&resource, "a"), gt);
+    auto outer = build_union_over_where(&resource, params.get(), {"a", "b"}, {"a", "b"}, /*all=*/true, where);
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+
+    // The whole WHERE pushed into both branches → the outer aggregate collapses to the union.
+    REQUIRE(out->type() == node_type::union_t);
+    REQUIRE(out->children().size() == 2);
+    for (const auto& branch : out->children()) {
+        auto m = branch_match_child(branch);
+        REQUIRE(m != nullptr);
+        REQUIRE(m->expressions().size() == 1);
+        auto* cmp = static_cast<compare_expression_t*>(m->expressions()[0].get());
+        REQUIRE(cmp->type() == compare_type::gt);
+        REQUIRE(is_key(cmp->left()));
+        REQUIRE(as_key(cmp->left()).as_string() == "a");
+        // the match sits directly above the branch's raw-data scan (index 0).
+        REQUIRE(branch->children()[0]->type() == node_type::data_t);
+    }
+}
+
+TEST_CASE("optimizer::pushdown_filter::plain_union_pushes_into_each_branch") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto gt = params->add_parameter(int64_t(5));
+
+    auto where = make_compare_expression(&resource, compare_type::gt, key(&resource, "a"), gt);
+    auto outer = build_union_over_where(&resource, params.get(), {"a", "b"}, {"a", "b"}, /*all=*/false, where);
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+
+    REQUIRE(out->type() == node_type::union_t);
+    REQUIRE(static_cast<node_union_t*>(out.get())->all() == false); // dedup preserved above
+    REQUIRE(out->children().size() == 2);
+    for (const auto& branch : out->children()) {
+        REQUIRE(branch_match_child(branch) != nullptr);
+    }
+}
+
+TEST_CASE("optimizer::pushdown_filter::union_conjunction_all_mappable") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto gt = params->add_parameter(int64_t(5));
+    auto lt = params->add_parameter(int64_t(10));
+
+    // WHERE a > 5 AND b < 10  (both columns present identically in both branches)
+    auto c1 = make_compare_expression(&resource, compare_type::gt, key(&resource, "a"), gt);
+    auto c2 = make_compare_expression(&resource, compare_type::lt, key(&resource, "b"), lt);
+    auto where = make_compare_union_expression(&resource, compare_type::union_and);
+    where->append_child(c1);
+    where->append_child(c2);
+
+    auto outer = build_union_over_where(&resource, params.get(), {"a", "b"}, {"a", "b"}, /*all=*/true, where);
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+
+    REQUIRE(out->type() == node_type::union_t);
+    for (const auto& branch : out->children()) {
+        auto m = branch_match_child(branch);
+        REQUIRE(m != nullptr);
+        REQUIRE(m->expressions().size() == 1);
+        // both conjuncts pushed → a union_and of 2 children.
+        auto* cmp = static_cast<compare_expression_t*>(m->expressions()[0].get());
+        REQUIRE(is_union_compare_condition(cmp->type()));
+        REQUIRE(cmp->children().size() == 2);
+    }
+}
+
+TEST_CASE("optimizer::pushdown_filter::union_residual_stays_above_for_non_mappable") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto gt = params->add_parameter(int64_t(5));
+    auto lt = params->add_parameter(int64_t(10));
+
+    // Right branch renames position 1 ("b" -> "c"): a conjunct on "b" is NOT identity-
+    // mappable to the right branch, so it stays in the residual above the union while
+    // the "a" conjunct pushes into both branches.
+    auto c1 = make_compare_expression(&resource, compare_type::gt, key(&resource, "a"), gt);
+    auto c2 = make_compare_expression(&resource, compare_type::lt, key(&resource, "b"), lt);
+    auto where = make_compare_union_expression(&resource, compare_type::union_and);
+    where->append_child(c1);
+    where->append_child(c2);
+
+    auto outer = build_union_over_where(&resource, params.get(), {"a", "b"}, {"a", "c"}, /*all=*/true, where);
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+
+    // Residual remains → the outer aggregate is kept, union as child[0].
+    REQUIRE(out->type() == node_type::aggregate_t);
+    REQUIRE(out->children()[0]->type() == node_type::union_t);
+
+    node_ptr residual_match;
+    for (const auto& c : out->children()) {
+        if (c->type() == node_type::match_t) {
+            residual_match = c;
+        }
+    }
+    REQUIRE(residual_match != nullptr);
+    REQUIRE(residual_match->expressions().size() == 1);
+    // Only the "b" conjunct survives above the union (a single lt, not a union_and).
+    auto* rcmp = static_cast<compare_expression_t*>(residual_match->expressions()[0].get());
+    REQUIRE(rcmp->type() == compare_type::lt);
+    REQUIRE(is_key(rcmp->left()));
+    REQUIRE(as_key(rcmp->left()).as_string() == "b");
+
+    // Each branch got the "a > 5" conjunct pushed.
+    for (const auto& branch : out->children()[0]->children()) {
+        auto m = branch_match_child(branch);
+        REQUIRE(m != nullptr);
+        auto* cmp = static_cast<compare_expression_t*>(m->expressions()[0].get());
+        REQUIRE(cmp->type() == compare_type::gt);
+        REQUIRE(as_key(cmp->left()).as_string() == "a");
+    }
 }

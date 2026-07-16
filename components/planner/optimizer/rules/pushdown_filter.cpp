@@ -20,6 +20,7 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <components/logical_plan/node_union.hpp>
 
 namespace components::planner::optimizer {
 
@@ -641,6 +642,149 @@ namespace components::planner::optimizer {
                         }
                         match_child->expressions()[0] = residual_expr;
                         node->children()[0] = pushdown_filter_impl(resource, source);
+                        return node;
+                    }
+                }
+            }
+
+            if (source->type() == node_type::union_t) {
+                // Push the WHERE below a UNION / UNION ALL by cloning it above EACH branch.
+                // A union is N-ary (>= 2 branch subplans). Both set-op kinds are safe
+                // targets: UNION ALL is pure duplication; plain UNION dedups ABOVE the
+                // union, so a row survives the outer filter iff it survived the same
+                // filter inside its branch — pushing the identical predicate into every
+                // branch preserves both membership and the dedup result.
+                //
+                // Union output columns are POSITIONAL: output column i is branch column i
+                // (validate_schema derives the union schema from the LEFT branch, and the
+                // set operation aligns operands by position). The match keys above the
+                // union reference the union output columns by NAME; map each name to its
+                // union output position, then require EVERY branch to expose the SAME name
+                // at that SAME position (an identity mapping). When a branch reorders or
+                // renames a referenced position, a shared pushed predicate would target
+                // the wrong branch column — so that conjunct is NOT cleanly mappable and
+                // stays in the residual above the union (correct, just not pushed),
+                // mirroring the join branch's residual bucket. The pushed predicate keeps
+                // its keys unchanged (identity name + position), so no clone/rewrite is
+                // needed and the leaf conjuncts are shared read-only across branches.
+                if (source->children().size() >= 2 && !match_child->expressions().empty() &&
+                    source->has_output_types()) {
+                    const auto& u_types = source->output_types();
+
+                    // name -> unique union output position (nullopt if absent or duplicated).
+                    auto union_pos_of = [&](const std::string& name) -> std::optional<size_t> {
+                        std::optional<size_t> found;
+                        for (size_t i = 0; i < u_types.size(); ++i) {
+                            if (u_types[i].alias() == name) {
+                                if (found) {
+                                    return std::nullopt; // ambiguous
+                                }
+                                found = i;
+                            }
+                        }
+                        return found;
+                    };
+                    // A branch exposes `name` identically iff its stamped output alias at
+                    // the union position equals `name`.
+                    auto branch_identity = [](const node_ptr& branch, const std::string& name, size_t pos) {
+                        if (!branch || !branch->has_output_types()) {
+                            return false;
+                        }
+                        const auto& b = branch->output_types();
+                        return pos < b.size() && b[pos].alias() == name;
+                    };
+
+                    auto conjuncts = split_conjuncts(resource, match_child->expressions()[0]);
+                    std::pmr::vector<expression_ptr> pushable{resource}, residual{resource};
+                    for (const auto& conj : conjuncts) {
+                        auto cols = collect_referenced_columns(conj);
+                        bool ok = !cols.empty();
+                        for (const auto& col : cols) {
+                            auto pos = union_pos_of(col);
+                            if (!pos) {
+                                ok = false;
+                                break;
+                            }
+                            for (const auto& branch : source->children()) {
+                                if (!branch_identity(branch, col, *pos)) {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            if (!ok) {
+                                break;
+                            }
+                        }
+                        (ok ? pushable : residual).push_back(conj);
+                    }
+
+                    if (!pushable.empty()) {
+                        auto filter_cols = collect_referenced_columns(rebuild_conjunction(resource, pushable));
+                        for (auto& branch : source->children()) {
+                            auto [b_db, b_rel] = node_cfn(branch);
+                            // Prefer pushing the predicate INTO the branch's own single-table
+                            // aggregate, directly below an IDENTITY projection, so it rides the
+                            // branch's disk scan (create_plan_match lowers a table-bound match
+                            // over a plain compare to a full_scan). Only safe when the branch is
+                            // a single-table aggregate whose projection maps each pushed column
+                            // identically (output name == input name): the match keys reference
+                            // the union output name, which then equals the scan's column name.
+                            // Otherwise (a renaming/computed projection, a join/nested-union
+                            // source, or a raw scan) wrap the branch in a filter aggregate — the
+                            // predicate is applied above the branch output (in-memory Filter),
+                            // still correct.
+                            node_select_t* branch_select = nullptr;
+                            if (branch->type() == node_type::aggregate_t &&
+                                branch->table_oid() != components::catalog::INVALID_OID) {
+                                for (const auto& c : branch->children()) {
+                                    if (c->type() == node_type::select_t) {
+                                        branch_select = static_cast<node_select_t*>(c.get());
+                                        break;
+                                    }
+                                }
+                            }
+                            std::set<std::string> branch_out;
+                            collect_subtree_columns(branch, branch_out);
+                            const bool push_below_projection =
+                                branch_select != nullptr &&
+                                filter_supported_through_identity_select(*branch_select, filter_cols, branch_out);
+
+                            auto pushed_match =
+                                make_node_match(resource, b_db, b_rel, rebuild_conjunction(resource, pushable));
+                            if (push_below_projection) {
+                                // Inherit the branch's already-resolved table_oid so
+                                // create_plan_match binds the pushed match to the branch table
+                                // (enrich also re-stamps it from the copied (db, rel) — same oid).
+                                pushed_match->set_table_oid(branch->table_oid());
+                                static_cast<node_aggregate_t*>(branch.get())->append_child(pushed_match);
+                                branch = pushdown_filter_impl(resource, branch);
+                            } else {
+                                auto new_agg = make_node_aggregate(resource, b_db, b_rel);
+                                new_agg->append_child(branch);
+                                new_agg->append_child(pushed_match);
+                                branch = pushdown_filter_impl(resource, boost::static_pointer_cast<node_t>(new_agg));
+                            }
+                        }
+                        auto residual_expr = rebuild_conjunction(resource, residual);
+                        if (!residual_expr) {
+                            // Whole WHERE pushed into every branch → the outer match is empty.
+                            // Drop the (now-empty) match child. Keep the enclosing aggregate
+                            // only if it still carries other pipeline stages (group/sort/
+                            // select); otherwise expose the pushed union directly (the minimal
+                            // plan), mirroring the join branch.
+                            auto& agg_children = node->children();
+                            for (size_t i = 0; i < agg_children.size(); ++i) {
+                                if (agg_children[i] == match_child) {
+                                    agg_children.erase(agg_children.begin() + static_cast<std::ptrdiff_t>(i));
+                                    break;
+                                }
+                            }
+                            if (node->children().size() == 1) {
+                                return source;
+                            }
+                            return node;
+                        }
+                        match_child->expressions()[0] = residual_expr;
                         return node;
                     }
                 }

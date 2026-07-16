@@ -5301,3 +5301,157 @@ TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
         REQUIRE(run(disk, "SELECT * FROM TestDatabase.t WHERE length(name) = 0;")->size() == 0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// FILTER PUSHDOWN THROUGH UNION / UNION ALL.
+//
+// A WHERE above a (SELECT ... UNION [ALL] SELECT ...) is cloned into a filter
+// above EACH branch by the pushdown_filter optimizer rule (positional column
+// identity: union output column i == branch column i). This lets the disk agent
+// push the branch predicate into the branch's Seq Scan instead of filtering the
+// merged union output. The pushdown is observable two ways:
+//   (1) Results: disk == in-memory == the pre-pushdown answer (parity), for a
+//       single conjunct, a conjunctive predicate, and a mixed predicate where
+//       one conjunct is NOT branch-mappable (a renamed branch column).
+//   (2) EXPLAIN (disk): a fully pushable predicate leaves NO "Filter" node above
+//       the "Append" (it rides the branch "Seq Scan"); a partially pushable one
+//       keeps a residual "Filter" for the non-mappable conjunct.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
+    auto plan_text = [](const auto& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            out += std::string(cur->value(0, r).template value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    };
+    auto contains = [](const std::string& hay, const char* needle) {
+        return hay.find(needle) != std::string::npos;
+    };
+
+    auto seed = [](auto* d) {
+        {
+            auto s = otterbrix::session_id_t();
+            d->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t1 (a bigint, b bigint);")->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t2 (a bigint, b bigint);")->is_success());
+        }
+        {
+            // t3 renames the 2nd column to `c`, so a filter on the union's `b` column
+            // is NOT identity-mappable into t3's branch (stays as a residual Filter).
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t3 (a bigint, c bigint);")->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t1 (a, b) VALUES "
+                                   "(1, 100), (6, 5), (8, 50), (3, 200);")
+                        ->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t2 (a, b) VALUES "
+                                   "(7, 8), (2, 300), (9, 9), (10, 1);")
+                        ->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t3 (a, c) VALUES "
+                                   "(7, 8), (2, 300), (9, 9), (10, 1);")
+                        ->is_success());
+        }
+    };
+
+    auto config = test_create_config("/tmp/test_sql_features/union_filter_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* disk = space.dispatcher();
+    seed(disk);
+
+    auto mconfig = test_create_config("/tmp/test_sql_features/union_filter_pushdown_mem");
+    test_clear_directory(mconfig);
+    mconfig.disk.on = false;
+    mconfig.wal.on = false;
+    test_spaces mspace(mconfig);
+    auto* mem = mspace.dispatcher();
+    seed(mem);
+
+    auto run = [](auto* d, const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        auto cur = d->execute_sql(s, sql);
+        if (!cur->is_success()) {
+            INFO("query failed: " << sql << " :: " << std::string(cur->get_error().what));
+            REQUIRE(cur->is_success());
+        }
+        return cur;
+    };
+
+    // (A) UNION ALL, single fully-pushable conjunct.
+    //     a>5: t1 -> {(6,5),(8,50)}, t2 -> {(7,8),(9,9),(10,1)} = 5 rows.
+    {
+        const std::string q = "SELECT * FROM (SELECT a, b FROM TestDatabase.t1 "
+                              "UNION ALL SELECT a, b FROM TestDatabase.t2) x WHERE a > 5;";
+        INFO(q);
+        auto dc = run(disk, q);
+        auto mc = run(mem, q);
+        REQUIRE(dc->size() == 5);
+        REQUIRE(mc->size() == 5);
+        auto t = plan_text(run(disk, std::string("EXPLAIN ") + q));
+        INFO("EXPLAIN(A):\n" << t);
+        REQUIRE(contains(t, "Seq Scan"));
+        REQUIRE_FALSE(contains(t, "Filter")); // fully pushed into the branch scans
+    }
+
+    // (A') plain UNION (dedup above): a>5 over identical branch data dedups to
+    //      {6,7,8,9,10} distinct (a,b) pairs — all distinct here → 5 rows still.
+    {
+        const std::string q = "SELECT * FROM (SELECT a, b FROM TestDatabase.t1 "
+                              "UNION SELECT a, b FROM TestDatabase.t2) x WHERE a > 5;";
+        INFO(q);
+        auto dc = run(disk, q);
+        auto mc = run(mem, q);
+        REQUIRE(dc->size() == mc->size());
+    }
+
+    // (B) UNION ALL, conjunctive predicate, both conjuncts pushable.
+    //     a>5 AND b<10: t1 -> {(6,5)}, t2 -> {(7,8),(9,9),(10,1)} = 4 rows.
+    {
+        const std::string q = "SELECT * FROM (SELECT a, b FROM TestDatabase.t1 "
+                              "UNION ALL SELECT a, b FROM TestDatabase.t2) x WHERE a > 5 AND b < 10;";
+        INFO(q);
+        auto dc = run(disk, q);
+        auto mc = run(mem, q);
+        REQUIRE(dc->size() == 4);
+        REQUIRE(mc->size() == 4);
+    }
+
+    // (C) UNION ALL where the 2nd branch renames column b->c. `a` is identity-
+    //     mappable (pushed into both Seq Scans); `b` is NOT (t3 exposes `c` at that
+    //     position) so it stays as a residual Filter above the union.
+    //     a>5 AND (union col1)<10: t1 -> {(6,5)}, t3 -> {(7,8),(9,9),(10,1)} = 4 rows.
+    {
+        const std::string q = "SELECT * FROM (SELECT a, b FROM TestDatabase.t1 "
+                              "UNION ALL SELECT a, c FROM TestDatabase.t3) x WHERE a > 5 AND b < 10;";
+        INFO(q);
+        auto dc = run(disk, q);
+        auto mc = run(mem, q);
+        REQUIRE(dc->size() == 4);
+        REQUIRE(mc->size() == 4);
+        auto t = plan_text(run(disk, std::string("EXPLAIN ") + q));
+        INFO("EXPLAIN(C):\n" << t);
+        REQUIRE(contains(t, "Seq Scan"));
+        REQUIRE(contains(t, "Filter")); // residual b<10 remains above the union
+    }
+}

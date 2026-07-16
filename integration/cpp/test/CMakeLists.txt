@@ -33,6 +33,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_column_projection.cpp
         test_computed_schema.cpp
         test_pushdown_filter.cpp
+        test_cte_pushdown.cpp
         test_subqueries.cpp
         test_hash_join.cpp
         test_star_join_e2e.cpp

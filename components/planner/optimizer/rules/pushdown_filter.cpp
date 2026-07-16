@@ -394,6 +394,76 @@ namespace components::planner::optimizer {
             return true;
         }
 
+        // --- push a WHERE into an inlined single-table sub-plan / CTE body ---------
+        //
+        // A non-recursive CTE reference (and a plain FROM-subquery) is INLINED by the
+        // SQL transformer as a source aggregate BOUND TO ITS BASE TABLE
+        // (table_oid() != INVALID_OID) whose pipeline stages (select / sort / its own
+        // WHERE) sit at children[0..] with the scan IMPLICIT in the aggregate identity
+        // — there is NO separate data child at index 0. The generic aggregate-source
+        // branch handles only the OTHER shape (a sub-query over an in-memory data /
+        // non-scan child at index 0, pipeline at [1..]); its loops start at i=1 and
+        // miss this one. create_plan_aggregate lowers a table-scan aggregate on the
+        // canonical `base -> match -> group -> sort -> select` chain, so a match child
+        // of the body aggregate lands AT the base scan (a full_scan predicate = disk
+        // pushdown + column pruning) — exactly the goal.
+        //
+        // A pushed conjunct's keys keep their paths, stamped in the body's OUTPUT
+        // coordinates. Predicate evaluation reads columns BY PATH INDEX against the
+        // BASE scan chunk (predicates::create_value_getter -> chunk.at(path)), so the
+        // push is sound ONLY when a referenced column's body-output ordinal already
+        // equals its base column index — a LEADING-PREFIX IDENTITY projection like
+        // `SELECT a, b FROM t(a,b,c)`. A reorder (`SELECT b, a`) or rename (`a AS x`)
+        // fails this test and the conjunct stays above the body (residual). `SELECT *`
+        // (no projection) is trivially prefix-identity: the body output IS the base
+        // scan in base order.
+        //
+        // `sel` is the body's projection. Returns true iff EVERY column in `cols` is a
+        // position-preserving identity output of `sel`.
+        bool select_prefix_identity_for(const node_select_t& sel, const std::set<std::string>& cols) {
+            const auto& exprs = sel.expressions();
+            const size_t hidden = sel.internal_aggregate_count;
+            if (exprs.size() < hidden) {
+                return false;
+            }
+            const size_t visible = exprs.size() - hidden;
+            for (const auto& col : cols) {
+                bool ok = false;
+                for (size_t p = 0; p < visible; ++p) {
+                    const auto& e = exprs[p];
+                    if (e->group() != expression_group::scalar) {
+                        continue;
+                    }
+                    auto* sc = static_cast<scalar_expression_t*>(e.get());
+                    if (sc->type() != scalar_type::get_field || sc->key().as_string() != col) {
+                        continue; // output at position p is not this column
+                    }
+                    // The base-source key is the sole param (renamed / explicit) or the
+                    // key itself (bare `SELECT a`). validate_schema stamped its path()[0]
+                    // to the incoming (base scan) column index.
+                    const key_t* in = nullptr;
+                    if (sc->params().empty()) {
+                        in = &sc->key();
+                    } else if (is_key(sc->params().front())) {
+                        in = &as_key(sc->params().front());
+                    }
+                    if (in == nullptr || in->as_string() != col) {
+                        break; // computed / renamed output — not identity
+                    }
+                    // Position-preserving iff the base column index equals the output
+                    // ordinal p. An unstamped (empty) path cannot be proven safe -> bail.
+                    if (in->path().size() == 1 && in->path()[0] == p) {
+                        ok = true;
+                    }
+                    break;
+                }
+                if (!ok) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         void collect_subtree_columns(const node_ptr& node, std::set<std::string>& cols) {
             if (!node) {
                 return;
@@ -1144,10 +1214,161 @@ namespace components::planner::optimizer {
             return node;
         }
 
+        // --- predicate pushdown INTO an inlined single-table CTE / sub-query body ----
+        //
+        // Runs as its OWN pass, BEFORE pushdown_filter, on the ORIGINAL tree. Deliberately
+        // separate from pushdown_filter_impl: that rule, while pushing a filter below a
+        // JOIN, synthesizes `aggregate{ scan, match }` wrappers and recurses into them —
+        // and this logic would then fuse those join-branch matches into their scans,
+        // altering the join EXPLAIN shape (and destabilizing the join lowering). Running
+        // first sidesteps that entirely: at this point no join wrappers exist, and the
+        // only source shape targeted here (a table-scan aggregate: table_oid stamped,
+        // scan implicit, pipeline at children[0..]) is DISJOINT from the join / union /
+        // in-memory-subquery shapes pushdown_filter handles.
+        //
+        // See select_prefix_identity_for above for why only a LEADING-PREFIX IDENTITY
+        // projection is pushable (predicate reads columns by PATH INDEX against the base
+        // scan).
+        node_ptr pushdown_cte_filter_impl(std::pmr::memory_resource* resource, node_ptr node) {
+            if (!node) {
+                return node;
+            }
+            for (size_t i = 0; i < node->children().size(); ++i) {
+                auto& child = node->children()[i];
+                auto optimized = pushdown_cte_filter_impl(resource, child);
+                if (optimized != child) {
+                    node->children()[i] = optimized;
+                }
+            }
+
+            if (node->type() != node_type::aggregate_t || node->children().size() < 2) {
+                return node;
+            }
+            auto* agg = static_cast<node_aggregate_t*>(node.get());
+
+            // The consumer's WHERE (first match child). child[0] is the FROM source.
+            node_ptr match_child = nullptr;
+            for (size_t i = 1; i < agg->children().size(); ++i) {
+                if (agg->children()[i]->type() == node_type::match_t) {
+                    match_child = agg->children()[i];
+                    break;
+                }
+            }
+            if (!match_child || match_child->expressions().empty()) {
+                return node;
+            }
+
+            auto source = agg->children()[0];
+            // Only an inlined single-table body: a table-scan aggregate (resolved oid, scan
+            // implicit). A recursive-CTE reference lowers to an empty-identity aggregate over a
+            // node_recursive_cte (no oid) and is therefore left untouched here.
+            if (source->type() != node_type::aggregate_t ||
+                source->table_oid() == components::catalog::INVALID_OID) {
+                return node;
+            }
+            auto* body = static_cast<node_aggregate_t*>(source.get());
+
+            // LIMIT/OFFSET, GROUP BY, HAVING and DISTINCT are HARD stops: pushing a filter below
+            // a LIMIT changes which rows survive (`ORDER BY .. LIMIT` then WHERE != WHERE then
+            // LIMIT); below a GROUP/HAVING it would run pre-aggregation against post-aggregation
+            // columns; DISTINCT ON dedups below the projection. Be conservative — leave the body
+            // untouched (correct, just not pushed) when any is present. A bare SORT is fine: it is
+            // row-preserving and the pushed match lands below it (base -> match -> sort).
+            node_ptr body_select = nullptr;
+            node_ptr body_match = nullptr;
+            bool body_blocked = body->is_distinct();
+            for (const auto& c : body->children()) {
+                switch (c->type()) {
+                    case node_type::limit_t:
+                    case node_type::group_t:
+                    case node_type::having_t:
+                        body_blocked = true;
+                        break;
+                    case node_type::select_t:
+                        body_select = c;
+                        break;
+                    case node_type::match_t:
+                        body_match = c;
+                        break;
+                    default:
+                        break;
+                }
+            }
+            if (body_blocked) {
+                return node;
+            }
+
+            auto* sel = body_select ? static_cast<node_select_t*>(body_select.get()) : nullptr;
+            // With no projection the body output IS the base scan in base order, so every base
+            // column is prefix-identity; take the base column set from the stamped output_types().
+            std::set<std::string> base_cols;
+            if (!sel && source->has_output_types()) {
+                for (const auto& t : source->output_types()) {
+                    if (!t.alias().empty()) {
+                        base_cols.insert(t.alias());
+                    }
+                }
+            }
+
+            auto conjuncts = split_conjuncts(resource, match_child->expressions()[0]);
+            std::pmr::vector<expression_ptr> pushable{resource}, residual{resource};
+            for (const auto& conj : conjuncts) {
+                auto cols = collect_referenced_columns(conj);
+                bool ok = !cols.empty();
+                if (ok) {
+                    ok = sel ? select_prefix_identity_for(*sel, cols)
+                             : std::includes(base_cols.begin(), base_cols.end(), cols.begin(), cols.end());
+                }
+                (ok ? pushable : residual).push_back(conj);
+            }
+            if (pushable.empty()) {
+                return node;
+            }
+
+            auto [m_db, m_rel] = node_cfn(source);
+            auto pushed_expr = rebuild_conjunction(resource, pushable);
+            if (body_match) {
+                // create_plan_aggregate builds ONE match_op (the last match child wins), so MERGE
+                // into the body's own WHERE rather than adding a second match child.
+                auto existing = split_conjuncts(resource, body_match->expressions()[0]);
+                existing.push_back(pushed_expr);
+                body_match->expressions()[0] = rebuild_conjunction(resource, existing);
+            } else {
+                auto pushed_match = make_node_match(resource, m_db, m_rel, pushed_expr);
+                // Inherit the body table's resolved oid so create_plan_match binds the pushed match
+                // to the base scan (a plain compare lowers to a full_scan predicate).
+                pushed_match->set_table_oid(source->table_oid());
+                body->append_child(pushed_match);
+            }
+
+            auto residual_expr = rebuild_conjunction(resource, residual);
+            if (!residual_expr) {
+                // Whole WHERE pushed into the body -> drop the (now-empty) consumer match child.
+                auto& cc = node->children();
+                for (size_t i = 0; i < cc.size(); ++i) {
+                    if (cc[i] == match_child) {
+                        cc.erase(cc.begin() + static_cast<std::ptrdiff_t>(i));
+                        break;
+                    }
+                }
+                // A bare wrapper { body } is a redundant pass-through -> expose the body directly.
+                if (node->children().size() == 1) {
+                    return source;
+                }
+                return node;
+            }
+            match_child->expressions()[0] = residual_expr;
+            return node;
+        }
+
     } // anonymous namespace
 
     logical_plan::node_ptr pushdown_filter(std::pmr::memory_resource* resource, logical_plan::node_ptr node) {
         return pushdown_filter_impl(resource, std::move(node));
+    }
+
+    logical_plan::node_ptr pushdown_cte_filter(std::pmr::memory_resource* resource, logical_plan::node_ptr node) {
+        return pushdown_cte_filter_impl(resource, std::move(node));
     }
 
 } // namespace components::planner::optimizer

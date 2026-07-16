@@ -100,6 +100,7 @@ target_link_libraries(
         otterbrix::index
         otterbrix::logical_plan
         otterbrix::catalog
+        otterbrix::regex
         spdlog::spdlog
         absl::flat_hash_map
         absl::node_hash_map

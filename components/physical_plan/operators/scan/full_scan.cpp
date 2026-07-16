@@ -1,6 +1,7 @@
 #include "full_scan.hpp"
 
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/like_to_regex.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
@@ -114,20 +115,50 @@ namespace components::operators {
                 // For a subscript path (v[i]) the comparison is against the element
                 // type, not the ARRAY/LIST column type; type_from_path resolves it.
                 const auto& col_type = types::complex_logical_type::type_from_path(types, path);
-                const auto& arr = parameters->parameters.at(param_id).children();
+                const auto& arr_param = parameters->parameters.at(param_id);
                 const bool is_any = expression->type() == expressions::compare_type::any;
                 auto filter = is_any ? std::unique_ptr<table::conjunction_filter_t>(
                                            std::make_unique<table::conjunction_or_filter_t>())
                                      : std::unique_ptr<table::conjunction_filter_t>(
                                            std::make_unique<table::conjunction_and_filter_t>());
-                filter->child_filters.reserve(arr.size());
-                for (const auto& val : arr) {
-                    auto coerced = val.type() == col_type ? val : val.cast_as(col_type, session_tz);
-                    if (coerced.is_null()) {
-                        continue;
+                // Empty / 0-row sub-query: the array param is the NA-null sentinel; calling .children() on it
+                // is invalid. Leaving the conjunction empty is exactly the PostgreSQL semantics — an empty OR
+                // matches nothing (`x = ANY(empty)` -> false), an empty AND matches everything
+                // (`x <> ALL(empty)` -> true) — so skip element construction when the array is null.
+                // LIKE/ILIKE ANY|ALL: each element is a pattern -> a regex_filter_t (pmr::string, no
+                // logical_value_t — Rule 1), converting a LIKE glob (regex_like) and matching case-
+                // insensitively for ILIKE. NOT LIKE ANY/ALL never reaches disk (it stays in-memory — a
+                // per-element negation is not expressible as a conjunction of positive filters).
+                const bool is_regex = inner_op == expressions::compare_type::regex;
+                const bool re_like = is_regex && expression->regex_like();
+                const bool re_icase = is_regex && expression->regex_icase();
+                if (!arr_param.is_null()) {
+                    const auto& arr = arr_param.children();
+                    filter->child_filters.reserve(arr.size());
+                    for (const auto& val : arr) {
+                        if (is_regex) {
+                            if (val.is_null()) {
+                                continue;
+                            }
+                            const auto raw = val.value<std::string_view>();
+                            std::pmr::string pat{resource};
+                            if (re_like) {
+                                const std::string converted = expressions::like_to_regex(std::string(raw));
+                                pat.assign(converted.begin(), converted.end());
+                            } else {
+                                pat.assign(raw.begin(), raw.end());
+                            }
+                            filter->child_filters.emplace_back(
+                                std::make_unique<table::regex_filter_t>(std::move(pat), re_icase, indices));
+                        } else {
+                            auto coerced = val.type() == col_type ? val : val.cast_as(col_type, session_tz);
+                            if (coerced.is_null()) {
+                                continue;
+                            }
+                            filter->child_filters.emplace_back(
+                                std::make_unique<table::constant_filter_t>(inner_op, coerced, indices));
+                        }
                     }
-                    filter->child_filters.emplace_back(
-                        std::make_unique<table::constant_filter_t>(inner_op, coerced, indices));
                 }
                 return filter;
             }
@@ -163,6 +194,17 @@ namespace components::operators {
                     return core::error_t{
                         core::error_code_t::invalid_parameter,
                         std::pmr::string{"parameter not found in expression to filter conversion", resource}};
+                }
+                // LIKE / ILIKE / regexp: `it->second` is the like_to_regex-converted pattern (a regex, not an
+                // orderable constant). Build a regex_filter_t that holds it as a plain pmr::string (NOT a
+                // logical_value_t — Rule 1) and matches with RE2, case-insensitively for ILIKE. Checked before
+                // the ENUM / cast logic below (which only makes sense for orderable constants).
+                if (expression->type() == expressions::compare_type::regex) {
+                    const auto& pat = it->second;
+                    return std::unique_ptr<table::table_filter_t>(
+                        std::make_unique<table::regex_filter_t>(std::pmr::string{pat.value<std::string_view>(), resource},
+                                                                expression->regex_icase(),
+                                                                std::move(indices)));
                 }
                 // Coerce STRING parameter to ENUM ordinal when the target column is an ENUM:
                 // compare semantics see int32 storage on both sides, so the literal must be

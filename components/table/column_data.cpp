@@ -546,9 +546,13 @@ namespace components::table {
             if (!result.validity().row_is_valid(0)) {
                 return false;
             }
-            // Dispatch handles both constant_filter_t and set_membership_filter_t.
+            // Dispatch handles constant_filter_t, set_membership_filter_t, and the string-only regex_filter_t.
             if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
                 return set->contains(result.value(0));
+            }
+            if (filter->filter_type == expressions::compare_type::regex) {
+                auto cell = result.value(0); // bind before value<string_view>() (chunk value is a temporary)
+                return filter->cast<regex_filter_t>().matches(cell.value<std::string_view>());
             }
             const auto& const_filter = filter->cast<constant_filter_t>();
             return const_filter.compare(result.value(0));

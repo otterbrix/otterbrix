@@ -465,12 +465,10 @@ namespace components::sql::transform {
                     // needed; negation is expressed by the union_not wrapper. Only case-insensitivity rides
                     // the compare (the executor builds std::regex with icase when set).
                     if (icase) {
+                        // ILIKE: the storage constant_filter compiles the pattern with RE2's case-insensitive
+                        // option (regex_icase is threaded into the disk filter by transform_predicate), so this
+                        // pushes down to disk exactly like plain LIKE — no in-memory diversion.
                         cmp->set_regex_flags(/*like=*/false, /*icase=*/true, /*negate=*/false);
-                        // The storage constant_filter matches a raw, case-sensitive std::regex, so ILIKE must
-                        // be evaluated in-memory (make_regex_comparator honours regex_icase). Marking it
-                        // unfoldable diverts it from the storage pushdown. (NOT ILIKE is already in-memory via
-                        // its union_not wrapper; plain LIKE stays on the case-sensitive storage path.)
-                        cmp->make_unfoldable();
                     }
                     if (negate) {
                         auto not_expr = make_compare_union_expression(resource_, compare_type::union_not);
@@ -858,7 +856,16 @@ namespace components::sql::transform {
                 if (inner_op == compare_type::regex) {
                     expr->set_regex_flags(re_like, re_icase, re_negate);
                 }
-                expr->make_unfoldable();
+                // ANY/ALL pushes into the disk scan as a conjunction of per-element filters
+                // (transform_predicate: constant_filter for comparisons, regex_filter for LIKE/ILIKE). The
+                // sub-query array is bound once (the executor runs sub_queries before the main plan), so a
+                // once-built filter is correct for these non-correlated arrays. Comparisons (=, <>, <, ...)
+                // and POSITIVE LIKE/ILIKE ANY|ALL push down; a NEGATED LIKE (NOT LIKE / NOT ILIKE) needs
+                // per-element negation no conjunction of positive filters expresses, so it stays in-memory
+                // (regex_any_predicate).
+                if (inner_op == compare_type::regex && re_negate) {
+                    expr->make_unfoldable();
+                }
                 return expr;
             }
             case EXPR_SUBLINK: {

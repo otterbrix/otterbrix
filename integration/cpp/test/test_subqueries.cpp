@@ -2499,6 +2499,118 @@ TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
     }
 }
 
+// Ф5 (Gap D): a COMPARISON ANY/ALL over a sub-query (= ANY / IN / > ALL / <> ALL) is pushed into the disk
+// scan as a conjunction of per-element constant_filters (the array is bound once — non-correlated). An empty
+// sub-query leaves the conjunction empty: `= ANY(empty)` matches nothing, `<> ALL(empty)` matches everything.
+TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
+    auto config = test_create_config("/tmp/test_subqueries/any_subquery_disk_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, v bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);")->is_success());
+    REQUIRE(run("CREATE TABLE db.keys (k bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.keys (k) VALUES (20), (40);")->is_success());
+
+    INFO("= ANY (SELECT ...) -> disk conjunction_or of eq filters");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v = ANY (SELECT k FROM db.keys);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // v in {20, 40}
+    }
+    INFO("IN (SELECT ...)");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v IN (SELECT k FROM db.keys);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    INFO("> ALL (SELECT ...) -> disk conjunction_and of gt filters");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v > ALL (SELECT k FROM db.keys);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // only 50 > both 20 and 40
+    }
+    INFO("<> ALL (SELECT ...) == NOT IN");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v <> ALL (SELECT k FROM db.keys);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // 10, 30, 50
+    }
+    INFO("= ANY (empty sub-query) matches nothing");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v = ANY (SELECT k FROM db.keys WHERE k > 1000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("<> ALL (empty sub-query) matches everything");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v <> ALL (SELECT k FROM db.keys WHERE k > 1000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+}
+
+// Ф5b: POSITIVE LIKE/ILIKE ANY|ALL over a sub-query pushes into the disk scan as a conjunction of
+// regex_filter_t (per-element, pmr::string pattern, RE2, no logical_value_t). ILIKE case-insensitivity is
+// a filter option. NOT LIKE ANY stays in-memory (per-element negation is not a conjunction of positives).
+TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
+    auto config = test_create_config("/tmp/test_subqueries/like_any_disk_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, s string);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, s) VALUES (1, 'apple'), (2, 'Banana'), (3, 'cherry'), (4, 'avocado');")
+                ->is_success());
+    REQUIRE(run("CREATE TABLE db.pat (p string);")->is_success());
+    // UPPERCASE patterns: case-sensitive LIKE matches nothing; case-insensitive ILIKE matches a*/c* rows.
+    REQUIRE(run("INSERT INTO db.pat (p) VALUES ('A%'), ('C%');")->is_success());
+
+    INFO("LIKE ANY (disk, case-sensitive): uppercase patterns match no lowercase row");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("ILIKE ANY (disk, case-insensitive): 'A%'/'C%' match apple, cherry, avocado");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s ILIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // apple, cherry, avocado (Banana starts with B)
+    }
+    INFO("ILIKE ALL (disk): no row starts with both A and C");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s ILIKE ALL (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("NOT LIKE ANY (in-memory): every row fails at least one uppercase pattern");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+    }
+}
+
 // M5 Part 3 (#559/#563): a bare NULL literal in one UNION branch reconciles to the other branch's type
 // (PostgreSQL), instead of a spurious "UNION column type mismatch". A genuine text-vs-int mismatch still errors.
 TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {

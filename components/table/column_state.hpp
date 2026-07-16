@@ -1,9 +1,11 @@
 #pragma once
 #include <components/types/types.hpp>
 #include <core/operations_helper.hpp>
+#include <core/regex/regex.hpp>
 #include <core/result_wrapper.hpp>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -233,6 +235,51 @@ namespace components::table {
         std::pmr::vector<uint64_t> table_indices;
     };
 
+    // LIKE / ILIKE / regexp disk filter. Holds the pattern as a plain std::pmr::string (NOT a
+    // logical_value_t — Rule 1) and compiles it once with RE2 on first match; filter_type is always
+    // compare_type::regex, so every zonemap path (which gates on eq/gt/gte/lt/lte) skips it — a regex
+    // has no min/max bound to prune on. Discriminated by dynamic_cast, never table_filter_t::cast<>
+    // (a reinterpret_cast). matches() is a partial RE2 search (== std::regex_search); ILIKE sets icase.
+    class regex_filter_t : public table_filter_t {
+    public:
+        regex_filter_t(std::pmr::string pattern, bool icase, std::pmr::vector<uint64_t> table_indices)
+            : table_filter_t(expressions::compare_type::regex)
+            , pattern(std::move(pattern))
+            , icase(icase)
+            , table_indices(std::move(table_indices)) {}
+
+        bool matches(std::string_view subject) const {
+            if (!compiled_) {
+                auto compiled = core::regex_t::compile(pattern.get_allocator().resource(), pattern, icase);
+                if (compiled.has_error()) {
+                    return false; // a like_to_regex pattern is always well-formed, so this is unreachable
+                }
+                compiled_.emplace(std::move(compiled.value()));
+            }
+            return compiled_->match(subject);
+        }
+
+        std::unique_ptr<table_filter_t> copy() const override {
+            return std::make_unique<regex_filter_t>(pattern, icase, table_indices);
+        }
+        bool equals(const table_filter_t& other) const override {
+            // filter_type == regex is unique to regex_filter_t (constant_filter_t never carries regex), so a
+            // matching filter_type guarantees `other` is a regex_filter_t — no dynamic_cast (Rule 14).
+            if (!table_filter_t::equals(other)) {
+                return false;
+            }
+            const auto& o = other.cast<regex_filter_t>();
+            return pattern == o.pattern && icase == o.icase;
+        }
+
+        std::pmr::string pattern;
+        bool icase = false;
+        std::pmr::vector<uint64_t> table_indices;
+
+    private:
+        mutable std::optional<core::regex_t> compiled_;
+    };
+
     // Dispatch helper used by all storage filter sites. Replaces the
     //     `filter->cast<constant_filter_t>().compare(value)` pattern with one that handles
     // set_membership_filter_t too. Constructs a temporary logical_value_t on the set's own
@@ -240,6 +287,15 @@ namespace components::table {
     // Templated on the value type (fixed-width T, bool for validity, string_view).
     template<typename T>
     inline bool table_filter_dispatch(const table_filter_t* filter, T value) {
+        // filter_type == regex is unique to regex_filter_t (no dynamic_cast — Rule 14). Regex applies only
+        // to string subjects (the row-based string_check_row path passes a string_view).
+        if (filter->filter_type == expressions::compare_type::regex) {
+            if constexpr (std::is_same_v<T, std::string_view>) {
+                return filter->cast<regex_filter_t>().matches(value);
+            } else {
+                return false;
+            }
+        }
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
             return set->contains(types::logical_value_t{set->values.get_allocator().resource(), value});
         }
@@ -250,6 +306,9 @@ namespace components::table {
     // (the column path within a struct/list); is_null_filter_t too. This unifies access
     // for sites that need to navigate sub-columns regardless of which filter kind landed.
     inline const std::pmr::vector<uint64_t>& table_filter_table_indices(const table_filter_t* filter) {
+        if (filter->filter_type == expressions::compare_type::regex) {
+            return filter->cast<regex_filter_t>().table_indices;
+        }
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
             return set->table_indices;
         }

@@ -53,6 +53,7 @@ target_link_libraries(
         otterbrix::session
         otterbrix::types
         otterbrix::vector
+        otterbrix::regex
 
         absl::crc32c
         Boost::boost

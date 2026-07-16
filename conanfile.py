@@ -23,7 +23,10 @@ class OtterbrixConan(ConanFile):
             self.requires("utf8proc/2.9.0")
             self.requires("tabulate/1.5")
         self.requires("catch2/3.15.1@")
-        self.requires("abseil/20260107.1")
+        # force: re2's recipe pins an older abseil range; override it so re2 and the
+        # rest of the tree share the single abseil binary we already depend on.
+        self.requires("abseil/20260107.1", force=True)
+        self.requires("re2/20240702")
         self.requires("benchmark/1.6.1@")
         self.requires("zlib/1.3.1@")
         self.requires("bzip2/1.0.8@")

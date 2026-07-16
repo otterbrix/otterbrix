@@ -1276,6 +1276,27 @@ namespace components::table {
         }
         return result_count;
     }
+
+    // Regex has no SIMD form; match each string row with regex_filter_t::matches (RE2, compiled once).
+    // Mirrors filter_selection but folds validity + regex match into one per-row test.
+    static uint64_t filter_selection_regex(vector::unified_vector_format& uvf,
+                                           const regex_filter_t& filter,
+                                           vector::indexing_vector_t& sel,
+                                           uint64_t approved_tuple_count,
+                                           vector::indexing_vector_t& result_sel) {
+        auto& mask = uvf.validity;
+        auto vec = uvf.get_data<std::string_view>();
+        uint64_t result_count = 0;
+        for (uint64_t i = 0; i < approved_tuple_count; i++) {
+            auto idx = sel.get_index(i);
+            auto vector_idx = uvf.referenced_indexing->get_index(idx);
+            bool matched = mask.row_is_valid(vector_idx) && filter.matches(vec[vector_idx]);
+            result_sel.set_index(result_count, idx);
+            result_count += matched;
+        }
+        return result_count;
+    }
+
     template<class T>
     static void filter_selection_switch(vector::unified_vector_format& uvf,
                                         T predicate,
@@ -1400,6 +1421,21 @@ namespace components::table {
         // Until M4 wires a vectorized IN-list path here, fall through to the row-based
         // check_row dispatch (which IS set_membership_filter_t-aware via table_filter_dispatch).
         if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
+            return approved_tuple_count;
+        }
+        // Regex is a per-row match, not a SIMD compare — filter_selection_switch has no regex case (it would
+        // throw). Evaluate it here with regex_filter_t::matches (RE2) so the vectorized path is CORRECT:
+        // declining (returning the count unchanged) would wrongly pass every row, because column_data_t::filter
+        // has no row-based fallback after this call. Checked before the constant_filter cast (a regex_filter_t
+        // is a distinct type). filter_type == regex is unique to regex_filter_t (no dynamic_cast — Rule 14).
+        if (filter.filter_type == expressions::compare_type::regex) {
+            vector::indexing_vector_t new_indexing(indexing.resource(), approved_tuple_count);
+            approved_tuple_count = filter_selection_regex(uvf,
+                                                          filter.cast<regex_filter_t>(),
+                                                          indexing,
+                                                          approved_tuple_count,
+                                                          new_indexing);
+            indexing = new_indexing;
             return approved_tuple_count;
         }
         auto& constant_filter = filter.cast<constant_filter_t>();

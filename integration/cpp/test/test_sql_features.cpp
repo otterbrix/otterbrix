@@ -382,6 +382,127 @@ TEST_CASE("integration::cpp::test_sql_features::like") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 7); // All except Alice, Alex, Alfred
     }
+
+    // ILIKE / NOT ILIKE exercise the case-insensitive regex_predicate path (RE2 icase option). The
+    // lowercase 'al'/'bob' patterns match the mixed-case data only because the match is case-folded.
+    INFO("ILIKE prefix wildcard (case-insensitive)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE name ILIKE 'al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // Alice, Alex, Alfred (case-insensitive)
+    }
+
+    INFO("ILIKE suffix wildcard (case-insensitive)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE name ILIKE '%E';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // Alice, Charlie, test_value (end in e/E)
+    }
+
+    INFO("ILIKE exact match (case-insensitive)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE name ILIKE 'BOB';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // Bob
+    }
+
+    INFO("NOT ILIKE");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE name NOT ILIKE 'al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 7); // All except Alice, Alex, Alfred
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
+    // Same LIKE/ILIKE cases as ::like but with DISK-backed storage, so the predicate is pushed into the disk
+    // scan's constant_filter_t (RE2, compiled once, case-insensitive for ILIKE) and evaluated on real column
+    // segments — the row-based string_check_row -> constant_filter_t::compare path. Guards the Ф3/Ф4 disk
+    // regex wiring against silent wrong results on uncompressed string columns.
+    auto config = test_create_config("/tmp/test_sql_features/like_disk_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            test_create_collection(dispatcher, session, database_name, collection_name);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('Alice', 1), ('Bob', 2), ('Charlie', 3), "
+                                               "('Alex', 4), ('Alfred', 5), ('Brian', 6), "
+                                               "('test_value', 7), ('test123', 8), ('abc', 9), ('xyz', 10);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+    }
+
+    INFO("LIKE prefix (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'Al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // Alice, Alex, Alfred
+    }
+
+    INFO("LIKE underscore (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'A___';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // Alex
+    }
+
+    INFO("ILIKE prefix case-insensitive (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name ILIKE 'al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // Alice, Alex, Alfred (case-insensitive)
+    }
+
+    INFO("NOT LIKE (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE 'Al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 7);
+    }
+
+    INFO("NOT ILIKE (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name NOT ILIKE 'al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 7);
+    }
 }
 
 TEST_CASE("integration::cpp::test_sql_features::distinct") {
@@ -5021,3 +5142,5 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
         REQUIRE(rows("x = 2 OR NOT (1 = 1)") == 1);     // {2} OR false
     }
 }
+
+

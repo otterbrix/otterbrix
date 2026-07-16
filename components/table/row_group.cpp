@@ -232,6 +232,9 @@ namespace components::table {
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
             return set->contains(element_value);
         }
+        if (filter->filter_type == expressions::compare_type::regex) {
+            return filter->cast<regex_filter_t>().matches(element_value.value<std::string_view>());
+        }
         return filter->cast<constant_filter_t>().compare(element_value);
     }
 
@@ -464,20 +467,58 @@ namespace components::table {
                     } else {
                         auto& col_data = get_column(column);
                         if (TYPE == table_scan_type::REGULAR) {
-                            vector::vector_t select_vector(result.resource(), result.data[out_idx].type(), max_count);
-                            auto prev_offset = state.column_scans[i].result_offset;
-                            state.column_scans[i].result_offset = 0;
-                            col_data.select(state.vector_index,
-                                            state.column_scans[i],
-                                            select_vector,
-                                            indexing,
-                                            approved_tuple_count);
-                            state.column_scans[i].result_offset = prev_offset;
-                            vector::vector_ops::copy(select_vector,
-                                                     result.data[out_idx],
-                                                     approved_tuple_count,
-                                                     0,
-                                                     state.column_scans[i].result_offset);
+                            // Late materialization: for a SELECTIVE filter, gather ONLY the surviving rows
+                            // (fetch_row — the same primitive check_predicate used to build the selection)
+                            // directly into the result instead of scanning the whole vector and slicing, so a
+                            // wide non-filter column decompresses approved_tuple_count rows, not max_count
+                            // (measured ~7x at 0.2% survival on a wide table). Gated on selectivity: below ~20%
+                            // survival the per-row gather wins; above it the bulk select() is competitive and
+                            // is the safe path for the complex-column update overlay (STRUCT/ARRAY/LIST
+                            // fetch_row scans children with the no-updates scan_count). No set_vector_type(FLAT)
+                            // here: result vectors are already FLAT and carry their auxiliary buffer from chunk
+                            // construction; forcing FLAT would reset a constant-size STRUCT buffer (e.g.
+                            // INTERVAL) and crash fetch_row.
+                            // Only simple (fixed-width / string) columns gather: a STRUCT/ARRAY/LIST
+                            // fetch_row scans its children with the no-updates scan_count and asserts when a
+                            // child carries an update overlay, so complex columns take the updates-aware
+                            // eager select(). Also skip a column with its own update overlay.
+                            const auto phys = result.data[out_idx].type().to_physical_type();
+                            const bool simple_col = phys != types::physical_type::STRUCT &&
+                                                    phys != types::physical_type::ARRAY &&
+                                                    phys != types::physical_type::LIST;
+                            const bool late_materialize = filter != nullptr && simple_col &&
+                                                          !col_data.has_updates() &&
+                                                          approved_tuple_count * uint64_t{5} < max_count;
+                            if (late_materialize) {
+                                const uint64_t base = state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+                                const uint64_t off = state.column_scans[i].result_offset;
+                                column_fetch_state fetch_state;
+                                for (uint64_t k = 0; k < approved_tuple_count; k++) {
+                                    col_data.fetch_row(fetch_state,
+                                                       static_cast<int64_t>(base + indexing.get_index(k)),
+                                                       result.data[out_idx],
+                                                       off + k);
+                                }
+                                // Advance the sequential scan state past this vector (gather did not scan it).
+                                col_data.skip(state.column_scans[i], max_count);
+                            } else {
+                                vector::vector_t select_vector(result.resource(),
+                                                               result.data[out_idx].type(),
+                                                               max_count);
+                                auto prev_offset = state.column_scans[i].result_offset;
+                                state.column_scans[i].result_offset = 0;
+                                col_data.select(state.vector_index,
+                                                state.column_scans[i],
+                                                select_vector,
+                                                indexing,
+                                                approved_tuple_count);
+                                state.column_scans[i].result_offset = prev_offset;
+                                vector::vector_ops::copy(select_vector,
+                                                         result.data[out_idx],
+                                                         approved_tuple_count,
+                                                         0,
+                                                         state.column_scans[i].result_offset);
+                            }
                         } else {
                             col_data.select_committed(state.vector_index,
                                                       state.column_scans[i],

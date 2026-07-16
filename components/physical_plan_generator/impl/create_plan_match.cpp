@@ -80,7 +80,11 @@ namespace services::planner::impl {
                 return false;
             }
             auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
-            if (comp_expr->type() == compare_type::regex || comp_expr->do_not_fold()) {
+            // A regex leaf (LIKE / ILIKE, pattern pre-converted by like_to_regex) IS pushable to disk now:
+            // constant_filter_t compares it via RE2 (case-insensitively when regex_icase). It still needs the
+            // `column OP constant` shape enforced below; an exotic non-key/expression operand falls back to
+            // operator_match. do_not_fold() (correlated / sub-query-array compares) still stays in-memory.
+            if (comp_expr->do_not_fold()) {
                 return false;
             }
             for (const auto& child : comp_expr->children()) {

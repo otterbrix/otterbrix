@@ -148,6 +148,8 @@ else()
     find_package(absl CONFIG REQUIRED)
 endif()
 
+find_package(re2 CONFIG REQUIRED)
+
 
 # conan
 #############################################################################################

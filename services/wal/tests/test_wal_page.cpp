@@ -585,3 +585,81 @@ TEST_CASE("edge_exact_fit") {
         REQUIRE((header.flags & PAGE_PARTIAL_END) == 0);
     }
 }
+
+// Two back-to-back spanning records: the page where the first record ENDS also
+// holds the second record's HEAD (flags END|CONT). The reader must re-arm its
+// span accumulator from that page's leftover bytes — otherwise the second
+// record, and every record until the next non-continuation page, is silently
+// dropped (multi-flush INSERT..SELECT statements write exactly this shape).
+TEST_CASE("back_to_back_spanning_records") {
+    tmp_dir_t dir("test_wal_page_b2b_span");
+    auto filepath = dir.file("wal_segment_0");
+    auto* resource = std::pmr::get_default_resource();
+
+    auto big = gen_data_chunk(500, resource);
+    auto small = gen_data_chunk(5, resource);
+
+    {
+        wal_page_writer_t writer(filepath, "testdb", 0);
+        crc32_t last_crc = 0;
+
+        auto r1 = encode_insert_rec(1, 42, last_crc, kTestTableOid, big, 0, 500);
+        REQUIRE(r1.data.size() > PAGE_DATA_SIZE);
+        writer.append(r1.data.data(), r1.data.size(), 1);
+        last_crc = extract_crc(r1.data.data(), r1.data.size());
+
+        auto r2 = encode_insert_rec(2, 43, last_crc, kTestTableOid, big, 500, 500);
+        writer.append(r2.data.data(), r2.data.size(), 2);
+        last_crc = extract_crc(r2.data.data(), r2.data.size());
+
+        auto r3 = encode_insert_rec(3, 44, last_crc, kTestTableOid, small, 1000, 5);
+        writer.append(r3.data.data(), r3.data.size(), 3);
+        writer.flush();
+    }
+
+    {
+        wal_page_reader_t reader(filepath);
+        auto records = reader.read_all_records(0);
+        REQUIRE(records.size() == 3);
+        REQUIRE(records[0].id == 1);
+        REQUIRE(records[1].id == 2);
+        REQUIRE(records[2].id == 3);
+    }
+}
+
+// A record boundary can land 1-3 bytes before the page end, splitting the next
+// record's 4-byte size prefix across pages. The reader must complete the prefix
+// before sizing its take — guessing "rest of the page" swallows the records
+// that follow the spanning one in the second page.
+TEST_CASE("size_prefix_split_across_pages") {
+    tmp_dir_t dir("test_wal_page_prefix_split");
+    auto filepath = dir.file("wal_segment_0");
+
+    // Filler sized to leave exactly 2 bytes of page-1 data space: an opaque
+    // [size][payload][crc] blob; its garbage payload decodes invalid and is
+    // skipped, which is irrelevant — only its length matters.
+    const uint32_t filler_total = PAGE_DATA_SIZE - 2;
+    std::vector<char> filler(filler_total, '\x5a');
+    const uint32_t filler_body = filler_total - 8;
+    std::memcpy(filler.data(), &filler_body, sizeof(uint32_t));
+
+    {
+        wal_page_writer_t writer(filepath, "testdb", 0);
+        writer.append(filler.data(), filler.size(), 1);
+
+        auto r2 = encode_commit_rec(2, 202, 0);
+        writer.append(r2.data.data(), r2.data.size(), 2);
+
+        auto r3 = encode_commit_rec(3, 203, 0);
+        writer.append(r3.data.data(), r3.data.size(), 3);
+        writer.flush();
+    }
+
+    {
+        wal_page_reader_t reader(filepath);
+        auto records = reader.read_all_records(0);
+        REQUIRE(records.size() == 2);
+        REQUIRE(records[0].id == 2);
+        REQUIRE(records[1].id == 3);
+    }
+}

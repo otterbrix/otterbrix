@@ -399,6 +399,76 @@ TEST_CASE("integration::cpp::restart_consistency::aborted_insert_shifts_replay_n
     check_restart_consistency(g);
 }
 
+// Multi-row-group flavor of the aborted-insert cell: everything crosses the
+// 1024-row vector boundary. The aborted placement spans several row groups
+// (version slots past the first group are the ones the slot-convention bug
+// mis-addressed), and the positional records after the abort resolve against
+// a numbering that includes thousands of dead rows.
+TEST_CASE("integration::cpp::restart_consistency::aborted_insert_multi_row_group", "[restart]") {
+    group_t g;
+    g.name = "aborted_insert_multi_rg";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.big (a bigint, v bigint)$S;",
+               "INSERT INTO rcdb.big (a, v) VALUES (0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),"
+               "(8,8),(9,9),(10,10),(11,11),(12,12),(13,13),(14,14),(15,15);",
+               // Double 7 times: 16 -> 2048 committed rows across 2+ row groups,
+               // with `a` kept unique per generation.
+               "INSERT INTO rcdb.big SELECT a + 16, v FROM rcdb.big;",
+               "INSERT INTO rcdb.big SELECT a + 32, v FROM rcdb.big;",
+               "INSERT INTO rcdb.big SELECT a + 64, v FROM rcdb.big;",
+               "INSERT INTO rcdb.big SELECT a + 128, v FROM rcdb.big;",
+               "INSERT INTO rcdb.big SELECT a + 256, v FROM rcdb.big;",
+               "INSERT INTO rcdb.big SELECT a + 512, v FROM rcdb.big;",
+               "INSERT INTO rcdb.big SELECT a + 1024, v FROM rcdb.big;",
+               // 2048 pending rows placed across row groups, then rolled back.
+               "@txn BEGIN;",
+               "@txn INSERT INTO rcdb.big SELECT a + 10000, v FROM rcdb.big;",
+               "@txn ROLLBACK;",
+               // Positional records captured against the post-abort numbering,
+               // touching rows well past the first row group.
+               "DELETE FROM rcdb.big WHERE a < 8;",
+               "UPDATE rcdb.big SET v = 77 WHERE a = 1500;"};
+    g.probes = {
+        {"state",
+         {},
+         {{"count", "SELECT COUNT(*) FROM rcdb.big;"},
+          {"deleted_stay_deleted", "SELECT * FROM rcdb.big WHERE a < 8;"},
+          {"update_sticks", "SELECT v FROM rcdb.big WHERE a = 1500;"},
+          {"aborted_rows_stay_gone", "SELECT COUNT(*) FROM rcdb.big WHERE a >= 10000;"},
+          {"late_sample", "SELECT * FROM rcdb.big WHERE a IN (1024, 1999, 2047);"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
+// Whole-table DELETE, VACUUM to zero, then reuse of the emptied row-id space.
+// The VACUUM epoch marker must replay before the re-inserts or they land above
+// 20 ghost tombstones and every later positional record misresolves.
+TEST_CASE("integration::cpp::restart_consistency::whole_table_delete_vacuum_reuse", "[restart]") {
+    group_t g;
+    g.name = "whole_table_delete_vacuum";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (a bigint, v bigint)$S;",
+               "INSERT INTO rcdb.t (a, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10),"
+               "(11,11),(12,12),(13,13),(14,14),(15,15),(16,16),(17,17),(18,18),(19,19),(20,20);",
+               "DELETE FROM rcdb.t;",
+               "VACUUM;",
+               // Fresh rows at the recycled physical ids 0..4.
+               "INSERT INTO rcdb.t (a, v) VALUES (101,1),(102,2),(103,3),(104,4),(105,5);",
+               "DELETE FROM rcdb.t WHERE a = 103;",
+               "UPDATE rcdb.t SET v = 42 WHERE a = 105;"};
+    g.probes = {
+        {"state",
+         {},
+         {{"survivors", "SELECT * FROM rcdb.t;"},
+          {"old_rows_gone", "SELECT COUNT(*) FROM rcdb.t WHERE a <= 20;"},
+          {"post_reuse_delete_stuck", "SELECT * FROM rcdb.t WHERE a = 103;"},
+          {"post_reuse_update_stuck", "SELECT v FROM rcdb.t WHERE a = 105;"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
 // ---------------------------------------------------------------------------
 // Type fidelity. The .otbx column record stores a bare uint8 logical_type, so
 // everything a type extension carries -- decimal width/scale, array size, list
@@ -815,3 +885,4 @@ TEST_CASE("integration::cpp::restart_consistency::rollback_does_not_wedge_compac
     }
     REQUIRE(user_table_compacted);
 }
+

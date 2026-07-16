@@ -138,27 +138,27 @@ namespace services::wal {
 
             // ---- Spanning record: continuation/last page ----
             if (in_span && (is_cont || is_end)) {
-                // Determine how many bytes we still need.
-                uint32_t needed = data_size;
-                if (span_buffer.size() >= 4) {
-                    uint32_t body_size = 0;
-                    std::memcpy(&body_size, span_buffer.data(), sizeof(uint32_t));
-                    uint32_t total_record = body_size + 8; // size(4) + body + crc(4)
-                    if (total_record > span_buffer.size()) {
-                        needed = static_cast<uint32_t>(total_record - span_buffer.size());
-                    } else {
-                        needed = 0;
-                    }
+                size_t offset = 0;
+
+                // Complete the 4-byte size prefix first if the page break split
+                // it: taking a whole-page guess here would swallow bytes that
+                // belong to the records AFTER the span in this page.
+                if (span_buffer.size() < sizeof(uint32_t)) {
+                    size_t prefix_take = std::min<size_t>(sizeof(uint32_t) - span_buffer.size(), data_size);
+                    span_buffer.insert(span_buffer.end(), data, data + prefix_take);
+                    offset = prefix_take;
                 }
 
-                uint32_t to_take = std::min(needed, data_size);
-                span_buffer.insert(span_buffer.end(), data, data + to_take);
-
-                // Check if we have the complete record now.
-                if (span_buffer.size() >= 4) {
+                if (span_buffer.size() >= sizeof(uint32_t)) {
                     uint32_t body_size = 0;
                     std::memcpy(&body_size, span_buffer.data(), sizeof(uint32_t));
-                    uint32_t total_record = body_size + 8;
+                    const uint32_t total_record = body_size + 8; // size(4) + body + crc(4)
+                    if (span_buffer.size() < total_record) {
+                        size_t take = std::min<size_t>(total_record - span_buffer.size(), data_size - offset);
+                        span_buffer.insert(span_buffer.end(), data + offset, data + offset + take);
+                        offset += take;
+                    }
+
                     if (span_buffer.size() >= total_record) {
                         auto rec = decode_record(span_buffer.data(), total_record, resource);
                         if (rec.is_valid() && rec.id > after_id) {
@@ -168,7 +168,6 @@ namespace services::wal {
                         in_span = false;
 
                         // Parse remaining complete records after the spanning data.
-                        size_t offset = to_take;
                         while (offset < data_size) {
                             if (offset + sizeof(uint32_t) > data_size) {
                                 break;
@@ -187,6 +186,19 @@ namespace services::wal {
                                 records.push_back(std::move(r));
                             }
                             offset += total_rec_bytes;
+                        }
+
+                        // This page may also START the next spanning record:
+                        // back-to-back multi-page records put the old record's
+                        // tail and the new record's head in the same page
+                        // (flags END|CONT, same as the not-in-span tail below).
+                        // Without re-arming, every record until the next
+                        // non-continuation page is lost.
+                        if (is_cont) {
+                            if (offset < data_size) {
+                                span_buffer.assign(data + offset, data + data_size);
+                            }
+                            in_span = true;
                         }
                     }
                 }

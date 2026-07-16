@@ -11,9 +11,16 @@ namespace services::planner::impl {
         // Pass the back-pointer so the operator stamps namespace_oid +
         // table_oid onto the logical node after a successful pg_class scan.
         // plan_resolve_index_t reads them in Pass 2.
+        //
+        // dbname is passed as a STRING: at plan-generation time the node's
+        // namespace_oid() is still INVALID_OID (the sibling resolve_namespace
+        // operator stamps its own node only at execution time), so the
+        // operator translates dbname -> namespace_oid itself at execution
+        // time. Dropping the dbname here was the #557 cross-database leak.
         return boost::intrusive_ptr(new components::operators::operator_resolve_table_t(context.resource,
                                                                                         context.log.clone(),
                                                                                         n->namespace_oid(),
+                                                                                        n->dbname(),
                                                                                         n->relname(),
                                                                                         n));
     }

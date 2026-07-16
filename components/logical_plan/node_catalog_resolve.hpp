@@ -94,7 +94,10 @@ namespace components::logical_plan {
     //
     // Field usage by kind:
     //   table       — dbname_ / relname_ / namespace_oid_ / table_oid() (base) /
-    //                 resolved_metadata_
+    //                 resolved_metadata_ / target_ (optional back-pointer to the
+    //                 sibling namespace resolve; execution-time namespace fast
+    //                 path — operator_resolve_table_t reads its stamp before
+    //                 falling back to its own pg_namespace scan)
     //   namespace_  — dbname_ / namespace_oid_
     //   database    — dbname_ / database_oid_
     //   type        — dbname_ / type_name_ / type_oid_ / resolved_type_metadata_
@@ -147,6 +150,10 @@ namespace components::logical_plan {
 
         // constraint — back-pointer to a sibling resolve node (must be
         // kind()==table); its Pass 1 stamp provides the target's table_oid.
+        // table — optional back-pointer to the sibling namespace resolve node
+        // (must be kind()==namespace_, same dbname); its Pass 1 stamp lets
+        // operator_resolve_table_t skip its own pg_namespace scan. Pure fast
+        // path: absent or unstamped, the operator self-resolves the dbname.
         node_catalog_resolve_t* target() const noexcept { return target_; }
         void set_target(node_catalog_resolve_t* target) noexcept { target_ = target; }
         resolve_direction direction() const noexcept { return direction_; }

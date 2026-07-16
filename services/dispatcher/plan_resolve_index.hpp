@@ -108,7 +108,13 @@ namespace services::catalog_resolve {
                     case resolve_kind::table: {
                         auto* rt = rn;
                         if (rt->namespace_oid() != components::catalog::INVALID_OID) {
-                            out->ns_by_dbname[rt->dbname()] = rt->namespace_oid();
+                            // ns_by_dbname is populated ONLY from namespace-kind
+                            // nodes (above): a table node's stamped namespace is
+                            // derived from the pg_class row it resolved to, and
+                            // letting it write the map under the user-typed
+                            // dbname allowed a mis-resolve to overwrite the
+                            // namespace node's correct entry and defeat
+                            // check_namespace_exists (issue #557 amplifier).
                             std::string key;
                             key.reserve(rt->dbname().size() + 1 + rt->relname().size());
                             key.append(rt->dbname()).push_back('|');

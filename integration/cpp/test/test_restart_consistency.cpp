@@ -402,6 +402,39 @@ TEST_CASE("integration::cpp::restart_consistency::aborted_insert_shifts_replay_n
     check_restart_consistency(g);
 }
 
+// A rolled-back UPDATE also placed rows: the MVCC update appended its new-row
+// images before the abort reverted the marks, so those images occupy physical
+// ids the live run consumed. Replay must place them at the record's append
+// base and retire them dead WITHOUT tombstoning the old rows (the abort
+// reverted those marks live) — a wrong dead range kills survivors, a
+// tombstoned old row loses committed data, and skipping placement shifts
+// every positional record after the rollback.
+TEST_CASE("integration::cpp::restart_consistency::aborted_update_shifts_replay_numbering", "[restart]") {
+    group_t g;
+    g.name = "aborted_update_numbering";
+    g.setup = {create_db,
+               "CREATE TABLE rcdb.t (a bigint, v bigint)$S;",
+               "INSERT INTO rcdb.t (a, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);",
+               "@txn BEGIN;",
+               "@txn UPDATE rcdb.t SET v = v + 1000 WHERE a <= 6;",
+               "@txn ROLLBACK;",
+               // Committed rows land at physical ids ABOVE the six aborted update images.
+               "INSERT INTO rcdb.t (a, v) VALUES (11,11),(12,12);",
+               // Positional records captured against the post-abort numbering.
+               "DELETE FROM rcdb.t WHERE a = 5;",
+               "UPDATE rcdb.t SET v = 99 WHERE a = 12;"};
+    g.probes = {
+        {"state",
+         {},
+         {{"survivors", "SELECT * FROM rcdb.t;"},
+          {"rollback_stuck", "SELECT v FROM rcdb.t WHERE a <= 6;"},
+          {"deleted_stays_deleted", "SELECT * FROM rcdb.t WHERE a = 5;"},
+          {"update_sticks", "SELECT v FROM rcdb.t WHERE a = 12;"}},
+         {}},
+    };
+    check_restart_consistency(g);
+}
+
 // Multi-row-group flavor of the aborted-insert cell: everything crosses the
 // 1024-row vector boundary. The aborted placement spans several row groups
 // (version slots are row-group-LOCAL; an absolute index would mis-address

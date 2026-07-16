@@ -462,9 +462,11 @@ namespace components::operators {
         // apply that releases the retained mutating scan pin (release_mutating_scans
         // at storage_delete_rows_inner's top) cannot fire now, and the mid-pump
         // applies could not release it (the cursor was still open when they landed).
-        // No later statement can sweep the pin either — sessions are minted per
-        // statement — so release explicitly with the same broadcast the abort path
-        // uses, or compaction of the target table defers forever.
+        // No later statement is guaranteed to sweep the pin either — an autocommit
+        // statement's session dies with the statement, and only statements inside one
+        // explicit transaction share a session — so release explicitly with the same
+        // broadcast the abort path uses, or compaction of the target table defers
+        // forever.
         if (!flushing_now && ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_rs, rsf] = actor_zeta::send(ctx->disk_address,
                                                &services::disk::manager_disk_t::release_scans_for_session,

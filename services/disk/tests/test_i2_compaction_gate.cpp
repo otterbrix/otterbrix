@@ -4,7 +4,7 @@
 // from a LATER mailbox turn. If a commit-time (maybe_cleanup) or VACUUM compaction
 // renumbered the survivors between capture and apply, the captured ids would name the
 // WRONG rows. I-2 defers compaction of an oid while a MUTATING scan cursor is in flight
-// on it — open, and (the new part) drained-but-awaiting-apply — reusing the existing
+// on it — open, or drained-but-awaiting-apply — reusing the
 // has_active_scan_for_oid gate that the three compact sites already consult.
 //
 // These tests drive the manager->agent path directly on a deterministic single-step test
@@ -184,7 +184,7 @@ TEST_CASE("i2_gate::mutating_cursor_defers_compaction_until_apply") {
     REQUIRE(total_rows(fx, oid) == 11); // released: 9 dead reclaimed, 11 survivors
 }
 
-// A plain read (non-mutating) cursor is GC'd at drain exactly as before — it must NOT retain
+// A plain read (non-mutating) cursor is GC'd at drain — it must NOT retain
 // past drain, so it never defers commit-time reclaim.
 TEST_CASE("i2_gate::read_cursor_is_not_retained") {
     fixture fx;

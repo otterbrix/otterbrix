@@ -164,8 +164,9 @@ namespace services::disk {
         // The PHYSICAL_COMPACT epoch marker (I-2) MUST ride THIS same stream, so it is truncated and
         // replayed atomically with the DML it orders — a marker stranded in a different db's WAL is
         // truncated independently and lost on restart, resurrecting the compacted-away rows. INVALID
-        // until the first DML emit; a compaction never fires before at least one delete/update, so it
-        // is always set by the time maybe_cleanup / VACUUM would emit the marker.
+        // until the first DML emit; every compactable state needs at least one prior DML emit on this
+        // table (an append at minimum — aborted inserts retire as committed-dead), so it is always
+        // set by the time maybe_cleanup / VACUUM would emit the marker.
         components::catalog::oid_t wal_route_db_oid = components::catalog::INVALID_OID;
 
         // Pin-on-first-record WAL stream for this table's physical records. EVERY record for

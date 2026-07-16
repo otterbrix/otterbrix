@@ -844,13 +844,13 @@ TEST_CASE("components::table::mvcc::abort_append_dead_in_place") {
     REQUIRE(scan_count(*table, env) == 10);
 }
 
-// Version slots are row-group-LOCAL. The scan's cumulative vector_index and the
-// delete path's collection-absolute row ids used to be forwarded into the slot
-// array unconverted, so for every row group after the first the lookups read —
-// and the delete stamps wrote — the wrong slot: pending appends beyond the first
-// row group scanned as committed-live for every snapshot, and delete stamps were
-// invisible to the dead-count/compaction walks. All probes act on row groups
-// past the first (row group size == DEFAULT_VECTOR_CAPACITY here).
+// Version slots are row-group-LOCAL. If the scan's cumulative vector_index or
+// the delete path's collection-absolute row ids were forwarded into the slot
+// array unconverted, every row group after the first would read — and the
+// delete stamps would write — the wrong slot: pending appends beyond the first
+// row group would scan as committed-live for every snapshot, and delete stamps
+// would be invisible to the dead-count/compaction walks. All probes act on row
+// groups past the first (row group size == DEFAULT_VECTOR_CAPACITY here).
 TEST_CASE("components::table::mvcc::version_slots_are_row_group_local") {
     test_env env;
     auto table = make_int_table(env);

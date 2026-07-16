@@ -20,7 +20,7 @@
 // cannot hide a divergence elsewhere:
 //
 //   RC_ONLY=defaults,index_content  ./test_otterbrix "[restart]"
-//   RC_DATA_ROOT=/var/tmp/rc        (default: /tmp/otterbrix/restart_consistency)
+//   RC_DATA_ROOT=/var/tmp/rc        (default: /var/tmp/otterbrix/restart_consistency)
 // ===========================================================================
 
 #include "restart_probe.hpp"
@@ -234,9 +234,9 @@ TEST_CASE("integration::cpp::restart_consistency::foreign_key", "[restart]") {
 
 // ---------------------------------------------------------------------------
 // Physical row_id stability. A live UPDATE is an MVCC delete+append (the row
-// moves to the end of the table); replay applies the same record in place. The
-// two disagree about where the row is, and every later record keyed by physical
-// row_id then lands on the wrong slot -- or on no slot at all.
+// moves to the end of the table); if replay applied the same record in place,
+// the two would disagree about where the row is, and every later record keyed
+// by physical row_id would land on the wrong slot -- or on no slot at all.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::restart_consistency::update_then_delete", "[restart]") {
     group_t g;
@@ -313,16 +313,17 @@ TEST_CASE("integration::cpp::restart_consistency::update_after_restart", "[resta
     check_restart_consistency(g);
 }
 
-// Compaction renumbers every surviving row from zero, with no WAL barrier. Any
-// DELETE or UPDATE recorded after that point replays against the OLD numbering.
+// Compaction renumbers every surviving row from zero. Without the
+// PHYSICAL_COMPACT epoch marker on the same WAL stream, any DELETE or UPDATE
+// recorded after that point would replay against the OLD numbering.
 TEST_CASE("integration::cpp::restart_consistency::delete_then_compact", "[restart]") {
     group_t g;
     g.name = "delete_then_compact";
     g.setup = {create_db,
                "CREATE TABLE rcdb.t (a bigint, v bigint)$S;",
                "INSERT INTO rcdb.t (a, v) VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);",
-               // >30% dead rows: crosses the automatic cleanup threshold, which
-               // compacts and renumbers with no WAL barrier.
+               // >30% dead rows: crosses the automatic cleanup threshold, so
+               // commit-time compaction renumbers the survivors.
                "DELETE FROM rcdb.t WHERE a IN (1, 2, 3, 4);",
                "DELETE FROM rcdb.t WHERE a = 6;",
                "UPDATE rcdb.t SET v = 99 WHERE a = 8;"};
@@ -369,10 +370,11 @@ TEST_CASE("integration::cpp::restart_consistency::vacuum_then_restart", "[restar
 }
 
 // An aborted transaction's INSERTs occupy physical row-ids in the live run --
-// ROLLBACK reverts marks, not placement -- but replay filters uncommitted
-// records, so every committed append after the abort lands lower on replay and
-// every positional DELETE/UPDATE recorded after the abort resolves against the
-// wrong rows (until the next compact marker closes the numbering epoch).
+// ROLLBACK reverts marks, not placement -- so replay must repeat that history:
+// if it filtered the uncommitted records instead, every committed append after
+// the abort would land lower on replay and every positional DELETE/UPDATE
+// recorded after the abort would resolve against the wrong rows (until the
+// next compact marker closes the numbering epoch).
 TEST_CASE("integration::cpp::restart_consistency::aborted_insert_shifts_replay_numbering", "[restart]") {
     group_t g;
     g.name = "aborted_insert_numbering";
@@ -401,9 +403,9 @@ TEST_CASE("integration::cpp::restart_consistency::aborted_insert_shifts_replay_n
 
 // Multi-row-group flavor of the aborted-insert cell: everything crosses the
 // 1024-row vector boundary. The aborted placement spans several row groups
-// (version slots past the first group are the ones the slot-convention bug
-// mis-addressed), and the positional records after the abort resolve against
-// a numbering that includes thousands of dead rows.
+// (version slots are row-group-LOCAL; an absolute index would mis-address
+// every slot past the first group), and the positional records after the
+// abort resolve against a numbering that includes thousands of dead rows.
 TEST_CASE("integration::cpp::restart_consistency::aborted_insert_multi_row_group", "[restart]") {
     group_t g;
     g.name = "aborted_insert_multi_rg";
@@ -717,9 +719,10 @@ TEST_CASE("integration::cpp::restart_consistency::timezone", "[restart]") {
 // through a bare mutating full_scan whose retained cursor is normally released
 // by the storage apply (storage_delete_rows / storage_update). When ZERO rows
 // match, no apply is ever sent — the operator must release the pin itself at
-// its final drive. Sessions are minted per statement, so no later statement's
-// sweep-on-open can match this (oid, session): an unreleased pin defers
-// compaction of the table forever. Observable end-to-end: VACUUM after the
+// its final drive. An autocommit statement's session dies with the statement,
+// so no later statement's sweep-on-open can match this (oid, session) (only
+// statements inside one explicit transaction share a session): an unreleased
+// pin defers compaction of the table forever. Observable end-to-end: VACUUM after the
 // zero-match DMLs must still compact and emit its PHYSICAL_COMPACT epoch
 // marker into the WAL.
 // ---------------------------------------------------------------------------

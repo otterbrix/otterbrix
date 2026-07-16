@@ -594,7 +594,8 @@ TEST_CASE("edge_exact_fit") {
 TEST_CASE("back_to_back_spanning_records") {
     tmp_dir_t dir("test_wal_page_b2b_span");
     auto filepath = dir.file("wal_segment_0");
-    auto* resource = std::pmr::get_default_resource();
+    core::pmr::otterbrix_resource mem;
+    auto* resource = &mem;
 
     auto big = gen_data_chunk(500, resource);
     auto small = gen_data_chunk(5, resource);

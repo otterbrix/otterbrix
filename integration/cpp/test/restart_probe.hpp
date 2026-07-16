@@ -29,8 +29,7 @@
 // defect of the probe, and is reported as INCONCLUSIVE rather than as a
 // violation of the invariant.
 //
-// Five further properties are load-bearing; each was learned by getting it
-// wrong first:
+// Five further properties are load-bearing:
 //
 //   1. PROBES MUST WRITE, not only read. A row inserted before the restart
 //      carries its DEFAULT in the WAL/checkpoint payload, so it reads back

@@ -1,14 +1,13 @@
 // ===========================================================================
 // Focused DML + restart micro-benchmark.
 //
-// The restart-consistency fixes touch exactly two hot paths:
-//   * UPDATE  -- the disk agent now writes the WAL record inside its mailbox
-//               handler, and the update carries an extra deep-copy of the chunk.
-//   * REPLAY  -- an UPDATE record now replays as an MVCC delete+append instead
-//               of an in-place rewrite.
+// Two DML hot paths dominate the restart-consistency cost model:
+//   * UPDATE  -- the disk agent writes the WAL record inside its mailbox
+//               handler, and the update carries a deep-copy of the chunk.
+//   * REPLAY  -- an UPDATE record replays as an MVCC delete+append (the same
+//               contract the live path uses).
 // The stock analytical benchmarks (SSB/TPC-H) are read-only and exercise
-// neither. This measures the two paths directly, in wall-clock milliseconds, so
-// the branch can be compared against its own baseline commit.
+// neither. This measures the two paths directly, in wall-clock milliseconds.
 //
 // Deterministic and self-contained: no external data, a fixed workload, and a
 // data directory taken from RC_DATA_ROOT (kept off tmpfs). Prints one

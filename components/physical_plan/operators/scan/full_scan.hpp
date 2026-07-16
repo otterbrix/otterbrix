@@ -41,7 +41,7 @@ namespace components::operators {
         // has_active_scan_for_oid then keeps deferring compaction of table_oid across the whole
         // capture->apply window, so a commit-time / VACUUM compaction can never renumber the rows
         // out from under the physical ids this scan hands to the mutation operator. Plain SELECT
-        // scans leave it false (cursor GC'd on drain, as before).
+        // scans leave it false (cursor GC'd on drain).
         void mark_mutating() noexcept { mutating_ = true; }
 
         // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---

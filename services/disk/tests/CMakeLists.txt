@@ -3,6 +3,7 @@ project(test_disk)
 set(${PROJECT_NAME}_SOURCES
     test_table_storage.cpp
     test_torn_checkpoint.cpp
+    test_checkpoint_fences.cpp
     test_system_table_bootstrap.cpp
     test_resolve.cpp
     test_pg_depend.cpp

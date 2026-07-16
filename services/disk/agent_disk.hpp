@@ -57,6 +57,12 @@ namespace services::disk {
 #ifdef DEV_MODE
     uint64_t pushdown_reply_rows() noexcept;
     void reset_pushdown_reply_rows() noexcept;
+
+    // Test-only fault injection: the NEXT checkpoint_inner fold of `table_oid`
+    // fails as if table_storage_t::checkpoint returned out_of_memory — after its
+    // compact already ran. Exercises the deferred-round epoch-fence path that
+    // real flush-pin exhaustion would take.
+    void arm_checkpoint_fold_failure(components::catalog::oid_t table_oid) noexcept;
 #endif
 
     // Forward-declared (full definitions in manager_disk.hpp). agent_disk_t's slice
@@ -731,6 +737,11 @@ namespace services::disk {
             }
             return false;
         }
+
+        // Record a physical WAL record's id onto its table's entry (see
+        // collection_storage_entry_t::last_applied_wal_id). Called after every
+        // awaited write_physical_* emit; a zero id (failed write) is a no-op.
+        void note_applied_wal_id(components::catalog::oid_t table_oid, wal::id_t wal_id) noexcept;
 
         // Per-agent GC slice — sole owner of GC state. Populated by
         // register_dropped_storage_inner_sync; on_horizon_advanced_inner removes entries

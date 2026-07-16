@@ -185,6 +185,14 @@ namespace services::disk {
             return wal_route_db_oid;
         }
 
+        // Highest wal id among the physical records the owning agent has awaited durable
+        // for this table. checkpoint_inner stamps the sidecar with max(snapshot, this):
+        // the auto-checkpoint captures its wal-id snapshot BEFORE two cross-actor
+        // suspensions, so DML can land — and be folded into the .otbx — after the
+        // snapshot; a sidecar below those records makes replay re-apply them onto a
+        // base that already embodies them.
+        wal::id_t last_applied_wal_id{0};
+
         // The db_oid the PHYSICAL_COMPACT epoch marker must ride: the WAL stream the table's DML
         // actually used (wal_route_db_oid), falling back to main_database — the SAME fallback the DML
         // paths use for an INVALID ctx.database_oid, so the marker lands with the DML it orders.

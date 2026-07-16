@@ -24,12 +24,16 @@ namespace services::disk {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_pushdown_reply_rows{0};
+        std::atomic<uint64_t> g_checkpoint_fold_fail_oid{0};
     } // namespace
     uint64_t pushdown_reply_rows() noexcept {
         return g_pushdown_reply_rows.load(std::memory_order_relaxed);
     }
     void reset_pushdown_reply_rows() noexcept {
         g_pushdown_reply_rows.store(0, std::memory_order_relaxed);
+    }
+    void arm_checkpoint_fold_failure(components::catalog::oid_t table_oid) noexcept {
+        g_checkpoint_fold_fail_oid.store(static_cast<uint64_t>(table_oid), std::memory_order_relaxed);
     }
 #endif
 
@@ -909,7 +913,9 @@ namespace services::disk {
                                              actual_count,
                                              txn.transaction_id,
                                              db_oid);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            const auto wal_id = co_await std::move(wf);
+            note_applied_wal_id(table_oid, wal_id);
+            if (wal_id == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::storage_append_inner: physical_insert WAL returned zero id for oid={}",
                       pool_idx_,
@@ -1126,7 +1132,9 @@ namespace services::disk {
                                              ctx.txn.transaction_id,
                                              /*in_place=*/false,
                                              db_oid);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            const auto wal_id = co_await std::move(wf);
+            note_applied_wal_id(table_oid, wal_id);
+            if (wal_id == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::storage_update_inner: physical_update WAL returned zero id for oid={}",
                       pool_idx_,
@@ -1193,7 +1201,9 @@ namespace services::disk {
                                              count,
                                              ctx.txn.transaction_id,
                                              db_oid);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            const auto wal_id = co_await std::move(wf);
+            note_applied_wal_id(table_oid, wal_id);
+            if (wal_id == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::storage_delete_rows_inner: physical_delete WAL returned zero id for oid={}",
                       pool_idx_,
@@ -2006,6 +2016,17 @@ namespace services::disk {
         co_return entry->storage->total_rows();
     }
 
+    void agent_disk_t::note_applied_wal_id(components::catalog::oid_t table_oid, wal::id_t wal_id) noexcept {
+        if (wal_id == wal::id_t{}) {
+            return;
+        }
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr) {
+            return;
+        }
+        it->second->last_applied_wal_id = std::max(it->second->last_applied_wal_id, wal_id);
+    }
+
     agent_disk_t::unique_future<void> agent_disk_t::fix_wal_id(wal::id_t wal_id) {
         trace(log_, "agent_disk::fix_wal_id : {}", wal_id);
         auto id = std::to_string(wal_id);
@@ -2015,7 +2036,7 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<checkpoint_result_t>
-    agent_disk_t::checkpoint_inner(session_id_t /*session*/, wal::id_t current_wal_id, uint64_t compact_watermark) {
+    agent_disk_t::checkpoint_inner(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
         // Per DISK entry, crash-safe checkpoint sequence (order matters):
         //   compact (MVCC-gated), backup .otbx → .prev, checkpoint(wal_id), persist
@@ -2062,6 +2083,7 @@ namespace services::disk {
             // uncommitted rows on recovery (.otbx has no version metadata), so
             // the entry's checkpoint is deferred to a later round; the WAL keeps
             // its replay records because the old sidecar/prev ids stay in the min.
+            const auto rows_before_compact = entry->table_storage.table().row_group()->total_rows();
             if (!entry->table_storage.table().compact(compact_watermark)) {
                 trace(log_,
                       "agent_disk[{}]::checkpoint_inner oid={} has version stamps above watermark {} — "
@@ -2071,6 +2093,24 @@ namespace services::disk {
                       compact_watermark);
                 min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
                 continue;
+            }
+
+            // Numbering-epoch boundary (I-2), same shrink-gated fire-and-forget discipline as
+            // maybe_cleanup_inner / vacuum_inner. This compact renumbers whether or not the fold
+            // below lands; on the fold-FAILURE path (deferred round) the old sidecar stays and the
+            // marker is the ONLY durable record of the epoch — without it, every later positional
+            // record replays against the pre-compact numbering. On the success path the marker's
+            // id sits above the sidecar and replays direct_compact_sync onto the already-dense
+            // loaded table: a no-op.
+            if (entry->table_storage.table().row_group()->total_rows() < rows_before_compact &&
+                manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
+                [[maybe_unused]] auto _cf = actor_zeta::send(manager_wal_addr_,
+                                                             &wal::manager_wal_replicate_t::write_physical_compact,
+                                                             session,
+                                                             tbl_oid,
+                                                             uint64_t{0}, // txn_id: system write
+                                                             compact_watermark,
+                                                             entry->compact_wal_db_oid());
             }
 
             trace(log_,
@@ -2099,13 +2139,36 @@ namespace services::disk {
                 }
             }
 
+            // Sidecar id = max(snapshot, last applied): the run_auto_checkpoint snapshot is
+            // taken BEFORE two cross-actor suspensions, so records this agent applied (and
+            // this fold embodies) can carry higher ids — stamping the bare snapshot would
+            // make replay re-apply them onto a base that already contains them. The whole
+            // handler turn is mailbox-atomic, so last_applied_wal_id is exactly the frontier
+            // the fold sees.
+            const auto sidecar_wal_id = std::max(current_wal_id, entry->last_applied_wal_id);
+
             // checkpoint(wal_id) returns out_of_memory on a column flush pin failure; it
             // aborts BEFORE the header swap and leaves the wal_id fields unchanged. On error,
             // defer this entry to a later round (same as the MVCC-gate skip above): restore
             // the .prev backup over any partial write, do NOT persist the sidecar or delete
             // the backup, and feed the unchanged prev_checkpoint_wal_id into the min() so the
-            // WAL keeps this table's replay records.
-            auto cp_r = entry->table_storage.checkpoint(current_wal_id);
+            // WAL keeps this table's replay records. The renumber the compact above already
+            // performed survives in memory — the PHYSICAL_COMPACT marker it emitted is what
+            // keeps replay aligned with it.
+#ifdef DEV_MODE
+            bool inject_fold_failure = false;
+            if (g_checkpoint_fold_fail_oid.load(std::memory_order_relaxed) == static_cast<uint64_t>(tbl_oid)) {
+                g_checkpoint_fold_fail_oid.store(0, std::memory_order_relaxed);
+                inject_fold_failure = true;
+            }
+#else
+            constexpr bool inject_fold_failure = false;
+#endif
+            auto cp_r = inject_fold_failure
+                            ? core::result_wrapper_t<bool>(
+                                  core::error_t(core::error_code_t::out_of_memory,
+                                                std::pmr::string{"injected checkpoint fold failure (test)"}))
+                            : entry->table_storage.checkpoint(sidecar_wal_id);
             if (cp_r.has_error()) {
                 warn(log_,
                      "agent_disk[{}]::checkpoint_inner oid={} checkpoint failed (rules 2/9) — deferring this round",
@@ -2130,19 +2193,43 @@ namespace services::disk {
                 sidecar_path += ".wal_id";
                 auto tmp_path = sidecar_path;
                 tmp_path += ".tmp";
+                bool sidecar_persisted = false;
                 std::ofstream sidecar(tmp_path, std::ios::binary | std::ios::trunc);
                 if (sidecar.is_open()) {
-                    auto v = static_cast<uint64_t>(current_wal_id);
+                    auto v = static_cast<uint64_t>(sidecar_wal_id);
                     sidecar.write(reinterpret_cast<const char*>(&v), sizeof(v));
                     sidecar.close();
                     std::error_code rename_error;
                     std::filesystem::rename(tmp_path, sidecar_path, rename_error);
-                    if (rename_error) {
-                        warn(log_,
-                             "agent_disk[{}]::checkpoint_inner sidecar rename failed: {}",
-                             pool_idx_,
-                             rename_error.message());
+                    sidecar_persisted = !rename_error;
+                }
+                if (!sidecar_persisted) {
+                    // The fold landed but its wal_id watermark did not. Folded data + stale
+                    // sidecar double-applies (old, fold] positional records on the next replay
+                    // — silent corruption. Continuing live is not an option either: the block
+                    // manager already references the new file layout, so restoring .prev and
+                    // running on would feed lazy loads stale bytes through new block ids.
+                    // Fail stop on the OLD consistent state: put the pre-fold checkpoint back
+                    // (a crash mid-restore is covered — the torn .otbx fails to load and the
+                    // opener falls back to .prev, which is only deleted after success below),
+                    // then abort; recovery replays the WAL onto the old base.
+                    error(log_,
+                          "agent_disk[{}]::checkpoint_inner oid={}: sidecar persist failed after a "
+                          "successful fold — restoring the previous checkpoint and aborting",
+                          pool_idx_,
+                          static_cast<unsigned>(tbl_oid));
+                    std::error_code restore_error;
+                    if (std::filesystem::exists(prev_path)) {
+                        std::filesystem::copy_file(prev_path,
+                                                   otbx_path,
+                                                   std::filesystem::copy_options::overwrite_existing,
+                                                   restore_error);
+                    } else {
+                        // First checkpoint of this table: no prior state to restore — absent
+                        // .otbx means "never checkpointed", which replays the full WAL.
+                        std::filesystem::remove(otbx_path, restore_error);
                     }
+                    std::abort();
                 }
             }
 
@@ -2524,7 +2611,9 @@ namespace services::disk {
                                              static_cast<std::uint64_t>(row.size()),
                                              ctx.txn.transaction_id,
                                              db_oid);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            const auto wal_id = co_await std::move(wf);
+            note_applied_wal_id(table_oid, wal_id);
+            if (wal_id == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::append_pg_catalog_row_inner: WAL write returned zero id for oid={}",
                       pool_idx_,
@@ -2670,7 +2759,9 @@ namespace services::disk {
                                              static_cast<std::uint64_t>(row_ids.size()),
                                              ctx.txn.transaction_id,
                                              components::catalog::well_known_oid::main_database);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            const auto wal_id = co_await std::move(wf);
+            note_applied_wal_id(table_oid, wal_id);
+            if (wal_id == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::delete_pg_catalog_rows_inner: WAL write returned zero id for oid={}",
                       pool_idx_,
@@ -2809,7 +2900,9 @@ namespace services::disk {
                                              ctx.txn.transaction_id,
                                              /*in_place=*/true,
                                              components::catalog::well_known_oid::main_database);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            const auto wal_id = co_await std::move(wf);
+            note_applied_wal_id(pg_attr_oid, wal_id);
+            if (wal_id == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: WAL write returned zero id "
                       "for attoid={}",

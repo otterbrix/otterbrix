@@ -105,6 +105,11 @@ if (ENABLE_TSAN)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-omit-frame-pointer -fsanitize=thread")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
     add_compile_definitions(OTTERBRIX_TSAN_ENABLED)
+    # gcc's -Wmaybe-uninitialized false-positives on coroutine frame teardown
+    # under -fsanitize=thread (actor-zeta future awaiters); keep it a warning
+    # here so -Werror doesn't block the TSAN build. Same for -Wtsan: actor-zeta
+    # headers use atomic_thread_fence, which TSAN cannot model.
+    add_compile_options(-Wno-error=maybe-uninitialized -Wno-error=tsan)
 endif()
 
 if (ENABLE_UBSAN)

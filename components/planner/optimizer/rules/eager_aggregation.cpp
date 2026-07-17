@@ -112,6 +112,15 @@ namespace components::planner::optimizer {
             if (find_child(agg, lp::node_type::having_t)) {
                 return;
             }
+            // A residual WHERE above the join (a cross-side predicate like
+            // t1.a > t2.b that pushdown_filter could not push below either side)
+            // addresses the join's MERGED column space. The partial splice collapses
+            // the pushed side to [group keys, join key, partial aggregates], silently
+            // re-pointing those merged paths at the wrong columns. Skip (conservative),
+            // same reasoning as the HAVING bail above.
+            if (find_child(agg, lp::node_type::match_t)) {
+                return;
+            }
             auto* group_node = static_cast<lp::node_group_t*>(group.get());
             if (group_node->internal_aggregate_count != 0) {
                 return;
@@ -197,6 +206,18 @@ namespace components::planner::optimizer {
             if (join_key_local >= pushed->output_types().size()) {
                 return; // defensive: unexpected stamp
             }
+            // Every referenced column must resolve inside the pushed side's stamped
+            // width (the output re-stamp below reads its type by that local index).
+            for (size_t m : key_merged) {
+                if (m - base >= pushed->output_types().size()) {
+                    return; // defensive: unexpected stamp
+                }
+            }
+            for (size_t m : agg_merged) {
+                if (m - base >= pushed->output_types().size()) {
+                    return; // defensive: unexpected stamp
+                }
+            }
 
             // --- Build the PARTIAL group node ------------------------------------
             // Partial output layout = [group keys..., join key (if new), aggregates...].
@@ -256,6 +277,34 @@ namespace components::planner::optimizer {
 
             // --- Splice the partial under the join and re-stamp the equi key -----
             pushed->append_child(partial_group);
+
+            // Re-stamp the pushed node's output schema to the TRUE partial layout
+            // [group keys..., join key (if added), partial aggregates...]. The node
+            // still carried the base table's full column list, and BOTH lowerings
+            // treat that stamp as the authoritative output layout —
+            // create_plan_aggregate forwards it into operator_group's output_types_
+            // and into the pushed reduce spec, either of which then types the
+            // partial extremum column with whatever base column happens to sit at
+            // the same ordinal (wrong type whenever the ordinals do not coincide).
+            {
+                const auto& base_types = pushed->output_types();
+                std::pmr::vector<components::types::complex_logical_type> partial_types{resource};
+                partial_types.reserve(num_keys + aggs.size());
+                for (size_t i = 0; i < keys.size(); ++i) {
+                    partial_types.push_back(base_types[key_merged[i] - base]);
+                }
+                if (!join_key_covered) {
+                    partial_types.push_back(base_types[join_key_local]);
+                }
+                for (size_t i = 0; i < aggs.size(); ++i) {
+                    // MIN/MAX preserve their argument's type; the column is named
+                    // after the partial aggregate's output alias.
+                    auto t = base_types[agg_merged[i] - base];
+                    t.set_alias(aggs[i]->key().as_string());
+                    partial_types.push_back(std::move(t));
+                }
+                pushed->set_output_types(std::move(partial_types));
+            }
 
             if (pushed_left) {
                 join->set_equi_columns(join_key_pos, join->right_col());

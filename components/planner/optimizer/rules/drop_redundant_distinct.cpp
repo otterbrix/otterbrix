@@ -1,5 +1,6 @@
 #include "drop_redundant_distinct.hpp"
 
+#include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
@@ -58,8 +59,8 @@ namespace components::planner::optimizer {
                 const ce::key_t* key = nullptr;
                 if (scalar->params().empty()) {
                     key = &scalar->key();
-                } else if (std::holds_alternative<ce::key_t>(scalar->params().front())) {
-                    key = &std::get<ce::key_t>(scalar->params().front());
+                } else if (ce::is_key(scalar->params().front())) {
+                    key = &ce::as_key(scalar->params().front());
                 } else {
                     continue; // parameter_id / nested expression — not a base column
                 }

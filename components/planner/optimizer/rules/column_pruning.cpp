@@ -65,8 +65,8 @@ namespace components::planner::optimizer {
 
         bool collect_cols_from_param(const expressions::param_storage& p, std::vector<size_t>& cols) {
             using expressions::expression_group;
-            if (std::holds_alternative<KeyT>(p)) {
-                const auto& key = std::get<KeyT>(p);
+            if (expressions::is_key(p)) {
+                const auto& key = expressions::as_key(p);
                 if (key.path().empty())
                     return true;
                 size_t idx = key.path()[0];
@@ -75,8 +75,8 @@ namespace components::planner::optimizer {
                 cols.push_back(idx);
                 return true;
             }
-            if (std::holds_alternative<expressions::expression_ptr>(p)) {
-                const auto& sub = std::get<expressions::expression_ptr>(p);
+            if (expressions::is_expr(p)) {
+                const auto& sub = expressions::as_expr(p);
                 if (!sub)
                     return true;
                 if (sub->group() == expression_group::scalar) {
@@ -199,10 +199,10 @@ namespace components::planner::optimizer {
                 // else the key itself carries the storage path (mirrors build_pushed_spec).
                 const KeyT* field = nullptr;
                 if (!se->params().empty()) {
-                    if (!std::holds_alternative<KeyT>(se->params().front())) {
+                    if (!expressions::is_key(se->params().front())) {
                         return false; // computed input — not a plain column
                     }
-                    field = &std::get<KeyT>(se->params().front());
+                    field = &expressions::as_key(se->params().front());
                 } else {
                     field = &se->key();
                 }
@@ -368,13 +368,13 @@ namespace components::planner::optimizer {
                     return true;
                 }
                 auto extract_side = [&](const expressions::param_storage& side) -> bool {
-                    if (std::holds_alternative<expressions::expression_ptr>(side)) {
+                    if (expressions::is_expr(side)) {
                         // Sub-expression in JOIN leaf — bail out.
                         return false;
                     }
-                    if (!std::holds_alternative<KeyT>(side))
+                    if (!expressions::is_key(side))
                         return true;
-                    const auto& key = std::get<KeyT>(side);
+                    const auto& key = expressions::as_key(side);
                     if (key.path().empty())
                         return true;
                     size_t idx = key.path()[0];

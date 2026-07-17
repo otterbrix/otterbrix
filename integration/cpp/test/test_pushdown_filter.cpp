@@ -14,6 +14,7 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <components/logical_plan/node_union.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/tests/generaty.hpp>
@@ -725,5 +726,183 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch_under_group_and_sort")
     REQUIRE(join->children()[1]->children().size() == 2);
     REQUIRE(join->children()[1]->children()[0] == right_scan);
     REQUIRE(join->children()[1]->children()[1]->type() == node_type::match_t);
+}
+
+// --- WHERE over a UNION whose output carries an alias-less column ------------
+
+// A stamped union output column can be alias-less: a projected constant
+// (`SELECT id, 1 FROM t1 UNION ALL SELECT id, 2 FROM t2`) has no type extension,
+// and complex_logical_type::alias() asserts on a missing extension (nullptr
+// deref in Release). union_pos_of / branch_identity / collect_subtree_columns
+// must skip alias-less columns — they can never match a WHERE column name.
+// Before the fix: optimize() SIGABRTs inside the union pushdown.
+// After: the WHERE on "id" is pushed into both branches and the alias-less
+// column is simply ignored.
+TEST_CASE("logical_plan::pushdown_filter_union_skips_aliasless_output_column") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    auto make_branch = [&]() {
+        auto scan = make_node_aggregate(&resource, db, rel);
+        std::pmr::vector<components::types::complex_logical_type> out_types(&resource);
+        out_types.emplace_back(components::types::logical_type::BIGINT, "id");
+        out_types.emplace_back(components::types::logical_type::BIGINT); // projected constant: no alias
+        scan->set_output_types(std::move(out_types));
+        return scan;
+    };
+    auto b1 = make_branch();
+    auto b2 = make_branch();
+
+    auto uni = make_node_union(&resource, b1, b2, /*all=*/true);
+    std::pmr::vector<components::types::complex_logical_type> u_types(&resource);
+    u_types.emplace_back(components::types::logical_type::BIGINT, "id");
+    u_types.emplace_back(components::types::logical_type::BIGINT);
+    uni->set_output_types(std::move(u_types));
+
+    auto cmp = make_compare_expression(&resource, compare_type::eq, key(&resource, "id", side_t::left), id_par{1});
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
+    outer->append_child(uni);
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
+
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+
+    // Full push: the outer aggregate collapses to the union; each branch got the
+    // filter wrapped above its scan.
+    REQUIRE(out == uni);
+    REQUIRE(uni->children().size() == 2);
+    for (const auto& branch : uni->children()) {
+        REQUIRE(branch->type() == node_type::aggregate_t);
+        REQUIRE(branch->children().size() == 2);
+        REQUIRE(branch->children()[1]->type() == node_type::match_t);
+        auto* m = static_cast<compare_expression_t*>(branch->children()[1]->expressions()[0].get());
+        REQUIRE(m->type() == compare_type::eq);
+        REQUIRE(is_key(m->left()));
+        REQUIRE(as_key(m->left()).as_string() == "id");
+    }
+    REQUIRE(uni->children()[0]->children()[0] == b1);
+    REQUIRE(uni->children()[1]->children()[0] == b2);
+}
+
+// --- UNION branches must not share mutable pushed conjuncts ------------------
+
+// The union pushdown installs the pushed conjuncts above EVERY branch. The
+// per-branch recursion mutates pushed keys IN PLACE: when a branch wraps a
+// join, relocalize_keys rewrites a right-side key's merged path into the
+// branch's right-LOCAL coordinates (subtract left_width). With shared leaf
+// expressions, branch 1's re-localized path leaks into every later branch.
+//
+// Branch 1: inner join (a,b) x (id,d) — merged schema [a,b,id,d], "id" at
+// merged position 2, left_width 2 => the pushed "id" conjunct is re-localized
+// to right-local 0 inside branch 1. Branch 2: a plain scan [x,y,id,z] with
+// "id" at the SAME position 2 — its copy of the filter must keep path 2.
+// Before the fix: branch 2's filter carries branch 1's re-localized path 0,
+// so it evaluates column "x" instead of "id" (wrong rows).
+TEST_CASE("logical_plan::pushdown_filter_union_branches_do_not_share_mutated_conjuncts") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    auto left_data = make_data(&resource, {"a", "b"});
+    auto right_data = make_data(&resource, {"id", "d"});
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
+    join->append_child(left_data);
+    join->append_child(right_data);
+    // Stamp the join's merged output schema exactly as validate_schema would.
+    std::pmr::vector<components::types::complex_logical_type> j_types(&resource);
+    for (const char* name : {"a", "b", "id", "d"}) {
+        j_types.emplace_back(components::types::logical_type::BIGINT, name);
+    }
+    join->set_output_types(std::move(j_types));
+
+    auto scan2 = make_data(&resource, {"x", "y", "id", "z"});
+
+    auto uni = make_node_union(&resource, join, scan2, /*all=*/true);
+    std::pmr::vector<components::types::complex_logical_type> u_types(&resource);
+    for (const char* name : {"a", "b", "id", "d"}) {
+        u_types.emplace_back(components::types::logical_type::BIGINT, name);
+    }
+    uni->set_output_types(std::move(u_types));
+
+    // WHERE id > ? — key stamped at union output position 2 (validator shape).
+    key match_key(&resource, "id", side_t::left);
+    {
+        std::pmr::vector<size_t> p(&resource);
+        p.push_back(2);
+        match_key.set_path(std::move(p));
+    }
+    auto cmp = make_compare_expression(&resource, compare_type::gt, match_key, id_par{1});
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
+    outer->append_child(uni);
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
+
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+
+    REQUIRE(out == uni);
+    REQUIRE(uni->children().size() == 2);
+
+    // Branch 1: the join; its right side got the filter re-localized to
+    // right-local column 0 ("id" is right_data's first column).
+    REQUIRE(uni->children()[0] == join);
+    REQUIRE(join->children().size() == 2);
+    REQUIRE(join->children()[0] == left_data);
+    auto right_pushed = join->children()[1];
+    REQUIRE(right_pushed->type() == node_type::aggregate_t);
+    REQUIRE(right_pushed->children().size() == 2);
+    REQUIRE(right_pushed->children()[0] == right_data);
+    REQUIRE(right_pushed->children()[1]->type() == node_type::match_t);
+    auto* m1 = static_cast<compare_expression_t*>(right_pushed->children()[1]->expressions()[0].get());
+    REQUIRE(is_key(m1->left()));
+    REQUIRE(as_key(m1->left()).as_string() == "id");
+    REQUIRE(as_key(m1->left()).path().size() == 1);
+    REQUIRE(as_key(m1->left()).path()[0] == 0);
+
+    // Branch 2: the plain scan wrapped in aggregate{scan, match}; its own copy
+    // of the filter must STILL address position 2 — NOT branch 1's re-localized
+    // right-local 0 (the shared-leaf corruption this test pins down).
+    auto branch2 = uni->children()[1];
+    REQUIRE(branch2->type() == node_type::aggregate_t);
+    REQUIRE(branch2->children().size() == 2);
+    REQUIRE(branch2->children()[0] == scan2);
+    REQUIRE(branch2->children()[1]->type() == node_type::match_t);
+    auto* m2 = static_cast<compare_expression_t*>(branch2->children()[1]->expressions()[0].get());
+    REQUIRE(is_key(m2->left()));
+    REQUIRE(as_key(m2->left()).as_string() == "id");
+    REQUIRE(as_key(m2->left()).path().size() == 1);
+    REQUIRE(as_key(m2->left()).path()[0] == 2);
+}
+
+// --- full-push collapse must not discard a DISTINCT aggregate (join site) ----
+
+// Root-cause sibling of the DISTINCT-discarding collapse in the CTE/union
+// full-push paths: the JOIN full-push site replaced the consumer aggregate
+// with the bare join as well. The DISTINCT flag lives on the aggregate node
+// itself, so collapsing it silently dropped the dedup.
+// Before the fix: optimize() returns the bare join (out == join).
+// After: the DISTINCT-carrying aggregate survives with the join as its only
+// child, while the filter is still fully pushed below the join.
+TEST_CASE("logical_plan::pushdown_filter_join_full_push_keeps_distinct_aggregate") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto left_data = make_data(&resource, {"a", "b"});
+    auto right_data = make_data(&resource, {"c", "d"});
+
+    auto join = make_node_join(&resource, db, rel, join_type::inner);
+    join->append_child(left_data);
+    join->append_child(right_data);
+
+    auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
+    node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);
+    outer->set_distinct(true); // SELECT DISTINCT over the join
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource, db, rel, std::move(cmp)));
+
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+
+    REQUIRE(out == outer);
+    REQUIRE(outer->is_distinct());
+    REQUIRE(outer->children().size() == 1);
+    REQUIRE(outer->children()[0] == join);
+    // The filter still reached the left join branch.
+    auto pushed = join->children()[0];
+    REQUIRE(pushed->type() == node_type::aggregate_t);
+    REQUIRE(pushed->children().size() == 2);
+    REQUIRE(pushed->children()[0] == left_data);
+    REQUIRE(pushed->children()[1]->type() == node_type::match_t);
 }
 

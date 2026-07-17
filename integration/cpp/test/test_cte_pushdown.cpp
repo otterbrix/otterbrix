@@ -213,6 +213,76 @@ TEST_CASE("integration::cte_pushdown::negatives_stay_correct") {
     }
 }
 
+TEST_CASE("integration::cte_pushdown::distinct_survives_full_push") {
+    auto config = test_create_config("/tmp/test_cte_pushdown/distinct");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE DD;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE DD.dup(a int, b int);")->is_success());
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(s,
+                                  "INSERT INTO DD.dup (a, b) VALUES "
+                                  "(1,10),(1,10),(2,20),(6,60),(6,60);")
+                    ->is_success());
+    }
+
+    INFO("DISTINCT over a CTE: the fully-pushed WHERE must not collapse the DISTINCT-carrying consumer");
+    {
+        // The whole WHERE (a = 1) is pushed into the CTE body, the consumer match
+        // child empties, and the consumer aggregate — which carries the DISTINCT
+        // flag — must survive the collapse. Rows with a = 1: (1,10) twice ->
+        // DISTINCT keeps exactly one. A dropped DISTINCT returns both duplicates.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(
+            s, "WITH c AS (SELECT a,b FROM DD.dup) SELECT DISTINCT * FROM c WHERE a = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("DISTINCT over a FROM-subquery UNION ALL: same guarantee on the union full-push site");
+    {
+        // Both union arms expose (a,b) identically, so a = 1 is pushed into each
+        // arm and the outer match empties. The DISTINCT flag on the consumer must
+        // survive: rows with a = 1 are (1,10) twice per arm = 4 under UNION ALL,
+        // DISTINCT collapses them to one. A dropped DISTINCT returns all 4.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s,
+                                           "SELECT DISTINCT * FROM ("
+                                           "SELECT a,b FROM DD.dup UNION ALL SELECT a,b FROM DD.dup"
+                                           ") u WHERE a = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("no DISTINCT: the pass-through consumer still collapses (plan stays minimal, rows unchanged)");
+    {
+        auto s = otterbrix::session_id_t();
+        auto plan = dispatcher->execute_sql(
+            s, "EXPLAIN WITH c AS (SELECT a,b FROM DD.dup) SELECT * FROM c WHERE a = 1;");
+        REQUIRE(plan->is_success());
+        const auto t = plan_text(plan);
+        REQUIRE(contains(t, "Seq Scan on dup"));
+        REQUIRE_FALSE(contains(t, "Filter"));
+
+        auto s2 = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(s2, "WITH c AS (SELECT a,b FROM DD.dup) SELECT * FROM c WHERE a = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // both duplicates: no DISTINCT requested
+    }
+}
+
 TEST_CASE("integration::cte_pushdown::recursive_untouched") {
     auto config = test_create_config("/tmp/test_cte_pushdown/rec");
     test_clear_directory(config);

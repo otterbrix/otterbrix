@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/clone_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -50,66 +51,75 @@ namespace components::planner::optimizer {
             }
         }
 
-        std::set<std::string> collect_referenced_columns(const expression_ptr& expr);
+        // The ONE traversal of an expression's referenced column keys: compare
+        // operands (recursing through union connectives and nested expressions),
+        // scalar / aggregate params, sort keys and function args. Every collector
+        // below rides it, so the key set that NAMES a conjunct's columns, the set
+        // that CLASSIFIES its side and the set that gets RE-LOCALIZED are identical
+        // by construction. Fn is invoked as fn(key_t&) for every referenced key.
+        template<typename Fn>
+        void for_each_referenced_key(const expression_ptr& expr, Fn&& fn);
 
-        void extract_from_param(const param_storage& param, std::set<std::string>& result) {
-            if (std::holds_alternative<key_t>(param)) {
-                result.insert(std::get<key_t>(param).as_string());
-            } else if (std::holds_alternative<expression_ptr>(param)) {
-                auto cols = collect_referenced_columns(std::get<expression_ptr>(param));
-                result.insert(cols.begin(), cols.end());
+        template<typename Fn>
+        void for_each_key_in_param(param_storage& param, Fn&& fn) {
+            if (is_key(param)) {
+                fn(as_key(param));
+            } else if (is_expr(param)) {
+                for_each_referenced_key(as_expr(param), fn);
             }
         }
 
-        std::set<std::string> collect_referenced_columns(const expression_ptr& expr) {
-            std::set<std::string> result;
+        template<typename Fn>
+        void for_each_referenced_key(const expression_ptr& expr, Fn&& fn) {
             if (!expr) {
-                return result;
+                return;
             }
-
             switch (expr->group()) {
                 case expression_group::compare: {
                     auto* cmp = static_cast<compare_expression_t*>(expr.get());
                     if (is_union_compare_condition(cmp->type())) {
-                        for (const auto& child : cmp->children()) {
-                            auto cols = collect_referenced_columns(child);
-                            result.insert(cols.begin(), cols.end());
+                        for (auto& child : cmp->children()) {
+                            for_each_referenced_key(child, fn);
                         }
                     } else {
-                        extract_from_param(cmp->left(), result);
-                        extract_from_param(cmp->right(), result);
+                        for_each_key_in_param(cmp->left(), fn);
+                        for_each_key_in_param(cmp->right(), fn);
                     }
                     break;
                 }
                 case expression_group::scalar: {
                     auto* sc = static_cast<scalar_expression_t*>(expr.get());
-                    for (const auto& param : sc->params()) {
-                        extract_from_param(param, result);
+                    for (auto& param : sc->params()) {
+                        for_each_key_in_param(param, fn);
                     }
                     break;
                 }
                 case expression_group::aggregate: {
                     auto* agg = static_cast<aggregate_expression_t*>(expr.get());
-                    for (const auto& param : agg->params()) {
-                        extract_from_param(param, result);
+                    for (auto& param : agg->params()) {
+                        for_each_key_in_param(param, fn);
                     }
                     break;
                 }
                 case expression_group::sort: {
-                    auto* srt = static_cast<sort_expression_t*>(expr.get());
-                    result.insert(srt->key().as_string());
+                    fn(static_cast<sort_expression_t*>(expr.get())->key());
                     break;
                 }
                 case expression_group::function: {
-                    auto* fn = static_cast<function_expression_t*>(expr.get());
-                    for (const auto& arg : fn->args()) {
-                        extract_from_param(arg, result);
+                    auto* func = static_cast<function_expression_t*>(expr.get());
+                    for (auto& arg : func->args()) {
+                        for_each_key_in_param(arg, fn);
                     }
                     break;
                 }
                 default:
                     break;
             }
+        }
+
+        std::set<std::string> collect_referenced_columns(const expression_ptr& expr) {
+            std::set<std::string> result;
+            for_each_referenced_key(expr, [&](const key_t& k) { result.insert(k.as_string()); });
             return result;
         }
 
@@ -125,83 +135,22 @@ namespace components::planner::optimizer {
         // right-range path. Correctness of the range test rests on the validator
         // rejecting genuinely ambiguous duplicate bare names, so a resolvable name maps
         // to exactly one merged column (validate_logical_plan.cpp).
-        void
-        collect_referenced_path_roots(const expression_ptr& expr, std::vector<size_t>& roots, bool& has_key, bool& has_unstamped);
-
-        void collect_path_root_from_param(const param_storage& param,
-                                          std::vector<size_t>& roots,
-                                          bool& has_key,
-                                          bool& has_unstamped) {
-            if (is_key(param)) {
-                const auto& k = as_key(param);
+        //
+        // Gathers the merged path root of every key the conjunct references — the
+        // same key set collect_referenced_columns names (both ride
+        // for_each_referenced_key); a key lacking a stamped path flips has_unstamped.
+        void collect_referenced_path_roots(const expression_ptr& expr,
+                                           std::vector<size_t>& roots,
+                                           bool& has_key,
+                                           bool& has_unstamped) {
+            for_each_referenced_key(expr, [&](const key_t& k) {
                 has_key = true;
                 if (k.path().empty()) {
                     has_unstamped = true; // an unvalidated plan — caller falls back to names
                 } else {
                     roots.push_back(k.path()[0]);
                 }
-            } else if (is_expr(param)) {
-                collect_referenced_path_roots(as_expr(param), roots, has_key, has_unstamped);
-            }
-        }
-
-        // Mirrors collect_referenced_columns' traversal exactly: it visits precisely the
-        // keys that classify a conjunct's side, so every such key's merged path root is
-        // gathered here (and any key lacking a stamped path flips has_unstamped).
-        void collect_referenced_path_roots(const expression_ptr& expr,
-                                            std::vector<size_t>& roots,
-                                            bool& has_key,
-                                            bool& has_unstamped) {
-            if (!expr) {
-                return;
-            }
-            switch (expr->group()) {
-                case expression_group::compare: {
-                    auto* cmp = static_cast<compare_expression_t*>(expr.get());
-                    if (is_union_compare_condition(cmp->type())) {
-                        for (const auto& child : cmp->children()) {
-                            collect_referenced_path_roots(child, roots, has_key, has_unstamped);
-                        }
-                    } else {
-                        collect_path_root_from_param(cmp->left(), roots, has_key, has_unstamped);
-                        collect_path_root_from_param(cmp->right(), roots, has_key, has_unstamped);
-                    }
-                    break;
-                }
-                case expression_group::scalar: {
-                    auto* sc = static_cast<scalar_expression_t*>(expr.get());
-                    for (const auto& param : sc->params()) {
-                        collect_path_root_from_param(param, roots, has_key, has_unstamped);
-                    }
-                    break;
-                }
-                case expression_group::aggregate: {
-                    auto* agg = static_cast<aggregate_expression_t*>(expr.get());
-                    for (const auto& param : agg->params()) {
-                        collect_path_root_from_param(param, roots, has_key, has_unstamped);
-                    }
-                    break;
-                }
-                case expression_group::sort: {
-                    auto* srt = static_cast<sort_expression_t*>(expr.get());
-                    has_key = true;
-                    if (srt->key().path().empty()) {
-                        has_unstamped = true;
-                    } else {
-                        roots.push_back(srt->key().path()[0]);
-                    }
-                    break;
-                }
-                case expression_group::function: {
-                    auto* fn = static_cast<function_expression_t*>(expr.get());
-                    for (const auto& arg : fn->args()) {
-                        collect_path_root_from_param(arg, roots, has_key, has_unstamped);
-                    }
-                    break;
-                }
-                default:
-                    break;
-            }
+            });
         }
 
         enum class conj_side
@@ -287,64 +236,46 @@ namespace components::planner::optimizer {
             k.set_path(std::move(p));
         }
 
-        void relocalize_keys(const expression_ptr& expr, size_t left_width, std::pmr::memory_resource* resource);
-
-        void relocalize_param(param_storage& param, size_t left_width, std::pmr::memory_resource* resource) {
-            if (is_key(param)) {
-                relocalize_key_path(as_key(param), left_width, resource);
-            } else if (is_expr(param)) {
-                relocalize_keys(as_expr(param), left_width, resource);
-            }
+        // Re-localizes every key the pushed conjunct references — the same key set
+        // the side classifier saw (both ride for_each_referenced_key), so every
+        // right-side key is rewritten.
+        void relocalize_keys(const expression_ptr& expr, size_t left_width, std::pmr::memory_resource* resource) {
+            for_each_referenced_key(expr, [&](key_t& k) { relocalize_key_path(k, left_width, resource); });
         }
 
-        // Mirrors collect_referenced_columns exactly: it visits precisely the keys that
-        // classify a conjunct as right-side, so every such key is re-localized here.
-        void relocalize_keys(const expression_ptr& expr, size_t left_width, std::pmr::memory_resource* resource) {
-            if (!expr) {
-                return;
+        // --- identity-projection resolution ----------------------------------------
+        //
+        // Both pushdown paths that route a filter THROUGH a projection (the
+        // identity-select consumer branch and the CTE-body prefix test below) share
+        // this single resolver of "is this output column an identity projection".
+        //
+        // Probe one visible projection output against a filter column `col`:
+        //   name_match — the output is a get_field NAMED col;
+        //   source     — non-null iff that output is an IDENTITY of col: its
+        //                base-source key (the sole key param when renamed /
+        //                explicit, else the expression key itself) carries the
+        //                SAME name. validate_schema stamped the source key's
+        //                path()[0] to the incoming column index.
+        // A name-matching but computed/renamed output yields {true, nullptr}.
+        struct identity_probe_t {
+            bool name_match;
+            const key_t* source;
+        };
+
+        identity_probe_t probe_identity_output(const scalar_expression_t* sc, const std::string& col) {
+            if (sc->type() != scalar_type::get_field || sc->key().as_string() != col) {
+                return {false, nullptr};
             }
-            switch (expr->group()) {
-                case expression_group::compare: {
-                    auto* cmp = static_cast<compare_expression_t*>(expr.get());
-                    if (is_union_compare_condition(cmp->type())) {
-                        for (auto& child : cmp->children()) {
-                            relocalize_keys(child, left_width, resource);
-                        }
-                    } else {
-                        relocalize_param(cmp->left(), left_width, resource);
-                        relocalize_param(cmp->right(), left_width, resource);
-                    }
-                    break;
-                }
-                case expression_group::scalar: {
-                    auto* sc = static_cast<scalar_expression_t*>(expr.get());
-                    for (auto& param : sc->params()) {
-                        relocalize_param(param, left_width, resource);
-                    }
-                    break;
-                }
-                case expression_group::aggregate: {
-                    auto* agg = static_cast<aggregate_expression_t*>(expr.get());
-                    for (auto& param : agg->params()) {
-                        relocalize_param(param, left_width, resource);
-                    }
-                    break;
-                }
-                case expression_group::sort: {
-                    auto* srt = static_cast<sort_expression_t*>(expr.get());
-                    relocalize_key_path(srt->key(), left_width, resource);
-                    break;
-                }
-                case expression_group::function: {
-                    auto* fn = static_cast<function_expression_t*>(expr.get());
-                    for (auto& arg : fn->args()) {
-                        relocalize_param(arg, left_width, resource);
-                    }
-                    break;
-                }
-                default:
-                    break;
+            const key_t* in = nullptr;
+            if (sc->params().empty()) {
+                in = &sc->key();
+            } else if (sc->params().size() == 1 && is_key(sc->params().front())) {
+                in = &as_key(sc->params().front());
             }
+            if (in == nullptr || in->as_string() != col) {
+                return {true, nullptr};
+            }
+            return {true, in};
         }
 
         bool filter_supported_through_identity_select(const node_select_t& sel,
@@ -367,24 +298,14 @@ namespace components::planner::optimizer {
                     if (expr->group() != expression_group::scalar) {
                         return false;
                     }
-                    auto* sc = static_cast<scalar_expression_t*>(expr.get());
-                    if (sc->type() != scalar_type::get_field) {
-                        continue;
-                    }
-                    const std::string out = sc->key().as_string();
-                    if (out != col) {
-                        continue;
-                    }
-                    if (sc->params().empty()) {
+                    // A name-matching but non-identity output is skipped: a later
+                    // output may still expose `col` identically (position is
+                    // irrelevant here — the filter evaluates by NAME above the
+                    // projection).
+                    auto probe = probe_identity_output(static_cast<const scalar_expression_t*>(expr.get()), col);
+                    if (probe.source != nullptr) {
                         ok_for_col = true;
                         break;
-                    }
-                    if (sc->params().size() == 1 && std::holds_alternative<key_t>(sc->params().front())) {
-                        const auto& in_key = std::get<key_t>(sc->params().front());
-                        if (in_key.as_string() == col) {
-                            ok_for_col = true;
-                            break;
-                        }
                     }
                 }
                 if (!ok_for_col) {
@@ -434,25 +355,15 @@ namespace components::planner::optimizer {
                     if (e->group() != expression_group::scalar) {
                         continue;
                     }
-                    auto* sc = static_cast<scalar_expression_t*>(e.get());
-                    if (sc->type() != scalar_type::get_field || sc->key().as_string() != col) {
+                    auto probe = probe_identity_output(static_cast<const scalar_expression_t*>(e.get()), col);
+                    if (!probe.name_match) {
                         continue; // output at position p is not this column
                     }
-                    // The base-source key is the sole param (renamed / explicit) or the
-                    // key itself (bare `SELECT a`). validate_schema stamped its path()[0]
-                    // to the incoming (base scan) column index.
-                    const key_t* in = nullptr;
-                    if (sc->params().empty()) {
-                        in = &sc->key();
-                    } else if (is_key(sc->params().front())) {
-                        in = &as_key(sc->params().front());
-                    }
-                    if (in == nullptr || in->as_string() != col) {
-                        break; // computed / renamed output — not identity
-                    }
-                    // Position-preserving iff the base column index equals the output
-                    // ordinal p. An unstamped (empty) path cannot be proven safe -> bail.
-                    if (in->path().size() == 1 && in->path()[0] == p) {
+                    // The FIRST name match decides. Position-preserving iff the
+                    // stamped base column index equals the output ordinal p; a
+                    // computed / renamed output (no source) or an unstamped (empty)
+                    // path cannot be proven safe -> not identity.
+                    if (probe.source != nullptr && probe.source->path().size() == 1 && probe.source->path()[0] == p) {
                         ok = true;
                     }
                     break;
@@ -479,7 +390,10 @@ namespace components::planner::optimizer {
             // the pre-rename name at the leaf, which would mis-bucket a predicate on `x`.
             if (node->has_output_types()) {
                 for (const auto& t : node->output_types()) {
-                    if (!t.alias().empty()) {
+                    // A projected constant is stamped alias-less (no type extension);
+                    // complex_logical_type::alias() asserts on that, so guard with
+                    // has_alias(). Such a column can never match a predicate name.
+                    if (t.has_alias()) {
                         cols.insert(t.alias());
                     }
                 }
@@ -548,7 +462,8 @@ namespace components::planner::optimizer {
                 const std::string out_name = sc->key().as_string();
                 bool found = false;
                 for (const auto& t : types) {
-                    if (t.alias() == out_name) {
+                    // alias() asserts on an alias-less (extension-free) column type.
+                    if (t.has_alias() && t.alias() == out_name) {
                         width += type_width(t);
                         found = true;
                         break;
@@ -745,6 +660,21 @@ namespace components::planner::optimizer {
                 }
             }
             conjuncts.insert(conjuncts.end(), derived.begin(), derived.end());
+        }
+
+        // A consumer aggregate whose WHERE was fully pushed down may be collapsed
+        // into its sole remaining child ONLY when the node itself carries no
+        // semantics of its own. node_aggregate_t payload that would be silently
+        // dropped by a collapse: the DISTINCT / DISTINCT ON dedup lives on the
+        // aggregate node (not on any child), result_alias names a FROM-subquery's
+        // output, and projected_cols is a scan-projection annotation (column_pruning
+        // runs after this rule, so it is normally empty here — checked anyway).
+        // read_cap is likewise stamped only by the later pushdown_limit rule.
+        // Pipeline stages (group/sort/select/limit children) keep the node at
+        // children().size() > 1, which every collapse site already checks.
+        bool aggregate_is_passthrough(const node_aggregate_t& agg) {
+            return !agg.is_distinct() && agg.distinct_on_keys().empty() && agg.result_alias().empty() &&
+                   agg.projected_cols().empty();
         }
 
         node_ptr pushdown_filter_impl(std::pmr::memory_resource* resource, node_ptr node) {
@@ -1050,12 +980,15 @@ namespace components::planner::optimizer {
                             }
                             auto pushed_source = pushdown_filter_impl(resource, source);
                             // If the aggregate now wraps ONLY the join (its match was the
-                            // sole pipeline stage), it is a redundant pass-through — expose
-                            // the pushed join directly (the canonical minimal plan the
-                            // unit tests assert). Keep the aggregate only when a group_t/
-                            // sort_t (or other pipeline stage) still needs it (the SSB
-                            // SUM/GROUP BY/ORDER BY case, which then keeps its residual).
-                            if (node->children().size() == 1) {
+                            // sole pipeline stage) AND carries no payload of its own
+                            // (DISTINCT/DISTINCT ON/result_alias live on the aggregate
+                            // node), it is a redundant pass-through — expose the pushed
+                            // join directly (the canonical minimal plan the unit tests
+                            // assert). Keep the aggregate when a group_t/sort_t (or other
+                            // pipeline stage) still needs it (the SSB SUM/GROUP BY/ORDER
+                            // BY case, which then keeps its residual) or when it carries
+                            // a dedup/naming payload a collapse would silently drop.
+                            if (node->children().size() == 1 && aggregate_is_passthrough(*agg)) {
                                 return pushed_source;
                             }
                             node->children()[0] = pushed_source;
@@ -1085,17 +1018,25 @@ namespace components::planner::optimizer {
                 // renames a referenced position, a shared pushed predicate would target
                 // the wrong branch column — so that conjunct is NOT cleanly mappable and
                 // stays in the residual above the union (correct, just not pushed),
-                // mirroring the join branch's residual bucket. The pushed predicate keeps
-                // its keys unchanged (identity name + position), so no clone/rewrite is
-                // needed and the leaf conjuncts are shared read-only across branches.
+                // mirroring the join branch's residual bucket. Each branch receives its
+                // OWN deep copy of the pushed conjuncts: the per-branch recursion mutates
+                // pushed keys in place (relocalize_keys rewrites a right-side key's path
+                // when the branch wraps a join), so sharing leaves across branches would
+                // leak one branch's re-localized paths into the next branch's filter.
                 if (source->children().size() >= 2 && !match_child->expressions().empty() &&
                     source->has_output_types()) {
                     const auto& u_types = source->output_types();
 
                     // name -> unique union output position (nullopt if absent or duplicated).
+                    // An alias-less output column (a projected constant carries no type
+                    // extension, and alias() asserts on that) can never match a WHERE
+                    // column name — skip it.
                     auto union_pos_of = [&](const std::string& name) -> std::optional<size_t> {
                         std::optional<size_t> found;
                         for (size_t i = 0; i < u_types.size(); ++i) {
+                            if (!u_types[i].has_alias()) {
+                                continue;
+                            }
                             if (u_types[i].alias() == name) {
                                 if (found) {
                                     return std::nullopt; // ambiguous
@@ -1106,13 +1047,13 @@ namespace components::planner::optimizer {
                         return found;
                     };
                     // A branch exposes `name` identically iff its stamped output alias at
-                    // the union position equals `name`.
+                    // the union position equals `name` (alias-less => no match, guarded).
                     auto branch_identity = [](const node_ptr& branch, const std::string& name, size_t pos) {
                         if (!branch || !branch->has_output_types()) {
                             return false;
                         }
                         const auto& b = branch->output_types();
-                        return pos < b.size() && b[pos].alias() == name;
+                        return pos < b.size() && b[pos].has_alias() && b[pos].alias() == name;
                     };
 
                     auto conjuncts = split_conjuncts(resource, match_child->expressions()[0]);
@@ -1170,8 +1111,16 @@ namespace components::planner::optimizer {
                                 branch_select != nullptr &&
                                 filter_supported_through_identity_select(*branch_select, filter_cols, branch_out);
 
+                            // Deep-copy the pushed conjuncts for THIS branch (see the
+                            // sharing rationale above): the recursion below may
+                            // relocalize the copy's keys in place.
+                            std::pmr::vector<expression_ptr> branch_pushed{resource};
+                            branch_pushed.reserve(pushable.size());
+                            for (const auto& conj : pushable) {
+                                branch_pushed.push_back(clone_expression(resource, conj));
+                            }
                             auto pushed_match =
-                                make_node_match(resource, b_db, b_rel, rebuild_conjunction(resource, pushable));
+                                make_node_match(resource, b_db, b_rel, rebuild_conjunction(resource, branch_pushed));
                             if (push_below_projection) {
                                 // Inherit the branch's already-resolved table_oid so
                                 // create_plan_match binds the pushed match to the branch table
@@ -1190,8 +1139,10 @@ namespace components::planner::optimizer {
                         if (!residual_expr) {
                             // Whole WHERE pushed into every branch → the outer match is empty.
                             // Drop the (now-empty) match child. Keep the enclosing aggregate
-                            // only if it still carries other pipeline stages (group/sort/
-                            // select); otherwise expose the pushed union directly (the minimal
+                            // if it still carries other pipeline stages (group/sort/select)
+                            // OR its own payload (DISTINCT/DISTINCT ON/result_alias — the
+                            // dedup lives on the aggregate node, so collapsing would drop
+                            // it); otherwise expose the pushed union directly (the minimal
                             // plan), mirroring the join branch.
                             auto& agg_children = node->children();
                             for (size_t i = 0; i < agg_children.size(); ++i) {
@@ -1200,7 +1151,7 @@ namespace components::planner::optimizer {
                                     break;
                                 }
                             }
-                            if (node->children().size() == 1) {
+                            if (node->children().size() == 1 && aggregate_is_passthrough(*agg)) {
                                 return source;
                             }
                             return node;
@@ -1304,7 +1255,7 @@ namespace components::planner::optimizer {
             std::set<std::string> base_cols;
             if (!sel && source->has_output_types()) {
                 for (const auto& t : source->output_types()) {
-                    if (!t.alias().empty()) {
+                    if (t.has_alias()) { // alias() asserts on an alias-less column type
                         base_cols.insert(t.alias());
                     }
                 }
@@ -1351,8 +1302,10 @@ namespace components::planner::optimizer {
                         break;
                     }
                 }
-                // A bare wrapper { body } is a redundant pass-through -> expose the body directly.
-                if (node->children().size() == 1) {
+                // A bare wrapper { body } is a redundant pass-through -> expose the body
+                // directly. The consumer's own payload (DISTINCT/DISTINCT ON/result_alias)
+                // lives on the aggregate node itself — never collapse it away.
+                if (node->children().size() == 1 && aggregate_is_passthrough(*agg)) {
                     return source;
                 }
                 return node;

@@ -258,7 +258,11 @@ namespace components::table {
             if (!compiled_) {
                 auto compiled = core::regex_t::compile(pattern.get_allocator().resource(), pattern, icase);
                 if (compiled.has_error()) {
-                    return false; // a like_to_regex pattern is always well-formed, so this is unreachable
+                    // Unreachable: every regex_filter_t construction site (transform_predicate in
+                    // full_scan.cpp) compiles the pattern at plan time and surfaces a failed compile
+                    // as an error on the scan error channel, so only validated patterns reach here
+                    // and a recompile of a validated pattern cannot fail.
+                    return false;
                 }
                 compiled_.emplace(std::move(compiled.value()));
             }
@@ -286,40 +290,81 @@ namespace components::table {
         mutable std::optional<core::regex_t> compiled_;
     };
 
-    // Map a three-way compare result to a boolean for a comparison filter_type (eq/ne/lt/lte/gt/gte).
-    inline bool compare_matches(types::compare_t comp, expressions::compare_type op) {
+    // Same-type value dispatch for compare_values_promoting below: the exact operator set the
+    // canonical in-memory comparator (simple_predicate's make_comparator) applies, so the pushed
+    // col-vs-col filter cannot drift from it. Callers guarantee both sides share a type.
+    inline bool compare_same_type_matches(const types::logical_value_t& left,
+                                          const types::logical_value_t& right,
+                                          expressions::compare_type op) {
         switch (op) {
             case expressions::compare_type::eq:
-                return comp == types::compare_t::equals;
+                return left == right;
             case expressions::compare_type::ne:
-                return comp != types::compare_t::equals;
+                return left != right;
             case expressions::compare_type::lt:
-                return comp == types::compare_t::less;
+                return left < right;
             case expressions::compare_type::lte:
-                return comp != types::compare_t::more;
+                return left <= right;
             case expressions::compare_type::gt:
-                return comp == types::compare_t::more;
+                return left > right;
             case expressions::compare_type::gte:
-                return comp != types::compare_t::less;
+                return left >= right;
             default:
                 return false;
         }
     }
 
-    // Column-vs-column disk filter: `a.x OP a.y` evaluated per row (fetch both column values, compare).
+    // THE canonical value-vs-value comparison, shared by the in-memory comparator (operator_match ->
+    // simple_predicate's make_comparator) and the pushed col-vs-col filter
+    // (row_group_t::check_predicate): a NULL operand is UNKNOWN -> false; on a type mismatch cast
+    // right->left with the SESSION timezone and, when that cast yields NULL (e.g. a value that
+    // overflows the narrower type), fall back to left->right so the narrower side promotes UP; a
+    // cast error propagates. Boolean-vs-numeric rejection happens BEFORE this call (per row in the
+    // in-memory comparator, at plan time for the pushed filter) — both reject the same shapes.
+    inline core::result_wrapper_t<bool> compare_values_promoting(const types::logical_value_t& left,
+                                                                 const types::logical_value_t& right,
+                                                                 expressions::compare_type op,
+                                                                 core::date::timezone_offset_t session_tz) {
+        if (left.is_null() || right.is_null()) {
+            return false;
+        }
+        if (left.type() == right.type()) {
+            return compare_same_type_matches(left, right, op);
+        }
+        auto cast_right = right.cast_as(left.type(), session_tz);
+        if (cast_right.has_error()) {
+            return cast_right.convert_error<bool>();
+        }
+        if (!cast_right.value().is_null()) {
+            return compare_same_type_matches(left, cast_right.value(), op);
+        }
+        auto cast_left = left.cast_as(right.type(), session_tz);
+        if (cast_left.has_error()) {
+            return cast_left.convert_error<bool>();
+        }
+        if (!cast_left.value().is_null()) {
+            return compare_same_type_matches(cast_left.value(), right, op);
+        }
+        return false;
+    }
+
+    // Column-vs-column disk filter: `a.x OP a.y` evaluated per row (fetch both column values,
+    // compare via compare_values_promoting with the session timezone captured at plan time).
     // filter_type is the comparison (eq/ne/lt/lte/gt/gte). Not zonemap-prunable (no constant bound).
     // Discriminated by dynamic_cast — its filter_type collides with constant_filter_t.
     class column_column_filter_t : public table_filter_t {
     public:
         column_column_filter_t(expressions::compare_type comparison_type,
                                std::pmr::vector<uint64_t> left_indices,
-                               std::pmr::vector<uint64_t> right_indices)
+                               std::pmr::vector<uint64_t> right_indices,
+                               core::date::timezone_offset_t session_tz)
             : table_filter_t(comparison_type)
             , left_indices(std::move(left_indices))
-            , right_indices(std::move(right_indices)) {}
+            , right_indices(std::move(right_indices))
+            , session_tz(session_tz) {}
 
         std::unique_ptr<table_filter_t> copy() const override {
-            return std::make_unique<column_column_filter_t>(filter_type, left_indices, right_indices);
+            return std::make_unique<column_column_filter_t>(filter_type, left_indices, right_indices, session_tz);
         }
         bool equals(const table_filter_t& other) const override {
             const auto* o = dynamic_cast<const column_column_filter_t*>(&other);
@@ -329,6 +374,9 @@ namespace components::table {
 
         std::pmr::vector<uint64_t> left_indices;
         std::pmr::vector<uint64_t> right_indices;
+        // Session timezone for the per-row promotion casts (mirrors expression_filter_t::session_tz;
+        // not part of equals() identity).
+        core::date::timezone_offset_t session_tz;
     };
 
     // Abstract per-row evaluator behind an expression_filter_t. The concrete implementation

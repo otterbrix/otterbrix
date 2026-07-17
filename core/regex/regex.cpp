@@ -17,6 +17,11 @@ namespace core {
     regex_t::compile(std::pmr::memory_resource* resource, std::string_view pattern, bool case_insensitive) {
         re2::RE2::Options options;
         options.set_log_errors(false); // a bad USER pattern must not spam stderr
+        // Byte-wise (Latin-1) matching: the replaced std::regex engine matched bytes, so the
+        // like_to_regex '.'/'.*' must advance over ANY byte. RE2's default UTF-8 mode silently
+        // fails to match a non-UTF-8 payload ("caf\xE9" vs LIKE '%') and rejects a pattern
+        // carrying such a byte at compile time — both regressions, not features.
+        options.set_encoding(re2::RE2::Options::EncodingLatin1);
         if (case_insensitive) {
             options.set_case_sensitive(false);
         }

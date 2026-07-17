@@ -3,6 +3,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <components/expressions/compare_expression.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/param_storage.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/date/timezones.hpp>
 #include <random>
@@ -502,6 +506,259 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
                                            "SELECT * FROM TestDatabase.TestCollection WHERE name NOT ILIKE 'al%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 7);
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_non_string_subject_errors") {
+    // The RE2 migration dropped the old std::regex dispatcher's operand type guard: a non-string
+    // LIKE subject reached value<std::string_view>() — *reinterpret_cast<std::string*> over an
+    // integer payload — and SEGFAULTED (in-memory regex_predicate::check_impl) or reinterpreted the
+    // int64 column bytes as string_views inside the disk scan (filter_selection_regex). PostgreSQL
+    // rejects `bigint LIKE 'p'` as a type error; both routes must return a clean error, never crash.
+    auto config = test_create_config("/tmp/test_sql_features/like_non_string_subject");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE regexdb;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE regexdb.d (id bigint, k bigint);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (12, 'abc'), (3, 'zz');");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO regexdb.d (id, k) VALUES (1, 1), (12, 1), (3, 1);");
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("single-table: BIGINT LIKE pushed into the scan filter must error, not crash");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM regexdb.t WHERE id LIKE '1%';");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("join residual (in-memory regex_predicate): BIGINT LIKE must error, not crash");
+    {
+        // The OR straddles both join sides, so the predicate stays in operator_match above the
+        // join sink and hits the in-memory regex_predicate with a BIGINT subject.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT t.id FROM regexdb.t t JOIN regexdb.d d ON t.id = d.id "
+                                           "WHERE t.id LIKE '1%' OR d.k = 999;");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("string LIKE on the same table still works");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM regexdb.t WHERE s LIKE 'a%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // ab, abc
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_all_null_element_three_valued") {
+    // Three-valued LIKE ANY/ALL: `x LIKE NULL` is UNKNOWN, so `x [NOT] LIKE ALL (S)` over a set S
+    // carrying a NULL can never be TRUE — PostgreSQL drops every row. The regex ANY/ALL predicate
+    // (and the disk-pushdown filter builder) skipped NULL elements without tracking them, so the
+    // exhausted-loop ALL result wrongly returned TRUE. ANY is unaffected (UNKNOWN and FALSE both
+    // drop the row).
+    auto config = test_create_config("/tmp/test_sql_features/like_all_null_element");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE regexdb;")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.d (id bigint, k bigint);")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.pat (p text);")->is_success());
+    REQUIRE(run("INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (2, 'abc'), (3, 'zz');")->is_success());
+    REQUIRE(run("INSERT INTO regexdb.d (id, k) VALUES (1, 1), (2, 1), (3, 1);")->is_success());
+    REQUIRE(run("INSERT INTO regexdb.pat (p) VALUES ('a%'), (NULL);")->is_success());
+
+    INFO("LIKE ALL over a NULL-bearing set is UNKNOWN for every row -> 0 rows (scan pushdown path)");
+    {
+        auto cur = run("SELECT id FROM regexdb.t WHERE s LIKE ALL (SELECT p FROM regexdb.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("NOT LIKE ALL over a NULL-bearing set is UNKNOWN for every row -> 0 rows");
+    {
+        auto cur = run("SELECT id FROM regexdb.t WHERE s NOT LIKE ALL (SELECT p FROM regexdb.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0); // 'zz' fails 'a%' but the NULL keeps the ALL at UNKNOWN
+    }
+
+    INFO("LIKE ALL above a join (in-memory regex_any_predicate) honours the NULL element -> 0 rows");
+    {
+        // The OR straddles both join sides, so the predicate stays in operator_match above the
+        // join sink and evaluates via the in-memory regex_any_predicate.
+        auto cur = run("SELECT t.id FROM regexdb.t t JOIN regexdb.d d ON t.id = d.id "
+                       "WHERE (t.s LIKE ALL (SELECT p FROM regexdb.pat)) OR d.k = 999;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("LIKE ANY is unaffected by the NULL element");
+    {
+        auto cur = run("SELECT id FROM regexdb.t WHERE s LIKE ANY (SELECT p FROM regexdb.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // ab, abc match 'a%'
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_any_non_string_elements_stringify") {
+    // Adjacent root cause (rule 19): the disk-pushdown builder read every regex ANY/ALL pattern
+    // element with value<std::string_view>() — *reinterpret_cast<std::string*> over a BIGINT
+    // payload for `s LIKE ANY (SELECT int_col ...)` — instead of coercing a non-text element to
+    // the subject's string type the way the in-memory regex_any_predicate does. The element must
+    // stringify (BIGINT 12 -> pattern '12'), never be dereferenced as a string.
+    auto config = test_create_config("/tmp/test_sql_features/like_any_non_string_elements");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE regexdb;")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
+    REQUIRE(run("INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (12, 'abc'), (3, '12');")->is_success());
+
+    INFO("BIGINT sub-query elements stringify into LIKE patterns");
+    {
+        // Elements {1, 12, 3} stringify to patterns '1', '12', '3'; only s = '12' matches one.
+        auto cur = run("SELECT id FROM regexdb.t WHERE s LIKE ANY (SELECT id FROM regexdb.t);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // the s = '12' row
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_errors") {
+    // A raw regexp pattern RE2 rejects (backreference '(a)\1') must surface as an error on the
+    // DISK path exactly like the in-memory regex_predicate does ("invalid regular expression").
+    // Before the fix regex_filter_t::matches() swallowed the failed compile and returned false,
+    // silently filtering out every row with SUCCESS status. Raw (non-LIKE) patterns reach the
+    // filter through the plan API (compare_type::regex with a bound parameter), so build the plan
+    // directly — SQL LIKE always pre-converts via like_to_regex.
+    auto config = test_create_config("/tmp/test_sql_features/regex_invalid_pattern_disk");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE regexdb;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO regexdb.t (id, s) VALUES (1, 'aa'), (2, 'bb');")
+                    ->is_success());
+    }
+
+    INFO("regexp with a backreference pattern errors instead of silently returning 0 rows");
+    {
+        auto* resource = dispatcher->resource();
+        auto session = otterbrix::session_id_t();
+        auto plan = components::logical_plan::make_node_aggregate(resource,
+                                                                  core::dbname_t{"regexdb"},
+                                                                  core::relname_t{"t"});
+        auto expr = components::expressions::make_compare_expression(
+            resource,
+            components::expressions::compare_type::regex,
+            components::expressions::key_t{resource, "s", components::expressions::side_t::left},
+            core::parameter_id_t{1});
+        plan->append_child(components::logical_plan::make_node_match(resource,
+                                                                     core::dbname_t{"regexdb"},
+                                                                     core::relname_t{"t"},
+                                                                     std::move(expr)));
+        auto params = components::logical_plan::make_parameter_node(resource);
+        params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(resource, "(a)\\1"));
+        auto cur = dispatcher->execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{resource, plan, params});
+        REQUIRE(cur->is_error());
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_matches_non_utf8_bytes") {
+    // RE2 defaults to UTF-8, but the replaced std::regex engine matched BYTE-wise: a latin-1
+    // payload like "caf\xE9" previously matched LIKE '%' / LIKE 'caf_', and a pattern carrying the
+    // raw byte compiled fine. In UTF-8 mode '.'/'.*' cannot advance past an invalid UTF-8 byte, so
+    // such rows silently disappeared. core::regex_t must compile with Latin-1 (byte-wise) encoding.
+    auto config = test_create_config("/tmp/test_sql_features/like_latin1_bytes");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE regexdb;")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.t (id bigint, name text);")->is_success());
+    const std::string latin1_value = "caf\xE9"; // 0xE9: latin-1 'é', NOT valid UTF-8
+    REQUIRE(run("INSERT INTO regexdb.t (id, name) VALUES (1, '" + latin1_value + "');")->is_success());
+
+    INFO("LIKE 'caf_' matches the latin-1 byte");
+    {
+        auto cur = run("SELECT * FROM regexdb.t WHERE name LIKE 'caf_';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("LIKE '%' matches a value containing an invalid UTF-8 byte");
+    {
+        auto cur = run("SELECT * FROM regexdb.t WHERE name LIKE '%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("a LIKE pattern carrying the raw latin-1 byte compiles and matches");
+    {
+        auto cur = run("SELECT * FROM regexdb.t WHERE name LIKE '" + latin1_value + "';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
     }
 }
 
@@ -5453,5 +5710,132 @@ TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
         INFO("EXPLAIN(C):\n" << t);
         REQUIRE(contains(t, "Seq Scan"));
         REQUIRE(contains(t, "Filter")); // residual b<10 remains above the union
+    }
+}
+
+// BUG D1 (pushed col-vs-col filter diverges from the canonical comparator): the pushed
+// column-vs-column filter (column_column_filter_t, row_group_t::check_predicate) cast right->left
+// ONLY, with a hardcoded ZERO timezone, and dropped the row when that cast yielded NULL. The
+// canonical comparator every col-vs-col predicate used BEFORE the pushdown (simple_predicate's
+// make_comparator, still canon for operator_match/joins) casts bidirectionally with the SESSION
+// timezone: right->left first, and when that yields NULL it retries left->right. Triggering the
+// divergence needs an ASYMMETRICALLY castable column pair — right->left must yield NULL while
+// left->right succeeds. TIMESTAMP vs TIME is exactly that: logical_value_t::cast_as implements
+// TIMESTAMP->TIME (time-of-day extraction, session-tz-independent) but NOT TIME->TIMESTAMP, whose
+// duration switch falls through to the NA tail. So `WHERE ts OP tm` pre-fix dropped EVERY row on
+// the pushed scan, while the canonical comparator answers via the TIMESTAMP->TIME retry. A numeric
+// pair (e.g. SMALLINT vs NUMERIC holding an out-of-int16-range value) can NOT reproduce it:
+// cast_as's first branch handles every is_numeric TARGET — a DECIMAL source included — as a raw
+// physical static_cast of the SCALED storage that never yields NULL (the decimal_to_numeric
+// overflow->NA branch below it is unreachable), so the one-way and the bidirectional comparators
+// compute the identical result there and a test on such data stays green pre-fix. Applies to BOTH
+// storage modes: IN_MEMORY table_storage_t scans push the same filter, hence the twin space below
+// asserts the canonical ABSOLUTE answer in each mode, not merely one mode against the other.
+TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in_memory") {
+    auto plan_text = [](const auto& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            out += std::string(cur->value(0, r).template value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    };
+    auto contains = [](const std::string& hay, const char* needle) {
+        return hay.find(needle) != std::string::npos;
+    };
+
+    auto seed = [](auto* d) {
+        {
+            auto s = otterbrix::session_id_t();
+            d->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t (ts timestamp, tm time);")->is_success());
+        }
+        {
+            // ('2024-01-15 10:30:00', '10:30:00'): time-of-day(ts) == tm -> `ts = tm` matches via the
+            //     left->right TIMESTAMP->TIME retry ONLY (right->left TIME->TIMESTAMP casts to NULL).
+            // ('2024-06-02 22:45:10', '22:45:10'): second retry-only `ts = tm` match.
+            // ('2024-03-01 08:00:00', '06:15:00'): no eq match; the only `ts > tm` row (08:00 > 06:15).
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t (ts, tm) VALUES "
+                                   "(TIMESTAMP '2024-01-15 10:30:00', TIME '10:30:00'), "
+                                   "(TIMESTAMP '2024-06-02 22:45:10', TIME '22:45:10'), "
+                                   "(TIMESTAMP '2024-03-01 08:00:00', TIME '06:15:00');")
+                        ->is_success());
+        }
+    };
+
+    // --- disk-backed space (the column_column_filter_t pushdown target) ---
+    auto config = test_create_config("/tmp/test_sql_features/col_vs_col_promote");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* disk = space.dispatcher();
+    seed(disk);
+
+    // --- IN_MEMORY-storage space with identical data: same pushed filter path, must agree ---
+    auto mconfig = test_create_config("/tmp/test_sql_features/col_vs_col_promote_mem");
+    test_clear_directory(mconfig);
+    mconfig.disk.on = false;
+    mconfig.wal.on = false;
+    test_spaces mspace(mconfig);
+    auto* mem = mspace.dispatcher();
+    seed(mem);
+
+    auto run = [](auto* d, const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        auto cur = d->execute_sql(s, sql);
+        if (!cur->is_success()) {
+            INFO("query failed: " << sql << " :: " << std::string(cur->get_error().what));
+            REQUIRE(cur->is_success());
+        }
+        return cur;
+    };
+
+    INFO("ts = tm: every match exists ONLY through the left->right TIMESTAMP->TIME retry");
+    {
+        const std::string q = "SELECT * FROM TestDatabase.t WHERE ts = tm;";
+        auto disk_cur = run(disk, q);
+        auto mem_cur = run(mem, q);
+        REQUIRE(mem_cur->size() == 2);  // RED pre-fix: the one-way TIME->TIMESTAMP cast NULLed every row -> 0
+        REQUIRE(disk_cur->size() == 2); // RED pre-fix: 0
+        // Pin the surviving ROWS, not only the cardinality (a wrong result set of the right size
+        // is exactly how the previous incarnation of this test stayed green pre-fix).
+        const auto t_a = *core::date::parse_time("10:30:00");
+        const auto t_b = *core::date::parse_time("22:45:10");
+        auto v0 = disk_cur->value(1, 0).value<core::date::time_t>();
+        auto v1 = disk_cur->value(1, 1).value<core::date::time_t>();
+        REQUIRE(((v0 == t_a && v1 == t_b) || (v0 == t_b && v1 == t_a)));
+
+        // The predicate must actually ride the disk scan (no operator_match "Filter" node),
+        // otherwise this test would silently pass through the in-memory comparator.
+        auto t = plan_text(run(disk, std::string("EXPLAIN ") + q));
+        INFO("EXPLAIN:\n" << t);
+        REQUIRE(contains(t, "Seq Scan"));
+        REQUIRE_FALSE(contains(t, "Filter"));
+    }
+
+    INFO("tm = ts: reversed operands ride the WORKING right->left TIMESTAMP->TIME cast; disk == memory");
+    {
+        const std::string q = "SELECT * FROM TestDatabase.t WHERE tm = ts;";
+        auto disk_cur = run(disk, q);
+        auto mem_cur = run(mem, q);
+        REQUIRE(mem_cur->size() == 2);
+        REQUIRE(disk_cur->size() == 2);
+    }
+
+    INFO("ts > tm: an inequality through the same retry; only the 08:00:00 > 06:15:00 row matches");
+    {
+        const std::string q = "SELECT * FROM TestDatabase.t WHERE ts > tm;";
+        auto disk_cur = run(disk, q);
+        auto mem_cur = run(mem, q);
+        REQUIRE(disk_cur->size() == mem_cur->size());
+        REQUIRE(disk_cur->size() == 1); // RED pre-fix: 0 (every row dropped by the one-way NULL cast)
+        REQUIRE(disk_cur->value(0, 0).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-03-01 08:00:00"));
     }
 }

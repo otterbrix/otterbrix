@@ -324,3 +324,119 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filt
         REQUIRE(cur->value(0, 0).value<int64_t>() == 0);
     }
 }
+
+TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_valued") {
+    // DISK-mode three-valued LIKE ALL: the pattern set of `s [NOT] LIKE ALL (SELECT ...)` is pushed
+    // into the scan as a conjunction of regex_filter_t leaves. A NULL element makes every ALL row
+    // at best UNKNOWN (`s LIKE NULL` is UNKNOWN), so PostgreSQL returns 0 rows — the filter builder
+    // used to exclude regex from the NULL-element collapse and returned the non-null-leaf result.
+    // ANY is unaffected (UNKNOWN and FALSE both drop the row).
+    auto config = test_create_config("/tmp/test_streaming_match_like_all_null_disk");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE MatchDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE MatchDb.t (id bigint, s text);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE MatchDb.pat (p text);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO MatchDb.t (id, s) VALUES (1, 'ab'), (2, 'abc'), (3, 'zz');")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO MatchDb.pat (p) VALUES ('a%'), (NULL);")->is_success());
+
+    {
+        auto cur = exec(dispatcher, "SELECT id FROM MatchDb.t WHERE s LIKE ALL (SELECT p FROM MatchDb.pat);");
+        INFO("LIKE ALL error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0); // the NULL pattern keeps every row at UNKNOWN
+    }
+    {
+        auto cur = exec(dispatcher, "SELECT id FROM MatchDb.t WHERE s NOT LIKE ALL (SELECT p FROM MatchDb.pat);");
+        INFO("NOT LIKE ALL error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0); // 'zz' fails 'a%' but the NULL keeps the ALL at UNKNOWN
+    }
+    {
+        auto cur = exec(dispatcher, "SELECT id FROM MatchDb.t WHERE s LIKE ANY (SELECT p FROM MatchDb.pat);");
+        INFO("LIKE ANY error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // ab, abc match 'a%'; the NULL adds only UNKNOWN
+    }
+}
+
+// BUG D2 guard (late-materialization gather must never emit garbage cells): a SELECTIVE pushed
+// filter (approved * 5 < max_count) makes row_group_t::templated_scan gather ONLY the surviving
+// rows per non-filter column via col_data.fetch_row. A buffer-pin OOM inside fetch_row sets
+// column_fetch_state::fetch_error and writes NOTHING for that cell; the gather loop used to
+// ignore fetch_error entirely, so the scan "succeeded" with default/garbage cells while every
+// sibling scan leg (bulk scan/select) aborts on cs.has_error(). The fix aborts the scan through
+// collection_scan_state::scan_error exactly like the bulk legs.
+//
+// The pin OOM itself is NOT deterministically triggerable from the integration harness: the
+// buffer pool is constructed inside table_storage_t with a fixed 4 GiB cap (manager_disk.cpp,
+// `buffer_pool_(resource, uint64_t(1) << 32, ...)`) and configuration::config exposes no
+// memory-limit knob. This test therefore pins the HAPPY PATH of the exact gather code the fix
+// touched: multi-vector disk table, wide non-filter string column, <20% survival in the first and
+// last vectors — asserting both the survivor COUNT and the exact GATHERED CELL VALUES, which is
+// precisely what silently rots when a fetch error is swallowed.
+TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_values_land") {
+    auto config = test_create_config("/tmp/test_streaming_match_late_mat_gather");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    // 4000 rows = 4 storage vectors (DEFAULT_VECTOR_CAPACITY 1024): the selective filters below
+    // leave survivors only in the first / last vector, so the gather runs against real vector
+    // offsets (base + indexing) rather than only index 0.
+    constexpr unsigned kGatherRows = 4000;
+    const std::string wide_pad(120, 'x'); // wide non-filter column -> the gather target
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE GatherDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE GatherDb.t (id bigint, s text);")->is_success());
+    {
+        std::stringstream q;
+        q << "INSERT INTO GatherDb.t (id, s) VALUES ";
+        for (unsigned i = 0; i < kGatherRows; ++i) {
+            q << "(" << i << ", 'payload_" << i << "_" << wide_pad << "')"
+              << (i + 1 == kGatherRows ? ";" : ", ");
+        }
+        auto cur = exec(dispatcher, q.str());
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == kGatherRows);
+    }
+
+    // Head of the first vector: 50 of 1024 survive (50*5 < 1024 -> the gather path).
+    {
+        auto cur = exec(dispatcher, "SELECT id, s FROM GatherDb.t WHERE id < 50;");
+        INFO("head gather error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 50);
+    }
+
+    // Tail of the LAST vector: survivors sit at in-vector offsets ~878..927 of vector 3.
+    {
+        auto cur = exec(dispatcher, "SELECT id, s FROM GatherDb.t WHERE id >= 3950;");
+        INFO("tail gather error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 50);
+    }
+
+    // Exact gathered CELL VALUES for single survivors in the first and last vectors — a swallowed
+    // fetch error would surface here as a default/garbage `s` cell next to a plausible row count.
+    {
+        auto cur = exec(dispatcher, "SELECT s FROM GatherDb.t WHERE id = 7;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const auto cell = cur->value(0, 0);
+        REQUIRE(cell.value<std::string_view>() == std::string("payload_7_") + wide_pad);
+    }
+    {
+        auto cur = exec(dispatcher, "SELECT s FROM GatherDb.t WHERE id = 3999;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const auto cell = cur->value(0, 0);
+        REQUIRE(cell.value<std::string_view>() == std::string("payload_3999_") + wide_pad);
+    }
+}

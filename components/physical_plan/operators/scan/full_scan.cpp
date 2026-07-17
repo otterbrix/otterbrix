@@ -1,90 +1,27 @@
 #include "full_scan.hpp"
 
+#include <components/expressions/clone_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/like_to_regex.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <core/regex/regex.hpp>
 #include <services/disk/manager_disk.hpp>
+
+#include <optional>
 
 namespace components::operators {
 
     namespace {
         namespace expr = expressions;
 
-        // --- Deep-clone the leaf compare that backs an expression_filter_t onto `resource`. ---
-        // The filter is MOVED to (and destroyed on) the disk agent's thread; if it merely shared the
-        // operator's compare_expression_ptr it would mutate compare_expression_t's thread-UNSAFE
-        // intrusive refcount from two threads (cf. pushed_aggregate_spec.hpp's
-        // no-expression_ptr-across-mailbox rule). An independent deep clone keeps the expression's
-        // ownership single-threaded — the filter is its sole owner end to end.
-        expr::key_t clone_key(std::pmr::memory_resource* r, const expr::key_t& src) {
-            expr::key_t k{r};
-            for (const auto& seg : src.storage()) {
-                // Uses-allocator construction: storage() (a pmr::vector<pmr::string>) propagates r.
-                k.storage().emplace_back(seg.c_str(), seg.size());
-            }
-            std::pmr::vector<size_t> path{r};
-            path.reserve(src.path().size());
-            for (auto idx : src.path()) {
-                path.push_back(idx);
-            }
-            k.set_path(std::move(path));
-            k.set_side(src.side());
-            if (src.has_cast_type()) {
-                k.set_cast_type(src.cast_type());
-            }
-            k.set_variant_select(src.is_variant_select());
-            return k;
-        }
-
-        expr::param_storage clone_param(std::pmr::memory_resource* r, const expr::param_storage& src);
-
-        expr::expression_ptr clone_expr(std::pmr::memory_resource* r, const expr::expression_ptr& src) {
-            if (src->group() == expr::expression_group::scalar) {
-                const auto& s = reinterpret_cast<const expr::scalar_expression_ptr&>(src);
-                auto out = expr::make_scalar_expression(r, s->type(), clone_key(r, s->key()));
-                for (const auto& p : s->params()) {
-                    out->append_param(clone_param(r, p));
-                }
-                return out;
-            }
-            const auto& f = reinterpret_cast<const expr::function_expression_ptr&>(src);
-            auto out = expr::make_function_expression(r, std::string{f->name()});
-            out->add_function_uid(f->function_uid());
-            for (const auto& a : f->args()) {
-                out->args().emplace_back(clone_param(r, a));
-            }
-            return out;
-        }
-
-        expr::param_storage clone_param(std::pmr::memory_resource* r, const expr::param_storage& src) {
-            if (expr::is_key(src)) {
-                return expr::param_storage{clone_key(r, expr::as_key(src))};
-            }
-            if (expr::is_parameter(src)) {
-                return expr::param_storage{expr::as_parameter(src)};
-            }
-            return expr::param_storage{clone_expr(r, expr::as_expr(src))};
-        }
-
-        expr::compare_expression_ptr clone_compare(std::pmr::memory_resource* r,
-                                                   const expr::compare_expression_ptr& src) {
-            auto out =
-                expr::make_compare_expression(r, src->type(), clone_param(r, src->left()), clone_param(r, src->right()));
-            out->set_inner_op(src->inner_op());
-            if (src->do_not_fold()) {
-                out->make_unfoldable();
-            }
-            for (const auto& c : src->children()) {
-                out->append_child(clone_expr(r, c));
-            }
-            return out;
-        }
-
-        // Collect the column key paths the expression references (key -> path; nested scalar/function
-        // -> recurse; parameters need no path). These tell row_group_t::check_predicate which columns
-        // to materialize into the per-row chunk.
-        void collect_paths(const expr::param_storage& p, std::pmr::vector<std::pmr::vector<size_t>>& paths) {
+        // Collect the column key paths and bound-parameter ids the expression references (key ->
+        // path; parameter -> id; nested scalar/function -> recurse). The paths tell
+        // row_group_t::check_predicate which columns to materialize into the per-row chunk; the ids
+        // bound the parameter snapshot shipped with an expression_filter_t.
+        void collect_refs(const expr::param_storage& p,
+                          std::pmr::vector<std::pmr::vector<size_t>>& paths,
+                          std::pmr::vector<core::parameter_id_t>& param_ids) {
             if (expr::is_key(p)) {
                 const auto& path = expr::as_key(p).path();
                 // Uses-allocator construction: the outer pmr::vector propagates its resource inward.
@@ -92,18 +29,19 @@ namespace components::operators {
                 return;
             }
             if (expr::is_parameter(p)) {
+                param_ids.push_back(expr::as_parameter(p));
                 return;
             }
             const auto& e = expr::as_expr(p);
             if (e->group() == expr::expression_group::scalar) {
                 const auto& s = reinterpret_cast<const expr::scalar_expression_ptr&>(e);
                 for (const auto& sub : s->params()) {
-                    collect_paths(sub, paths);
+                    collect_refs(sub, paths, param_ids);
                 }
             } else {
                 const auto& f = reinterpret_cast<const expr::function_expression_ptr&>(e);
                 for (const auto& sub : f->args()) {
-                    collect_paths(sub, paths);
+                    collect_refs(sub, paths, param_ids);
                 }
             }
         }
@@ -235,21 +173,55 @@ namespace components::operators {
                 std::pmr::vector<std::unique_ptr<table::table_filter_t>> leaves(resource);
                 bool has_null_element = false;
                 if (!arr_param.is_null()) {
+                    // Regex over a non-string subject column would reinterpret the column payload as
+                    // string bytes inside the scan; PostgreSQL rejects it as a type error. Mirrors
+                    // the in-memory regex predicates' operand guard.
+                    if (is_regex && !types::is_string(col_type.type())) {
+                        return core::error_t{core::error_code_t::comparison_failure,
+                                             std::pmr::string{"incorrect argument type for regex", resource}};
+                    }
                     const auto& arr = arr_param.children();
                     leaves.reserve(arr.size());
                     for (const auto& val : arr) {
                         if (is_regex) {
+                            // A NULL pattern element contributes an UNKNOWN comparison, never a match
+                            // (three-valued) — and must never be dereferenced as a string.
                             if (val.is_null()) {
                                 has_null_element = true;
                                 continue;
                             }
-                            const auto raw = val.value<std::string_view>();
+                            // Non-text element (exotic `col LIKE ANY(SELECT int_col ...)`): coerce to
+                            // the subject's string type so it stringifies, mirroring the in-memory
+                            // regex_any_predicate; a coercion that yields NULL is an UNKNOWN comparison.
+                            std::optional<types::logical_value_t> coerced_el;
+                            std::string_view raw;
+                            if (types::is_string(val.type().type())) {
+                                raw = val.value<std::string_view>();
+                            } else {
+                                auto casted = val.cast_as(col_type, session_tz);
+                                if (casted.has_error()) {
+                                    return casted.convert_error<std::unique_ptr<table::table_filter_t>>();
+                                }
+                                if (casted.value().is_null()) {
+                                    has_null_element = true;
+                                    continue;
+                                }
+                                coerced_el = std::move(casted.value());
+                                raw = coerced_el->value<std::string_view>();
+                            }
                             std::pmr::string pat{resource};
                             if (re_like) {
                                 const std::string converted = expressions::like_to_regex(std::string(raw));
                                 pat.assign(converted.begin(), converted.end());
                             } else {
                                 pat.assign(raw.begin(), raw.end());
+                            }
+                            // Compile ONCE at plan time: an element pattern RE2 rejects must surface as
+                            // an error here — matching the in-memory path — never a filter that silently
+                            // drops every row (regex_filter_t::matches relies on this validation).
+                            auto compiled = core::regex_t::compile(resource, pat, re_icase);
+                            if (compiled.has_error()) {
+                                return compiled.convert_error<std::unique_ptr<table::table_filter_t>>();
                             }
                             leaves.emplace_back(
                                 std::make_unique<table::regex_filter_t>(std::move(pat), re_icase, indices));
@@ -286,10 +258,11 @@ namespace components::operators {
                 // non-null element that violates makes the row FALSE, otherwise the NULL makes it UNKNOWN;
                 // either way the row is dropped, so the whole predicate collapses to a constant FALSE (an
                 // empty OR matches nothing). This is the classic `x NOT IN (SELECT ... with a NULL)` → no
-                // rows. ANY / IN is unaffected: a NULL element only adds UNKNOWN, and for `x op ANY(S)`
+                // rows, and it holds for the regex family too: `x [NOT] LIKE ALL(S with a NULL)` is at best
+                // UNKNOWN (`x LIKE NULL` is UNKNOWN), so both LIKE ALL and NOT LIKE ALL drop every row.
+                // ANY / IN is unaffected: a NULL element only adds UNKNOWN, and for `x op ANY(S)`
                 // UNKNOWN and FALSE both drop the row, so the OR of the non-null leaves already agrees.
-                // (Regex NOT LIKE ANY/ALL keeps its dedicated negation handling below.)
-                if (!is_any && !is_regex && has_null_element) {
+                if (!is_any && has_null_element) {
                     return std::unique_ptr<table::table_filter_t>(std::make_unique<table::conjunction_or_filter_t>());
                 }
 
@@ -349,28 +322,37 @@ namespace components::operators {
             default: {
                 // Shape (B): one operand is a FUNCTION/ARITHMETIC expression over column(s) and the
                 // other a bound parameter — e.g. WHERE substring(s,1,3)='abc', WHERE x+1>5. Not
-                // representable as a constant_filter_t, so ship an expression_filter_t: a deep-cloned
-                // copy of the compare (single-threaded ownership), the referenced column paths, and a
-                // snapshot of the referenced parameter values. The per-row evaluator is built AGENT-SIDE
+                // representable as a constant_filter_t, so ship an expression_filter_t: a deep clone
+                // of the compare, the referenced column paths, and a snapshot of the referenced
+                // parameter values. The clone (canonical expressions::clone_expression) is REQUIRED:
+                // the filter is MOVED to (and destroyed on) the disk agent's thread, and sharing the
+                // operator's compare_expression_ptr would mutate the expression's thread-UNSAFE
+                // intrusive refcount from two threads (cf. pushed_aggregate_spec.hpp's
+                // no-expression_ptr-across-mailbox rule) — the clone keeps ownership single-threaded,
+                // the filter its sole owner end to end. The per-row evaluator is built AGENT-SIDE
                 // (its value_getter closures capture the agent's resource + function registry, which
                 // cannot cross the mailbox), mirroring what operator_match does for the in-memory path.
                 if (expressions::is_expr(expression->left()) || expressions::is_expr(expression->right())) {
                     std::pmr::vector<std::pmr::vector<size_t>> column_paths{resource};
-                    collect_paths(expression->left(), column_paths);
-                    collect_paths(expression->right(), column_paths);
-                    // Snapshot the FULL bound-parameter set (not only the ids collect_refs found): a
-                    // constant literal inside the expression can be lowered to a parameter in ways the
-                    // structural walk does not enumerate, so copy them all — the map is small (per-query
-                    // parameters) and this guarantees every value_getter resolves agent-side.
+                    std::pmr::vector<core::parameter_id_t> param_ids{resource};
+                    collect_refs(expression->left(), column_paths, param_ids);
+                    collect_refs(expression->right(), column_paths, param_ids);
+                    // Snapshot ONLY the parameters the expression references: every bound parameter is
+                    // a param_storage alternative (compare operand / scalar param / function arg) that
+                    // collect_refs enumerates, so the referenced-id set is complete — an unrelated
+                    // query parameter (e.g. a large sub-query array) never ships with the filter.
                     std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> param_snapshot{resource};
-                    for (const auto& [id, value] : parameters->parameters) {
-                        param_snapshot.emplace(id, value);
+                    for (const auto& id : param_ids) {
+                        if (auto pit = parameters->parameters.find(id); pit != parameters->parameters.end()) {
+                            param_snapshot.emplace(id, pit->second);
+                        }
                     }
-                    return std::unique_ptr<table::table_filter_t>(
-                        std::make_unique<table::expression_filter_t>(clone_compare(resource, expression),
-                                                                     std::move(column_paths),
-                                                                     std::move(param_snapshot),
-                                                                     session_tz));
+                    auto clone = expressions::clone_expression(resource, expression);
+                    return std::unique_ptr<table::table_filter_t>(std::make_unique<table::expression_filter_t>(
+                        std::move(reinterpret_cast<expressions::compare_expression_ptr&>(clone)),
+                        std::move(column_paths),
+                        std::move(param_snapshot),
+                        session_tz));
                 }
                 // A disk table_filter_t is `column OP constant` only: the LEFT operand must be a key
                 // and the RIGHT a bound parameter (the param_storage alternative that is neither a key
@@ -402,7 +384,8 @@ namespace components::operators {
                     return std::unique_ptr<table::table_filter_t>(
                         std::make_unique<table::column_column_filter_t>(expression->type(),
                                                                         std::move(li),
-                                                                        std::move(ri)));
+                                                                        std::move(ri),
+                                                                        session_tz));
                 }
                 if (!expressions::is_key(expression->left()) || !expressions::is_parameter(expression->right())) {
                     return core::error_t{
@@ -424,6 +407,30 @@ namespace components::operators {
                 // the ENUM / cast logic below (which only makes sense for orderable constants).
                 if (expression->type() == expressions::compare_type::regex) {
                     const auto& pat = it->second;
+                    // NULL pattern (`col LIKE NULL` nested under AND/OR reaches filter construction —
+                    // the top-level short-circuit in source_next only sees non-union compares):
+                    // UNKNOWN matches nothing — an empty OR; never dereference the NULL's payload.
+                    if (pat.is_null()) {
+                        return std::unique_ptr<table::table_filter_t>(
+                            std::make_unique<table::conjunction_or_filter_t>());
+                    }
+                    // Operand type guard (mirrors the in-memory regex predicates): a non-string subject
+                    // column would be reinterpreted as string bytes inside the scan, a non-string
+                    // pattern parameter as a std::string* here. PostgreSQL rejects both as type errors.
+                    const auto& subj_type = types::complex_logical_type::type_from_path(types, path);
+                    if (!types::is_string(subj_type.type()) || !types::is_string(pat.type().type())) {
+                        return core::error_t{core::error_code_t::comparison_failure,
+                                             std::pmr::string{"incorrect argument type for regex", resource}};
+                    }
+                    // Compile ONCE at plan time: a pattern RE2 rejects (raw regexp with a backreference,
+                    // lookahead, ...) must surface as an error on the scan error channel — identical to
+                    // the in-memory regex_predicate — never a filter that silently drops every row
+                    // (regex_filter_t::matches relies on this validation).
+                    auto compiled =
+                        core::regex_t::compile(resource, pat.value<std::string_view>(), expression->regex_icase());
+                    if (compiled.has_error()) {
+                        return compiled.convert_error<std::unique_ptr<table::table_filter_t>>();
+                    }
                     return std::unique_ptr<table::table_filter_t>(
                         std::make_unique<table::regex_filter_t>(std::pmr::string{pat.value<std::string_view>(), resource},
                                                                 expression->regex_icase(),

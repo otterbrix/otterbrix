@@ -17,6 +17,8 @@ namespace core {
     // that std::regex has no non-throwing way to report. match() is a PARTIAL search
     // (RE2::PartialMatch), the exact analogue of std::regex_search; a self-anchored like_to_regex
     // pattern therefore matches identically. Case-insensitivity (ILIKE) is a compile-time option.
+    // Matching is BYTE-wise (RE2 Latin-1 encoding), like the std::regex engine it replaced: '.'
+    // advances over any byte, so non-UTF-8 payloads and patterns keep matching.
     class regex_t {
     public:
         // Compile `pattern` (RE2/Google syntax; the like_to_regex output alphabet ^ $ . .* and

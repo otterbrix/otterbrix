@@ -2,10 +2,12 @@
 #include "utils.hpp"
 
 #include <components/expressions/like_to_regex.hpp>
+#include <components/table/column_state.hpp>
 #include <core/regex/regex.hpp>
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace components::operators::predicates {
@@ -48,6 +50,13 @@ namespace components::operators::predicates {
                 }
                 const auto& subject_val = left_val.value();
                 const auto& pattern_val = right_val.value();
+                // Operand type guard (restores the std::regex dispatcher's behavior): a non-string
+                // operand must be a returned error — value<std::string_view>() on a non-string
+                // value dereferences its payload as a std::string*.
+                if (!types::is_string(subject_val.type().type()) || !types::is_string(pattern_val.type().type())) {
+                    return core::error_t{core::error_code_t::comparison_failure,
+                                         std::pmr::string{"incorrect argument type for regex", resource}};
+                }
                 auto compiled = core::regex_t::compile(resource, pattern_val.value<std::string_view>(), icase);
                 if (compiled.has_error()) {
                     return compiled.error();
@@ -56,7 +65,6 @@ namespace components::operators::predicates {
             };
         }
 
-        template<typename COMP>
         simple_predicate::row_check_fn_t make_comparator(std::pmr::memory_resource* resource,
                                                          const compute::function_registry_t* function_registry,
                                                          const expressions::compare_expression_ptr& expr,
@@ -64,11 +72,15 @@ namespace components::operators::predicates {
                                                          core::date::timezone_offset_t session_tz) {
             auto left_getter = impl::create_value_getter(resource, function_registry, expr->left(), parameters);
             auto right_getter = impl::create_value_getter(resource, function_registry, expr->right(), parameters);
-            return [resource, left_getter = std::move(left_getter), right_getter = std::move(right_getter), session_tz](
-                       const vector::data_chunk_t& chunk_left,
-                       const vector::data_chunk_t& chunk_right,
-                       size_t index_left,
-                       size_t index_right) -> core::result_wrapper_t<bool> {
+            const auto op = expr->type();
+            return [resource,
+                    left_getter = std::move(left_getter),
+                    right_getter = std::move(right_getter),
+                    op,
+                    session_tz](const vector::data_chunk_t& chunk_left,
+                                const vector::data_chunk_t& chunk_right,
+                                size_t index_left,
+                                size_t index_right) -> core::result_wrapper_t<bool> {
                 auto left_val = left_getter(chunk_left, chunk_right, index_left, index_right);
                 auto right_val = right_getter(chunk_left, chunk_right, index_left, index_right);
                 if (left_val.has_error()) {
@@ -77,18 +89,15 @@ namespace components::operators::predicates {
                 if (right_val.has_error()) {
                     return right_val.convert_error<bool>();
                 }
-                // Technically this will be neither true nor false, but for simplicity we use false
-                if (left_val.value().is_null() || right_val.value().is_null()) {
-                    return false;
-                }
                 // PostgreSQL rejects an IMPLICIT boolean <-> numeric comparison ("operator
                 // does not exist: boolean = integer"). is_numeric(BOOLEAN) is true, so without
                 // this guard cast_as would silently coerce the numeric via the int->bool cast
                 // and compare — asymmetric and surprising. Reject when EXACTLY one side is
                 // BOOLEAN and the other is a non-boolean numeric, so `bool_col = 1` errors.
                 // Same-type bool=bool and numeric=numeric (neither trips l_bool != r_bool), and
-                // any string / temporal / NULL pairing, are untouched.
-                {
+                // any string / temporal / NULL pairing, are untouched. NULL operands skip the
+                // guard (UNKNOWN -> false inside the shared comparator).
+                if (!left_val.value().is_null() && !right_val.value().is_null()) {
                     // Detect a boolean operand by PHYSICAL type (BOOL) so it fires whether the
                     // value's logical type is BOOL or BOOLEAN. The other side is numeric-non-bool
                     // when it is is_numeric but not itself physically BOOL.
@@ -101,21 +110,10 @@ namespace components::operators::predicates {
                             std::pmr::string{"operator does not exist: boolean = numeric type", resource}};
                     }
                 }
-                auto cast_right = right_val.value().cast_as(left_val.value().type(), session_tz);
-                if (cast_right.has_error()) {
-                    return cast_right.convert_error<bool>();
-                }
-                if (!cast_right.value().is_null()) {
-                    return evaluate_comp<COMP>(resource, left_val.value(), cast_right.value());
-                }
-                auto cast_left = left_val.value().cast_as(right_val.value().type(), session_tz);
-                if (cast_left.has_error()) {
-                    return cast_left.convert_error<bool>();
-                }
-                if (!cast_left.value().is_null()) {
-                    return evaluate_comp<COMP>(resource, cast_left.value(), right_val.value());
-                }
-                return false;
+                // THE canonical NULL + bidirectional-promotion + compare semantics live in ONE
+                // place — table::compare_values_promoting — shared with the pushed col-vs-col
+                // disk filter (row_group_t::check_predicate), so the two paths cannot diverge.
+                return table::compare_values_promoting(left_val.value(), right_val.value(), op, session_tz);
             };
         }
 
@@ -127,14 +125,18 @@ namespace components::operators::predicates {
         // the move-only compiled regex can live as a member.
         class regex_predicate final : public predicate {
         public:
-            regex_predicate(impl::value_getter subject, core::result_wrapper_t<core::regex_t> compiled)
-                : subject_(std::move(subject))
+            regex_predicate(std::pmr::memory_resource* resource,
+                            impl::value_getter subject,
+                            core::result_wrapper_t<core::regex_t> compiled)
+                : resource_(resource)
+                , subject_(std::move(subject))
                 , error_(compiled.has_error() ? std::optional<core::error_t>(compiled.error()) : std::nullopt)
                 , re_(compiled.has_error() ? std::nullopt : std::optional<core::regex_t>(std::move(compiled.value()))) {}
 
             // NULL pattern: `col LIKE NULL` is unknown -> matches nothing.
-            explicit regex_predicate(impl::value_getter subject)
-                : subject_(std::move(subject)) {}
+            regex_predicate(std::pmr::memory_resource* resource, impl::value_getter subject)
+                : resource_(resource)
+                , subject_(std::move(subject)) {}
 
         private:
             core::result_wrapper_t<bool> check_impl(const vector::data_chunk_t& chunk_left,
@@ -155,12 +157,31 @@ namespace components::operators::predicates {
                     return false;
                 }
                 const auto& subject_val = subject.value();
+                // Non-string subject (`int_col LIKE 'p'` — the validator does not type-check regex):
+                // a returned error, exactly like the replaced std::regex dispatcher — never read the
+                // payload as a std::string*.
+                if (!types::is_string(subject_val.type().type())) {
+                    return core::error_t{core::error_code_t::comparison_failure,
+                                         std::pmr::string{"incorrect argument type for regex", resource_}};
+                }
                 return re_->match(subject_val.value<std::string_view>());
             }
 
+            std::pmr::memory_resource* resource_;
             impl::value_getter subject_;
             std::optional<core::error_t> error_;
             std::optional<core::regex_t> re_;
+        };
+
+        // Transparent hash/equal so the pattern cache below is probed with the raw string_view —
+        // the per-row/per-element hit path allocates nothing; only a miss materializes the key.
+        struct pattern_hash_t {
+            using is_transparent = void;
+            size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+        };
+        struct pattern_eq_t {
+            using is_transparent = void;
+            bool operator()(std::string_view lhs, std::string_view rhs) const noexcept { return lhs == rhs; }
         };
 
         // `col LIKE/ILIKE/regexp ANY|ALL (SELECT ...)`: the sub-query result array is the pattern set, read
@@ -208,10 +229,22 @@ namespace components::operators::predicates {
                     return !is_any_;
                 }
                 const auto& subject_val = left_val.value();
+                // Non-string subject (`int_col LIKE ANY(...)` — the validator does not type-check
+                // regex): a returned error, never a payload read as a std::string*.
+                if (!types::is_string(subject_val.type().type())) {
+                    return core::error_t{core::error_code_t::comparison_failure,
+                                         std::pmr::string{"incorrect argument type for regex", resource_}};
+                }
                 std::string_view subject = subject_val.value<std::string_view>();
                 const auto& arr = arr_param.children();
+                // Three-valued (SQL NULL) membership, mirroring the non-regex ANY/ALL lambda below:
+                // a NULL pattern element (or one whose cast yields NULL) contributes an UNKNOWN
+                // comparison, never a match. Remember that one was seen so the ALL exhausted-loop
+                // result can drop the row.
+                bool has_null_element = false;
                 for (const auto& element : arr) {
                     if (element.is_null()) {
+                        has_null_element = true;
                         continue;
                     }
                     // Text pattern element: read the bytes inline, no per-row logical_value_t (Rule 1). A
@@ -227,6 +260,7 @@ namespace components::operators::predicates {
                             return casted.convert_error<bool>();
                         }
                         if (casted.value().is_null()) {
+                            has_null_element = true;
                             continue;
                         }
                         coerced = std::move(casted.value());
@@ -249,14 +283,20 @@ namespace components::operators::predicates {
                         return false;
                     }
                 }
+                // Loop exhausted with no decisive element. For `x [NOT] LIKE ALL(S)` a NULL element
+                // makes the still-undecided row UNKNOWN, not TRUE, so it must be dropped. ANY is
+                // unaffected: no match is FALSE, and UNKNOWN drops the row too.
+                if (!is_any_ && has_null_element) {
+                    return false;
+                }
                 return !is_any_;
             }
 
-            // Compile-once: look the element pattern up in the cache, compiling + inserting on a miss.
+            // Compile-once: look the element pattern up in the cache (heterogeneous string_view
+            // probe — a hit allocates nothing), compiling + inserting on a miss.
             // Returns nullptr for a pattern that does not compile (cached as an empty slot).
             core::regex_t* compiled_for(std::string_view pattern) {
-                std::pmr::string key{pattern, resource_};
-                if (auto it = cache_.find(key); it != cache_.end()) {
+                if (auto it = cache_.find(pattern); it != cache_.end()) {
                     return it->second.has_value() ? &*it->second : nullptr;
                 }
                 const std::string converted =
@@ -264,7 +304,7 @@ namespace components::operators::predicates {
                 auto compiled = core::regex_t::compile(resource_, converted, re_icase_);
                 std::optional<core::regex_t> slot =
                     compiled.has_error() ? std::nullopt : std::optional<core::regex_t>(std::move(compiled.value()));
-                auto [ins, _inserted] = cache_.emplace(std::move(key), std::move(slot));
+                auto [ins, _inserted] = cache_.emplace(std::pmr::string{pattern, resource_}, std::move(slot));
                 return ins->second.has_value() ? &*ins->second : nullptr;
             }
 
@@ -277,7 +317,8 @@ namespace components::operators::predicates {
             bool re_negate_;
             bool is_any_;
             core::date::timezone_offset_t session_tz_;
-            std::pmr::unordered_map<std::pmr::string, std::optional<core::regex_t>> cache_;
+            std::pmr::unordered_map<std::pmr::string, std::optional<core::regex_t>, pattern_hash_t, pattern_eq_t>
+                cache_;
         };
 
     } // anonymous namespace
@@ -413,29 +454,16 @@ namespace components::operators::predicates {
                 return {new simple_predicate(resource, std::move(nested), expr->type())};
             }
             case compare_type::eq:
-                return {new simple_predicate(
-                    resource,
-                    make_comparator<std::equal_to<>>(resource, function_registry, expr, parameters, session_tz))};
             case compare_type::ne:
-                return {new simple_predicate(
-                    resource,
-                    make_comparator<std::not_equal_to<>>(resource, function_registry, expr, parameters, session_tz))};
             case compare_type::gt:
-                return {new simple_predicate(
-                    resource,
-                    make_comparator<std::greater<>>(resource, function_registry, expr, parameters, session_tz))};
             case compare_type::gte:
-                return {new simple_predicate(
-                    resource,
-                    make_comparator<std::greater_equal<>>(resource, function_registry, expr, parameters, session_tz))};
             case compare_type::lt:
-                return {new simple_predicate(
-                    resource,
-                    make_comparator<std::less<>>(resource, function_registry, expr, parameters, session_tz))};
             case compare_type::lte:
+                // One comparator for all six operators: the op rides expr->type() into the shared
+                // table::compare_values_promoting helper (single source with the pushed disk filter).
                 return {new simple_predicate(
                     resource,
-                    make_comparator<std::less_equal<>>(resource, function_registry, expr, parameters, session_tz))};
+                    make_comparator(resource, function_registry, expr, parameters, session_tz))};
             case compare_type::any:
             case compare_type::all: {
                 // inner_op is guaranteed valid by the transformer (an unmapped ANY/ALL operator is rejected
@@ -561,13 +589,22 @@ namespace components::operators::predicates {
                         it != parameters->parameters.end()) {
                         auto subject = impl::create_value_getter(resource, function_registry, expr->left(), parameters);
                         if (it->second.is_null()) {
-                            return {new regex_predicate(std::move(subject))};
+                            return {new regex_predicate(resource, std::move(subject))};
                         }
                         const auto& pattern_val = it->second;
+                        // Non-string pattern parameter: stored as the predicate's error (returned at
+                        // eval through the same channel as a failed compile) — never read as a string.
+                        if (!types::is_string(pattern_val.type().type())) {
+                            return {new regex_predicate(
+                                resource,
+                                std::move(subject),
+                                core::error_t{core::error_code_t::comparison_failure,
+                                              std::pmr::string{"incorrect argument type for regex", resource}})};
+                        }
                         auto compiled = core::regex_t::compile(resource,
                                                                pattern_val.value<std::string_view>(),
                                                                expr->regex_icase());
-                        return {new regex_predicate(std::move(subject), std::move(compiled))};
+                        return {new regex_predicate(resource, std::move(subject), std::move(compiled))};
                     }
                 }
                 return {new simple_predicate(resource,

@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <core/operations_helper.hpp>
 #include <services/disk/agent_disk.hpp>
 
 // End-to-end coverage for aggregate-pushdown-to-owning-agent, run over BOTH
@@ -272,8 +273,8 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_partial_min_keeps_dou
     REQUIRE(cur->size() == 2);
     REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     REQUIRE(cur->value(1, 0).type().type() == components::types::logical_type::DOUBLE);
-    REQUIRE(cur->value(1, 0).value<double>() == 1.5); // exactly representable
+    REQUIRE(core::is_equals(cur->value(1, 0).value<double>(), 1.5)); // exactly representable
     REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
     REQUIRE(cur->value(1, 1).type().type() == components::types::logical_type::DOUBLE);
-    REQUIRE(cur->value(1, 1).value<double>() == 10.25); // exactly representable
+    REQUIRE(core::is_equals(cur->value(1, 1).value<double>(), 10.25)); // exactly representable
 }

@@ -433,7 +433,7 @@ TEST_CASE("integration::cpp::test_sql_features::like") {
 TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     // Same LIKE/ILIKE cases as ::like but with DISK-backed storage, so the predicate is pushed into the disk
     // scan's constant_filter_t (RE2, compiled once, case-insensitive for ILIKE) and evaluated on real column
-    // segments — the row-based string_check_row -> constant_filter_t::compare path. Guards the Ф3/Ф4 disk
+    // segments — the row-based string_check_row -> constant_filter_t::compare path. Guards the disk
     // regex wiring against silent wrong results on uncompressed string columns.
     auto config = test_create_config("/tmp/test_sql_features/like_disk_pushdown");
     test_clear_directory(config);
@@ -633,7 +633,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_all_null_element_three_valu
 }
 
 TEST_CASE("integration::cpp::test_sql_features::like_any_non_string_elements_stringify") {
-    // Adjacent root cause (rule 19): the disk-pushdown builder read every regex ANY/ALL pattern
+    // The disk-pushdown builder used to read every regex ANY/ALL pattern
     // element with value<std::string_view>() — *reinterpret_cast<std::string*> over a BIGINT
     // payload for `s LIKE ANY (SELECT int_col ...)` — instead of coercing a non-text element to
     // the subject's string type the way the in-memory regex_any_predicate does. The element must
@@ -5400,7 +5400,7 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
     }
 }
 
-// Ф9: WHERE a.x OP a.y (column-vs-column) pushes into the disk scan as a column_column_filter_t
+// WHERE a.x OP a.y (column-vs-column) pushes into the disk scan as a column_column_filter_t
 // (fetch both column values per row and compare). A NULL operand excludes the row (SQL 3-valued logic).
 TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
     auto config = test_create_config("/tmp/test_sql_features/column_vs_column");
@@ -5443,8 +5443,8 @@ TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
 // expression_filter_t evaluated per row — not filtered in a separate operator_match above
 // the scan. The pushdown is observable two ways:
 //   (1) EXPLAIN: the plan carries no "Filter" (operator_match) node — the predicate rides
-//       the "Seq Scan". Before the pushdown these predicates lowered to a "Filter" over an
-//       unfiltered scan, so the absence of "Filter" is the red->green signal.
+//       the "Seq Scan". Without the pushdown these predicates lower to a "Filter" over an
+//       unfiltered scan, so the absence of "Filter" is the observable signal.
 //   (2) Results: identical rows to the pre-existing in-memory operator_match answer, with a
 //       NULL operand excluded (SQL: f(NULL) OP c is NULL -> the row does not match).
 TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
@@ -5713,24 +5713,19 @@ TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
     }
 }
 
-// BUG D1 (pushed col-vs-col filter diverges from the canonical comparator): the pushed
-// column-vs-column filter (column_column_filter_t, row_group_t::check_predicate) cast right->left
-// ONLY, with a hardcoded ZERO timezone, and dropped the row when that cast yielded NULL. The
-// canonical comparator every col-vs-col predicate used BEFORE the pushdown (simple_predicate's
-// make_comparator, still canon for operator_match/joins) casts bidirectionally with the SESSION
-// timezone: right->left first, and when that yields NULL it retries left->right. Triggering the
-// divergence needs an ASYMMETRICALLY castable column pair — right->left must yield NULL while
-// left->right succeeds. TIMESTAMP vs TIME is exactly that: logical_value_t::cast_as implements
-// TIMESTAMP->TIME (time-of-day extraction, session-tz-independent) but NOT TIME->TIMESTAMP, whose
-// duration switch falls through to the NA tail. So `WHERE ts OP tm` pre-fix dropped EVERY row on
-// the pushed scan, while the canonical comparator answers via the TIMESTAMP->TIME retry. A numeric
-// pair (e.g. SMALLINT vs NUMERIC holding an out-of-int16-range value) can NOT reproduce it:
-// cast_as's first branch handles every is_numeric TARGET — a DECIMAL source included — as a raw
-// physical static_cast of the SCALED storage that never yields NULL (the decimal_to_numeric
-// overflow->NA branch below it is unreachable), so the one-way and the bidirectional comparators
-// compute the identical result there and a test on such data stays green pre-fix. Applies to BOTH
-// storage modes: IN_MEMORY table_storage_t scans push the same filter, hence the twin space below
-// asserts the canonical ABSOLUTE answer in each mode, not merely one mode against the other.
+// The pushed column-vs-column filter (column_column_filter_t, row_group_t::check_predicate) used
+// to cast right->left ONLY, with a hardcoded ZERO timezone, and dropped the row when that cast
+// yielded NULL. The canonical comparator every col-vs-col predicate used BEFORE the pushdown
+// (simple_predicate's make_comparator, still canon for operator_match/joins) casts bidirectionally
+// with the SESSION timezone: right->left first, and when that yields NULL it retries left->right.
+// Triggering the divergence needs an ASYMMETRICALLY castable column pair — right->left must yield
+// NULL while left->right succeeds. TIMESTAMP vs TIME is exactly that: logical_value_t::cast_as
+// implements TIMESTAMP->TIME (time-of-day extraction, session-tz-independent) but NOT
+// TIME->TIMESTAMP, whose duration switch falls through to the NA tail. So `WHERE ts OP tm`
+// pre-fix dropped EVERY row on the pushed scan, while the canonical comparator answers via the
+// TIMESTAMP->TIME retry. Applies to BOTH storage modes: IN_MEMORY table_storage_t scans push the
+// same filter, hence the twin space below asserts the canonical ABSOLUTE answer in each mode,
+// not merely one mode against the other.
 TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in_memory") {
     auto plan_text = [](const auto& cur) {
         std::string out;
@@ -5801,10 +5796,10 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
         const std::string q = "SELECT * FROM TestDatabase.t WHERE ts = tm;";
         auto disk_cur = run(disk, q);
         auto mem_cur = run(mem, q);
-        REQUIRE(mem_cur->size() == 2);  // RED pre-fix: the one-way TIME->TIMESTAMP cast NULLed every row -> 0
-        REQUIRE(disk_cur->size() == 2); // RED pre-fix: 0
-        // Pin the surviving ROWS, not only the cardinality (a wrong result set of the right size
-        // is exactly how the previous incarnation of this test stayed green pre-fix).
+        REQUIRE(mem_cur->size() == 2);  // pre-fix: the one-way TIME->TIMESTAMP cast NULLed every row -> 0
+        REQUIRE(disk_cur->size() == 2); // pre-fix: 0
+        // Pin the surviving ROWS, not only the cardinality (a wrong result set of the right
+        // size would still pass a cardinality-only check).
         const auto t_a = *core::date::parse_time("10:30:00");
         const auto t_b = *core::date::parse_time("22:45:10");
         auto v0 = disk_cur->value(1, 0).value<core::date::time_t>();
@@ -5834,7 +5829,7 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
         auto disk_cur = run(disk, q);
         auto mem_cur = run(mem, q);
         REQUIRE(disk_cur->size() == mem_cur->size());
-        REQUIRE(disk_cur->size() == 1); // RED pre-fix: 0 (every row dropped by the one-way NULL cast)
+        REQUIRE(disk_cur->size() == 1); // pre-fix: 0 (every row dropped by the one-way NULL cast)
         REQUIRE(disk_cur->value(0, 0).value<core::date::timestamp_t>() ==
                 *core::date::parse_timestamp("2024-03-01 08:00:00"));
     }

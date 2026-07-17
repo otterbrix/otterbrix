@@ -22,7 +22,7 @@ namespace components::operators::predicates {
         // Exotic scalar regex: `col regexp <column-or-expression>` where the pattern is NOT a bound
         // parameter, so it varies per row and genuinely cannot be compiled once. Reads both operands via
         // the shared value_getter and compiles per row with RE2 — crash-safe: a bad pattern is a returned
-        // core::error_t, never a thrown std::regex_error (std::regex had no non-throwing way to report it).
+        // core::error_t, never a throw.
         // The common `col LIKE/ILIKE/regexp <literal>` shape does NOT come here — it routes to
         // regex_predicate (compile-once) below.
         inline simple_predicate::row_check_fn_t make_regex_comparator(std::pmr::memory_resource* resource,
@@ -50,9 +50,9 @@ namespace components::operators::predicates {
                 }
                 const auto& subject_val = left_val.value();
                 const auto& pattern_val = right_val.value();
-                // Operand type guard (restores the std::regex dispatcher's behavior): a non-string
-                // operand must be a returned error — value<std::string_view>() on a non-string
-                // value dereferences its payload as a std::string*.
+                // Operand type guard: a non-string operand must be a returned error —
+                // value<std::string_view>() on a non-string value dereferences its payload
+                // as a std::string*.
                 if (!types::is_string(subject_val.type().type()) || !types::is_string(pattern_val.type().type())) {
                     return core::error_t{core::error_code_t::comparison_failure,
                                          std::pmr::string{"incorrect argument type for regex", resource}};
@@ -158,8 +158,7 @@ namespace components::operators::predicates {
                 }
                 const auto& subject_val = subject.value();
                 // Non-string subject (`int_col LIKE 'p'` — the validator does not type-check regex):
-                // a returned error, exactly like the replaced std::regex dispatcher — never read the
-                // payload as a std::string*.
+                // a returned error — never read the payload as a std::string*.
                 if (!types::is_string(subject_val.type().type())) {
                     return core::error_t{core::error_code_t::comparison_failure,
                                          std::pmr::string{"incorrect argument type for regex", resource_}};
@@ -247,7 +246,7 @@ namespace components::operators::predicates {
                         has_null_element = true;
                         continue;
                     }
-                    // Text pattern element: read the bytes inline, no per-row logical_value_t (Rule 1). A
+                    // Text pattern element: read the bytes inline, no per-row logical_value_t. A
                     // non-text element (exotic `col LIKE ANY(SELECT int_col ...)`) is coerced to the subject's
                     // string type so it stringifies; a failed coercion (null) is skipped.
                     std::optional<types::logical_value_t> coerced;
@@ -466,8 +465,8 @@ namespace components::operators::predicates {
                     make_comparator(resource, function_registry, expr, parameters, session_tz))};
             case compare_type::any:
             case compare_type::all: {
-                // inner_op is guaranteed valid by the transformer (an unmapped ANY/ALL operator is rejected
-                // there, not silently defaulted to `=` — finding 5). No invalid->eq remap here.
+                // inner_op is guaranteed valid by the transformer (an unmapped ANY/ALL operator is
+                // rejected there, not silently defaulted to `=`).
                 auto inner_op = expr->inner_op();
                 const bool is_any = expr->type() == compare_type::any;
                 auto left_getter = impl::create_value_getter(resource, function_registry, expr->left(), parameters);

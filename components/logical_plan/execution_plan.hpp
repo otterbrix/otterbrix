@@ -28,7 +28,8 @@ namespace components::logical_plan {
         // A scalar-equality against ARRAY(SELECT ...): `col = ARRAY(SELECT ...)`. Only this form needs a
         // 0-row result rebuilt as a typed empty array `{}` (so `col = {}` compares against a real empty
         // array); IN / ANY / ALL keep the NA-null sentinel (their empty-set semantics rely on it). false
-        // for every other form. Appended last so the existing aggregate emplace_back sites are unaffected.
+        // for every other form. Kept last: the emplace_back sites aggregate-initialize (compacter, id)
+        // and rely on the trailing bools' defaults.
         bool array_equality = false;
     };
 

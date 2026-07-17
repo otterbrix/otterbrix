@@ -91,7 +91,7 @@ namespace components::planner {
         // single-table filters below the join and rewrite_hash_joins has settled the
         // join shape (equi-key stamp + localized ON keys). Running it earlier would
         // race those restructurings, which shift merged schemas and the per-side
-        // column indices this rule splits on (the reason it was disabled). At this
+        // column indices this rule splits on. At this
         // point key.side()/key.path() are final, so process_join's per-side split and
         // ON-key remap read the same localized indices rewrite_hash_joins detected.
         // UNGATED: projected_cols is a scan projection HINT (empty = read all), valid

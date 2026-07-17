@@ -366,7 +366,7 @@ namespace components::operators {
                 if (!val.is_null() && val.type() != result_type) {
                     auto casted = val.cast_as(result_type, session_tz);
                     // No error channel here (the lambda yields a value); a non-castable pair falls back to
-                    // the uncoerced value, matching the previous NA-return behaviour instead of aborting.
+                    // the uncoerced value instead of aborting.
                     if (!casted.has_error() && !casted.value().is_null()) {
                         return std::move(casted.value());
                     }

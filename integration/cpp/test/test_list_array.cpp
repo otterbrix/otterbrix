@@ -661,7 +661,7 @@ TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
     }
 }
 
-// M2 (#563 finding 2 / #559): `col = ARRAY(SELECT ...)` is real, length-aware array equality — the
+// #563/#559: `col = ARRAY(SELECT ...)` is real, length-aware array equality — the
 // sub-query rows are compacted into an array and compared to the column. A different-length result is
 // simply unequal (never truncated/padded), and an empty sub-query yields a real empty array {} (unequal
 // to a non-empty column), not the NA-null sentinel.

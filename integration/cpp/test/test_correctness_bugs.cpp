@@ -896,13 +896,13 @@ TEST_CASE("integration::cpp::correctness_bugs::scalar_not_like_null_subject") {
 
 // A DECIMAL operand coerced to the other side's integer type in a comparison must be DESCALED
 // (round, overflow -> NULL/unknown), never handed over as the raw scaled storage payload.
-// logical_value_t::cast_as's first branch fires for every is_numeric TARGET — a DECIMAL SOURCE
-// included — and static_casts the scaled payload (NUMERIC(10,2) 3.00 -> 300; 100000.00 wraps
-// int16 to -27008), leaving the dedicated descaling DECIMAL->numeric branch unreachable (its
-// condition is a strict subset). Every comparator funnels through cast_as — simple_predicate's
-// bidirectional coercion AND the pushed col-vs-col scan filter — so `a < b` over
-// (SMALLINT, NUMERIC) compares garbage on both storage modes. Values are pinned, not counts:
-// the wrong and the right row set both have 2 rows for `a < b`, and 1 row for `a > b`.
+// logical_value_t::cast_as's raw-numeric branch used to fire for a DECIMAL SOURCE too and
+// static_cast the scaled payload (NUMERIC(10,2) 3.00 -> 300; 100000.00 wraps int16 to -27008),
+// leaving the dedicated descaling DECIMAL->numeric branch unreachable. Every comparator funnels
+// through cast_as — simple_predicate's bidirectional coercion AND the pushed col-vs-col scan
+// filter — so `a < b` over (SMALLINT, NUMERIC) compared garbage on both storage modes. Values
+// are pinned, not counts: the wrong and the right row set both have 2 rows for `a < b`, and
+// 1 row for `a > b`.
 TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descale") {
     auto config = test_create_config("/tmp/test_correctness_bugs/decimal_operand_comparison_descale");
     test_clear_directory(config);

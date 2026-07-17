@@ -307,10 +307,10 @@ namespace components::table {
         if (count == 0) {
             return 0;
         }
-        // Apply the committed-update overlay (was assert(!has_updates())). This is the base leaf of the
-        // virtual scan_count family, so it makes complex-column fetch_row (array/struct child scans and their
-        // validity children) updates-aware — a late-materialization gather can then read a column that carries
-        // an update overlay. When updates_ is null this is byte-for-byte the old scan_vector path.
+        // Apply the committed-update overlay. This is the base leaf of the virtual scan_count family,
+        // so it makes complex-column fetch_row (array/struct child scans and their validity children)
+        // updates-aware — a late-materialization gather can then read a column that carries an update
+        // overlay. When updates_ is null this reduces to the plain scan_vector path.
         return scan_count_with_updates(state, result, count);
     }
 

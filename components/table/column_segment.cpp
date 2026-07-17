@@ -1426,8 +1426,8 @@ namespace components::table {
         // Regex is a per-row match, not a SIMD compare — filter_selection_switch has no regex case (it would
         // throw). Evaluate it here with regex_filter_t::matches (RE2) so the vectorized path is CORRECT:
         // declining (returning the count unchanged) would wrongly pass every row, because column_data_t::filter
-        // has no row-based fallback after this call. Checked before the constant_filter cast (a regex_filter_t
-        // is a distinct type). filter_type == regex is unique to regex_filter_t (no dynamic_cast — Rule 14).
+        // has no row-based fallback after this call. Checked before the constant_filter cast: filter_type ==
+        // regex is unique to regex_filter_t, so the cast below is safe.
         if (filter.filter_type == expressions::compare_type::regex) {
             vector::indexing_vector_t new_indexing(indexing.resource(), approved_tuple_count);
             approved_tuple_count = filter_selection_regex(uvf,

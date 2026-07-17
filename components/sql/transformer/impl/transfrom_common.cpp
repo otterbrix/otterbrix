@@ -545,7 +545,7 @@ namespace components::sql::transform {
                     auto cmp = make_compare_expression(resource_, compare_type::regex, key_left.field, param_id);
                     // On the SCALAR path the pattern is already like_to_regex-converted, so regex_like is not
                     // needed; negation is expressed by the union_not wrapper. Only case-insensitivity rides
-                    // the compare (the executor builds std::regex with icase when set).
+                    // the compare (the executor compiles the regex with icase when set).
                     if (icase) {
                         // ILIKE: the storage constant_filter compiles the pattern with RE2's case-insensitive
                         // option (regex_icase is threaded into the disk filter by transform_predicate), so this
@@ -959,7 +959,7 @@ namespace components::sql::transform {
                 // inner_op whose LIKE glob is converted per element at eval time (regex_like), matched
                 // case-insensitively for ILIKE (regex_icase), and negated per element before the any/all
                 // fold for NOT LIKE (regex_negate). Everything else (=, <>, <, ~~->regexp, ...) goes through
-                // get_compare_type; an unmapped operator is rejected (never silently `=` — finding 5).
+                // get_compare_type; an unmapped operator is rejected (never silently `=`).
                 compare_type inner_op;
                 bool re_like = false;
                 bool re_icase = false;

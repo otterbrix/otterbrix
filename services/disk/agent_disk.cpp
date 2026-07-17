@@ -713,10 +713,8 @@ namespace services::disk {
                         if (!src_is_null_type && src_vec.validity().row_is_valid(row)) {
                             // A fixed ARRAY column reconciles a length mismatch against the
                             // column DEFAULT (truncate / pad-with-default); other columns use
-                            // the plain value cast.
-                            // A fixed ARRAY reconciles length; other columns take the plain value cast.
-                            // No error channel in this coroutine — a non-castable value degrades to NULL
-                            // (the cast's pre-existing NA fallback) rather than aborting.
+                            // the plain value cast. No error channel in this coroutine — a
+                            // non-castable value degrades to NULL rather than aborting.
                             components::types::logical_value_t reconciled{
                                 resource(),
                                 components::types::complex_logical_type{components::types::logical_type::NA}};

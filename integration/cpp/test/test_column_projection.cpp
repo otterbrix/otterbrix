@@ -23,7 +23,7 @@
 using namespace test_helpers;
 
 // Disk-backed (disk.on=true) end-to-end coverage: the column_pruning optimizer rule
-// now populates node_aggregate_t::projected_cols, so the owning disk agent's
+// populates node_aggregate_t::projected_cols, so the owning disk agent's
 // storage_fetch_next_batch reads ONLY the projected storage columns (a WIDE chunk
 // whose non-projected slots are placeholders, indexed by original storage position).
 // Wrong projection here would return garbage / crash, so pinning concrete values

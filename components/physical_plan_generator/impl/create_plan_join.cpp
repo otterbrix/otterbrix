@@ -130,14 +130,13 @@ namespace services::planner::impl {
             // count, or an INVALID_OID side keeps the default child order. A wrong
             // estimate only picks a slower-but-correct plan.
             //
-            // Decision record: counts decide whenever BOTH effective counts exist;
-            // with incomplete count evidence the default order stands. Refusing to
-            // swap without evidence is refusing to act, not a fallback — a shape-only
-            // "filtered side is smaller" guess once swapped a weakly-filtered HUGE
-            // left onto the build (memory blow-up), so no blind heuristics here. The
-            // fetch side (collect_inner_hash_join_oids in services/collection/
-            // executor.cpp) resolves each join input through the same effective-oid
-            // descent, so every side with a backing relation gets a live count.
+            // Counts decide only when BOTH effective counts exist; with incomplete
+            // evidence the default order stands. No shape-only heuristics: a
+            // "filtered side is smaller" guess can swap a weakly-filtered huge left
+            // onto the build (memory blow-up). The fetch side
+            // (collect_inner_hash_join_oids in services/collection/executor.cpp)
+            // resolves each join input through the same effective-oid descent, so
+            // every side with a backing relation gets a live count.
             bool swap_build_side = false;
             if (join_node->type() == join_type::inner) {
                 const auto left_eff = components::logical_plan::effective_table_oid(node->children().front());
@@ -196,7 +195,7 @@ namespace services::planner::impl {
                 case join_type::anti:
                     // Defensive guard: hash is never stamped on cross/invalid, and semi/anti
                     // are only ever produced as LATERAL joins (handled above). Return nullptr
-                    // -> executor surfaces the error (rule 9: no throw here).
+                    // -> executor surfaces the error (no throw here).
                     return nullptr;
             }
             // Physical roles: probe = left_, build = right_. When swapped the
@@ -243,7 +242,7 @@ namespace services::planner::impl {
             case join_type::anti:
                 // Defensive guard: validation guarantees invalid never fires, and semi/anti
                 // are only ever produced as LATERAL joins (handled above). Return nullptr ->
-                // executor surfaces the error (rule 9: no throw on the operator-build path).
+                // executor surfaces the error (no throw on the operator-build path).
                 return nullptr;
         }
         components::operators::operator_ptr left;

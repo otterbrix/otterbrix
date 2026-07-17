@@ -18,9 +18,8 @@ namespace components::types {
         // The scalar CAST path dispatches through (double_)simple_physical_type_switch, which only handles
         // this fixed set of physical types. A source/target physical type outside it (realistically
         // physical_type::NA — a NULL/untyped value — or a nested/complex type that reached the scalar
-        // switch) previously hit the switch's `default:` and threw std::logic_error, which aborts through
-        // the executor's noexcept coroutine. cast_as consults this before dispatching and returns a
-        // conversion_failure error instead.
+        // switch) would trip the switch's `default:` invariant abort. cast_as consults this before
+        // dispatching and returns a conversion_failure error instead.
         constexpr bool is_scalar_castable_physical_type(physical_type pt) noexcept {
             switch (pt) {
                 case physical_type::BOOL:
@@ -385,7 +384,7 @@ namespace components::types {
 
             // Guard the un-handleable case BEFORE dispatching: a NA source (a NULL value) or any physical
             // type the scalar switch can not handle would otherwise trip its `default:` invariant abort.
-            // Surface it through the project's error mechanism instead (Rule 2/9: no exceptions).
+            // Surface it as a conversion_failure error instead.
             if (!is_scalar_castable_physical_type(type.to_physical_type()) ||
                 !is_scalar_castable_physical_type(type_.to_physical_type())) {
                 std::string message = "cannot cast logical_type " +

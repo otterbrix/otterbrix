@@ -241,8 +241,8 @@ namespace components::table {
         std::pmr::vector<uint64_t> table_indices;
     };
 
-    // LIKE / ILIKE / regexp disk filter. Holds the pattern as a plain std::pmr::string (NOT a
-    // logical_value_t — Rule 1) and compiles it once with RE2 on first match; filter_type is always
+    // LIKE / ILIKE / regexp disk filter. Holds the pattern as a plain std::pmr::string (not a
+    // logical_value_t) and compiles it once with RE2 on first match; filter_type is always
     // compare_type::regex, so every zonemap path (which gates on eq/gt/gte/lt/lte) skips it — a regex
     // has no min/max bound to prune on. Discriminated by dynamic_cast, never table_filter_t::cast<>
     // (a reinterpret_cast). matches() is a partial RE2 search (== std::regex_search); ILIKE sets icase.
@@ -274,7 +274,7 @@ namespace components::table {
         }
         bool equals(const table_filter_t& other) const override {
             // filter_type == regex is unique to regex_filter_t (constant_filter_t never carries regex), so a
-            // matching filter_type guarantees `other` is a regex_filter_t — no dynamic_cast (Rule 14).
+            // matching filter_type guarantees `other` is a regex_filter_t — no dynamic_cast needed.
             if (!table_filter_t::equals(other)) {
                 return false;
             }
@@ -433,7 +433,7 @@ namespace components::table {
     // Templated on the value type (fixed-width T, bool for validity, string_view).
     template<typename T>
     inline bool table_filter_dispatch(const table_filter_t* filter, T value) {
-        // filter_type == regex is unique to regex_filter_t (no dynamic_cast — Rule 14). Regex applies only
+        // filter_type == regex is unique to regex_filter_t, so no dynamic_cast is needed. Regex applies only
         // to string subjects (the row-based string_check_row path passes a string_view).
         if (filter->filter_type == expressions::compare_type::regex) {
             if constexpr (std::is_same_v<T, std::string_view>) {

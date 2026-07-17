@@ -960,8 +960,8 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
 
     // Positive (subset direction): group keys ⊊ projection ({a} ⊆ {a, count}). The
     // extra projected column is an AGGREGATE, so each group is still one row -> DISTINCT
-    // redundant. This is the executable form of the task's `DISTINCT a,b GROUP BY a`
-    // (a bare non-grouped, non-aggregated `b` is rejected as un-grouped SQL).
+    // redundant. (`DISTINCT a, b GROUP BY a` cannot exercise this shape: a bare
+    // non-grouped, non-aggregated `b` is rejected as un-grouped SQL.)
     INFO("DISTINCT a, COUNT(*) GROUP BY a: group ⊊ projection -> no Unique, 2 rows");
     {
         auto s = otterbrix::session_id_t();

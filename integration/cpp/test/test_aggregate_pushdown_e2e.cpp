@@ -182,30 +182,17 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::grouped_computed_schema") {
 // ----------------------------------------------------------------------------
 // eager_aggregation vs a RESIDUAL cross-side WHERE. `WHERE t1.a > t2.b`
 // references BOTH join sides, so pushdown_filter leaves it as a match_t child of
-// the outer aggregate, addressed in the join's MERGED column space
-// (t1 = [g,x,k,a] width 4 -> a@3; t2 = [k,b,c] -> b@5). The eager-aggregation
-// rule bailed on a having_t child but NOT on that residual match: it splices the
-// MIN partial under the join, collapsing t1's output to [g, k, MIN(x)].
+// the outer aggregate, addressed in the join's MERGED column space. The
+// eager-aggregation rule must bail on that residual match (as it does for a
+// having_t child): splicing the MIN partial under the join would pre-aggregate
+// rows the post-join filter is required to drop, and would leave the match's
+// merged paths pointing into t1's collapsed [g, k, MIN(x)] layout.
 //
-// Two pre-fix corruptions follow (both verified under lldb on the pre-fix tree):
-//   1. The partial MIN is computed over ALL t1 rows — the residual WHERE never
-//      reaches t1, so rows the filter must drop are folded into the extremum.
-//   2. The match's stale merged paths re-point: a@3 now reads t2.k, and b@5
-//      reads t2's THIRD slot — which column_pruning left unpopulated (nothing
-//      references c), a zero-filled column. The filter degenerates to
-//      `t2.k > 0`, keeping every join row instead of dropping cross-side
-//      mismatches.
-// The data below makes corruption 1 observable no matter what junk corruption 2
-// reads: the ONLY row the true filter drops, (g=1, x=5, a=0), holds its group's
-// SMALLEST x. (With a non-minimal x the fold is invisible and the degenerate
-// keep-everything filter returns the correct rows — a coincidentally green
-// plan, which is exactly what this regression test must not be.)
-//
-// RED before the fix: the partial pre-aggregates g=1 over {x=10, x=5} -> the
-// query returns MIN 5 for g=1 (or loses a group entirely if the junk slot ever
-// compares false). GREEN after: the rule bails under the residual match, the
-// join+filter see intact t1 rows, drop (a=0, x=5) AFTER the join, and g=1
-// aggregates only x=10 -> TWO groups, g=1 -> MIN 10 and g=2 -> MIN 30.
+// Data design: the ONLY row the true filter drops, (g=1, x=5, a=0), holds its
+// group's SMALLEST x, so a wrong pre-aggregation is observable as MIN 5 for
+// g=1. (With a non-minimal x the fold is invisible and the plan would be
+// coincidentally green — exactly what this regression test must not be.)
+// Correct result: TWO groups, g=1 -> MIN 10 and g=2 -> MIN 30.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_under_residual_cross_side_where") {
     auto config = make_test_config("/tmp/test_aggregate_pushdown_e2e/eager_residual_where");
@@ -227,8 +214,8 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_und
     REQUIRE(cur->is_success());
     // Correct semantics: rows surviving t1.a > t2.b are (g=1,x=10,a=100) and
     // (g=2,x=30,a=100); the (g=1,x=5,a=0) row joins on k=1 but fails the WHERE,
-    // so it is dropped AFTER the join and must NOT contribute to MIN(x) — the
-    // pre-fix eager splice folds it into the partial and returns MIN 5 here.
+    // so it is dropped AFTER the join and must NOT contribute to MIN(x) — a
+    // wrong eager splice folds it into the partial and returns MIN 5 here.
     REQUIRE(cur->size() == 2);
     REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     REQUIRE(cur->value(1, 0).value<int64_t>() == 10);
@@ -237,19 +224,15 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_und
 }
 
 // ----------------------------------------------------------------------------
-// eager_aggregation must re-stamp the pushed node's output_types. The splice
-// leaves the pushed side's node stamped with the base table's FULL column list;
-// create_plan_aggregate forwards that stamp as the authoritative output layout
-// (operator_group's output_types_ / the pushed reduce spec), which types the
-// aggregate output column at ordinal key_count + a. With a = (x double,
-// g bigint, k bigint) — x FIRST, so base ordinal 2 is k BIGINT while the
-// partial layout [g, k, MIN(x)] holds the DOUBLE minimum there — the DOUBLE
-// partial minima are emitted through a BIGINT-typed slot.
-//
-// RED before the fix: vector_t::set_value refuses the mistyped DOUBLE value
-// (assert in Debug; the cell is skipped in Release), so MIN(x) never comes back
-// as 1.5 / 10.25. GREEN after: the pushed node is re-stamped with the true
-// partial layout and the exact DOUBLE minima flow through.
+// eager_aggregation must re-stamp the pushed node's output_types with the true
+// partial layout [keys..., MIN(x)]: create_plan_aggregate forwards that stamp
+// as the authoritative output layout (operator_group's output_types_ / the
+// pushed reduce spec), which types the aggregate output column at ordinal
+// key_count + a. A stale base-table stamp mistypes that slot — here
+// a = (x double, g bigint, k bigint) puts BIGINT k at the ordinal where the
+// partial layout [g, k, MIN(x)] emits the DOUBLE minimum, and
+// vector_t::set_value refuses the mistyped cell (assert in Debug; the cell is
+// skipped in Release), so MIN(x) never comes back as 1.5 / 10.25.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_partial_min_keeps_double_type") {
     auto config = make_test_config("/tmp/test_aggregate_pushdown_e2e/eager_partial_types");

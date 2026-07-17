@@ -147,8 +147,8 @@ namespace components::operators {
                 }
                 auto inner_op = expression->inner_op();
                 if (inner_op == expressions::compare_type::invalid) {
-                    // An unmapped ANY/ALL operator must surface as an error, never silently become `=`
-                    // (finding 5). The transformer already rejects these; this is defence in depth.
+                    // An unmapped ANY/ALL operator must surface as an error, never silently become `=`.
+                    // The transformer already rejects these; this is defence in depth.
                     return core::error_t{
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"unsupported operator in ANY/ALL subquery comparison", resource}};
@@ -320,7 +320,7 @@ namespace components::operators {
                     std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices)));
             }
             default: {
-                // Shape (B): one operand is a FUNCTION/ARITHMETIC expression over column(s) and the
+                // One operand is a FUNCTION/ARITHMETIC expression over column(s) and the
                 // other a bound parameter — e.g. WHERE substring(s,1,3)='abc', WHERE x+1>5. Not
                 // representable as a constant_filter_t, so ship an expression_filter_t: a deep clone
                 // of the compare, the referenced column paths, and a snapshot of the referenced
@@ -359,13 +359,6 @@ namespace components::operators {
                         std::move(param_snapshot),
                         session_tz));
                 }
-                // A disk table_filter_t is `column OP constant` only: the LEFT operand must be a key
-                // and the RIGHT a bound parameter (the param_storage alternative that is neither a key
-                // nor a nested expression). A column-vs-column comparison (right is a key_t) or any
-                // other shape is not representable here — return a clean error instead of std::get
-                // throwing bad_variant_access (create_plan_match routes such predicates to
-                // operator_match; this is a defensive guard for any other caller, and with the asserts
-                // erased in Release it stops a bad_variant_access — Rule 2: no exceptions).
                 // Column-vs-column `a.x OP a.y`: both operands are columns -> a column_column_filter_t that
                 // fetches both values per row and compares (is_pure_compare only accepts a plain comparison).
                 if (expressions::is_key(expression->left()) && expressions::is_key(expression->right())) {
@@ -392,6 +385,13 @@ namespace components::operators {
                                                                         std::move(ri),
                                                                         session_tz));
                 }
+                // Otherwise a disk table_filter_t is `column OP constant` only: the LEFT operand must
+                // be a key and the RIGHT a bound parameter (the param_storage alternative that is
+                // neither a key nor a nested expression). Any other shape is not representable here —
+                // return a clean error instead of std::get throwing bad_variant_access
+                // (create_plan_match routes such predicates to operator_match; this is a defensive
+                // guard for any other caller, and with the asserts erased in Release it stops a
+                // bad_variant_access).
                 if (!expressions::is_key(expression->left()) || !expressions::is_parameter(expression->right())) {
                     return core::error_t{
                         core::error_code_t::physical_plan_error,
@@ -408,7 +408,7 @@ namespace components::operators {
                 }
                 // LIKE / ILIKE / regexp: `it->second` is the like_to_regex-converted pattern (a regex, not an
                 // orderable constant). Build a regex_filter_t that holds it as a plain pmr::string (NOT a
-                // logical_value_t — Rule 1) and matches with RE2, case-insensitively for ILIKE. Checked before
+                // logical_value_t) and matches with RE2, case-insensitively for ILIKE. Checked before
                 // the ENUM / cast logic below (which only makes sense for orderable constants).
                 if (expression->type() == expressions::compare_type::regex) {
                     const auto& pat = it->second;

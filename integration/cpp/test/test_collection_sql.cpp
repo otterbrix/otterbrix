@@ -929,12 +929,10 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
     }
 }
 
-// UNION runtime retype must not depend on row contents: operator_union used to adopt the
-// RIGHT branch's column type whenever the left column's DATA happened to be entirely NULL
-// (a runtime column_all_null heuristic), so a genuinely-typed all-NULL INTEGER column
-// flipped to the NULL-literal branch's text type depending on what the table held. The
-// validator already reconciles the union schema data-INDEPENDENTLY (PostgreSQL rules) and
-// stamps it on the union node — the operator must trust that stamp.
+// UNION runtime retype must not depend on row contents: the validator reconciles the
+// union schema data-INDEPENDENTLY (PostgreSQL rules) and stamps it on the union node,
+// and operator_union must trust that stamp — a genuinely-typed all-NULL INTEGER column
+// must not flip to the NULL-literal branch's text type based on what the table holds.
 TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_stamped_type") {
     auto config = test_create_config("/tmp/test_collection_sql/union_stamped_type");
     test_clear_directory(config);
@@ -971,10 +969,9 @@ TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_s
     }
 }
 
-// The UNION NULL-literal reconciliation copied the RIGHT branch's whole
-// complex_logical_type INCLUDING its alias, silently renaming the union's output column
-// (PostgreSQL keeps the FIRST SELECT's output names). An outer reference to the left
-// branch's alias through a derived table then failed to resolve.
+// The UNION NULL-literal reconciliation must take only the RIGHT branch's TYPE, never
+// its alias: PostgreSQL keeps the FIRST SELECT's output names, and renaming the output
+// column breaks outer references to the left branch's alias through a derived table.
 TEST_CASE("integration::cpp::test_collection::sql::union_null_branch_keeps_left_column_name") {
     auto config = test_create_config("/tmp/test_collection_sql/union_null_alias");
     test_clear_directory(config);

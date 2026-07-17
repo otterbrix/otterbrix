@@ -1275,8 +1275,8 @@ namespace services::collection::executor {
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
-                    // C-NULL: a value-position scalar sub-query that yielded NULL / 0 rows is bound as an
-                    // untyped NA-null, which the projection type resolver would reject (rule 6). Give it a
+                    // A value-position scalar sub-query that yielded NULL / 0 rows is bound as an
+                    // untyped NA-null, which the projection type resolver would reject. Give it a
                     // concrete type from the sub-query's schema-derived output type, in a VALIDATION-ONLY
                     // copy of the parameter map — the runtime param stays NA-null so operator_select projects
                     // a typed NULL from the resolved column type. Mirrors the LATERAL correlation override.

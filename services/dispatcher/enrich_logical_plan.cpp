@@ -224,9 +224,8 @@ namespace services::dispatcher { namespace {
                     for (std::uint64_t row = 0; row < rows; ++row) {
                         auto v = col.value(row);
                         if (!v.is_null() && v.type() != *target_type) {
-                            // No error channel here (void enrich); a non-castable value keeps its original
-                            // form (the old code likewise passed through the cast's NA fallback), so a bad
-                            // retype degrades gracefully instead of aborting.
+                            // No error channel here (void enrich); a non-castable value keeps its
+                            // original form, so a bad retype degrades gracefully instead of aborting.
                             auto casted = v.cast_as(*target_type, session_tz);
                             if (!casted.has_error()) {
                                 v = std::move(casted.value());

@@ -587,22 +587,16 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
 // Build-side selection vs a FILTERED side, plan-time. pushdown_filter wraps a
 // join input that carries a single-table WHERE in a fresh oid-less aggregate
 // (aggregate{source, match}), so the join child's own table_oid() is INVALID.
-// The pure direct-oid count gate then abstained, and the statistics-free
-// tiebreaker swapped the filtered LEFT relation onto the hash build with ZERO
-// size information — a weakly-filtered HUGE left joined to a tiny unfiltered
-// right built the HUGE side (memory blow-up vs the pre-branch order).
+// A direct-oid count gate would abstain there, and a statistics-free
+// tiebreaker would swap the filtered LEFT relation onto the hash build with
+// ZERO size information — a weakly-filtered HUGE left joined to a tiny
+// unfiltered right would build the HUGE side (memory blow-up).
 //
 // create_plan_join must resolve each side's EFFECTIVE base relation THROUGH the
 // wrapper and let live row counts decide: pre-filter left 1000 vs right 2 keeps
 // the tiny right as the build. The filter shape remains only an exact-count
 // TIE-break — a filtered relation is certainly no larger than its pre-filter
 // count, so at equal counts building the filtered side is evidence-backed.
-//
-// RED before the fix: the wrapper hides the left oid -> the count path abstains
-// -> blind syntactic swap -> the physical build (right_) child is the lowered
-// filter wrapper (an operator_match with no pre-set output). GREEN after: both
-// effective counts are known, 1000 > 2 -> no swap -> the build stays the tiny
-// raw-data child (key column "rk").
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidence") {
     std::pmr::monotonic_buffer_resource arena;
@@ -694,9 +688,8 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
 // BEFORE the filtered `filt` (build). The swap is answer-neutral (swapped_
 // restores logical [left, right] output order), proven by the rows.
 //
-// (Historical: this shape was once decided by a statistics-free shape-only
-// tiebreaker; that branch is deleted — counts decide whenever both effective
-// counts exist, and the filter shape only breaks an exact count tie.)
+// Counts decide whenever both effective counts exist; the filter shape only
+// breaks an exact count tie.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
     auto config = test_create_config("/tmp/test_hash_join/syntactic");
@@ -762,23 +755,19 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
 }
 
 // ----------------------------------------------------------------------------
-// BUG E3 follow-up, end-to-end: the row-count fetch must resolve a join input
-// THROUGH pushdown_filter's oid-less wrapper. `big` (8 rows) carries a weak
-// local WHERE (x < 100, keeps every row), so pushdown wraps it in the oid-less
-// aggregate{scan, match}; collect_inner_hash_join_oids used to read only the
-// DIRECT child's table_oid, so big's live count was never fetched, the count
-// gate abstained, and the (now deleted) statistics-free shape tiebreaker
-// swapped the HUGE filtered left onto the hash build — the memory blow-up
-// shape from the SSB regression. With the effective-oid descent in the
-// collector the counts decide: big 8 vs tiny 2 -> the tiny right STAYS the
-// build (a pushed filter is no evidence of size without a count tie).
+// The row-count fetch must resolve a join input THROUGH pushdown_filter's
+// oid-less wrapper. `big` (8 rows) carries a weak local WHERE (x < 100, keeps
+// every row), so pushdown wraps it in the oid-less aggregate{scan, match}; a
+// collector reading only the DIRECT child's table_oid never fetches big's live
+// count, the count gate abstains, and a shape-only "filtered side is smaller"
+// guess would swap the HUGE filtered left onto the hash build (the SSB memory
+// blow-up shape). With the effective-oid descent in collect_inner_hash_join_oids
+// the counts decide: big 8 vs tiny 2 -> the tiny right STAYS the build (a
+// pushed filter is no evidence of size without a count tie).
 //
 // EXPLAIN renders the probe (physical left_) child first and the build
 // (physical right_) child second, so `big` (probe) must be rendered BEFORE
-// `tiny` (build). RED before the collector fix: only tiny's count is fetched
-// -> the count gate abstains -> the shape tiebreaker swaps big onto the build
-// -> `tiny` is rendered first. GREEN after: counts {big: 8, tiny: 2} -> no
-// swap -> `big` first.
+// `tiny` (build).
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrapper") {
     auto config = test_create_config("/tmp/test_hash_join/wrapped_count");

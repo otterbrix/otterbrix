@@ -275,8 +275,7 @@ namespace components::table {
                                                  core::error_t& error) {
         if (!filter.evaluator) {
             // Reached the per-row check without an agent-attached evaluator (see
-            // expression_evaluator_t). Fail cleanly instead of dereferencing null (Rule 2: no
-            // exceptions / crash for control flow).
+            // expression_evaluator_t). Fail cleanly with an error instead of dereferencing null.
             error = core::error_t{core::error_code_t::physical_plan_error,
                                   std::pmr::string{"expression_filter_t reached check_predicate without an evaluator",
                                                    collection_->resource()}};
@@ -639,8 +638,8 @@ namespace components::table {
                             // wide non-filter column decompresses approved_tuple_count rows, not max_count
                             // (measured ~7x at 0.2% survival on a wide table). Gated on selectivity: below ~20%
                             // survival the per-row gather wins; above it the bulk select() is competitive.
-                            // fetch_row is now fully updates-aware for every column kind (base scan_count applies
-                            // the overlay), so STRUCT/ARRAY/LIST and updated columns gather safely too. No
+                            // fetch_row is updates-aware for every column kind (base scan_count applies the
+                            // overlay), so STRUCT/ARRAY/LIST and updated columns gather safely too. No
                             // set_vector_type(FLAT) here: result vectors are already FLAT and carry their
                             // auxiliary buffer from chunk construction; forcing FLAT would reset a constant-size
                             // STRUCT buffer (e.g. INTERVAL) and crash fetch_row.

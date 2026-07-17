@@ -36,8 +36,7 @@ namespace components::expressions {
 
     // True iff any function_expression / aggregate_expression in the tree is a
     // UDF (or one of their nested argument expressions is). Recurses through
-    // function/aggregate/scalar params and compare children/operands. R14: tag
-    // via group() + static_cast (NO dynamic_cast).
+    // function/aggregate/scalar params and compare children/operands.
     inline bool expr_references_udf(const expression_ptr& expr) {
         if (!expr) {
             return false;

@@ -265,7 +265,7 @@ TEST_CASE("components::types::logical_value::cast_as_null_returns_error") {
     // Regression: cast_as() on a NULL/NA-typed value used to dispatch into the scalar physical-type
     // switch whose `default:` arm threw std::logic_error. Under the executor's -fno-exceptions
     // coroutine that becomes unhandled_exception() -> assert(false) -> SIGABRT. It must instead
-    // surface a conversion_failure through result_wrapper_t (Rule 2/9: no exceptions).
+    // surface a conversion_failure through result_wrapper_t.
     std::pmr::monotonic_buffer_resource resource;
 
     logical_value_t null_value(&resource, complex_logical_type{logical_type::NA});

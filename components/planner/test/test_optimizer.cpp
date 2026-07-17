@@ -1767,8 +1767,8 @@ TEST_CASE("optimizer::pushdown_filter::union_residual_stays_above_for_non_mappab
 //
 // Both t1 and t2 expose "id" and "k" (merged schema [t1.id=0, t1.k=1,
 // t2.id=2, t2.k=3], left_width=2). `WHERE t1.id=5 AND t2.id=7` — the bare
-// name "id" is on BOTH sides, so the old NAME-based bucketing (is `id` a
-// subset of one side's alias set?) put BOTH conjuncts in the residual
+// name "id" is on BOTH sides, so NAME-based bucketing (is `id` a
+// subset of one side's alias set?) would put BOTH conjuncts in the residual
 // above the join, never reaching the scans. The validator stamps each
 // key's merged path (t1.id->0, t2.id->2); bucketing by path()[0] vs
 // left_width routes t1.id below t1 and t2.id below t2.
@@ -2138,7 +2138,7 @@ TEST_CASE("optimizer::drop_redundant_distinct::plain_keys_equal_projection") {
     REQUIRE_FALSE(drd_is_distinct_after(&resource, drd_agg(&resource, group, select)));
 }
 
-// Positive (subset direction — the task's `DISTINCT a,b GROUP BY a`): group {a} ⊆
+// Positive (subset direction — `SELECT DISTINCT a, b ... GROUP BY a`): group {a} ⊆
 // projection {a,b}. group keys are the leading output ordinal {0}; projection covers it.
 TEST_CASE("optimizer::drop_redundant_distinct::plain_keys_subset_of_projection") {
     auto resource = core::pmr::otterbrix_resource();
@@ -2293,12 +2293,12 @@ namespace {
 TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
     auto resource = core::pmr::otterbrix_resource();
     auto outer = eag::make_join_agg(&resource, "min");
-    // RED before the rule: the left join side is a BARE table aggregate (no group).
+    // Before the rule: the left join side is a BARE table aggregate (no group).
     REQUIRE(eag::pushed_partial(outer) == nullptr);
 
     components::planner::optimizer::eager_aggregation(&resource, outer);
 
-    // GREEN: a partial group is spliced onto side a: [g, k(join key), min(x)].
+    // After the rule: a partial group is spliced onto side a: [g, k(join key), min(x)].
     auto* partial = eag::pushed_partial(outer);
     REQUIRE(partial != nullptr);
     REQUIRE(partial->expressions().size() == 3);

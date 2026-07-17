@@ -138,7 +138,7 @@ namespace components::types {
             // case physical_type::NA:
             //     return callback.template operator()<std::nullptr_t>(std::forward<Args>(args)...);
             default:
-                // Rule 2/9: a true invariant violation must never throw (it aborts messily through the
+                // A true invariant violation must never throw (an exception aborts messily through the
                 // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
                 // compare / void in components/vector/*.cpp) operates on already-validated vector physical
                 // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
@@ -184,7 +184,7 @@ namespace components::types {
             // case physical_type::NA:
             //     return double_callback.template operator()<TypeLeft, std::nullptr_t>(std::forward<Args>(args)...);
             default:
-                // Rule 2/9: a true invariant violation must never throw (it aborts messily through the
+                // A true invariant violation must never throw (an exception aborts messily through the
                 // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
                 // compare / void in components/vector/*.cpp) operates on already-validated vector physical
                 // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
@@ -230,7 +230,7 @@ namespace components::types {
             // case physical_type::NA:
             //     return simple_physical_type_switch<DoubleCallback, std::nullptr_t>(type_right, std::forward<Args>(args)...);
             default:
-                // Rule 2/9: a true invariant violation must never throw (it aborts messily through the
+                // A true invariant violation must never throw (an exception aborts messily through the
                 // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
                 // compare / void in components/vector/*.cpp) operates on already-validated vector physical
                 // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is

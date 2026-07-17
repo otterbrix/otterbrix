@@ -1181,7 +1181,7 @@ namespace components::sql::transform {
                         // Scalar sub-query as a projected value: flatten it into a sub-query whose single
                         // compacted result binds to a parameter, then project that parameter as a constant
                         // column (read live at execution; a NULL/0-row result is typed from the sub-query's
-                        // output types — see C-NULL). Save/restore the pending internal-aggregate stash so the
+                        // output types). Save/restore the pending internal-aggregate stash so the
                         // inner transform's clear() does not drop this level's aggregates.
                         auto param_id =
                             plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
@@ -1228,14 +1228,14 @@ namespace components::sql::transform {
         // A sole-predicate `WHERE EXISTS (SELECT ... WHERE inner.k = outer.k)` is the
         // canonical SEMI join (emit each outer row iff the inner side has >=1 match);
         // `WHERE NOT EXISTS (...)` is the ANTI join (emit iff the inner side has none).
-        // These were previously unsupported (the flatten path cannot resolve the outer
-        // column). We speculatively transform the EXISTS body with lateral correlation
-        // scope active: if it references an outer column (correlations captured), the
-        // outer FROM source becomes the join's left child and the inner sub-plan its
-        // right child, re-rooted under a fresh container aggregate. An UNCORRELATED
-        // EXISTS keeps the existing (single-pass) flatten path. Only a correct plan can
-        // result: a mis-detected correlation either errors (as today) or runs a
-        // slower-but-correct per-row lateral join — never a wrong answer.
+        // The flatten path cannot resolve an outer column, so we speculatively
+        // transform the EXISTS body with lateral correlation scope active: if it
+        // references an outer column (correlations captured), the outer FROM source
+        // becomes the join's left child and the inner sub-plan its right child,
+        // re-rooted under a fresh container aggregate. An UNCORRELATED EXISTS keeps
+        // the (single-pass) flatten path. Only a correct plan can result: a
+        // mis-detected correlation either errors or runs a slower-but-correct
+        // per-row lateral join — never a wrong answer.
         bool where_consumed_by_semi_anti = false;
         if (node.whereClause && agg) {
             SubLink* exists_sub = nullptr;

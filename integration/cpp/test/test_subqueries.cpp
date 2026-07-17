@@ -450,9 +450,7 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
 // NOTE: NOT IN is deliberately NOT routed to an anti-join — a plain anti-join
 // cannot reproduce SQL three-valued logic (a single NULL in the subquery makes
 // `x NOT IN (S)` never TRUE, yielding zero rows), so it stays on the existing
-// membership-test path. A regression guard for the NULL case is intentionally
-// omitted here because that path currently ABORTS on a NULL subquery element
-// (pre-existing, unrelated to this change) — see the task report.
+// membership-test path.
 
 // ---------------------------------------------------------------------------
 // Subqueries in SELECT list and in FROM (derived tables)
@@ -2440,7 +2438,7 @@ TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
     }
 }
 
-// M2 (#563 finding 2): a SubLink as a comparison operand is lowered by kind. `flag = EXISTS (SELECT ...)`
+// #563: a SubLink as a comparison operand is lowered by kind. `flag = EXISTS (SELECT ...)`
 // must compare against the BOOLEAN result of EXISTS (compact_to_bool_value), not the first value of the
 // sub-query (the pre-fix silent-wrong behaviour).
 TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
@@ -2477,8 +2475,8 @@ TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
     }
 }
 
-// M4 (#559): scalar sub-queries in value position — projected in the SELECT list and as an arithmetic
-// operand — plus a NULL/0-row scalar sub-query returning a typed NULL row (C-NULL).
+// #559: scalar sub-queries in value position — projected in the SELECT list and as an arithmetic
+// operand — plus a NULL/0-row scalar sub-query returning a typed NULL row.
 TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
     auto config = test_create_config("/tmp/test_subqueries/value_position_scalar");
     test_clear_directory(config);
@@ -2529,7 +2527,7 @@ TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
     }
 }
 
-// M5 (#559 / #563): a bare NULL literal in value position is typed (PG unknown->text) instead of rejected,
+// #559/#563: a bare NULL literal in value position is typed (PG unknown->text) instead of rejected,
 // and `NULL::T` is a proper NULL rather than a garbage non-null value.
 TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
     auto config = test_create_config("/tmp/test_subqueries/null_literal_typing");
@@ -2572,7 +2570,7 @@ TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
     }
 }
 
-// M3c (#563 finding 5): the LIKE/ILIKE family for `<op> ANY (SELECT ...)` and scalar ILIKE. LIKE ANY
+// #563: the LIKE/ILIKE family for `<op> ANY (SELECT ...)` and scalar ILIKE. LIKE ANY
 // converts each sub-query pattern via like_to_regex (%/_), ILIKE ANY matches case-insensitively, NOT LIKE
 // ANY negates per element before the ANY fold; scalar ILIKE / NOT ILIKE match case-insensitively.
 TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
@@ -2629,7 +2627,7 @@ TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
     }
 }
 
-// Ф5 (Gap D): a COMPARISON ANY/ALL over a sub-query (= ANY / IN / > ALL / <> ALL) is pushed into the disk
+// A COMPARISON ANY/ALL over a sub-query (= ANY / IN / > ALL / <> ALL) is pushed into the disk
 // scan as a conjunction of per-element constant_filters (the array is bound once — non-correlated). An empty
 // sub-query leaves the conjunction empty: `= ANY(empty)` matches nothing, `<> ALL(empty)` matches everything.
 TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
@@ -2690,7 +2688,7 @@ TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
     }
 }
 
-// Ф5b: POSITIVE LIKE/ILIKE ANY|ALL over a sub-query pushes into the disk scan as a conjunction of
+// POSITIVE LIKE/ILIKE ANY|ALL over a sub-query pushes into the disk scan as a conjunction of
 // regex_filter_t (per-element, pmr::string pattern, RE2, no logical_value_t). ILIKE case-insensitivity is
 // a filter option. NOT LIKE ANY stays in-memory (per-element negation is not a conjunction of positives).
 TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
@@ -2756,7 +2754,7 @@ TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
     }
 }
 
-// M5 Part 3 (#559/#563): a bare NULL literal in one UNION branch reconciles to the other branch's type
+// #559/#563: a bare NULL literal in one UNION branch reconciles to the other branch's type
 // (PostgreSQL), instead of a spurious "UNION column type mismatch". A genuine text-vs-int mismatch still errors.
 TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
     auto config = test_create_config("/tmp/test_subqueries/union_null_reconcile");
@@ -3002,7 +3000,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
 }
 
 // ---------------------------------------------------------------------------
-// T1: the pending internal-aggregate stash (an aggregate hidden inside SELECT-
+// The pending internal-aggregate stash (an aggregate hidden inside SELECT-
 // list arithmetic, e.g. `SELECT sum(x) + 1`) must SURVIVE a sub-query transform
 // that runs BEFORE the stash is flushed into this level's group (WHERE is
 // transformed between the SELECT list and the flush). The inner
@@ -3059,7 +3057,7 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
 }
 
 // ---------------------------------------------------------------------------
-// T4: DISTINCT ON makes a sub-query ORDER BY OBSERVABLE without any LIMIT — it
+// DISTINCT ON makes a sub-query ORDER BY OBSERVABLE without any LIMIT — it
 // keeps the FIRST row per ON-key group in ORDER BY order. The bare-sort
 // elimination for order-insensitively compacted sub-queries (IN / ANY / ALL /
 // EXISTS / scalar) must NOT strip the sort under a DISTINCT ON aggregate.

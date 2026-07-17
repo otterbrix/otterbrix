@@ -80,10 +80,10 @@ namespace services::planner::impl {
                 return false;
             }
             auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
-            // A regex leaf (LIKE / ILIKE, pattern pre-converted by like_to_regex) IS pushable to disk now:
+            // A regex leaf (LIKE / ILIKE, pattern pre-converted by like_to_regex) is pushable to disk:
             // constant_filter_t compares it via RE2 (case-insensitively when regex_icase). It still needs the
             // `column OP constant` shape enforced below; an exotic non-key/expression operand falls back to
-            // operator_match. do_not_fold() (correlated / sub-query-array compares) still stays in-memory.
+            // operator_match. do_not_fold() (correlated / sub-query-array compares) stays in-memory.
             if (comp_expr->do_not_fold()) {
                 return false;
             }
@@ -94,19 +94,13 @@ namespace services::planner::impl {
             }
 
             // A LEAF compare (not a union AND/OR of sub-compares) is pushable into a disk
-            // table_filter_t in one of two shapes:
-            //   (A) `column OP constant` — one operand a key_t, the other a bound parameter_id_t;
-            //       lowered to a constant_filter_t.
-            //   (B) `f(column...) OP constant` — one operand a FUNCTION/ARITHMETIC expression over
-            //       column(s), the other a bound parameter_id_t; lowered to an expression_filter_t
-            //       and evaluated per row in the scan (mirrors operator_match's in-memory getter).
-            // A column-vs-column comparison (both key_t) or any other shape is NOT representable and
-            // MUST be evaluated by operator_match instead. (union compare expressions carry nullptr
-            // in the left/right slots — handled above.)
+            // table_filter_t only in the shapes (A)/(B)/(C) checked below; any other shape
+            // MUST be evaluated by operator_match instead. (union compare expressions carry
+            // nullptr in the left/right slots — handled above.)
             if (!is_union_compare_condition(comp_expr->type())) {
                 // param_storage is variant<parameter_id_t, key_t, expression_ptr>: a bound
                 // parameter is the alternative that is neither a key nor a nested expression. Uses the
-                // is_key/is_expr/is_parameter accessors, not std::holds_alternative (Rule 14).
+                // is_key/is_expr/is_parameter accessors, not std::holds_alternative.
                 const bool no_expr = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right());
                 // (A) column OP constant: exactly one operand a key, the other a bound parameter.
                 const bool col_op_const = no_expr && (is_key(comp_expr->left()) != is_key(comp_expr->right()));

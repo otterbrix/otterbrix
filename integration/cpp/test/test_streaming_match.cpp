@@ -364,7 +364,7 @@ TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_v
     }
 }
 
-// BUG D2 guard (late-materialization gather must never emit garbage cells): a SELECTIVE pushed
+// Late-materialization gather must never emit garbage cells: a SELECTIVE pushed
 // filter (approved * 5 < max_count) makes row_group_t::templated_scan gather ONLY the surviving
 // rows per non-filter column via col_data.fetch_row. A buffer-pin OOM inside fetch_row sets
 // column_fetch_state::fetch_error and writes NOTHING for that cell; the gather loop used to

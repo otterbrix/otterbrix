@@ -3,10 +3,8 @@
 #include "index_selection_helpers.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
-#include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/function_expression.hpp>
-#include <components/expressions/scalar_expression.hpp>
+#include <components/expressions/udf_references.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_having.hpp>
@@ -24,50 +22,6 @@ namespace services::planner::impl {
         bool is_range_compare(expr::compare_type type) {
             return type == expr::compare_type::lt || type == expr::compare_type::lte ||
                    type == expr::compare_type::gt || type == expr::compare_type::gte;
-        }
-
-        // A user-defined function is any resolved function_uid at or beyond the builtin set. The disk
-        // agent rebuilds its filter-evaluation registry with register_default_functions and NOTHING
-        // else (it cannot see the coordinator's UDF registrations), so an expression_filter_t that
-        // references a UDF would look up a null function pointer agent-side and deref it. Keep such
-        // predicates on operator_match (executor-side, full registry). Mirrors pushdown_aggregate's
-        // is_udf_uid; invalid_function_uid (unresolved) is NOT a UDF.
-        bool is_udf_uid(components::compute::function_uid uid) noexcept {
-            return uid != components::compute::invalid_function_uid &&
-                   uid >= components::compute::DEFAULT_FUNCTIONS.size();
-        }
-
-        bool expr_references_udf(const expr::expression_ptr& e);
-
-        bool param_references_udf(const expr::param_storage& p) {
-            return expr::is_expr(p) && expr_references_udf(expr::as_expr(p));
-        }
-
-        bool expr_references_udf(const expr::expression_ptr& e) {
-            if (!e) {
-                return false;
-            }
-            if (e->group() == expr::expression_group::function) {
-                const auto& f = reinterpret_cast<const expr::function_expression_ptr&>(e);
-                if (is_udf_uid(f->function_uid())) {
-                    return true;
-                }
-                for (const auto& a : f->args()) {
-                    if (param_references_udf(a)) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-            if (e->group() == expr::expression_group::scalar) {
-                const auto& s = reinterpret_cast<const expr::scalar_expression_ptr&>(e);
-                for (const auto& a : s->params()) {
-                    if (param_references_udf(a)) {
-                        return true;
-                    }
-                }
-            }
-            return false;
         }
 
         // Check if this compare expression can use an index scan
@@ -165,11 +119,13 @@ namespace services::planner::impl {
                     no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
                 // (C) f(column...) OP constant: one operand a function/arithmetic expression over column(s),
                 // the other a bound parameter -> an expression_filter_t evaluated per row on the agent. Only
-                // when UDF-free (the disk agent cannot resolve a UDF, see is_udf_uid).
+                // when UDF-free (the disk agent cannot resolve a UDF, see
+                // components/expressions/udf_references.hpp).
                 const bool expr_op_const =
                     ((is_expr(comp_expr->left()) && is_parameter(comp_expr->right())) ||
                      (is_expr(comp_expr->right()) && is_parameter(comp_expr->left()))) &&
-                    !param_references_udf(comp_expr->left()) && !param_references_udf(comp_expr->right());
+                    !expr::param_references_udf(comp_expr->left()) &&
+                    !expr::param_references_udf(comp_expr->right());
                 if (!col_op_const && !col_op_col && !expr_op_const) {
                     return false;
                 }

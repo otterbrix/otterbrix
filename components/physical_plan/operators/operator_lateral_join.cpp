@@ -213,10 +213,12 @@ namespace components::operators {
                         if (mask[inner_row]) {
                             matched = true;
                             // inner/left emit every matched (outer ++ inner) pair; semi/anti
-                            // only need the EXISTENCE of a match, not the matched rows.
-                            if (!semi_anti) {
-                                builder.emit_matched(outer_chunk, row, inner_chunk, inner_row);
+                            // only need the EXISTENCE of a match, not the matched rows —
+                            // the first hit settles existence, skip the rest of the chunk.
+                            if (semi_anti) {
+                                break;
                             }
+                            builder.emit_matched(outer_chunk, row, inner_chunk, inner_row);
                         }
                     }
                     if (matched && semi_anti) {

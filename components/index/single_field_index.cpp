@@ -32,6 +32,20 @@ namespace components::index {
     single_field_index_t::impl_t::impl_t(const_iterator iterator)
         : iterator_(iterator) {}
 
+    // A key that can not be cast into the locked key domain (stored_type_ locks to the
+    // first inserted key's type) is OUT-OF-DOMAIN: the btree holds only
+    // stored_type_-typed keys (its comparator requires one type), and rebuilding the
+    // index when a dynamic-schema column's type evolves is the caller's responsibility
+    // (the CREATE INDEX relkind='g' validation contract). The index_t maintenance API is
+    // void, so the defined no-exception semantics are:
+    //   * writes: an out-of-domain key stays un-indexed (insert/insert_txn); remove /
+    //     mark_delete on one is an exact no-op (it was never stored);
+    //   * probes: an out-of-domain probe orders AFTER every in-domain key (type
+    //     bracketing), so its equal-range and both bounds sit at cend() — eq/gt/gte are
+    //     empty, lt/lte cover the in-domain keys, and in-domain lookups stay exact.
+    // Never assert-then-value(): a failed cast in Release would dereference an empty
+    // optional (UB, garbage key, silent index corruption).
+
     auto single_field_index_t::insert_impl(value_t key,
                                            index_value_t value,
                                            core::date::timezone_offset_t local_timezone) -> void {
@@ -39,14 +53,18 @@ namespace components::index {
             stored_type_ = key.type();
         }
         auto casted = key.cast_as(stored_type_, local_timezone);
-        assert(!casted.has_error() && "index key cast can not fail");
+        if (casted.has_error()) {
+            return; // out-of-domain key: not representable in this index (see note above)
+        }
         storage_.insert({std::move(casted.value()), std::move(value)});
     }
 
     auto single_field_index_t::remove_impl(components::index::value_t key, core::date::timezone_offset_t local_timezone)
         -> void {
         auto casted = key.cast_as(stored_type_, local_timezone);
-        assert(!casted.has_error() && "index key cast can not fail");
+        if (casted.has_error()) {
+            return; // out-of-domain key: never stored, nothing to erase
+        }
         auto it = storage_.find(casted.value());
         if (it != storage_.end()) {
             storage_.erase(it);
@@ -56,7 +74,10 @@ namespace components::index {
     index_t::range single_field_index_t::find_impl(const value_t& value,
                                                    core::date::timezone_offset_t local_timezone) const {
         auto casted = value.cast_as(stored_type_, local_timezone);
-        assert(!casted.has_error() && "index key cast can not fail");
+        if (casted.has_error()) {
+            // out-of-domain probe orders after every in-domain key: empty range at cend()
+            return std::make_pair(iterator(new impl_t(storage_.cend())), iterator(new impl_t(storage_.cend())));
+        }
         auto range = storage_.equal_range(casted.value());
         return std::make_pair(iterator(new impl_t(range.first)), iterator(new impl_t(range.second)));
     }
@@ -64,16 +85,16 @@ namespace components::index {
     index_t::range single_field_index_t::lower_bound_impl(const value_t& value,
                                                           core::date::timezone_offset_t local_timezone) const {
         auto casted = value.cast_as(stored_type_, local_timezone);
-        assert(!casted.has_error() && "index key cast can not fail");
-        auto it = storage_.lower_bound(casted.value());
+        // out-of-domain probe orders after every in-domain key -> its bound is cend()
+        auto it = casted.has_error() ? storage_.cend() : storage_.lower_bound(casted.value());
         return std::make_pair(cbegin(), index_t::iterator(new impl_t(it)));
     }
 
     index_t::range single_field_index_t::upper_bound_impl(const value_t& value,
                                                           core::date::timezone_offset_t local_timezone) const {
         auto casted = value.cast_as(stored_type_, local_timezone);
-        assert(!casted.has_error() && "index key cast can not fail");
-        auto it = storage_.upper_bound(casted.value());
+        // out-of-domain probe orders after every in-domain key -> its bound is cend()
+        auto it = casted.has_error() ? storage_.cend() : storage_.upper_bound(casted.value());
         return std::make_pair(index_t::iterator(new impl_t(it)), cend());
     }
 
@@ -92,7 +113,9 @@ namespace components::index {
             stored_type_ = key.type();
         }
         auto casted = key.cast_as(stored_type_, local_timezone);
-        assert(!casted.has_error() && "index key cast can not fail");
+        if (casted.has_error()) {
+            return; // out-of-domain key: not representable; pending/storage stay in lockstep
+        }
         auto casted_key = std::move(casted.value());
         pending_inserts_[txn_id].emplace_back(casted_key, row_index);
         storage_.insert({std::move(casted_key), std::move(val)});
@@ -103,7 +126,9 @@ namespace components::index {
                                                 uint64_t txn_id,
                                                 core::date::timezone_offset_t local_timezone) {
         auto casted = key.cast_as(stored_type_, local_timezone);
-        assert(!casted.has_error() && "index key cast can not fail");
+        if (casted.has_error()) {
+            return; // out-of-domain key: never stored, nothing to mark deleted
+        }
         auto casted_key = std::move(casted.value());
         auto range = storage_.equal_range(casted_key);
         for (auto it = range.first; it != range.second; ++it) {

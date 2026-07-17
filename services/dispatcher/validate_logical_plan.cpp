@@ -2997,7 +2997,14 @@ namespace services::dispatcher {
                         continue; // right branch is a NULL literal -> keep the left (concrete) type
                     }
                     if (left_schema[i].from_null_literal) {
-                        left_schema[i].type = right_schema[i].type; // left branch is NULL -> adopt the right type
+                        // left branch is NULL -> adopt the right TYPE, but keep the left column's
+                        // output name: PostgreSQL takes a union's column names from the FIRST
+                        // SELECT. Copying the whole complex_logical_type would silently rename
+                        // the column to the right branch's alias and break outer references.
+                        auto adopted = right_schema[i].type;
+                        adopted.set_alias(left_schema[i].type.has_alias() ? left_schema[i].type.alias()
+                                                                          : std::string{});
+                        left_schema[i].type = std::move(adopted);
                         continue;
                     }
                     return core::error_t(

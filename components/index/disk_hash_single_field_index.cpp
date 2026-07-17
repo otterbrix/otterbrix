@@ -30,9 +30,15 @@ namespace components::index {
             case logical_type::SMALLINT:
             case logical_type::INTEGER:
             case logical_type::BIGINT: {
-                // The switch guarantees a non-null integer key, so the cast can not fail.
+                // Signed-integer widening can not fail for the types this switch admits;
+                // still, never assert-then-value() (a failed cast in Release would deref an
+                // empty optional). A non-widenable key keeps its native representation —
+                // identical to the default branch, and self-consistent between insert and
+                // find (both normalize the same way).
                 auto casted = key.cast_as(complex_logical_type(logical_type::BIGINT), local_timezone);
-                assert(!casted.has_error() && "integer index key cast can not fail");
+                if (casted.has_error()) {
+                    return key;
+                }
                 return std::move(casted.value());
             }
             case logical_type::UTINYINT:
@@ -40,7 +46,9 @@ namespace components::index {
             case logical_type::UINTEGER:
             case logical_type::UBIGINT: {
                 auto casted = key.cast_as(complex_logical_type(logical_type::UBIGINT), local_timezone);
-                assert(!casted.has_error() && "integer index key cast can not fail");
+                if (casted.has_error()) {
+                    return key;
+                }
                 return std::move(casted.value());
             }
             default:

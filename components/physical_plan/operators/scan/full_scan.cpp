@@ -348,8 +348,13 @@ namespace components::operators {
                         }
                     }
                     auto clone = expressions::clone_expression(resource, expression);
+                    // clone_expression preserves the node kind, so the clone of a compare expression IS a
+                    // compare expression; build the typed intrusive_ptr via static_cast (a reinterpret_cast
+                    // of the smart-pointer object itself is a strict-aliasing violation gcc rejects).
+                    expressions::compare_expression_ptr compare_clone{
+                        static_cast<expressions::compare_expression_t*>(clone.get())};
                     return std::unique_ptr<table::table_filter_t>(std::make_unique<table::expression_filter_t>(
-                        std::move(reinterpret_cast<expressions::compare_expression_ptr&>(clone)),
+                        std::move(compare_clone),
                         std::move(column_paths),
                         std::move(param_snapshot),
                         session_tz));

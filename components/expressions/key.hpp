@@ -22,7 +22,8 @@ namespace components::expressions {
             , storage_{std::move(key.storage_)}
             , path_{std::move(key.path_)}
             , cast_type_{std::move(key.cast_type_)}
-            , variant_select_{key.variant_select_} {}
+            , variant_select_{key.variant_select_}
+            , absent_ok_{key.absent_ok_} {}
 
         key_t(const key_t& key) = default;
         key_t& operator=(const key_t& key) = default;
@@ -112,6 +113,14 @@ namespace components::expressions {
 
         void set_variant_select(bool v) { variant_select_ = v; }
 
+        // Set for a jsonb navigation / existence key: a key that matches no column
+        // is a legal ABSENT leaf (postgres 3VL — navigation yields SQL NULL,
+        // existence yields false), not the hard "path not found" error a mistyped
+        // regular column deserves. Only such flagged keys get the lenient handling.
+        bool absent_ok() const { return absent_ok_; }
+
+        void set_absent_ok(bool v) { absent_ok_ = v; }
+
         auto is_null() const -> bool { return storage_.empty(); }
 
         auto side() const -> side_t { return side_; }
@@ -146,6 +155,7 @@ namespace components::expressions {
         std::pmr::vector<size_t> path_;
         std::optional<types::complex_logical_type> cast_type_;
         bool variant_select_ = false;
+        bool absent_ok_ = false;
     };
 
     template<class OStream>

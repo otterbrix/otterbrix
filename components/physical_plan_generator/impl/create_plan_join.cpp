@@ -1,6 +1,7 @@
 #include "create_plan_join.hpp"
 
 #include <components/logical_plan/node_join.hpp>
+#include <components/logical_plan/plan_root.hpp>
 #include <components/physical_plan/operators/operator_hash_join.hpp>
 #include <components/physical_plan/operators/operator_join.hpp>
 #include <components/physical_plan/operators/operator_lateral_join.hpp>
@@ -11,11 +12,12 @@
 namespace services::planner::impl {
 
     namespace {
-        // Structural probe of a hash-join input sub-plan for the STATISTICS-FREE
-        // build-side tiebreaker below. `has_join` marks a multi-relation intermediate
-        // (a join result — never a good, size-bounded hash-build target); `has_filter`
-        // marks a pushed-down single-relation WHERE filter (a `match` below the join),
-        // the syntactic proxy for the more-selective / smaller side. Read-only, purely
+        // Structural probe of a hash-join input sub-plan for the exact-count
+        // TIE-break below. `has_join` marks a multi-relation intermediate (a join
+        // result — its output size is not bounded by either input count, so it is
+        // never tie-broken); `has_filter` marks a pushed-down single-relation WHERE
+        // filter (a `match` below the join) — at an exact pre-filter count tie the
+        // evidence that this side's actual size is <= the other's. Read-only, purely
         // from the logical plan shape — no catalog / row-count access.
         struct subplan_shape_t {
             bool has_join{false};
@@ -36,6 +38,7 @@ namespace services::planner::impl {
                 probe_subplan_shape(child, out);
             }
         }
+
     } // namespace
 
     components::operators::operator_ptr
@@ -113,54 +116,56 @@ namespace services::planner::impl {
             // Build-side selection: operator_hash_join_t materializes its
             // physical RIGHT child as the hash build side, so the default build is the
             // LOGICAL-right table. Move the SMALLER table onto the build side IFF this
-            // is an INNER join, both children are distinct base tables whose live row
-            // counts are known (fetched into context.row_counts by execute_plan_full),
-            // and the current build (right) is the LARGER side. When swapping, the
-            // smaller logical-left child moves into the physical build slot and
-            // swapped_=true tells compute_join_layout to re-assemble the output in
-            // logical [left, right] order, so results are byte-for-byte identical.
-            // Outer joins are never swapped (their NULL-pad side is orientation-fixed);
-            // a self-join (same oid), a missing/equal count, or an INVALID_OID side
-            // keeps the default child order. A wrong estimate only picks a
-            // slower-but-correct plan.
-            bool swap_build_side = false;
-            bool stats_decided = false;
-            if (join_node->type() == join_type::inner && left_oid != components::catalog::INVALID_OID &&
-                right_oid != components::catalog::INVALID_OID && left_oid != right_oid) {
-                const auto left_it = context.row_counts.find(left_oid);
-                const auto right_it = context.row_counts.find(right_oid);
-                if (left_it != context.row_counts.end() && right_it != context.row_counts.end()) {
-                    // Both live counts known -> the statistics decide (unchanged behavior).
-                    stats_decided = true;
-                    if (left_it->second < right_it->second) {
-                        swap_build_side = true;
-                    }
-                }
-            }
-
-            // Statistics-free syntactic build-side tiebreaker (heuristic J). Runs ONLY
-            // when the live-count path abstained -- IN-MEMORY mode leaves row_counts
-            // empty, and a join sub-tree / self-join side carries no usable count. It
-            // reorders NOTHING in the logical plan: like the statistics path it merely
-            // sets swap_build_side, and operator_hash_join_t's swapped_ restores the
-            // logical [left, right] output order, so the answer is byte-identical.
+            // is an INNER join, both children are (possibly filter-wrapped) distinct
+            // base tables whose live row counts are known (fetched into
+            // context.row_counts by execute_plan_full), and the current build (right)
+            // is the LARGER side. Each side is resolved to its EFFECTIVE base relation
+            // (effective_table_oid descends through pushdown_filter's oid-less match
+            // wrapper), so a filtered base table still exposes the table the count was
+            // fetched for. When swapping, the smaller logical-left child moves into the
+            // physical build slot and swapped_=true tells compute_join_layout to
+            // re-assemble the output in logical [left, right] order, so results are
+            // byte-for-byte identical. Outer joins are never swapped (their NULL-pad
+            // side is orientation-fixed); a self-join (same effective oid), a missing
+            // count, or an INVALID_OID side keeps the default child order. A wrong
+            // estimate only picks a slower-but-correct plan.
             //
-            // Fires only in the clean single-relation-vs-single-relation case where the
-            // LOGICAL-LEFT input carries a pushed-down local filter and the right does
-            // not: the filtered relation is the more selective / smaller side, so it is
-            // moved onto the hash build (default build is the physical-right child).
-            // If the RIGHT is the filtered side it is already the default build (no swap
-            // needed); if either side is a join sub-tree the orientation is left alone (a
-            // join result is not a size-bounded build target). A wrong syntactic guess
-            // only picks a slower-but-correct plan.
-            if (!stats_decided && join_node->type() == join_type::inner) {
-                subplan_shape_t left_shape;
-                subplan_shape_t right_shape;
-                probe_subplan_shape(node->children().front(), left_shape);
-                probe_subplan_shape(node->children().back(), right_shape);
-                if (!left_shape.has_join && !right_shape.has_join && left_shape.has_filter &&
-                    !right_shape.has_filter) {
-                    swap_build_side = true;
+            // Decision record: counts decide whenever BOTH effective counts exist;
+            // with incomplete count evidence the default order stands. Refusing to
+            // swap without evidence is refusing to act, not a fallback — a shape-only
+            // "filtered side is smaller" guess once swapped a weakly-filtered HUGE
+            // left onto the build (memory blow-up), so no blind heuristics here. The
+            // fetch side (collect_inner_hash_join_oids in services/collection/
+            // executor.cpp) resolves each join input through the same effective-oid
+            // descent, so every side with a backing relation gets a live count.
+            bool swap_build_side = false;
+            if (join_node->type() == join_type::inner) {
+                const auto left_eff = components::logical_plan::effective_table_oid(node->children().front());
+                const auto right_eff = components::logical_plan::effective_table_oid(node->children().back());
+                if (left_eff != components::catalog::INVALID_OID &&
+                    right_eff != components::catalog::INVALID_OID && left_eff != right_eff) {
+                    const auto left_it = context.row_counts.find(left_eff);
+                    const auto right_it = context.row_counts.find(right_eff);
+                    if (left_it != context.row_counts.end() && right_it != context.row_counts.end()) {
+                        // Both live counts known -> the statistics decide.
+                        if (left_it->second < right_it->second) {
+                            swap_build_side = true;
+                        } else if (left_it->second == right_it->second) {
+                            // Exact PRE-filter count tie: a pushed-down local filter only
+                            // removes rows, so a filtered-left / unfiltered-right pair makes
+                            // the left certainly <= the right — evidence-backed tie-break
+                            // onto the build. Join sub-trees are never tie-broken (their
+                            // output size is not bounded by either input count).
+                            subplan_shape_t left_shape;
+                            subplan_shape_t right_shape;
+                            probe_subplan_shape(node->children().front(), left_shape);
+                            probe_subplan_shape(node->children().back(), right_shape);
+                            if (!left_shape.has_join && !right_shape.has_join && left_shape.has_filter &&
+                                !right_shape.has_filter) {
+                                swap_build_side = true;
+                            }
+                        }
+                    }
                 }
             }
 

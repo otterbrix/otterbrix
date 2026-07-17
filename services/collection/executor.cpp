@@ -1031,8 +1031,7 @@ namespace services::collection::executor {
                                                           std::pmr::string{"collection already exists", resource()}});
                     }
                 } else {
-                    const std::string target_db =
-                        id.get_namespace().empty() ? std::string{} : std::string(id.get_namespace().front());
+                    const std::string target_db{id.database()};
                     const auto str_path = services::catalog_resolve::build_type_search_path_str(target_db);
                     auto* n = static_cast<node_create_collection_t*>(
                         components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
@@ -1226,13 +1225,13 @@ namespace services::collection::executor {
                     err.contains_error()) {
                     error = make_cursor(resource(), err);
                 }
-                if (!error && !id.get_namespace().empty()) {
+                if (!error && !id.database().empty()) {
                     auto* cstr = static_cast<node_create_constraint_t*>(
                         components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
                     if (cstr->kind() == constraint_kind::foreign_key || cstr->kind() == constraint_kind::check) {
                         const auto* tbl_local =
                             services::catalog_resolve::tbl_md_for(&dispatcher_idx,
-                                                                  std::string_view(id.get_namespace().front()),
+                                                                  id.database(),
                                                                   std::string_view(id.table_name()));
                         const bool local_is_g = tbl_local && tbl_local->relkind == 'g';
                         bool ref_is_g = false;

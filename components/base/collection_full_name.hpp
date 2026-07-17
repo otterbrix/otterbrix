@@ -1,5 +1,6 @@
 #pragma once
 
+#include <compare>
 #include <sstream>
 #include <string>
 
@@ -54,22 +55,11 @@ struct qualified_name_t {
     bool empty() const noexcept {
         return unique_identifier.empty() && database.empty() && schema.empty() && collection.empty();
     }
-};
 
-inline bool operator==(const qualified_name_t& c1, const qualified_name_t& c2) {
-    return c1.unique_identifier == c2.unique_identifier && c1.database == c2.database && c1.schema == c2.schema &&
-           c1.collection == c2.collection;
-}
-
-inline bool operator<(const qualified_name_t& c1, const qualified_name_t& c2) {
-    return c1.unique_identifier < c2.unique_identifier || c1.database < c2.database ||
-           (c1.database == c2.database && c1.schema < c2.schema) ||
-           (c1.database == c2.database && c1.schema == c2.schema && c1.collection < c2.collection);
-}
-
-struct collection_name_hash {
-    inline std::size_t operator()(const qualified_name_t& key) const {
-        return std::hash<std::string>()(key.unique_identifier) ^ std::hash<std::string>()(key.database) ^
-               std::hash<std::string>()(key.schema) ^ std::hash<std::string>()(key.collection);
-    }
+    // Lexicographic over declaration order (unique_identifier, database,
+    // schema, collection) — the 4-part uid.db.schema.rel syntax order, uid
+    // outermost. Note this SORT order differs from table_id's namespace
+    // STORAGE order, which is database-first (resolution order).
+    bool operator==(const qualified_name_t&) const = default;
+    auto operator<=>(const qualified_name_t&) const = default;
 };

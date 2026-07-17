@@ -1277,12 +1277,11 @@ namespace services::dispatcher {
     core::error_t check_namespace_exists(std::pmr::memory_resource* resource,
                                          const impl::plan_resolve_index_t* idx,
                                          const components::catalog::table_id& id) {
-        const auto& ns = id.get_namespace();
-        if (ns.empty()) {
+        if (id.database().empty()) {
             return core::error_t(core::error_code_t::database_not_exists,
                                  std::pmr::string{"database does not exist", resource});
         }
-        if (impl::ns_oid_for_dbname(idx, std::string_view(ns.front())) == components::catalog::INVALID_OID) {
+        if (impl::ns_oid_for_dbname(idx, id.database()) == components::catalog::INVALID_OID) {
             return core::error_t(core::error_code_t::database_not_exists,
                                  std::pmr::string{"database does not exist", resource});
         }
@@ -1295,8 +1294,7 @@ namespace services::dispatcher {
         if (auto err = check_namespace_exists(resource, idx, id); err.contains_error()) {
             return err;
         }
-        const auto* tbl =
-            impl::tbl_md_for(idx, std::string_view(id.get_namespace().front()), std::string_view(id.table_name()));
+        const auto* tbl = impl::tbl_md_for(idx, id.database(), std::string_view(id.table_name()));
         if (!tbl) {
             return core::error_t(core::error_code_t::table_not_exists,
                                  std::pmr::string{"collection does not exist", resource});

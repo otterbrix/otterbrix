@@ -13,13 +13,17 @@ namespace components::catalog {
 
     class table_id {
     public:
-        table_id(std::pmr::memory_resource* resource, std::pmr::vector<std::pmr::string> full_name);
-        table_id(std::pmr::memory_resource* resource, table_namespace_t ns, std::pmr::string name);
         table_id(std::pmr::memory_resource* resource, const qualified_name_t& full_name);
 
+        // Namespace STORAGE order is database-first: [database, schema?, uid?],
+        // empty parts omitted — so database() is front() whenever a database
+        // was given. Consumers (check_namespace_exists / check_collection_exists
+        // / the type-search-path builder) read the database through database().
         [[nodiscard]] const table_namespace_t& get_namespace() const;
+        [[nodiscard]] std::string_view database() const noexcept {
+            return namespace_parts_.empty() ? std::string_view{} : std::string_view(namespace_parts_.front());
+        }
         [[nodiscard]] const std::pmr::string& table_name() const;
-        [[nodiscard]] std::pmr::string to_pmr_string() const;
 
         // pg_class.oid for this table. INVALID_OID until assigned by the CREATE TABLE
         // pipeline (build_create_table_writes / operator_create_collection) —
@@ -38,12 +42,3 @@ namespace components::catalog {
         oid_t oid_{INVALID_OID};
     };
 } // namespace components::catalog
-
-namespace std {
-    template<>
-    struct hash<components::catalog::table_id> {
-        std::size_t operator()(const components::catalog::table_id& id) const noexcept {
-            return std::hash<std::pmr::string>{}(id.to_pmr_string());
-        }
-    };
-} // namespace std

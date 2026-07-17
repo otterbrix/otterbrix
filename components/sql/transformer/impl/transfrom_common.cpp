@@ -481,6 +481,14 @@ namespace components::sql::transform {
                         error_ = raw_val.error();
                         return nullptr;
                     }
+                    if (raw_val.value().is_null()) {
+                        // `col [NOT] [I]LIKE NULL` is UNKNOWN for every row (three-valued logic,
+                        // and NOT UNKNOWN is still UNKNOWN) -> zero rows for BOTH the plain and
+                        // the negated form. all_false is the canonical no-rows predicate (the
+                        // scan short-circuits it); it must NOT be wrapped in union_not here —
+                        // that would turn match-nothing into match-everything.
+                        return make_compare_expression(resource_, compare_type::all_false);
+                    }
                     auto pattern = expressions::like_to_regex(std::string(raw_val.value().value<std::string_view>()));
                     auto param_id = plan->parameters->add_parameter(types::logical_value_t(resource_, pattern));
                     const bool icase = (op_str == "~~*" || op_str == "!~~*");  // ILIKE / NOT ILIKE
@@ -498,7 +506,20 @@ namespace components::sql::transform {
                     if (negate) {
                         auto not_expr = make_compare_union_expression(resource_, compare_type::union_not);
                         not_expr->append_child(cmp);
-                        return not_expr;
+                        // A NULL subject makes `NULL NOT [I]LIKE p` UNKNOWN -> the row is dropped
+                        // (PostgreSQL); the bare union_not would flip the regex's NULL-subject
+                        // false into true and keep it. Guard with is_not_null(col) exactly like
+                        // the negated ANY/ALL forms, so disk pushdown inherits the same shape.
+                        auto guard_param = plan->parameters->add_parameter(
+                            types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+                        auto guard = make_compare_expression(resource_,
+                                                             compare_type::is_not_null,
+                                                             key_left.field,
+                                                             guard_param);
+                        auto guarded = make_compare_union_expression(resource_, compare_type::union_and);
+                        guarded->append_child(guard);
+                        guarded->append_child(not_expr);
+                        return guarded;
                     }
                     return cmp;
                 }
@@ -648,16 +669,25 @@ namespace components::sql::transform {
                             // unusual parenthesised nesting).
                             auto param_id = plan->parameters->add_parameter(
                                 types::logical_value_t{resource_, types::logical_type::NA});
+                            // Save/restore the pending internal-aggregate stash around each inner
+                            // transform: the inner transform_select epilogue flushes + clears the
+                            // stash, which would steal this level's SELECT-list aggregates.
                             switch (sub->subLinkType) {
                                 case EXPR_SUBLINK: {
+                                    auto prev_pending = std::move(pending_internal_aggs_);
+                                    pending_internal_aggs_.clear();
                                     auto sub_node = transform(*sub->subselect, plan);
+                                    pending_internal_aggs_ = std::move(prev_pending);
                                     plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
                                     plan->sub_queries.emplace_back(std::move(sub_node));
                                     return param_id;
                                 }
                                 case EXISTS_SUBLINK: {
                                     // `col = EXISTS (SELECT ...)`: compare against the boolean EXISTS result.
+                                    auto prev_pending = std::move(pending_internal_aggs_);
+                                    pending_internal_aggs_.clear();
                                     auto sub_node = transform(*sub->subselect, plan);
+                                    pending_internal_aggs_ = std::move(prev_pending);
                                     plan->sub_query_results.emplace_back(&vector::compact_to_bool_value, param_id);
                                     plan->sub_queries.emplace_back(std::move(sub_node));
                                     return param_id;
@@ -666,7 +696,10 @@ namespace components::sql::transform {
                                     // `col = ARRAY (SELECT ...)`: array equality against the compacted array.
                                     // array_equality lets the executor rebuild a 0-row result as a typed empty
                                     // {}; array_operand marks the enclosing compare unfoldable (see below).
+                                    auto prev_pending = std::move(pending_internal_aggs_);
+                                    pending_internal_aggs_.clear();
                                     auto sub_node = transform(*sub->subselect, plan);
+                                    pending_internal_aggs_ = std::move(prev_pending);
                                     plan->sub_query_results.emplace_back(&vector::compact_to_array_value,
                                                                          param_id,
                                                                          /*boolean_required=*/false,
@@ -845,7 +878,12 @@ namespace components::sql::transform {
                 auto param_id2 =
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 // Transform before appending so nested sub_queries/sub_query_results come first.
+                // Save/restore the pending internal-aggregate stash so the inner epilogue's
+                // flush + clear does not steal this level's SELECT-list aggregates.
+                auto prev_pending = std::move(pending_internal_aggs_);
+                pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);
+                pending_internal_aggs_ = std::move(prev_pending);
                 plan->sub_query_results.emplace_back(&vector::compact_to_bool_value, param_id2);
                 plan->sub_queries.emplace_back(std::move(sub_node));
                 auto expr = make_compare_expression(resource_, compare_type::eq, param_id1, param_id2);
@@ -894,7 +932,12 @@ namespace components::sql::transform {
                 auto param_id =
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 // Transform before appending so nested sub_queries/sub_query_results come first.
+                // Save/restore the pending internal-aggregate stash so the inner epilogue's
+                // flush + clear does not steal this level's SELECT-list aggregates.
+                auto prev_pending = std::move(pending_internal_aggs_);
+                pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);
+                pending_internal_aggs_ = std::move(prev_pending);
                 plan->sub_query_results.emplace_back(&vector::compact_to_array_value, param_id);
                 plan->sub_queries.emplace_back(std::move(sub_node));
                 auto ctype = node->subLinkType == ANY_SUBLINK ? compare_type::any : compare_type::all;
@@ -919,7 +962,12 @@ namespace components::sql::transform {
                 auto param_result =
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 // Transform before appending so nested sub_queries/sub_query_results come first.
+                // Save/restore the pending internal-aggregate stash so the inner epilogue's
+                // flush + clear does not steal this level's SELECT-list aggregates.
+                auto prev_pending = std::move(pending_internal_aggs_);
+                pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);
+                pending_internal_aggs_ = std::move(prev_pending);
                 // boolean_required: WHERE's argument must be type boolean (PostgreSQL). The
                 // executor rejects a non-boolean static output type of this sub-query before
                 // binding, so `WHERE (SELECT 1)` errors instead of silently coercing to bool.
@@ -1509,7 +1557,12 @@ namespace components::sql::transform {
                 auto param_id =
                     plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
                 // Transform before appending so nested sub_queries/sub_query_results come first.
+                // Save/restore the pending internal-aggregate stash so the inner epilogue's
+                // flush + clear does not steal this level's SELECT-list aggregates.
+                auto prev_pending = std::move(pending_internal_aggs_);
+                pending_internal_aggs_.clear();
                 auto sub_node = transform(*pg_ptr_cast<SubLink>(node)->subselect, plan);
+                pending_internal_aggs_ = std::move(prev_pending);
                 plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
                 plan->sub_queries.emplace_back(std::move(sub_node));
                 return param_id;

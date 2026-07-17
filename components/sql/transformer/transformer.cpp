@@ -3,6 +3,7 @@
 
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/plan_root.hpp>
 #include <components/sql/parser/extension.hpp>
 #include <components/vector/data_chunk.hpp>
 
@@ -31,36 +32,19 @@ namespace components::sql::transform {
         //
         // A flattened sub-query root is either the aggregate itself (no FROM identity) or a
         // resolve-wrapping sequence_t (resolves at the front, the aggregate last). Unwrap to
-        // the aggregate; return nullptr when the root is not an aggregate (nothing to strip).
-        // Local mirror of dispatcher::effective_root_node to avoid a components->services dep.
-        logical_plan::node_t* subquery_aggregate_root(const logical_plan::node_ptr& root) {
-            using logical_plan::node_type;
-            if (!root) {
-                return nullptr;
-            }
-            logical_plan::node_t* n = root.get();
-            if (n->type() == node_type::sequence_t) {
-                const auto& kids = n->children();
-                if (kids.empty() || !kids.front() ||
-                    kids.front()->type() != node_type::catalog_resolve_t) {
-                    return nullptr; // planner-style sequence_t, not a transformer resolve wrap
-                }
-                n = nullptr;
-                for (auto it = kids.rbegin(); it != kids.rend(); ++it) {
-                    if (*it && (*it)->type() != node_type::catalog_resolve_t) {
-                        n = it->get();
-                        break;
-                    }
-                }
-            }
-            return (n && n->type() == node_type::aggregate_t) ? n : nullptr;
-        }
+        // the aggregate via the shared logical_plan::effective_root_node; anything that does
+        // not unwrap to an aggregate has nothing to strip.
 
         // Remove a bare ORDER BY (a childless sort_t marker in the aggregate's flat pipeline)
         // when NO limit_t child is present. A LIMIT/OFFSET child makes the sort a top-N: the
         // ordering is then observable and the sort is kept. No-op if there is no sort child.
         void strip_bare_sort_child(logical_plan::node_t* agg) {
             using logical_plan::node_type;
+            // DISTINCT ON keeps the FIRST row per ON-key group in ORDER BY order — the sort
+            // is load-bearing without any LIMIT (caller guarantees agg is an aggregate_t).
+            if (!static_cast<const logical_plan::node_aggregate_t*>(agg)->distinct_on_keys().empty()) {
+                return;
+            }
             auto& kids = agg->children();
             for (const auto& c : kids) {
                 if (c && c->type() == node_type::limit_t) {
@@ -102,8 +86,9 @@ namespace components::sql::transform {
                 if (!order_insensitive_compaction(plan.sub_query_results[i])) {
                     continue;
                 }
-                if (auto* agg = subquery_aggregate_root(plan.sub_queries[i])) {
-                    strip_bare_sort_child(agg);
+                auto* root = logical_plan::effective_root_node(plan.sub_queries[i].get());
+                if (root && root->type() == logical_plan::node_type::aggregate_t) {
+                    strip_bare_sort_child(root);
                 }
             }
         }

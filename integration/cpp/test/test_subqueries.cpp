@@ -3000,3 +3000,114 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
         REQUIRE(notin_cur->size() == 0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// T1: the pending internal-aggregate stash (an aggregate hidden inside SELECT-
+// list arithmetic, e.g. `SELECT sum(x) + 1`) must SURVIVE a sub-query transform
+// that runs BEFORE the stash is flushed into this level's group (WHERE is
+// transformed between the SELECT list and the flush). The inner
+// transform_select epilogue flushes + clears the stash; without a save/restore
+// around every inner transform the OUTER aggregate leaks into the INNER group
+// and the outer projection references a never-computed column.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_subquery") {
+    auto config = test_create_config("/tmp/test_subqueries/outer_agg_where_subquery");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    INFO("scalar (EXPR) sub-query as a WHERE comparison operand");
+    {
+        // avg(budget) = 66000; salaries above it: 90000+80000+70000+75000+72000 = 387000.
+        auto cur = run("SELECT SUM(salary) + 10 AS s FROM TestDatabase.Employees "
+                       "WHERE salary > (SELECT AVG(budget) FROM TestDatabase.Departments);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 387010);
+    }
+
+    INFO("EXISTS sub-query in WHERE (speculative semi/anti probe + flatten path)");
+    {
+        // EXISTS is true -> all 10 rows aggregated: sum(salary) = 652000.
+        auto cur = run("SELECT SUM(salary) + 10 AS s FROM TestDatabase.Employees "
+                       "WHERE EXISTS (SELECT id FROM TestDatabase.Departments WHERE budget > 60000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 652010);
+    }
+
+    INFO("ANY sub-query in WHERE");
+    {
+        // High-budget depts {1,4,5}: 90000+80000+70000+65000+75000+72000 = 452000.
+        auto cur = run("SELECT SUM(salary) + 10 AS s FROM TestDatabase.Employees "
+                       "WHERE dept_id = ANY (SELECT id FROM TestDatabase.Departments WHERE budget > 60000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 452010);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T4: DISTINCT ON makes a sub-query ORDER BY OBSERVABLE without any LIMIT — it
+// keeps the FIRST row per ON-key group in ORDER BY order. The bare-sort
+// elimination for order-insensitively compacted sub-queries (IN / ANY / ALL /
+// EXISTS / scalar) must NOT strip the sort under a DISTINCT ON aggregate.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
+    auto config = test_create_config("/tmp/test_subqueries/distinct_on_subquery_sort");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.events (k bigint, ts bigint, v bigint);")->is_success());
+    // Insertion order = oldest-ts first, so a stripped sort would keep the OLDEST
+    // row per k (scan order) instead of the latest-ts row DISTINCT ON demands.
+    REQUIRE(run("INSERT INTO db.events (k, ts, v) VALUES "
+                "(1, 1, 100), (2, 1, 300), (1, 2, 200), (2, 2, 400);")
+                ->is_success());
+    REQUIRE(run("CREATE TABLE db.vals (x bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.vals (x) VALUES (200), (400), (100), (300);")->is_success());
+
+    INFO("IN (SELECT DISTINCT ON (k) v ... ORDER BY k, ts DESC) keeps the latest row per k");
+    {
+        auto cur = run("SELECT x FROM db.vals WHERE x IN "
+                       "(SELECT DISTINCT ON (k) v FROM db.events ORDER BY k, ts DESC);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        // Latest-ts rows are v=200 (k=1) and v=400 (k=2), in either output order.
+        const auto a = cur->value(0, 0).value<int64_t>();
+        const auto b = cur->value(0, 1).value<int64_t>();
+        const bool latest_pair = (a == 200 && b == 400) || (a == 400 && b == 200);
+        REQUIRE(latest_pair);
+    }
+
+    INFO("the sub-query Sort survives in the plan (it feeds DISTINCT ON, not a LIMIT)");
+    {
+        auto ex = run("EXPLAIN ANALYZE SELECT x FROM db.vals WHERE x IN "
+                      "(SELECT DISTINCT ON (k) v FROM db.events ORDER BY k, ts DESC);");
+        REQUIRE(ex->is_success());
+        const auto t = plan_text(ex);
+        REQUIRE(contains(t, "InitPlan"));
+        REQUIRE(contains(t, "Sort"));
+    }
+}

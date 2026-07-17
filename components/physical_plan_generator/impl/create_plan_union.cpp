@@ -20,6 +20,10 @@ namespace services::planner::impl {
 
         auto op = boost::intrusive_ptr(
             new components::operators::operator_union_t(context.resource, context.log.clone(), union_node->all()));
+        // Forward the validator-stamped, reconciled union schema (validate_schema's
+        // union_t case) — the operator types its output from this stamp, not from the
+        // row data the branches happen to produce.
+        op->set_output_types(node->output_types());
         op->set_children(std::move(left_op), std::move(right_op));
         return op;
     }

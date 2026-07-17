@@ -721,8 +721,9 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
     };
 
     REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders;"), "Seq Scan"));
-    // col-vs-col predicate is not storage-pushable, so it lowers to a standalone Filter (operator_match).
-    REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders WHERE id > cust;"), "Filter"));
+    // col-vs-col predicate now pushes into the scan (column_column_filter_t), so it renders as a Seq Scan
+    // with no standalone Filter / operator_match.
+    REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders WHERE id > cust;"), "Seq Scan"));
     REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders ORDER BY id;"), "Sort"));
     REQUIRE(contains(label_of("EXPLAIN SELECT id + cust FROM TestDatabase.orders;"), "Project"));
     REQUIRE(contains(
@@ -742,4 +743,273 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
     REQUIRE(contains(label_of("EXPLAIN DELETE FROM TestDatabase.orders WHERE id = 1;"), "Delete"));
     // Regression: SELECT DISTINCT lowers to operator_distinct, which must render "Unique" (was "Filter").
     REQUIRE(contains(label_of("EXPLAIN SELECT DISTINCT cust FROM TestDatabase.orders;"), "Unique"));
+}
+
+// End-to-end proof (disk.on=true) that a single-table WHERE conjunct whose column
+// NAME also exists on the OTHER join side is pushed to the correct side's Seq Scan
+// — not stranded in a residual Filter above the join. Both t1 and t2 expose "id"
+// and "k"; `WHERE t1.id = 5 AND t2.id = 7` used to bucket by name (id is a subset
+// of BOTH sides) and stay in the residual; it now buckets by the validator's
+// stamped merged path and folds into each side's full_scan (a pushable
+// `column OP constant` becomes a Seq Scan predicate, so NO "Filter" node remains).
+TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
+    auto config = test_helpers::make_test_config("/tmp/test_explain/join_shared_col", /*disk_on=*/true, /*wal_on=*/true);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    using test_helpers::exec;
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    // Both tables carry columns named "id" and "k" (name collision across sides).
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id bigint, k bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (5,1),(5,2),(6,1);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.t2 (id, k) VALUES (7,1),(8,2),(7,3);")->is_success());
+
+    const std::string q =
+        "SELECT a.id, a.k, b.id, b.k FROM db.t1 a JOIN db.t2 b ON a.k = b.k WHERE a.id = 5 AND b.id = 7";
+
+    INFO("parity: the collision-named filters still return the correct join rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, q + ";");
+        REQUIRE(cur->is_success());
+        // t1 filtered id=5 -> (5,1),(5,2); t2 filtered id=7 -> (7,1),(7,3); join on k -> only k=1.
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5); // a.id
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 1); // a.k
+        REQUIRE(cur->value(2, 0).value<int64_t>() == 7); // b.id
+        REQUIRE(cur->value(3, 0).value<int64_t>() == 1); // b.k
+    }
+
+    INFO("EXPLAIN: both per-side filters ride the Seq Scans; no residual Filter remains");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN " + q + ";");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        // The plan is (top-down):
+        //   Project -> Hash Join -> [Filter -> Seq Scan on t1], [Filter -> Seq Scan on t2]
+        // Each side's collision-named predicate rides its own scan BELOW the join. Before
+        // the side-based fix, the name collision (id/k on both sides) left BOTH conjuncts
+        // in a single residual Filter directly ABOVE the Hash Join.
+        REQUIRE(contains(t, "Seq Scan on t1"));
+        REQUIRE(contains(t, "Seq Scan on t2"));
+        const auto join_pos = t.find("Hash Join");
+        const auto first_filter = t.find("Filter");
+        REQUIRE(join_pos != std::string::npos);
+        REQUIRE(first_filter != std::string::npos); // per-side filters are present, below the join
+        // The join precedes every Filter => NO residual Filter above the join (the fix).
+        REQUIRE(join_pos < first_filter);
+    }
+}
+
+// ============================================================================
+// TRANSITIVE EQUI-PREDICATE PROPAGATION — end-to-end (disk.on=true).
+//
+// `t1 JOIN t2 ON t1.k = t2.k WHERE t1.k = 5` implies `t2.k = 5` on every matched
+// row, so the optimizer SYNTHESIZES that partner predicate and pushes it below
+// t2's scan too — in addition to the original `t1.k = 5` below t1.
+//
+// Correctness harness: t2 holds a row with k=7 that matches NO t1 row and is only
+// excludable via the join. The derived `t2.k = 5` pushes the filter EARLIER but
+// must NOT change the result set. We prove that two ways: (a) the exact expected
+// join rows come back, and (b) writing the partner predicate EXPLICITLY
+// (`... AND t2.k = 5`) yields an IDENTICAL result — the derivation is semantically
+// transparent. EXPLAIN then shows a Filter below BOTH scans for the inner join
+// (the derived predicate reached t2) but below ONLY t1 for a LEFT join (the
+// derivation is suppressed on the null-padded side — soundness).
+// ============================================================================
+namespace {
+    size_t count_occurrences(const std::string& hay, const std::string& needle) {
+        size_t n = 0;
+        for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + needle.size())) {
+            ++n;
+        }
+        return n;
+    }
+} // namespace
+
+TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation") {
+    auto config =
+        test_helpers::make_test_config("/tmp/test_explain/transitive_equi", /*disk_on=*/true, /*wal_on=*/false);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    using test_helpers::exec;
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id2 bigint, k bigint, v bigint);")->is_success());
+    // t1.k in {5,5,9}; t2.k in {5,5,7}. The t2 row with k=7 matches NO t1 row and is
+    // only excludable via the join; the t1 row with k=9 is filtered by the WHERE.
+    REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (1,5),(2,5),(3,9);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.t2 (id2, k, v) VALUES (10,5,100),(11,5,200),(12,7,300);")->is_success());
+
+    const std::string inner =
+        "SELECT t1.id, t2.id2 FROM db.t1 JOIN db.t2 ON t1.k = t2.k WHERE t1.k = 5 ORDER BY t1.id, t2.id2";
+
+    INFO("parity: derived t2.k=5 does not change the result set");
+    {
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, inner + ";");
+        REQUIRE(cur->is_success());
+        // t1 (k=5): {1,2}; t2 (k=5): {10,11}; inner join -> 2x2 = 4 rows; t2.k=7 never matches.
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 10);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 11);
+        REQUIRE(cur->value(0, 2).value<int64_t>() == 2);
+        REQUIRE(cur->value(1, 2).value<int64_t>() == 10);
+        REQUIRE(cur->value(0, 3).value<int64_t>() == 2);
+        REQUIRE(cur->value(1, 3).value<int64_t>() == 11);
+    }
+
+    INFO("parity: writing the partner predicate explicitly yields the IDENTICAL result");
+    {
+        // The optimizer's derived `t2.k = 5` must equal what the user could write by hand.
+        const std::string with_partner =
+            "SELECT t1.id, t2.id2 FROM db.t1 JOIN db.t2 ON t1.k = t2.k WHERE t1.k = 5 AND t2.k = 5 "
+            "ORDER BY t1.id, t2.id2";
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, with_partner + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(1, 3).value<int64_t>() == 11);
+    }
+
+    INFO("EXPLAIN (inner): a Filter rides BOTH scans — the derived predicate reached t2");
+    {
+        // Plan (top-down):
+        //   Project -> Sort -> Hash Join -> [Filter -> Seq Scan on t1], [Filter -> Seq Scan on t2]
+        // WITHOUT the transitive derivation the WHERE only touches t1, so t2 would be a
+        // bare Seq Scan (one Filter total). The DERIVED `t2.k = 5` adds the SECOND Filter.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN " + inner + ";");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "Seq Scan on t1"));
+        REQUIRE(contains(t, "Seq Scan on t2"));
+        REQUIRE(count_occurrences(t, "Seq Scan") == 2);
+        REQUIRE(count_occurrences(t, "Filter") == 2); // one per side — the derived predicate reached t2
+        // Every Filter sits BELOW the join (no residual predicate above it).
+        REQUIRE(t.find("Hash Join") < t.find("Filter"));
+    }
+
+    const std::string outer =
+        "SELECT t1.id, t2.id2 FROM db.t1 LEFT JOIN db.t2 ON t1.k = t2.k WHERE t1.k = 5 ORDER BY t1.id, t2.id2";
+    INFO("EXPLAIN (LEFT): the derivation is suppressed on the null-padded side — only t1 filtered");
+    {
+        // Plan (top-down):
+        //   Project -> Sort -> Hash Join -> [Filter -> Seq Scan on t1], [Seq Scan on t2]
+        // A LEFT join preserves unmatched left rows with a NULL-padded right side, so
+        // deriving `t2.k = 5` would be UNSOUND. It is gated out — t2 stays a bare scan.
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, "EXPLAIN " + outer + ";");
+        REQUIRE(cur->is_success());
+        const auto t = plan_text(cur);
+        REQUIRE(contains(t, "Seq Scan on t1"));
+        REQUIRE(contains(t, "Seq Scan on t2"));
+        REQUIRE(count_occurrences(t, "Filter") == 1); // ONLY t1 — no derived predicate on t2
+    }
+}
+
+// DISTINCT-under-GROUP-BY subsumption: a GROUP BY already emits rows distinct on its
+// key columns, so a DISTINCT over a projection that is a SUPERSET of those keys is
+// redundant. The optimizer clears it (no "Unique" operator_distinct pass), otherwise
+// the "Unique" label stays. The rendered "Unique" label is the observable proxy for the
+// operator_distinct that the drop_redundant_distinct rule removes.
+TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
+    auto config = test_create_config("/tmp/test_explain/distinct_under_group_by");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto s = otterbrix::session_id_t();
+        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+    }
+    {
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.t(a int, b int);")->is_success());
+    }
+    {
+        // Distinct (a,b) combos: (1,10),(1,20),(2,10) -> 3. Groups on a: {1,2} -> 2.
+        auto s = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(s, "INSERT INTO TestDatabase.t (a, b) VALUES (1,10),(1,10),(1,20),(2,10),(2,10);")
+                    ->is_success());
+    }
+
+    // Positive: group keys == projection ({a,b} ⊆ {a,b}) -> DISTINCT cleared.
+    INFO("DISTINCT a,b GROUP BY a,b: DISTINCT is redundant -> no Unique, still 3 rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto plan =
+            dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a, b FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(plan->is_success());
+        REQUIRE_FALSE(contains(plan_text(plan), "Unique"));
+
+        auto s2 = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s2, "SELECT DISTINCT a, b FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    // Positive (subset direction): group keys ⊊ projection ({a} ⊆ {a, count}). The
+    // extra projected column is an AGGREGATE, so each group is still one row -> DISTINCT
+    // redundant. (`DISTINCT a, b GROUP BY a` cannot exercise this shape: a bare
+    // non-grouped, non-aggregated `b` is rejected as un-grouped SQL.)
+    INFO("DISTINCT a, COUNT(*) GROUP BY a: group ⊊ projection -> no Unique, 2 rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto plan = dispatcher->execute_sql(
+            s, "EXPLAIN SELECT DISTINCT a, COUNT(*) AS c FROM TestDatabase.t GROUP BY a;");
+        REQUIRE(plan->is_success());
+        REQUIRE_FALSE(contains(plan_text(plan), "Unique"));
+
+        auto s2 = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(s2, "SELECT DISTINCT a, COUNT(*) AS c FROM TestDatabase.t GROUP BY a;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    // NEGATIVE (the trap): group keys ⊄ projection ({a,b} ⊄ {a}). Groups (1,10),(1,20)
+    // both project a=1, so DISTINCT a really removes a duplicate -> MUST be kept.
+    INFO("TRAP: DISTINCT a GROUP BY a,b: DISTINCT is NOT redundant -> Unique kept, 2 rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto plan =
+            dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(plan->is_success());
+        REQUIRE(contains(plan_text(plan), "Unique"));
+
+        auto s2 = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s2, "SELECT DISTINCT a FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // distinct a: {1,2}; without the trap-kept DISTINCT it would be 3
+
+        // Positive control: the SAME projection/keys WITHOUT DISTINCT keeps all 3 groups.
+        auto s3 = otterbrix::session_id_t();
+        auto cur_no_distinct = dispatcher->execute_sql(s3, "SELECT a FROM TestDatabase.t GROUP BY a, b;");
+        REQUIRE(cur_no_distinct->is_success());
+        REQUIRE(cur_no_distinct->size() == 3);
+    }
+
+    // Negative: no GROUP BY at all -> DISTINCT must never be touched.
+    INFO("DISTINCT a (no GROUP BY): untouched -> Unique kept, 2 rows");
+    {
+        auto s = otterbrix::session_id_t();
+        auto plan = dispatcher->execute_sql(s, "EXPLAIN SELECT DISTINCT a FROM TestDatabase.t;");
+        REQUIRE(plan->is_success());
+        REQUIRE(contains(plan_text(plan), "Unique"));
+
+        auto s2 = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s2, "SELECT DISTINCT a FROM TestDatabase.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
 }

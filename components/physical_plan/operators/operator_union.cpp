@@ -59,8 +59,11 @@ namespace components::operators {
             return true;
         }
 
-        // Deep-copy selected rows from src into a new chunk.
-        // Uses data_chunk_t::copy which correctly handles STRUCT/ARRAY/LIST columns.
+        // Deep-copy selected rows from src into a new chunk of `types`. Columns are copied per-column so a
+        // column whose source type differs from the target (the reconciled NULL-literal UNION branch — a
+        // genuine type mismatch is rejected at validation) is materialised as target-typed NULLs instead of
+        // copied (data_chunk_t::copy would assert on the type mismatch). Matching columns use the whole-value
+        // copy, which handles STRUCT/ARRAY/LIST.
         vector::data_chunk_t copy_rows(const vector::data_chunk_t& src,
                                        const std::pmr::vector<uint64_t>& row_indices,
                                        const std::pmr::vector<types::complex_logical_type>& types,
@@ -71,7 +74,16 @@ namespace components::operators {
                 idx.set_index(i, row_indices[i]);
             }
             vector::data_chunk_t out(res, types, n);
-            src.copy(out, idx, n, 0);
+            for (size_t c = 0; c < types.size(); ++c) {
+                if (src.data[c].type().type() == types[c].type()) {
+                    vector::vector_ops::copy(src.data[c], out.data[c], idx, n, 0, 0);
+                } else {
+                    for (uint64_t i = 0; i < n; ++i) {
+                        out.data[c].set_null(i, true);
+                    }
+                }
+            }
+            out.set_cardinality(n);
             return out;
         }
 
@@ -79,15 +91,33 @@ namespace components::operators {
 
     operator_union_t::operator_union_t(std::pmr::memory_resource* resource, log_t log, bool all)
         : read_only_operator_t(resource, log, operator_type::union_op)
-        , all_(all) {}
+        , all_(all)
+        , output_types_(resource) {}
+
+    void operator_union_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& types) {
+        output_types_.assign(types.begin(), types.end());
+    }
 
     void operator_union_t::emit_union_(std::pmr::memory_resource* res,
                                        const chunks_vector_t& left_chunks,
                                        const chunks_vector_t& right_chunks,
                                        chunks_vector_t& out_chunks) {
-        // Output column types follow the left side (PostgreSQL UNION uses the first
-        // SELECT's column types); fall back to the right side if the left is empty.
-        const auto& types = left_chunks.empty() ? right_chunks.front().types() : left_chunks.front().types();
+        // Output column types are the validator-stamped union schema (see set_output_types):
+        // the reconciliation — including the PostgreSQL NULL-literal rule — happened
+        // data-INDEPENDENTLY at validation, so the result type never depends on which rows
+        // the tables happen to hold. An unstamped plan (validation leaves error/empty
+        // schemas unstamped) degrades to the left side's data-derived types — PostgreSQL
+        // UNION uses the first SELECT's column types — with the right side used only when
+        // the left produced no chunks at all.
+        std::pmr::vector<types::complex_logical_type> types(res);
+        if (!output_types_.empty()) {
+            types.assign(output_types_.begin(), output_types_.end());
+        } else if (!left_chunks.empty() || !right_chunks.empty()) {
+            const auto& src = left_chunks.empty() ? right_chunks.front().types() : left_chunks.front().types();
+            types.assign(src.begin(), src.end());
+        } else {
+            return; // nothing to emit and no schema to type an empty result with
+        }
 
         if (all_) {
             auto copy_all = [&](const chunks_vector_t& src_chunks) {

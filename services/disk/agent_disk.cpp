@@ -4,6 +4,7 @@
 #include <components/logical_plan/node_group.hpp>              // node_group_t::set_pushdown (re-lowering guard)
 #include <components/physical_plan/operators/aggregate/operator_func.hpp> // aggregate::operator_func_t (reduce rebuild)
 #include <components/physical_plan/operators/operator_group.hpp>          // operator_group_t + group_key_t (aggregate-pushdown reduce)
+#include <components/physical_plan/operators/predicates/expression_filter_bridge.hpp> // attach_expression_evaluators (WHERE f(col) pushdown)
 #include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
 #include <components/physical_plan_generator/create_plan.hpp>  // create_plan + function_registry + context_storage_t
 #include <components/vector/cell_equal.hpp> // components::vector::cells_equal (typed FK hash-verify)
@@ -712,13 +713,22 @@ namespace services::disk {
                         if (!src_is_null_type && src_vec.validity().row_is_valid(row)) {
                             // A fixed ARRAY column reconciles a length mismatch against the
                             // column DEFAULT (truncate / pad-with-default); other columns use
-                            // the plain value cast.
-                            auto reconciled = array_target
-                                                  ? components::table::reconcile_to_fixed_array(resource(),
-                                                                                                src_vec.value(row),
-                                                                                                table_columns[i],
-                                                                                                session_tz)
-                                                  : src_vec.value(row).cast_as(target_type, session_tz);
+                            // the plain value cast. No error channel in this coroutine — a
+                            // non-castable value degrades to NULL rather than aborting.
+                            components::types::logical_value_t reconciled{
+                                resource(),
+                                components::types::complex_logical_type{components::types::logical_type::NA}};
+                            if (array_target) {
+                                reconciled = components::table::reconcile_to_fixed_array(resource(),
+                                                                                        src_vec.value(row),
+                                                                                        table_columns[i],
+                                                                                        session_tz);
+                            } else {
+                                auto casted = src_vec.value(row).cast_as(target_type, session_tz);
+                                if (!casted.has_error()) {
+                                    reconciled = std::move(casted.value());
+                                }
+                            }
                             // reconcile_to_fixed_array yields a NULL value only when a NOT NULL
                             // fixed ARRAY column receives a too-short value with no default to
                             // pad from. operator_check_constraint already rejects this with a
@@ -1281,6 +1291,10 @@ namespace services::disk {
             scan.pos.next_row = 0;
             scan.pos.max_row = static_cast<int64_t>(it->second->storage->total_rows());
             scan.filter = std::move(filter);
+            // Attach agent-side per-row evaluators to any expression_filter_t in the shipped filter
+            // (WHERE f(col) OP const): its value_getter closures capture THIS agent's resource +
+            // function registry, which cannot cross the mailbox, so the filter arrived evaluator-less.
+            components::operators::predicates::attach_expression_evaluators(resource(), scan.filter.get());
             scan.projected_cols = std::move(projected_cols);
             scan.txn = txn;
             scan.matched_limit = limit;
@@ -1376,6 +1390,9 @@ namespace services::disk {
         auto it = storages_.find(table_oid);
         const bool no_storage =
             (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr);
+        // A pushed aggregate can carry an expression WHERE too — attach its per-row evaluators here
+        // (same rationale as the raw-scan path: the value_getter closures cannot cross the mailbox).
+        components::operators::predicates::attach_expression_evaluators(resource(), filter.get());
         auto reduced_r = reduce_pushed_aggregate(resource(),
                                                  log_.clone(),
                                                  no_storage ? nullptr : it->second->storage.get(),
@@ -2293,7 +2310,11 @@ namespace services::disk {
                         components::vector::vector_t casted(resource(), target_type, local.size());
                         for (uint64_t r = 0; r < local.size(); r++) {
                             if (src_vec.validity().row_is_valid(r)) {
-                                casted.set_value(r, src_vec.value(r).cast_as(target_type, ctx.session_tz));
+                                // Both sides are numeric / STRING_LITERAL (guarded above) and the row is
+                                // non-null, so the cast can not fail.
+                                auto casted_val = src_vec.value(r).cast_as(target_type, ctx.session_tz);
+                                assert(!casted_val.has_error() && "numeric/string column cast can not fail");
+                                casted.set_value(r, casted_val.value());
                             } else {
                                 casted.validity().set_invalid(r);
                             }

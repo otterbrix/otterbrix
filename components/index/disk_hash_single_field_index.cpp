@@ -29,13 +29,28 @@ namespace components::index {
             case logical_type::TINYINT:
             case logical_type::SMALLINT:
             case logical_type::INTEGER:
-            case logical_type::BIGINT:
-                return key.cast_as(complex_logical_type(logical_type::BIGINT), local_timezone);
+            case logical_type::BIGINT: {
+                // Signed-integer widening can not fail for the types this switch admits;
+                // still, never assert-then-value() (a failed cast in Release would deref an
+                // empty optional). A non-widenable key keeps its native representation —
+                // identical to the default branch, and self-consistent between insert and
+                // find (both normalize the same way).
+                auto casted = key.cast_as(complex_logical_type(logical_type::BIGINT), local_timezone);
+                if (casted.has_error()) {
+                    return key;
+                }
+                return std::move(casted.value());
+            }
             case logical_type::UTINYINT:
             case logical_type::USMALLINT:
             case logical_type::UINTEGER:
-            case logical_type::UBIGINT:
-                return key.cast_as(complex_logical_type(logical_type::UBIGINT), local_timezone);
+            case logical_type::UBIGINT: {
+                auto casted = key.cast_as(complex_logical_type(logical_type::UBIGINT), local_timezone);
+                if (casted.has_error()) {
+                    return key;
+                }
+                return std::move(casted.value());
+            }
             default:
                 return key;
         }

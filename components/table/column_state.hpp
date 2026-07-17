@@ -1,16 +1,24 @@
 #pragma once
 #include <components/types/types.hpp>
+#include <core/date/date_types.hpp>
 #include <core/operations_helper.hpp>
+#include <core/regex/regex.hpp>
 #include <core/result_wrapper.hpp>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
 #include <components/table/storage/buffer_handle.hpp>
 
+#include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/types/logical_value.hpp>
+
+namespace components::vector {
+    class data_chunk_t;
+} // namespace components::vector
 
 namespace components::table {
     class row_group_t;
@@ -233,15 +241,209 @@ namespace components::table {
         std::pmr::vector<uint64_t> table_indices;
     };
 
+    // LIKE / ILIKE / regexp disk filter. Holds the pattern as a plain std::pmr::string (not a
+    // logical_value_t) and compiles it once with RE2 on first match; filter_type is always
+    // compare_type::regex, so every zonemap path (which gates on eq/gt/gte/lt/lte) skips it — a regex
+    // has no min/max bound to prune on. Discriminated by dynamic_cast, never table_filter_t::cast<>
+    // (a reinterpret_cast). matches() is a partial RE2 search (== std::regex_search); ILIKE sets icase.
+    class regex_filter_t : public table_filter_t {
+    public:
+        regex_filter_t(std::pmr::string pattern, bool icase, std::pmr::vector<uint64_t> table_indices)
+            : table_filter_t(expressions::compare_type::regex)
+            , pattern(std::move(pattern))
+            , icase(icase)
+            , table_indices(std::move(table_indices)) {}
+
+        bool matches(std::string_view subject) const {
+            if (!compiled_) {
+                auto compiled = core::regex_t::compile(pattern.get_allocator().resource(), pattern, icase);
+                if (compiled.has_error()) {
+                    // Unreachable: every regex_filter_t construction site (transform_predicate in
+                    // full_scan.cpp) compiles the pattern at plan time and surfaces a failed compile
+                    // as an error on the scan error channel, so only validated patterns reach here
+                    // and a recompile of a validated pattern cannot fail.
+                    return false;
+                }
+                compiled_.emplace(std::move(compiled.value()));
+            }
+            return compiled_->match(subject);
+        }
+
+        std::unique_ptr<table_filter_t> copy() const override {
+            return std::make_unique<regex_filter_t>(pattern, icase, table_indices);
+        }
+        bool equals(const table_filter_t& other) const override {
+            // filter_type == regex is unique to regex_filter_t (constant_filter_t never carries regex), so a
+            // matching filter_type guarantees `other` is a regex_filter_t — no dynamic_cast needed.
+            if (!table_filter_t::equals(other)) {
+                return false;
+            }
+            const auto& o = other.cast<regex_filter_t>();
+            return pattern == o.pattern && icase == o.icase;
+        }
+
+        std::pmr::string pattern;
+        bool icase = false;
+        std::pmr::vector<uint64_t> table_indices;
+
+    private:
+        mutable std::optional<core::regex_t> compiled_;
+    };
+
+    // Same-type value dispatch for compare_values_promoting below: the exact operator set the
+    // canonical in-memory comparator (simple_predicate's make_comparator) applies, so the pushed
+    // col-vs-col filter cannot drift from it. Callers guarantee both sides share a type.
+    inline bool compare_same_type_matches(const types::logical_value_t& left,
+                                          const types::logical_value_t& right,
+                                          expressions::compare_type op) {
+        switch (op) {
+            case expressions::compare_type::eq:
+                return left == right;
+            case expressions::compare_type::ne:
+                return left != right;
+            case expressions::compare_type::lt:
+                return left < right;
+            case expressions::compare_type::lte:
+                return left <= right;
+            case expressions::compare_type::gt:
+                return left > right;
+            case expressions::compare_type::gte:
+                return left >= right;
+            default:
+                return false;
+        }
+    }
+
+    // THE canonical value-vs-value comparison, shared by the in-memory comparator (operator_match ->
+    // simple_predicate's make_comparator) and the pushed col-vs-col filter
+    // (row_group_t::check_predicate): a NULL operand is UNKNOWN -> false; on a type mismatch cast
+    // right->left with the SESSION timezone and, when that cast yields NULL (e.g. a value that
+    // overflows the narrower type), fall back to left->right so the narrower side promotes UP; a
+    // cast error propagates. Boolean-vs-numeric rejection happens BEFORE this call (per row in the
+    // in-memory comparator, at plan time for the pushed filter) — both reject the same shapes.
+    inline core::result_wrapper_t<bool> compare_values_promoting(const types::logical_value_t& left,
+                                                                 const types::logical_value_t& right,
+                                                                 expressions::compare_type op,
+                                                                 core::date::timezone_offset_t session_tz) {
+        if (left.is_null() || right.is_null()) {
+            return false;
+        }
+        if (left.type() == right.type()) {
+            return compare_same_type_matches(left, right, op);
+        }
+        auto cast_right = right.cast_as(left.type(), session_tz);
+        if (cast_right.has_error()) {
+            return cast_right.convert_error<bool>();
+        }
+        if (!cast_right.value().is_null()) {
+            return compare_same_type_matches(left, cast_right.value(), op);
+        }
+        auto cast_left = left.cast_as(right.type(), session_tz);
+        if (cast_left.has_error()) {
+            return cast_left.convert_error<bool>();
+        }
+        if (!cast_left.value().is_null()) {
+            return compare_same_type_matches(cast_left.value(), right, op);
+        }
+        return false;
+    }
+
+    // Column-vs-column disk filter: `a.x OP a.y` evaluated per row (fetch both column values,
+    // compare via compare_values_promoting with the session timezone captured at plan time).
+    // filter_type is the comparison (eq/ne/lt/lte/gt/gte). Not zonemap-prunable (no constant bound).
+    // Discriminated by dynamic_cast — its filter_type collides with constant_filter_t.
+    class column_column_filter_t : public table_filter_t {
+    public:
+        column_column_filter_t(expressions::compare_type comparison_type,
+                               std::pmr::vector<uint64_t> left_indices,
+                               std::pmr::vector<uint64_t> right_indices,
+                               core::date::timezone_offset_t session_tz)
+            : table_filter_t(comparison_type)
+            , left_indices(std::move(left_indices))
+            , right_indices(std::move(right_indices))
+            , session_tz(session_tz) {}
+
+        std::unique_ptr<table_filter_t> copy() const override {
+            return std::make_unique<column_column_filter_t>(filter_type, left_indices, right_indices, session_tz);
+        }
+        bool equals(const table_filter_t& other) const override {
+            const auto* o = dynamic_cast<const column_column_filter_t*>(&other);
+            return o && filter_type == o->filter_type && left_indices == o->left_indices &&
+                   right_indices == o->right_indices;
+        }
+
+        std::pmr::vector<uint64_t> left_indices;
+        std::pmr::vector<uint64_t> right_indices;
+        // Session timezone for the per-row promotion casts (mirrors expression_filter_t::session_tz;
+        // not part of equals() identity).
+        core::date::timezone_offset_t session_tz;
+    };
+
+    // Abstract per-row evaluator behind an expression_filter_t. The concrete implementation
+    // wraps a components::operators::predicates::predicate and lives in the physical_plan layer
+    // (which may depend on table, not the reverse). It is built AGENT-SIDE and attached after the
+    // filter crosses the mailbox: the predicate's value_getter closures capture the agent's memory
+    // resource + function registry, neither of which can travel through a message, so the filter
+    // ships evaluator-less and the owning agent attaches one before the first scan.
+    class expression_evaluator_t {
+    public:
+        virtual ~expression_evaluator_t() = default;
+        // Evaluate the whole compare over `row` at `index`; `row` presents each referenced column
+        // at its ORIGINAL storage column index (path[0]) so the value_getters resolve correctly.
+        virtual core::result_wrapper_t<bool> evaluate(const vector::data_chunk_t& row, size_t index) const = 0;
+    };
+
+    // A comparison whose one operand is a function/arithmetic expression over column(s) and whose
+    // other operand is a bound parameter — e.g. WHERE substring(s,1,3)='abc', WHERE x+1>5. It is not
+    // representable as a constant_filter_t (there is no single column/constant pair), so it is
+    // dispatched by its OWN branch in row_group_t::check_predicate, which materializes the referenced
+    // columns of one row and runs `evaluator`. Discriminated by dynamic_cast: filter_type aliases the
+    // comparison op (eq/gt/...) and therefore collides with constant_filter_t.
+    class expression_filter_t : public table_filter_t {
+    public:
+        expression_filter_t(expressions::compare_expression_ptr expression,
+                            std::pmr::vector<std::pmr::vector<size_t>> column_paths,
+                            std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> parameters,
+                            core::date::timezone_offset_t session_tz)
+            : table_filter_t(expression->type())
+            , expression(std::move(expression))
+            , column_paths(std::move(column_paths))
+            , parameters(std::move(parameters))
+            , session_tz(session_tz) {}
+
+        std::unique_ptr<table_filter_t> copy() const override;
+        bool equals(const table_filter_t& other) const override;
+
+        // The whole leaf compare (both operands). Its type() is `filter_type`.
+        expressions::compare_expression_ptr expression;
+        // Storage column paths referenced by the expression (key paths, path[0] = column index).
+        std::pmr::vector<std::pmr::vector<size_t>> column_paths;
+        // Snapshot of the parameter values the expression references, resolved operator-side.
+        std::pmr::unordered_map<core::parameter_id_t, types::logical_value_t> parameters;
+        core::date::timezone_offset_t session_tz;
+        // Attached agent-side (see expression_evaluator_t). Null until then; check_predicate errors
+        // if it is reached without one.
+        std::unique_ptr<expression_evaluator_t> evaluator;
+    };
+
     // Dispatch helper used by all storage filter sites. Replaces the
     //     `filter->cast<constant_filter_t>().compare(value)` pattern with one that handles
-    // set_membership_filter_t too. Constructs a temporary logical_value_t on the default
+    // set_membership_filter_t too. Constructs a temporary logical_value_t on the set's own
     // pmr resource for the membership probe — fine for a 1-shot bool, no escape.
     // Templated on the value type (fixed-width T, bool for validity, string_view).
     template<typename T>
     inline bool table_filter_dispatch(const table_filter_t* filter, T value) {
+        // filter_type == regex is unique to regex_filter_t, so no dynamic_cast is needed. Regex applies only
+        // to string subjects (the row-based string_check_row path passes a string_view).
+        if (filter->filter_type == expressions::compare_type::regex) {
+            if constexpr (std::is_same_v<T, std::string_view>) {
+                return filter->cast<regex_filter_t>().matches(value);
+            } else {
+                return false;
+            }
+        }
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-            return set->contains(types::logical_value_t{std::pmr::get_default_resource(), value});
+            return set->contains(types::logical_value_t{set->values.get_allocator().resource(), value});
         }
         return filter->cast<constant_filter_t>().compare(value);
     }
@@ -250,6 +452,13 @@ namespace components::table {
     // (the column path within a struct/list); is_null_filter_t too. This unifies access
     // for sites that need to navigate sub-columns regardless of which filter kind landed.
     inline const std::pmr::vector<uint64_t>& table_filter_table_indices(const table_filter_t* filter) {
+        if (filter->filter_type == expressions::compare_type::regex) {
+            return filter->cast<regex_filter_t>().table_indices;
+        }
+        if (auto* cc = dynamic_cast<const column_column_filter_t*>(filter)) {
+            // col-vs-col is dispatched by its own branch; this guard just avoids a bad constant_filter cast.
+            return cc->left_indices;
+        }
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
             return set->table_indices;
         }

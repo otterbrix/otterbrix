@@ -54,6 +54,15 @@ namespace components::table {
         if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
+        // col-vs-col has no constant bound to prune on (and would mis-cast to constant_filter_t below).
+        if (dynamic_cast<const column_column_filter_t*>(&filter)) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        // An expression_filter_t (WHERE f(col) OP const) has no single constant to bound a segment's
+        // [min,max] against, and its layout is not a constant_filter_t — never cast it here.
+        if (dynamic_cast<const expression_filter_t*>(&filter)) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
 
         if (filter.filter_type == expressions::compare_type::eq ||
             filter.filter_type == expressions::compare_type::gt ||
@@ -126,6 +135,14 @@ namespace components::table {
         // See check_zonemap above — set_membership_filter_t needs min(values)/max(values)
         // intersection logic, deferred to M4. Until then, no pruning for IN-list filters.
         if (dynamic_cast<const set_membership_filter_t*>(&filter)) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        // col-vs-col has no constant bound to prune on (and would mis-cast to constant_filter_t below).
+        if (dynamic_cast<const column_column_filter_t*>(&filter)) {
+            return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
+        }
+        // expression_filter_t is not a constant_filter_t and carries no single bound — no pruning.
+        if (dynamic_cast<const expression_filter_t*>(&filter)) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
 
@@ -290,8 +307,11 @@ namespace components::table {
         if (count == 0) {
             return 0;
         }
-        assert(!has_updates());
-        return scan_vector(state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
+        // Apply the committed-update overlay. This is the base leaf of the virtual scan_count family,
+        // so it makes complex-column fetch_row (array/struct child scans and their validity children)
+        // updates-aware — a late-materialization gather can then read a column that carries an update
+        // overlay. When updates_ is null this reduces to the plain scan_vector path.
+        return scan_count_with_updates(state, result, count);
     }
 
     uint64_t
@@ -546,9 +566,13 @@ namespace components::table {
             if (!result.validity().row_is_valid(0)) {
                 return false;
             }
-            // Dispatch handles both constant_filter_t and set_membership_filter_t.
+            // Dispatch handles constant_filter_t, set_membership_filter_t, and the string-only regex_filter_t.
             if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
                 return set->contains(result.value(0));
+            }
+            if (filter->filter_type == expressions::compare_type::regex) {
+                auto cell = result.value(0); // bind before value<string_view>() (chunk value is a temporary)
+                return filter->cast<regex_filter_t>().matches(cell.value<std::string_view>());
             }
             const auto& const_filter = filter->cast<constant_filter_t>();
             return const_filter.compare(result.value(0));

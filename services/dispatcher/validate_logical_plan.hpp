@@ -32,6 +32,9 @@ namespace services::dispatcher {
         std::string result_alias;
         components::types::complex_logical_type type;
         components::expressions::side_t side = components::expressions::side_t::undefined;
+        // Set when this column is a bare NULL literal (a scalar constant whose value is NULL, whose type was
+        // defaulted to text). Lets a UNION reconcile the column to the other branch's type (PostgreSQL).
+        bool from_null_literal = false;
     };
     struct type_path_t {
         column_path path;

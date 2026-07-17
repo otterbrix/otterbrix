@@ -3,6 +3,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <components/expressions/compare_expression.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/param_storage.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/date/timezones.hpp>
 #include <random>
@@ -381,6 +385,380 @@ TEST_CASE("integration::cpp::test_sql_features::like") {
                                            "WHERE name NOT LIKE 'Al%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 7); // All except Alice, Alex, Alfred
+    }
+
+    // ILIKE / NOT ILIKE exercise the case-insensitive regex_predicate path (RE2 icase option). The
+    // lowercase 'al'/'bob' patterns match the mixed-case data only because the match is case-folded.
+    INFO("ILIKE prefix wildcard (case-insensitive)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE name ILIKE 'al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // Alice, Alex, Alfred (case-insensitive)
+    }
+
+    INFO("ILIKE suffix wildcard (case-insensitive)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE name ILIKE '%E';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // Alice, Charlie, test_value (end in e/E)
+    }
+
+    INFO("ILIKE exact match (case-insensitive)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE name ILIKE 'BOB';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // Bob
+    }
+
+    INFO("NOT ILIKE");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection "
+                                           "WHERE name NOT ILIKE 'al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 7); // All except Alice, Alex, Alfred
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
+    // Same LIKE/ILIKE cases as ::like but with DISK-backed storage, so the predicate is pushed into the disk
+    // scan's constant_filter_t (RE2, compiled once, case-insensitive for ILIKE) and evaluated on real column
+    // segments — the row-based string_check_row -> constant_filter_t::compare path. Guards the disk
+    // regex wiring against silent wrong results on uncompressed string columns.
+    auto config = test_create_config("/tmp/test_sql_features/like_disk_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            test_create_collection(dispatcher, session, database_name, collection_name);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (name, count) VALUES "
+                                               "('Alice', 1), ('Bob', 2), ('Charlie', 3), "
+                                               "('Alex', 4), ('Alfred', 5), ('Brian', 6), "
+                                               "('test_value', 7), ('test123', 8), ('abc', 9), ('xyz', 10);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 10);
+        }
+    }
+
+    INFO("LIKE prefix (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'Al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // Alice, Alex, Alfred
+    }
+
+    INFO("LIKE underscore (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'A___';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // Alex
+    }
+
+    INFO("ILIKE prefix case-insensitive (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name ILIKE 'al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // Alice, Alex, Alfred (case-insensitive)
+    }
+
+    INFO("NOT LIKE (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE 'Al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 7);
+    }
+
+    INFO("NOT ILIKE (disk)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM TestDatabase.TestCollection WHERE name NOT ILIKE 'al%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 7);
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_non_string_subject_errors") {
+    // The RE2 migration dropped the old std::regex dispatcher's operand type guard: a non-string
+    // LIKE subject reached value<std::string_view>() — *reinterpret_cast<std::string*> over an
+    // integer payload — and SEGFAULTED (in-memory regex_predicate::check_impl) or reinterpreted the
+    // int64 column bytes as string_views inside the disk scan (filter_selection_regex). PostgreSQL
+    // rejects `bigint LIKE 'p'` as a type error; both routes must return a clean error, never crash.
+    auto config = test_create_config("/tmp/test_sql_features/like_non_string_subject");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE regexdb;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE regexdb.d (id bigint, k bigint);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (12, 'abc'), (3, 'zz');");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "INSERT INTO regexdb.d (id, k) VALUES (1, 1), (12, 1), (3, 1);");
+        REQUIRE(cur->is_success());
+    }
+
+    INFO("single-table: BIGINT LIKE pushed into the scan filter must error, not crash");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM regexdb.t WHERE id LIKE '1%';");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("join residual (in-memory regex_predicate): BIGINT LIKE must error, not crash");
+    {
+        // The OR straddles both join sides, so the predicate stays in operator_match above the
+        // join sink and hits the in-memory regex_predicate with a BIGINT subject.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT t.id FROM regexdb.t t JOIN regexdb.d d ON t.id = d.id "
+                                           "WHERE t.id LIKE '1%' OR d.k = 999;");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("string LIKE on the same table still works");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM regexdb.t WHERE s LIKE 'a%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // ab, abc
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_all_null_element_three_valued") {
+    // Three-valued LIKE ANY/ALL: `x LIKE NULL` is UNKNOWN, so `x [NOT] LIKE ALL (S)` over a set S
+    // carrying a NULL can never be TRUE — PostgreSQL drops every row. The regex ANY/ALL predicate
+    // (and the disk-pushdown filter builder) skipped NULL elements without tracking them, so the
+    // exhausted-loop ALL result wrongly returned TRUE. ANY is unaffected (UNKNOWN and FALSE both
+    // drop the row).
+    auto config = test_create_config("/tmp/test_sql_features/like_all_null_element");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE regexdb;")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.d (id bigint, k bigint);")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.pat (p text);")->is_success());
+    REQUIRE(run("INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (2, 'abc'), (3, 'zz');")->is_success());
+    REQUIRE(run("INSERT INTO regexdb.d (id, k) VALUES (1, 1), (2, 1), (3, 1);")->is_success());
+    REQUIRE(run("INSERT INTO regexdb.pat (p) VALUES ('a%'), (NULL);")->is_success());
+
+    INFO("LIKE ALL over a NULL-bearing set is UNKNOWN for every row -> 0 rows (scan pushdown path)");
+    {
+        auto cur = run("SELECT id FROM regexdb.t WHERE s LIKE ALL (SELECT p FROM regexdb.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("NOT LIKE ALL over a NULL-bearing set is UNKNOWN for every row -> 0 rows");
+    {
+        auto cur = run("SELECT id FROM regexdb.t WHERE s NOT LIKE ALL (SELECT p FROM regexdb.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0); // 'zz' fails 'a%' but the NULL keeps the ALL at UNKNOWN
+    }
+
+    INFO("LIKE ALL above a join (in-memory regex_any_predicate) honours the NULL element -> 0 rows");
+    {
+        // The OR straddles both join sides, so the predicate stays in operator_match above the
+        // join sink and evaluates via the in-memory regex_any_predicate.
+        auto cur = run("SELECT t.id FROM regexdb.t t JOIN regexdb.d d ON t.id = d.id "
+                       "WHERE (t.s LIKE ALL (SELECT p FROM regexdb.pat)) OR d.k = 999;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("LIKE ANY is unaffected by the NULL element");
+    {
+        auto cur = run("SELECT id FROM regexdb.t WHERE s LIKE ANY (SELECT p FROM regexdb.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // ab, abc match 'a%'
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_any_non_string_elements_stringify") {
+    // The disk-pushdown builder used to read every regex ANY/ALL pattern
+    // element with value<std::string_view>() — *reinterpret_cast<std::string*> over a BIGINT
+    // payload for `s LIKE ANY (SELECT int_col ...)` — instead of coercing a non-text element to
+    // the subject's string type the way the in-memory regex_any_predicate does. The element must
+    // stringify (BIGINT 12 -> pattern '12'), never be dereferenced as a string.
+    auto config = test_create_config("/tmp/test_sql_features/like_any_non_string_elements");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE regexdb;")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
+    REQUIRE(run("INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (12, 'abc'), (3, '12');")->is_success());
+
+    INFO("BIGINT sub-query elements stringify into LIKE patterns");
+    {
+        // Elements {1, 12, 3} stringify to patterns '1', '12', '3'; only s = '12' matches one.
+        auto cur = run("SELECT id FROM regexdb.t WHERE s LIKE ANY (SELECT id FROM regexdb.t);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // the s = '12' row
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_errors") {
+    // A raw regexp pattern RE2 rejects (backreference '(a)\1') must surface as an error on the
+    // DISK path exactly like the in-memory regex_predicate does ("invalid regular expression").
+    // Before the fix regex_filter_t::matches() swallowed the failed compile and returned false,
+    // silently filtering out every row with SUCCESS status. Raw (non-LIKE) patterns reach the
+    // filter through the plan API (compare_type::regex with a bound parameter), so build the plan
+    // directly — SQL LIKE always pre-converts via like_to_regex.
+    auto config = test_create_config("/tmp/test_sql_features/regex_invalid_pattern_disk");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE regexdb;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO regexdb.t (id, s) VALUES (1, 'aa'), (2, 'bb');")
+                    ->is_success());
+    }
+
+    INFO("regexp with a backreference pattern errors instead of silently returning 0 rows");
+    {
+        auto* resource = dispatcher->resource();
+        auto session = otterbrix::session_id_t();
+        auto plan = components::logical_plan::make_node_aggregate(resource,
+                                                                  core::dbname_t{"regexdb"},
+                                                                  core::relname_t{"t"});
+        auto expr = components::expressions::make_compare_expression(
+            resource,
+            components::expressions::compare_type::regex,
+            components::expressions::key_t{resource, "s", components::expressions::side_t::left},
+            core::parameter_id_t{1});
+        plan->append_child(components::logical_plan::make_node_match(resource,
+                                                                     core::dbname_t{"regexdb"},
+                                                                     core::relname_t{"t"},
+                                                                     std::move(expr)));
+        auto params = components::logical_plan::make_parameter_node(resource);
+        params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(resource, "(a)\\1"));
+        auto cur = dispatcher->execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{resource, plan, params});
+        REQUIRE(cur->is_error());
+    }
+}
+
+TEST_CASE("integration::cpp::test_sql_features::like_matches_non_utf8_bytes") {
+    // RE2 defaults to UTF-8, but the replaced std::regex engine matched BYTE-wise: a latin-1
+    // payload like "caf\xE9" previously matched LIKE '%' / LIKE 'caf_', and a pattern carrying the
+    // raw byte compiled fine. In UTF-8 mode '.'/'.*' cannot advance past an invalid UTF-8 byte, so
+    // such rows silently disappeared. core::regex_t must compile with Latin-1 (byte-wise) encoding.
+    auto config = test_create_config("/tmp/test_sql_features/like_latin1_bytes");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE regexdb;")->is_success());
+    REQUIRE(run("CREATE TABLE regexdb.t (id bigint, name text);")->is_success());
+    const std::string latin1_value = "caf\xE9"; // 0xE9: latin-1 'é', NOT valid UTF-8
+    REQUIRE(run("INSERT INTO regexdb.t (id, name) VALUES (1, '" + latin1_value + "');")->is_success());
+
+    INFO("LIKE 'caf_' matches the latin-1 byte");
+    {
+        auto cur = run("SELECT * FROM regexdb.t WHERE name LIKE 'caf_';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("LIKE '%' matches a value containing an invalid UTF-8 byte");
+    {
+        auto cur = run("SELECT * FROM regexdb.t WHERE name LIKE '%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("a LIKE pattern carrying the raw latin-1 byte compiles and matches");
+    {
+        auto cur = run("SELECT * FROM regexdb.t WHERE name LIKE '" + latin1_value + "';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
     }
 }
 
@@ -5019,5 +5397,440 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
         REQUIRE(rows("NOT (x = 2 OR x = 3)") == 1);     // {1}
         REQUIRE(rows("NOT (x >= 2) AND y < 100") == 1); // {1}
         REQUIRE(rows("x = 2 OR NOT (1 = 1)") == 1);     // {2} OR false
+    }
+}
+
+// WHERE a.x OP a.y (column-vs-column) pushes into the disk scan as a column_column_filter_t
+// (fetch both column values per row and compare). A NULL operand excludes the row (SQL 3-valued logic).
+TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
+    auto config = test_create_config("/tmp/test_sql_features/column_vs_column");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto run = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, x bigint, y bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, x, y) VALUES "
+                "(1, 5, 5), (2, 3, 7), (3, 9, 2), (4, 4, 4), (5, 10, 20);")
+                ->is_success());
+
+    INFO("x = y");
+    { auto cur = run("SELECT id FROM db.t WHERE x = y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
+    INFO("x < y");
+    { auto cur = run("SELECT id FROM db.t WHERE x < y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
+    INFO("x > y");
+    { auto cur = run("SELECT id FROM db.t WHERE x > y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 1); }
+    INFO("x <> y");
+    { auto cur = run("SELECT id FROM db.t WHERE x <> y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+    INFO("x >= y");
+    { auto cur = run("SELECT id FROM db.t WHERE x >= y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+
+    REQUIRE(run("INSERT INTO db.t (id, x, y) VALUES (6, 5, NULL);")->is_success());
+    INFO("NULL operand excluded from x = y");
+    { auto cur = run("SELECT id FROM db.t WHERE x = y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
+    INFO("NULL operand excluded from x <> y");
+    { auto cur = run("SELECT id FROM db.t WHERE x <> y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+}
+
+// A comparison whose one operand is a FUNCTION or ARITHMETIC expression over columns
+// (substring(s,1,3)='abc', x+1>5, length(name)=5) must be PUSHED into the disk scan as an
+// expression_filter_t evaluated per row — not filtered in a separate operator_match above
+// the scan. The pushdown is observable two ways:
+//   (1) EXPLAIN: the plan carries no "Filter" (operator_match) node — the predicate rides
+//       the "Seq Scan". Without the pushdown these predicates lower to a "Filter" over an
+//       unfiltered scan, so the absence of "Filter" is the observable signal.
+//   (2) Results: identical rows to the pre-existing in-memory operator_match answer, with a
+//       NULL operand excluded (SQL: f(NULL) OP c is NULL -> the row does not match).
+TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
+    auto plan_text = [](const auto& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            out += std::string(cur->value(0, r).template value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    };
+    auto contains = [](const std::string& hay, const char* needle) {
+        return hay.find(needle) != std::string::npos;
+    };
+
+    auto seed = [](auto* d) {
+        {
+            auto s = otterbrix::session_id_t();
+            d->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t (name string, x bigint, s string);")
+                        ->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t (name, x, s) VALUES "
+                                   "('alice', 1, 'abcdef'), ('bob', 4, 'defabc'), ('carol', 5, 'abcxyz'), "
+                                   "('dave', 10, 'xyzabc');")
+                        ->is_success());
+        }
+        {
+            // A row whose `name` is NULL: length(name) and substring over a NULL are NULL, so
+            // this row must never match a function/arith predicate (NULL operand excluded).
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "INSERT INTO TestDatabase.t (x, s) VALUES (7, 'abczzz');")->is_success());
+        }
+    };
+
+    // --- disk-backed space (the target of the pushdown) ---
+    auto config = test_create_config("/tmp/test_sql_features/expression_filter_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* disk = space.dispatcher();
+    seed(disk);
+
+    // --- in-memory space with identical data: the ground-truth answer ---
+    auto mconfig = test_create_config("/tmp/test_sql_features/expression_filter_pushdown_mem");
+    test_clear_directory(mconfig);
+    mconfig.disk.on = false;
+    mconfig.wal.on = false;
+    test_spaces mspace(mconfig);
+    auto* mem = mspace.dispatcher();
+    seed(mem);
+
+    auto run = [](auto* d, const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        auto cur = d->execute_sql(s, sql);
+        if (!cur->is_success()) {
+            INFO("query failed: " << sql << " :: " << std::string(cur->get_error().what));
+            REQUIRE(cur->is_success());
+        }
+        return cur;
+    };
+
+    struct predicate_case {
+        const char* where;
+        std::size_t expected;
+    };
+    // NB: substring(s,1,3) would be the canonical string-function case, but a schema-qualified
+    // `substring` mis-resolves its name to 'pg_catalog' in validate_logical_plan (a pre-existing
+    // transformer issue, unrelated to this pushdown). length() is also a function operand and
+    // exercises the identical expression_filter_t path.
+    const predicate_case cases[] = {
+        {"x + 1 > 5", 3},       // arithmetic operand; x>4 -> {5,10,7}
+        {"length(name) = 5", 2}, // function operand; {'alice','carol'}; NULL name excluded
+        {"length(name) = 3", 1}, // function operand; {'bob'}
+        {"x * 2 = 20", 1},       // arithmetic operand; {10}
+    };
+
+    for (const auto& c : cases) {
+        const std::string select = std::string("SELECT * FROM TestDatabase.t WHERE ") + c.where + ";";
+        INFO(select);
+
+        // (1) results: disk == in-memory == expected.
+        auto disk_cur = run(disk, select);
+        auto mem_cur = run(mem, select);
+        REQUIRE(disk_cur->size() == c.expected);
+        REQUIRE(mem_cur->size() == c.expected);
+
+        // (2) pushdown: EXPLAIN carries no separate "Filter" node — the predicate is pushed
+        //     into the "Seq Scan". (Before the pushdown these lowered to a "Filter" node.)
+        auto ex = run(disk, std::string("EXPLAIN ") + select);
+        const std::string t = plan_text(ex);
+        REQUIRE(contains(t, "Seq Scan"));
+        REQUIRE_FALSE(contains(t, "Filter"));
+    }
+
+    // NULL operand is excluded: for the NULL-name row, length(name) is NULL, so NULL OP const is
+    // never true. length(name)=5 therefore yields {alice,carol} (2), NOT 3 — the NULL row is
+    // dropped — and disk agrees with the in-memory answer. A predicate no non-null row satisfies
+    // returns 0 (the NULL row does not sneak in).
+    INFO("NULL operand excluded");
+    {
+        REQUIRE(run(disk, "SELECT * FROM TestDatabase.t WHERE length(name) = 5;")->size() ==
+                run(mem, "SELECT * FROM TestDatabase.t WHERE length(name) = 5;")->size());
+        REQUIRE(run(disk, "SELECT * FROM TestDatabase.t WHERE length(name) = 0;")->size() == 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FILTER PUSHDOWN THROUGH UNION / UNION ALL.
+//
+// A WHERE above a (SELECT ... UNION [ALL] SELECT ...) is cloned into a filter
+// above EACH branch by the pushdown_filter optimizer rule (positional column
+// identity: union output column i == branch column i). This lets the disk agent
+// push the branch predicate into the branch's Seq Scan instead of filtering the
+// merged union output. The pushdown is observable two ways:
+//   (1) Results: disk == in-memory == the pre-pushdown answer (parity), for a
+//       single conjunct, a conjunctive predicate, and a mixed predicate where
+//       one conjunct is NOT branch-mappable (a renamed branch column).
+//   (2) EXPLAIN (disk): a fully pushable predicate leaves NO "Filter" node above
+//       the "Append" (it rides the branch "Seq Scan"); a partially pushable one
+//       keeps a residual "Filter" for the non-mappable conjunct.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
+    auto plan_text = [](const auto& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            out += std::string(cur->value(0, r).template value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    };
+    auto contains = [](const std::string& hay, const char* needle) {
+        return hay.find(needle) != std::string::npos;
+    };
+
+    auto seed = [](auto* d) {
+        {
+            auto s = otterbrix::session_id_t();
+            d->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t1 (a bigint, b bigint);")->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t2 (a bigint, b bigint);")->is_success());
+        }
+        {
+            // t3 renames the 2nd column to `c`, so a filter on the union's `b` column
+            // is NOT identity-mappable into t3's branch (stays as a residual Filter).
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t3 (a bigint, c bigint);")->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t1 (a, b) VALUES "
+                                   "(1, 100), (6, 5), (8, 50), (3, 200);")
+                        ->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t2 (a, b) VALUES "
+                                   "(7, 8), (2, 300), (9, 9), (10, 1);")
+                        ->is_success());
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t3 (a, c) VALUES "
+                                   "(7, 8), (2, 300), (9, 9), (10, 1);")
+                        ->is_success());
+        }
+    };
+
+    auto config = test_create_config("/tmp/test_sql_features/union_filter_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* disk = space.dispatcher();
+    seed(disk);
+
+    auto mconfig = test_create_config("/tmp/test_sql_features/union_filter_pushdown_mem");
+    test_clear_directory(mconfig);
+    mconfig.disk.on = false;
+    mconfig.wal.on = false;
+    test_spaces mspace(mconfig);
+    auto* mem = mspace.dispatcher();
+    seed(mem);
+
+    auto run = [](auto* d, const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        auto cur = d->execute_sql(s, sql);
+        if (!cur->is_success()) {
+            INFO("query failed: " << sql << " :: " << std::string(cur->get_error().what));
+            REQUIRE(cur->is_success());
+        }
+        return cur;
+    };
+
+    // (A) UNION ALL, single fully-pushable conjunct.
+    //     a>5: t1 -> {(6,5),(8,50)}, t2 -> {(7,8),(9,9),(10,1)} = 5 rows.
+    {
+        const std::string q = "SELECT * FROM (SELECT a, b FROM TestDatabase.t1 "
+                              "UNION ALL SELECT a, b FROM TestDatabase.t2) x WHERE a > 5;";
+        INFO(q);
+        auto dc = run(disk, q);
+        auto mc = run(mem, q);
+        REQUIRE(dc->size() == 5);
+        REQUIRE(mc->size() == 5);
+        auto t = plan_text(run(disk, std::string("EXPLAIN ") + q));
+        INFO("EXPLAIN(A):\n" << t);
+        REQUIRE(contains(t, "Seq Scan"));
+        REQUIRE_FALSE(contains(t, "Filter")); // fully pushed into the branch scans
+    }
+
+    // (A') plain UNION (dedup above): a>5 over identical branch data dedups to
+    //      {6,7,8,9,10} distinct (a,b) pairs — all distinct here → 5 rows still.
+    {
+        const std::string q = "SELECT * FROM (SELECT a, b FROM TestDatabase.t1 "
+                              "UNION SELECT a, b FROM TestDatabase.t2) x WHERE a > 5;";
+        INFO(q);
+        auto dc = run(disk, q);
+        auto mc = run(mem, q);
+        REQUIRE(dc->size() == mc->size());
+    }
+
+    // (B) UNION ALL, conjunctive predicate, both conjuncts pushable.
+    //     a>5 AND b<10: t1 -> {(6,5)}, t2 -> {(7,8),(9,9),(10,1)} = 4 rows.
+    {
+        const std::string q = "SELECT * FROM (SELECT a, b FROM TestDatabase.t1 "
+                              "UNION ALL SELECT a, b FROM TestDatabase.t2) x WHERE a > 5 AND b < 10;";
+        INFO(q);
+        auto dc = run(disk, q);
+        auto mc = run(mem, q);
+        REQUIRE(dc->size() == 4);
+        REQUIRE(mc->size() == 4);
+    }
+
+    // (C) UNION ALL where the 2nd branch renames column b->c. `a` is identity-
+    //     mappable (pushed into both Seq Scans); `b` is NOT (t3 exposes `c` at that
+    //     position) so it stays as a residual Filter above the union.
+    //     a>5 AND (union col1)<10: t1 -> {(6,5)}, t3 -> {(7,8),(9,9),(10,1)} = 4 rows.
+    {
+        const std::string q = "SELECT * FROM (SELECT a, b FROM TestDatabase.t1 "
+                              "UNION ALL SELECT a, c FROM TestDatabase.t3) x WHERE a > 5 AND b < 10;";
+        INFO(q);
+        auto dc = run(disk, q);
+        auto mc = run(mem, q);
+        REQUIRE(dc->size() == 4);
+        REQUIRE(mc->size() == 4);
+        auto t = plan_text(run(disk, std::string("EXPLAIN ") + q));
+        INFO("EXPLAIN(C):\n" << t);
+        REQUIRE(contains(t, "Seq Scan"));
+        REQUIRE(contains(t, "Filter")); // residual b<10 remains above the union
+    }
+}
+
+// The pushed column-vs-column filter (column_column_filter_t, row_group_t::check_predicate) used
+// to cast right->left ONLY, with a hardcoded ZERO timezone, and dropped the row when that cast
+// yielded NULL. The canonical comparator every col-vs-col predicate used BEFORE the pushdown
+// (simple_predicate's make_comparator, still canon for operator_match/joins) casts bidirectionally
+// with the SESSION timezone: right->left first, and when that yields NULL it retries left->right.
+// Triggering the divergence needs an ASYMMETRICALLY castable column pair — right->left must yield
+// NULL while left->right succeeds. TIMESTAMP vs TIME is exactly that: logical_value_t::cast_as
+// implements TIMESTAMP->TIME (time-of-day extraction, session-tz-independent) but NOT
+// TIME->TIMESTAMP, whose duration switch falls through to the NA tail. So `WHERE ts OP tm`
+// pre-fix dropped EVERY row on the pushed scan, while the canonical comparator answers via the
+// TIMESTAMP->TIME retry. Applies to BOTH storage modes: IN_MEMORY table_storage_t scans push the
+// same filter, hence the twin space below asserts the canonical ABSOLUTE answer in each mode,
+// not merely one mode against the other.
+TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in_memory") {
+    auto plan_text = [](const auto& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            out += std::string(cur->value(0, r).template value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    };
+    auto contains = [](const std::string& hay, const char* needle) {
+        return hay.find(needle) != std::string::npos;
+    };
+
+    auto seed = [](auto* d) {
+        {
+            auto s = otterbrix::session_id_t();
+            d->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        }
+        {
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t (ts timestamp, tm time);")->is_success());
+        }
+        {
+            // ('2024-01-15 10:30:00', '10:30:00'): time-of-day(ts) == tm -> `ts = tm` matches via the
+            //     left->right TIMESTAMP->TIME retry ONLY (right->left TIME->TIMESTAMP casts to NULL).
+            // ('2024-06-02 22:45:10', '22:45:10'): second retry-only `ts = tm` match.
+            // ('2024-03-01 08:00:00', '06:15:00'): no eq match; the only `ts > tm` row (08:00 > 06:15).
+            auto s = otterbrix::session_id_t();
+            REQUIRE(d->execute_sql(s,
+                                   "INSERT INTO TestDatabase.t (ts, tm) VALUES "
+                                   "(TIMESTAMP '2024-01-15 10:30:00', TIME '10:30:00'), "
+                                   "(TIMESTAMP '2024-06-02 22:45:10', TIME '22:45:10'), "
+                                   "(TIMESTAMP '2024-03-01 08:00:00', TIME '06:15:00');")
+                        ->is_success());
+        }
+    };
+
+    // --- disk-backed space (the column_column_filter_t pushdown target) ---
+    auto config = test_create_config("/tmp/test_sql_features/col_vs_col_promote");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* disk = space.dispatcher();
+    seed(disk);
+
+    // --- IN_MEMORY-storage space with identical data: same pushed filter path, must agree ---
+    auto mconfig = test_create_config("/tmp/test_sql_features/col_vs_col_promote_mem");
+    test_clear_directory(mconfig);
+    mconfig.disk.on = false;
+    mconfig.wal.on = false;
+    test_spaces mspace(mconfig);
+    auto* mem = mspace.dispatcher();
+    seed(mem);
+
+    auto run = [](auto* d, const std::string& sql) {
+        auto s = otterbrix::session_id_t();
+        auto cur = d->execute_sql(s, sql);
+        if (!cur->is_success()) {
+            INFO("query failed: " << sql << " :: " << std::string(cur->get_error().what));
+            REQUIRE(cur->is_success());
+        }
+        return cur;
+    };
+
+    INFO("ts = tm: every match exists ONLY through the left->right TIMESTAMP->TIME retry");
+    {
+        const std::string q = "SELECT * FROM TestDatabase.t WHERE ts = tm;";
+        auto disk_cur = run(disk, q);
+        auto mem_cur = run(mem, q);
+        REQUIRE(mem_cur->size() == 2);  // pre-fix: the one-way TIME->TIMESTAMP cast NULLed every row -> 0
+        REQUIRE(disk_cur->size() == 2); // pre-fix: 0
+        // Pin the surviving ROWS, not only the cardinality (a wrong result set of the right
+        // size would still pass a cardinality-only check).
+        const auto t_a = *core::date::parse_time("10:30:00");
+        const auto t_b = *core::date::parse_time("22:45:10");
+        auto v0 = disk_cur->value(1, 0).value<core::date::time_t>();
+        auto v1 = disk_cur->value(1, 1).value<core::date::time_t>();
+        REQUIRE(((v0 == t_a && v1 == t_b) || (v0 == t_b && v1 == t_a)));
+
+        // The predicate must actually ride the disk scan (no operator_match "Filter" node),
+        // otherwise this test would silently pass through the in-memory comparator.
+        auto t = plan_text(run(disk, std::string("EXPLAIN ") + q));
+        INFO("EXPLAIN:\n" << t);
+        REQUIRE(contains(t, "Seq Scan"));
+        REQUIRE_FALSE(contains(t, "Filter"));
+    }
+
+    INFO("tm = ts: reversed operands ride the WORKING right->left TIMESTAMP->TIME cast; disk == memory");
+    {
+        const std::string q = "SELECT * FROM TestDatabase.t WHERE tm = ts;";
+        auto disk_cur = run(disk, q);
+        auto mem_cur = run(mem, q);
+        REQUIRE(mem_cur->size() == 2);
+        REQUIRE(disk_cur->size() == 2);
+    }
+
+    INFO("ts > tm: an inequality through the same retry; only the 08:00:00 > 06:15:00 row matches");
+    {
+        const std::string q = "SELECT * FROM TestDatabase.t WHERE ts > tm;";
+        auto disk_cur = run(disk, q);
+        auto mem_cur = run(mem, q);
+        REQUIRE(disk_cur->size() == mem_cur->size());
+        REQUIRE(disk_cur->size() == 1); // pre-fix: 0 (every row dropped by the one-way NULL cast)
+        REQUIRE(disk_cur->value(0, 0).value<core::date::timestamp_t>() ==
+                *core::date::parse_timestamp("2024-03-01 08:00:00"));
     }
 }

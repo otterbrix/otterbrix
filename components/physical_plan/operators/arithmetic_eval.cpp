@@ -296,14 +296,27 @@ namespace components::operators {
                 return right_rw.convert_error<bool>();
             auto left_val = std::move(left_rw.value());
             auto right_val = std::move(right_rw.value());
+            // A NULL operand makes the comparison UNKNOWN; treat it as false (three-valued
+            // logic, mirroring simple_predicate). This is also what keeps a NULL out of the
+            // type-mismatch cast below: casting to/from an NA-typed NULL is a conversion_failure,
+            // and a CASE-WHEN condition over a nullable column must fall through, not error.
+            if (left_val.is_null() || right_val.is_null()) {
+                return false;
+            }
             if (left_val.type() != right_val.type()) {
                 auto cast_right = right_val.cast_as(left_val.type(), session_tz);
-                if (!cast_right.is_null()) {
-                    right_val = std::move(cast_right);
+                if (cast_right.has_error()) {
+                    return cast_right.convert_error<bool>();
+                }
+                if (!cast_right.value().is_null()) {
+                    right_val = std::move(cast_right.value());
                 } else {
                     auto cast_left = left_val.cast_as(right_val.type(), session_tz);
-                    if (!cast_left.is_null()) {
-                        left_val = std::move(cast_left);
+                    if (cast_left.has_error()) {
+                        return cast_left.convert_error<bool>();
+                    }
+                    if (!cast_left.value().is_null()) {
+                        left_val = std::move(cast_left.value());
                     }
                 }
             }
@@ -352,8 +365,10 @@ namespace components::operators {
             auto coerce_to_result = [&](types::logical_value_t val) -> types::logical_value_t {
                 if (!val.is_null() && val.type() != result_type) {
                     auto casted = val.cast_as(result_type, session_tz);
-                    if (!casted.is_null()) {
-                        return casted;
+                    // No error channel here (the lambda yields a value); a non-castable pair falls back to
+                    // the uncoerced value instead of aborting.
+                    if (!casted.has_error() && !casted.value().is_null()) {
+                        return std::move(casted.value());
                     }
                 }
                 return val;

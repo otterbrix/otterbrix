@@ -2,6 +2,7 @@
 #include "operations_helper.hpp"
 #include <core/date/date_cast.hpp>
 
+#include <algorithm>
 #include <boost/container_hash/hash.hpp>
 #include <cmath>
 #include <cstring>
@@ -13,6 +14,33 @@ namespace components::types {
     namespace {
         template<typename T>
         inline constexpr bool ext_is_signed_v = std::is_signed_v<T> || std::is_same_v<T, int128_t>;
+
+        // The scalar CAST path dispatches through (double_)simple_physical_type_switch, which only handles
+        // this fixed set of physical types. A source/target physical type outside it (realistically
+        // physical_type::NA — a NULL/untyped value — or a nested/complex type that reached the scalar
+        // switch) would trip the switch's `default:` invariant abort. cast_as consults this before
+        // dispatching and returns a conversion_failure error instead.
+        constexpr bool is_scalar_castable_physical_type(physical_type pt) noexcept {
+            switch (pt) {
+                case physical_type::BOOL:
+                case physical_type::UINT8:
+                case physical_type::INT8:
+                case physical_type::UINT16:
+                case physical_type::INT16:
+                case physical_type::UINT32:
+                case physical_type::INT32:
+                case physical_type::UINT64:
+                case physical_type::INT64:
+                case physical_type::UINT128:
+                case physical_type::INT128:
+                case physical_type::FLOAT:
+                case physical_type::DOUBLE:
+                case physical_type::STRING:
+                    return true;
+                default:
+                    return false;
+            }
+        }
     }
 
     logical_value_t::~logical_value_t() { destroy_heap(); }
@@ -335,16 +363,36 @@ namespace components::types {
         }
     };
 
-    logical_value_t logical_value_t::cast_as(const complex_logical_type& type,
-                                             core::date::timezone_offset_t session_tz) const {
+    core::result_wrapper_t<logical_value_t> logical_value_t::cast_as(const complex_logical_type& type,
+                                                                     core::date::timezone_offset_t session_tz) const {
         if (type_ == type) {
             return logical_value_t(*this);
         }
-        if (is_numeric(type.type()) || (type.type() == logical_type::STRING_LITERAL && is_numeric(type_.type()))) {
+        // A DECIMAL source stores value * 10^scale, so the raw physical cast below would hand an
+        // integer/float target the SCALED payload (NUMERIC(10,2) 3.00 -> 300, and 100000.00 wraps
+        // int16 to -27008). Route it to the descaling DECIMAL -> numeric branch instead. BOOLEAN is
+        // the one numeric target that stays raw: payload truthiness equals value truthiness
+        // (payload == 0 iff the decimal is 0) and the descaling branch has no bool leg.
+        const bool decimal_source_descale =
+            type_.type() == logical_type::DECIMAL && type.type() != logical_type::BOOLEAN;
+        if ((is_numeric(type.type()) && !decimal_source_descale) ||
+            (type.type() == logical_type::STRING_LITERAL && is_numeric(type_.type()))) {
             // same problem as in physical_value
             // ideally use something like this
             // return logicaL_value<type.type()>{value<type_.type()>()};
             // but type is not a constexpr, so here is a huge switch:
+
+            // Guard the un-handleable case BEFORE dispatching: a NA source (a NULL value) or any physical
+            // type the scalar switch can not handle would otherwise trip its `default:` invariant abort.
+            // Surface it as a conversion_failure error instead.
+            if (!is_scalar_castable_physical_type(type.to_physical_type()) ||
+                !is_scalar_castable_physical_type(type_.to_physical_type())) {
+                std::string message = "cannot cast logical_type " +
+                                      std::to_string(static_cast<int>(type_.type())) + " to logical_type " +
+                                      std::to_string(static_cast<int>(type.type()));
+                return core::error_t{core::error_code_t::conversion_failure,
+                                     std::pmr::string{message.c_str(), resource_}};
+            }
 
             return double_simple_physical_type_switch<cast_callback_t>(type.to_physical_type(),
                                                                        type_.to_physical_type(),
@@ -382,7 +430,9 @@ namespace components::types {
                     assert(false && "incorrect type for conversion to decimal");
             }
         } else if (type_.type() == logical_type::DECIMAL && is_numeric(type.type())) {
-            const auto* decimal_extension = reinterpret_cast<const decimal_logical_type_extension*>(type.extension());
+            // The scale lives on the SOURCE decimal type; `type` is the plain numeric target and
+            // carries no extension.
+            const auto* decimal_extension = reinterpret_cast<const decimal_logical_type_extension*>(type_.extension());
             auto create_numeric_inner = [&]<typename From, typename To>() {
                 if constexpr (std::is_floating_point_v<To>) {
                     return logical_value_t{resource_,
@@ -412,6 +462,8 @@ namespace components::types {
                 }
             };
             switch (type.type()) {
+                case logical_type::UTINYINT:
+                    return create_numeric.operator()<uint8_t>();
                 case logical_type::USMALLINT:
                     return create_numeric.operator()<uint16_t>();
                 case logical_type::UINTEGER:
@@ -420,6 +472,8 @@ namespace components::types {
                     return create_numeric.operator()<uint64_t>();
                 case logical_type::UHUGEINT:
                     return create_numeric.operator()<uint128_t>();
+                case logical_type::TINYINT:
+                    return create_numeric.operator()<int8_t>();
                 case logical_type::SMALLINT:
                     return create_numeric.operator()<int16_t>();
                 case logical_type::INTEGER:
@@ -444,29 +498,32 @@ namespace components::types {
             std::vector<logical_value_t> fields;
             fields.reserve(children().size());
             for (size_t i = 0; i < children().size(); i++) {
-                fields.emplace_back(children()[i].cast_as(type.child_types()[i], session_tz));
+                auto casted = children()[i].cast_as(type.child_types()[i], session_tz);
+                if (casted.has_error()) {
+                    return casted.error();
+                }
+                fields.emplace_back(std::move(casted.value()));
             }
 
             return create_struct(resource_, type, fields);
         } else if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
                    type.type() == logical_type::ARRAY) {
-            // A fixed ARRAY value or a variable-length LIST is cast to a fixed ARRAY,
-            // casting each element to the target element type. The target has a declared
-            // size, so the source length is reconciled to it: an over-long value is
-            // truncated and a short one is padded with NULL. This is the schema-free
-            // fallback; the INSERT/append path reconciles short values against the
-            // column DEFAULT instead (see table::reconcile_to_fixed_array).
+            // A fixed ARRAY value or a variable-length LIST is cast to a fixed ARRAY, casting each element
+            // to the target element type while KEEPING THE SOURCE LENGTH (no truncate/pad). Array equality
+            // is length-aware, so a size mismatch must stay visible (a different-length array is simply
+            // unequal) rather than be silently reconciled to the target size. The INSERT/append path
+            // reconciles short values against the column DEFAULT via table::reconcile_to_fixed_array, not
+            // this cast — so this cast is used only by the comparison paths.
             const auto& target_elem_type = type.child_type();
-            const auto target_size = static_cast<const array_logical_type_extension*>(type.extension())->size();
             const auto& src = children();
             std::vector<logical_value_t> elems;
-            elems.reserve(target_size);
-            for (uint64_t i = 0; i < target_size; ++i) {
-                if (i < src.size()) {
-                    elems.emplace_back(src[i].cast_as(target_elem_type, session_tz));
-                } else {
-                    elems.emplace_back(logical_value_t{resource_, complex_logical_type{logical_type::NA}});
+            elems.reserve(src.size());
+            for (const auto& child : src) {
+                auto casted = child.cast_as(target_elem_type, session_tz);
+                if (casted.has_error()) {
+                    return casted.error();
                 }
+                elems.emplace_back(std::move(casted.value()));
             }
             return create_array(resource_, target_elem_type, elems);
         } else if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
@@ -477,7 +534,11 @@ namespace components::types {
             std::vector<logical_value_t> elems;
             elems.reserve(children().size());
             for (const auto& child : children()) {
-                elems.emplace_back(child.cast_as(target_elem_type, session_tz));
+                auto casted = child.cast_as(target_elem_type, session_tz);
+                if (casted.has_error()) {
+                    return casted.error();
+                }
+                elems.emplace_back(std::move(casted.value()));
             }
             return create_list(resource_, target_elem_type, elems);
         } else if (type.type() == logical_type::ENUM) {
@@ -616,6 +677,18 @@ namespace components::types {
     }
 
     bool logical_value_t::operator==(const logical_value_t& rhs) const {
+        // Array/list equality is length-aware (PostgreSQL): arrays of different length are simply unequal —
+        // never reconciled, never an assert. Element types are coerced by cast_as before comparison; a
+        // residual per-element type mismatch (e.g. an NA pad against a typed element) also counts as
+        // not-equal rather than tripping the element assert. Handled before the size-inclusive type assert.
+        if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
+            (rhs.type_.type() == logical_type::ARRAY || rhs.type_.type() == logical_type::LIST)) {
+            const auto& l = *vec_ptr();
+            const auto& r = *rhs.vec_ptr();
+            return std::equal(l.begin(), l.end(), r.begin(), r.end(), [](const auto& le, const auto& re) {
+                return le.type_ == re.type_ && le == re;
+            });
+        }
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
         switch (type_.type()) {
             case logical_type::NA:
@@ -673,6 +746,15 @@ namespace components::types {
     bool logical_value_t::operator!=(const logical_value_t& rhs) const { return !(*this == rhs); }
 
     bool logical_value_t::operator<(const logical_value_t& rhs) const {
+        // Array/list ordering is length-aware: compare element-wise, a shorter array that is a prefix sorts
+        // first (lexicographic). Handled before the size-inclusive type assert so different-length arrays
+        // do not trip it.
+        if ((type_.type() == logical_type::ARRAY || type_.type() == logical_type::LIST) &&
+            (rhs.type_.type() == logical_type::ARRAY || rhs.type_.type() == logical_type::LIST)) {
+            const auto& lv = *vec_ptr();
+            const auto& rv = *rhs.vec_ptr();
+            return std::lexicographical_compare(lv.begin(), lv.end(), rv.begin(), rv.end());
+        }
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
         switch (type_.type()) {
             case logical_type::BOOLEAN:
@@ -719,9 +801,20 @@ namespace components::types {
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP: {
-                auto& lv = *vec_ptr();
-                auto& rv = *rhs.vec_ptr();
-                return std::lexicographical_compare(lv.begin(), lv.end(), rv.begin(), rv.end());
+                // Element-wise lexicographic comparison (ARRAY/LIST length-awareness is handled before the
+                // assert above; STRUCT/MAP have an equal field count guaranteed by the assert).
+                const auto& lv = *vec_ptr();
+                const auto& rv = *rhs.vec_ptr();
+                const size_t n = lv.size() < rv.size() ? lv.size() : rv.size();
+                for (size_t i = 0; i < n; ++i) {
+                    if (lv[i] < rv[i]) {
+                        return true;
+                    }
+                    if (rv[i] < lv[i]) {
+                        return false;
+                    }
+                }
+                return lv.size() < rv.size();
             }
             default:
                 return false;
@@ -977,16 +1070,37 @@ namespace components::types {
     // session timezone cancels out in arithmetics, so we don't have to pass it
     constexpr auto place_holder_time_zone = core::date::timezone_offset_t{};
 
+    namespace {
+        // Mixed-type numeric operands of sum/subtract/mult/divide/modulus are promoted
+        // to one common type before the per-type dispatch. Both casts are
+        // numeric-to-numeric (see promote_type) and cannot fail, hence the assert.
+        struct promoted_operands_t {
+            logical_value_t lhs;
+            logical_value_t rhs;
+        };
+
+        bool needs_numeric_promotion(const logical_value_t& value1, const logical_value_t& value2) {
+            return !value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
+                   is_numeric(value1.type().type()) && is_numeric(value2.type().type());
+        }
+
+        promoted_operands_t promote_numeric_operands(const logical_value_t& value1, const logical_value_t& value2) {
+            auto promoted = promote_type(value1.type().type(), value2.type().type());
+            auto lhs = value1.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            auto rhs = value2.cast_as(complex_logical_type(promoted), place_holder_time_zone);
+            assert(!lhs.has_error() && !rhs.has_error() && "numeric promotion cast can not fail");
+            return {std::move(lhs.value()), std::move(rhs.value())};
+        }
+    } // namespace
+
     logical_value_t logical_value_t::sum(const logical_value_t& value1, const logical_value_t& value2) {
         if (value1.is_null() && value2.is_null()) {
             return value1;
         }
 
-        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
-            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
-            auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return sum(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                       value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+        if (needs_numeric_promotion(value1, value2)) {
+            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            return sum(lhs, rhs);
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1099,11 +1213,9 @@ namespace components::types {
             return value1;
         }
 
-        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
-            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
-            auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return subtract(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                            value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+        if (needs_numeric_promotion(value1, value2)) {
+            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            return subtract(lhs, rhs);
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1227,11 +1339,9 @@ namespace components::types {
             return value1;
         }
 
-        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
-            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
-            auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return mult(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                        value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+        if (needs_numeric_promotion(value1, value2)) {
+            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            return mult(lhs, rhs);
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1327,11 +1437,9 @@ namespace components::types {
             }
         }
 
-        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
-            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
-            auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return divide(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                          value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+        if (needs_numeric_promotion(value1, value2)) {
+            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            return divide(lhs, rhs);
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();
@@ -1413,11 +1521,9 @@ namespace components::types {
             return value1;
         }
 
-        if (!value1.is_null() && !value2.is_null() && value1.type().type() != value2.type().type() &&
-            is_numeric(value1.type().type()) && is_numeric(value2.type().type())) {
-            auto promoted = promote_type(value1.type().type(), value2.type().type());
-            return modulus(value1.cast_as(complex_logical_type(promoted), place_holder_time_zone),
-                           value2.cast_as(complex_logical_type(promoted), place_holder_time_zone));
+        if (needs_numeric_promotion(value1, value2)) {
+            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            return modulus(lhs, rhs);
         }
 
         auto type = value1.is_null() ? value2.type().type() : value1.type().type();

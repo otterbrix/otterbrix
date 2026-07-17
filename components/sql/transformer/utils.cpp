@@ -236,6 +236,8 @@ namespace components::sql::transform {
                 return "T_CommonTableExpr";
             case T_ColumnReferenceStorageDirective:
                 return "T_ColumnReferenceStorageDirective";
+            case T_SubLink:
+                return "T_SubLink";
             default:
                 return "unknown";
         }
@@ -349,6 +351,14 @@ namespace components::sql::transform {
                 auto cast = pg_ptr_cast<TypeCast>(node);
                 auto constant = pg_ptr_cast<A_Const>(cast->arg);
                 if (constant->val.type != T_String) {
+                    // A NULL literal under a CAST (`NULL::T`) is a typed NULL. Reading ival/fval of a T_Null
+                    // node yields a garbage non-null value — return an untyped NA null instead; the value
+                    // stays NULL via the vector validity mask and the projection resolves a concrete column
+                    // type (PG unknown->text) downstream.
+                    if (constant->val.type == T_Null) {
+                        return types::logical_value_t(resource,
+                                                      types::complex_logical_type{types::logical_type::NA});
+                    }
                     // A numeric literal under a CAST: a T_Float keeps its payload in `str`
                     // (floatVal -> double -> DOUBLE), a T_Integer in `ival` (intVal -> long -> BIGINT).
                     // Reading `ival` for a T_Float misreads it as a garbage BIGINT — e.g.
@@ -662,36 +672,6 @@ namespace components::sql::transform {
             }
             result.push_back(std::move(tc));
         }
-        return result;
-    }
-
-    std::string like_to_regex(const std::string& pattern) {
-        std::string result = "^";
-        for (size_t i = 0; i < pattern.size(); ++i) {
-            char c = pattern[i];
-            if (c == '%') {
-                result += ".*";
-            } else if (c == '_') {
-                result += '.';
-            } else if (c == '\\' && i + 1 < pattern.size()) {
-                ++i;
-                // escape the next character literally
-                char next = pattern[i];
-                if (next == '.' || next == '*' || next == '+' || next == '?' || next == '(' || next == ')' ||
-                    next == '[' || next == ']' || next == '{' || next == '}' || next == '|' || next == '^' ||
-                    next == '$' || next == '\\') {
-                    result += '\\';
-                }
-                result += next;
-            } else if (c == '.' || c == '*' || c == '+' || c == '?' || c == '(' || c == ')' || c == '[' || c == ']' ||
-                       c == '{' || c == '}' || c == '|' || c == '^' || c == '$' || c == '\\') {
-                result += '\\';
-                result += c;
-            } else {
-                result += c;
-            }
-        }
-        result += '$';
         return result;
     }
 

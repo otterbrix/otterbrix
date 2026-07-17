@@ -569,6 +569,11 @@ namespace services::dispatcher {
                                                                            const named_schema& schema_left,
                                                                            const named_schema& schema_right,
                                                                            bool same_schema) {
+            // Defensive: a set/arithmetic child may be null (e.g. an unsupported SET value the transformer
+            // already rejected). Guard the recursion so validation never dereferences a null child.
+            if (!expr) {
+                return named_schema(resource);
+            }
             switch (expr->type()) {
                 case update_expr_type::set: {
                     auto* set_expr = reinterpret_cast<update_expr_set_t*>(expr);
@@ -833,6 +838,14 @@ namespace services::dispatcher {
                                              std::pmr::string{"constant expression with no value", resource});
                     }
                     result_type = resolve(scalar_expr->params()[0]);
+                    // A bare NULL literal projects an untyped NA constant. PostgreSQL types an unknown NULL
+                    // as text — resolve it to STRING_LITERAL so the projection has a concrete column type.
+                    // The value stays NULL via the vector validity mask (operator_select projects a typed
+                    // NULL from this resolved type). Scalar-subquery NULLs are already re-typed from their
+                    // own output types upstream, so they never reach here as NA.
+                    if (result_type.type() == logical_type::NA || result_type.type() == logical_type::UNKNOWN) {
+                        result_type = components::types::complex_logical_type(logical_type::STRING_LITERAL);
+                    }
                     break;
                 }
                 case scalar_type::case_expr: {
@@ -1462,7 +1475,12 @@ namespace services::dispatcher {
                                         column.type().type() == logical_type::STRING_LITERAL)) {
                                 components::vector::vector_t new_column(resource, *it, chunk.capacity());
                                 for (size_t i = 0; i < chunk.size(); i++) {
-                                    auto val = column.value(i).cast_as(*it, session_tz);
+                                    auto casted = column.value(i).cast_as(*it, session_tz);
+                                    if (casted.has_error()) {
+                                        result = casted.error();
+                                        return false;
+                                    }
+                                    const auto& val = casted.value();
                                     if (val.type().type() == logical_type::NA) {
                                         result = core::error_t(
                                             core::error_code_t::schema_error,
@@ -1483,7 +1501,12 @@ namespace services::dispatcher {
                                 if (it->type() == logical_type::STRUCT) {
                                     components::vector::vector_t new_column(resource, *it, chunk.capacity());
                                     for (size_t i = 0; i < chunk.size(); i++) {
-                                        auto val = column.value(i).cast_as(*it, session_tz);
+                                        auto casted = column.value(i).cast_as(*it, session_tz);
+                                        if (casted.has_error()) {
+                                            result = casted.error();
+                                            return false;
+                                        }
+                                        const auto& val = casted.value();
                                         if (val.type().type() == logical_type::NA) {
                                             result = core::error_t(
                                                 core::error_code_t::schema_error,
@@ -2003,11 +2026,16 @@ namespace services::dispatcher {
                         };
                         std::set<column_key> seen_cols;
                         for (const auto& col : incoming_schema) {
-                            column_key key{col.result_alias, std::string(col.type.alias()), col.type.type(), col.side};
+                            // A projected constant (e.g. `SELECT 1`) has no alias/extension;
+                            // complex_logical_type::alias() asserts on that, so guard it. An
+                            // alias-less column keys on the empty string, which is correct for
+                            // this duplicate-name check.
+                            std::string col_alias = col.type.has_alias() ? std::string(col.type.alias()) : std::string{};
+                            column_key key{col.result_alias, col_alias, col.type.type(), col.side};
                             if (!seen_cols.insert(std::move(key)).second) {
                                 return core::error_t(
                                     core::error_code_t::schema_error,
-                                    std::pmr::string{"column '" + col.type.alias() +
+                                    std::pmr::string{"column '" + col_alias +
                                                          "' has multiple types; use explicit type selection",
                                                      resource});
                             }
@@ -2048,7 +2076,19 @@ namespace services::dispatcher {
                                 if (!scalar_expr->key().is_null()) {
                                     out_type.set_alias(scalar_expr->key().as_string());
                                 }
-                                result_schema.push_back(type_from_t{node->result_alias(), std::move(out_type)});
+                                // A bare NULL literal is a scalar constant whose bound value is NULL (its type
+                                // was defaulted to text). Mark the column so a UNION can reconcile it to the
+                                // other branch's type.
+                                bool from_null = false;
+                                if (scalar_expr->type() == scalar_type::constant && !scalar_expr->params().empty() &&
+                                    components::expressions::is_parameter(scalar_expr->params().front())) {
+                                    auto pit = parameters.parameters.find(
+                                        components::expressions::as_parameter(scalar_expr->params().front()));
+                                    from_null = (pit != parameters.parameters.end() && pit->second.is_null());
+                                }
+                                type_from_t entry{node->result_alias(), std::move(out_type)};
+                                entry.from_null_literal = from_null;
+                                result_schema.push_back(std::move(entry));
                             }
                         }
                         return result_schema;
@@ -2665,8 +2705,15 @@ namespace services::dispatcher {
                     return expr_res;
                 }
 
+                // Semi-/anti-join output is the LEFT (outer) schema ONLY — the right side
+                // contributes only existence (matched / not-matched), never columns. Every
+                // other join type merges both sides.
                 // TODO: merge using join type, because some join types allow duplicate names in result, while others do not
-                result = impl::merge_schemas(resource, std::move(left_schema.value()), std::move(right_schema.value()));
+                if (join_node->type() == join_type::semi || join_node->type() == join_type::anti) {
+                    result = std::move(left_schema.value());
+                } else {
+                    result = impl::merge_schemas(resource, std::move(left_schema.value()), std::move(right_schema.value()));
+                }
                 break;
             }
             // For now next 3 nodes do not support returning clause:
@@ -3059,19 +3106,37 @@ namespace services::dispatcher {
                 if (right_res.has_error()) {
                     return right_res;
                 }
-                const auto& left_schema = left_res.value();
+                auto& left_schema = left_res.value(); // patched in place on a NULL-branch reconcile
                 const auto& right_schema = right_res.value();
                 if (left_schema.size() != right_schema.size()) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"UNION operands must have the same number of columns", resource});
                 }
+                // A bare NULL literal branch carries from_null_literal on its schema column (set where the
+                // constant's type is resolved). PostgreSQL reconciles such a column to the other branch's
+                // type rather than erroring — adopt the concrete side; error only on a genuine mismatch.
                 for (size_t i = 0; i < left_schema.size(); ++i) {
-                    if (left_schema[i].type.type() != right_schema[i].type.type()) {
-                        return core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"UNION column type mismatch at position " + std::to_string(i), resource});
+                    if (left_schema[i].type.type() == right_schema[i].type.type()) {
+                        continue;
                     }
+                    if (right_schema[i].from_null_literal) {
+                        continue; // right branch is a NULL literal -> keep the left (concrete) type
+                    }
+                    if (left_schema[i].from_null_literal) {
+                        // left branch is NULL -> adopt the right TYPE, but keep the left column's
+                        // output name: PostgreSQL takes a union's column names from the FIRST
+                        // SELECT. Copying the whole complex_logical_type would silently rename
+                        // the column to the right branch's alias and break outer references.
+                        auto adopted = right_schema[i].type;
+                        adopted.set_alias(left_schema[i].type.has_alias() ? left_schema[i].type.alias()
+                                                                          : std::string{});
+                        left_schema[i].type = std::move(adopted);
+                        continue;
+                    }
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"UNION column type mismatch at position " + std::to_string(i), resource});
                 }
                 return left_res;
             }

@@ -7,6 +7,7 @@ set(${PROJECT_NAME}_SOURCES
         test_scalar.cpp
         test_uvector.cpp
         test_resource_tracer.cpp
+        test_regex.cpp
         )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})
@@ -17,6 +18,7 @@ target_link_libraries(
         Boost::boost
         otterbrix::assert
         otterbrix::log
+        otterbrix::regex
         ${CMAKE_THREAD_LIBS_INIT}
 )
 

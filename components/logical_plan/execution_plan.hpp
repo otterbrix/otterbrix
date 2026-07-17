@@ -25,6 +25,12 @@ namespace components::logical_plan {
         // binding (else a numeric scalar would silently coerce to bool). false for every
         // other sub-query form (IN / scalar comparison / EXISTS), where any type is legal.
         bool boolean_required = false;
+        // A scalar-equality against ARRAY(SELECT ...): `col = ARRAY(SELECT ...)`. Only this form needs a
+        // 0-row result rebuilt as a typed empty array `{}` (so `col = {}` compares against a real empty
+        // array); IN / ANY / ALL keep the NA-null sentinel (their empty-set semantics rely on it). false
+        // for every other form. Kept last: the emplace_back sites aggregate-initialize (compacter, id)
+        // and rely on the trailing bools' defaults.
+        bool array_equality = false;
     };
 
     // EXPLAIN mode for the whole plan. `plan` renders the physical plan without executing;

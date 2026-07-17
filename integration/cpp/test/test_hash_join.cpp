@@ -5,9 +5,11 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/log/log.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_limit.hpp>
+#include <components/logical_plan/node_match.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer/rules/hash_join.hpp>
@@ -578,5 +580,255 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
             rev_sum += cur->value(2, row).value<int64_t>();
         }
         CHECK(rev_sum == 300); // 100 + 200
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Build-side selection vs a FILTERED side, plan-time. pushdown_filter wraps a
+// join input that carries a single-table WHERE in a fresh oid-less aggregate
+// (aggregate{source, match}), so the join child's own table_oid() is INVALID.
+// A direct-oid count gate would abstain there, and a statistics-free
+// tiebreaker would swap the filtered LEFT relation onto the hash build with
+// ZERO size information — a weakly-filtered HUGE left joined to a tiny
+// unfiltered right would build the HUGE side (memory blow-up).
+//
+// create_plan_join must resolve each side's EFFECTIVE base relation THROUGH the
+// wrapper and let live row counts decide: pre-filter left 1000 vs right 2 keeps
+// the tiny right as the build. The filter shape remains only an exact-count
+// TIE-break — a filtered relation is certainly no larger than its pre-filter
+// count, so at equal counts building the filtered side is evidence-backed.
+// ----------------------------------------------------------------------------
+TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidence") {
+    std::pmr::monotonic_buffer_resource arena;
+    auto* res = &arena;
+    compute::function_registry_t registry(res);
+
+    using components::catalog::oid_t;
+    constexpr oid_t big_oid = 52;
+    constexpr oid_t tiny_oid = 53;
+
+    // INNER hash join: logical-left = filter wrapper over the BIG table (bk/bv),
+    // logical-right = tiny unfiltered table (rk/rv). row_counts is seeded keyed
+    // by the EFFECTIVE base-table oids — the live counts the pre-lowering fetch
+    // provides for plain base tables.
+    auto lower = [&](uint64_t big_rows, uint64_t tiny_rows) {
+        services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
+        context.known_oids.insert(big_oid);
+        context.known_oids.insert(tiny_oid);
+        context.row_counts[big_oid] = big_rows;
+        context.row_counts[tiny_oid] = tiny_rows;
+
+        auto big_table = logical_plan::make_node_raw_data(res, build_named_chunk(res, "bk", "bv", 100));
+        big_table->set_table_oid(big_oid);
+        // The wrapper shape pushdown_filter synthesizes around a join input: an
+        // oid-less aggregate holding [source, match]; the WHERE is a plain
+        // col-vs-col compare (plan-time only — never executed here).
+        auto where = expressions::make_compare_expression(
+            res,
+            compare_type::gt,
+            expressions::param_storage{make_key(res, "bv", side_t::left, 1)},
+            expressions::param_storage{make_key(res, "bk", side_t::left, 0)});
+        auto wrapper = logical_plan::make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+        wrapper->append_child(big_table);
+        wrapper->append_child(logical_plan::make_node_match(res, core::dbname_t{}, core::relname_t{}, where));
+
+        auto tiny = logical_plan::make_node_raw_data(res, build_named_chunk(res, "rk", "rv", 2));
+        tiny->set_table_oid(tiny_oid);
+
+        auto cond =
+            expressions::make_compare_expression(res,
+                                                 compare_type::eq,
+                                                 expressions::param_storage{make_key(res, "bk", side_t::left, 0)},
+                                                 expressions::param_storage{make_key(res, "rk", side_t::right, 0)});
+        auto join = logical_plan::make_node_join(res, core::dbname_t{}, core::relname_t{}, join_type::inner);
+        join->append_child(wrapper);
+        join->append_child(tiny);
+        join->append_expression(cond);
+        join->set_equi_columns(0, 0); // post-rewrite_hash_joins state: algo -> hash
+
+        auto plan =
+            services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
+        REQUIRE(plan);
+        REQUIRE(plan->type() == operator_type::hash_join);
+        REQUIRE(plan->right()); // physical build side
+        return plan;
+    };
+
+    INFO("huge filtered LEFT vs tiny RIGHT with live counts -> the tiny right STAYS the build");
+    {
+        auto plan = lower(1000, 2);
+        // The build must be the tiny raw-data child, NOT the filter wrapper.
+        REQUIRE(plan->right()->type() == operator_type::raw_data);
+        REQUIRE(plan->right()->output());
+        REQUIRE(!plan->right()->output()->chunks().empty());
+        CHECK(plan->right()->output()->chunks().front().types()[0].alias() == "rk");
+    }
+
+    INFO("EXACT pre-filter count tie -> the filtered left (certainly <= tie) becomes the build");
+    {
+        auto plan = lower(2, 2);
+        // Swap fired: the build (right_) is the lowered filter wrapper.
+        CHECK(plan->right()->type() == operator_type::match);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Build-side selection at an EXACT pre-filter count tie (in-memory mode).
+//
+// operator_hash_join_t materializes its physical RIGHT child as the hash build.
+// Table storages live in the disk-manager agents even with disk.on=false
+// (pool-as-store), so execute_plan_full fetches live row counts here too, and
+// collect_inner_hash_join_oids resolves the filter-wrapped `filt` side through
+// pushdown_filter's oid-less wrapper: `filt` and `pln` both hold 3 pre-filter
+// rows — an exact tie. A pushed-down local WHERE filter only removes rows, so
+// the filtered LOGICAL-LEFT side (`filt`) is certainly <= the unfiltered right
+// (`pln`) — the evidence-backed tie-break moves it onto the hash build.
+// EXPLAIN renders the probe (physical left_) child first and the build
+// (physical right_) child second, so the UNfiltered `pln` (probe) is rendered
+// BEFORE the filtered `filt` (build). The swap is answer-neutral (swapped_
+// restores logical [left, right] output order), proven by the rows.
+//
+// Counts decide whenever both effective counts exist; the filter shape only
+// breaks an exact count tie.
+// ----------------------------------------------------------------------------
+TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
+    auto config = test_create_config("/tmp/test_hash_join/syntactic");
+    test_clear_directory(config);
+    config.disk.on = false; // in-memory: counts are still served by the pool-as-store disk agents
+    config.wal.on = false;
+    test_spaces space(config);
+    auto dispatcher = space.dispatcher();
+    auto session = otterbrix::session_id_t();
+
+    const std::string sdb = "synbuilddb";
+    dispatcher->execute_sql(session, "CREATE DATABASE " + sdb + ";");
+    auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
+    REQUIRE(run("CREATE TABLE " + sdb + ".filt ();")->is_success()); // (k, x)
+    REQUIRE(run("CREATE TABLE " + sdb + ".pln ();")->is_success());  // (k, y)
+    REQUIRE(run("INSERT INTO " + sdb + ".filt (k, x) VALUES (1, 5), (2, 9), (3, 5);")->is_success());
+    REQUIRE(run("INSERT INTO " + sdb + ".pln (k, y) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
+
+    auto plan_text = [&](const std::string& sql) {
+        auto c = run("EXPLAIN " + sql);
+        REQUIRE(c->is_success());
+        std::string t;
+        for (size_t r = 0; r < c->size(); ++r) {
+            t += std::string(c->value(0, r).value<std::string_view>());
+            t += '\n';
+        }
+        return t;
+    };
+
+    // `filt` is filtered (x = 5); `pln` is not. `filt` is the logical-LEFT input.
+    const std::string q =
+        "SELECT * FROM " + sdb + ".filt JOIN " + sdb + ".pln ON filt.k = pln.k WHERE filt.x = 5";
+
+    INFO("EXPLAIN: the filtered relation (filt) is the hash BUILD side, rendered AFTER the probe (pln)");
+    {
+        const std::string t = plan_text(q);
+        INFO(t);
+        REQUIRE(t.find("Hash Join") != std::string::npos);
+        const auto pos_filt = t.find("on filt");
+        const auto pos_pln = t.find("on pln");
+        REQUIRE(pos_filt != std::string::npos);
+        REQUIRE(pos_pln != std::string::npos);
+        // Probe (pln) precedes build (filt): pln is rendered first.
+        CHECK(pos_pln < pos_filt);
+    }
+
+    INFO("rows: the build-side swap is answer-neutral");
+    {
+        auto cur = run(q + " ORDER BY filt.k ASC;");
+        REQUIRE(cur->is_success());
+        // filt.x = 5 keeps k in {1, 3}; join on k with pln -> 2 rows.
+        // SELECT * column order = [filt.k, filt.x, pln.k, pln.y].
+        REQUIRE(cur->size() == 2);
+        CHECK(cur->value(0, 0).value<int64_t>() == 1);  // filt.k
+        CHECK(cur->value(1, 0).value<int64_t>() == 5);  // filt.x
+        CHECK(cur->value(2, 0).value<int64_t>() == 1);  // pln.k
+        CHECK(cur->value(3, 0).value<int64_t>() == 10); // pln.y
+        CHECK(cur->value(0, 1).value<int64_t>() == 3);  // filt.k
+        CHECK(cur->value(1, 1).value<int64_t>() == 5);  // filt.x
+        CHECK(cur->value(2, 1).value<int64_t>() == 3);  // pln.k
+        CHECK(cur->value(3, 1).value<int64_t>() == 30); // pln.y
+    }
+}
+
+// ----------------------------------------------------------------------------
+// The row-count fetch must resolve a join input THROUGH pushdown_filter's
+// oid-less wrapper. `big` (8 rows) carries a weak local WHERE (x < 100, keeps
+// every row), so pushdown wraps it in the oid-less aggregate{scan, match}; a
+// collector reading only the DIRECT child's table_oid never fetches big's live
+// count, the count gate abstains, and a shape-only "filtered side is smaller"
+// guess would swap the HUGE filtered left onto the hash build (the SSB memory
+// blow-up shape). With the effective-oid descent in collect_inner_hash_join_oids
+// the counts decide: big 8 vs tiny 2 -> the tiny right STAYS the build (a
+// pushed filter is no evidence of size without a count tie).
+//
+// EXPLAIN renders the probe (physical left_) child first and the build
+// (physical right_) child second, so `big` (probe) must be rendered BEFORE
+// `tiny` (build).
+// ----------------------------------------------------------------------------
+TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrapper") {
+    auto config = test_create_config("/tmp/test_hash_join/wrapped_count");
+    test_clear_directory(config);
+    config.disk.on = false; // counts are still served by the pool-as-store disk agents
+    config.wal.on = false;
+    test_spaces space(config);
+    auto dispatcher = space.dispatcher();
+    auto session = otterbrix::session_id_t();
+
+    const std::string wdb = "wrapcountdb";
+    dispatcher->execute_sql(session, "CREATE DATABASE " + wdb + ";");
+    auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
+    REQUIRE(run("CREATE TABLE " + wdb + ".big ();")->is_success());  // (k, x)
+    REQUIRE(run("CREATE TABLE " + wdb + ".tiny ();")->is_success()); // (k, y)
+    REQUIRE(run("INSERT INTO " + wdb + ".big (k, x) VALUES (1, 1), (2, 2), (3, 3), (4, 4), "
+                "(5, 5), (6, 6), (7, 7), (8, 8);")
+                ->is_success());
+    REQUIRE(run("INSERT INTO " + wdb + ".tiny (k, y) VALUES (1, 10), (2, 20);")->is_success());
+
+    auto plan_text = [&](const std::string& sql) {
+        auto c = run("EXPLAIN " + sql);
+        REQUIRE(c->is_success());
+        std::string t;
+        for (size_t r = 0; r < c->size(); ++r) {
+            t += std::string(c->value(0, r).value<std::string_view>());
+            t += '\n';
+        }
+        return t;
+    };
+
+    // Weak filter on the LEFT (keeps all 8 rows) -> pushdown wraps `big`.
+    const std::string q =
+        "SELECT * FROM " + wdb + ".big JOIN " + wdb + ".tiny ON big.k = tiny.k WHERE big.x < 100";
+
+    INFO("EXPLAIN: live counts resolved through the wrapper -> tiny (2 rows) stays the build");
+    {
+        const std::string t = plan_text(q);
+        INFO(t);
+        REQUIRE(t.find("Hash Join") != std::string::npos);
+        const auto pos_big = t.find("on big");
+        const auto pos_tiny = t.find("on tiny");
+        REQUIRE(pos_big != std::string::npos);
+        REQUIRE(pos_tiny != std::string::npos);
+        // Probe (big) precedes build (tiny): big is rendered first.
+        CHECK(pos_big < pos_tiny);
+    }
+
+    INFO("rows: the build-side decision is answer-neutral");
+    {
+        auto cur = run(q + " ORDER BY big.k ASC;");
+        REQUIRE(cur->is_success());
+        // Keys {1, 2} match; SELECT * column order = [big.k, big.x, tiny.k, tiny.y].
+        REQUIRE(cur->size() == 2);
+        CHECK(cur->value(0, 0).value<int64_t>() == 1);  // big.k
+        CHECK(cur->value(1, 0).value<int64_t>() == 1);  // big.x
+        CHECK(cur->value(2, 0).value<int64_t>() == 1);  // tiny.k
+        CHECK(cur->value(3, 0).value<int64_t>() == 10); // tiny.y
+        CHECK(cur->value(0, 1).value<int64_t>() == 2);  // big.k
+        CHECK(cur->value(1, 1).value<int64_t>() == 2);  // big.x
+        CHECK(cur->value(2, 1).value<int64_t>() == 2);  // tiny.k
+        CHECK(cur->value(3, 1).value<int64_t>() == 20); // tiny.y
     }
 }

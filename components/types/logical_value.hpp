@@ -8,6 +8,7 @@
 
 #include "types.hpp"
 #include <core/date/date_types.hpp>
+#include <core/result_wrapper.hpp>
 
 namespace components::types {
 
@@ -30,7 +31,8 @@ namespace components::types {
         template<typename T>
         T value() const;
         bool is_null() const noexcept;
-        logical_value_t cast_as(const complex_logical_type& type, core::date::timezone_offset_t session_tz) const;
+        core::result_wrapper_t<logical_value_t> cast_as(const complex_logical_type& type,
+                                                        core::date::timezone_offset_t session_tz) const;
         void set_alias(const std::string& alias);
 
         bool operator==(const logical_value_t& rhs) const;

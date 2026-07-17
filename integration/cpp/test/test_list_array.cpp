@@ -660,3 +660,44 @@ TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
         }
     }
 }
+
+// #563/#559: `col = ARRAY(SELECT ...)` is real, length-aware array equality — the
+// sub-query rows are compacted into an array and compared to the column. A different-length result is
+// simply unequal (never truncated/padded), and an empty sub-query yields a real empty array {} (unequal
+// to a non-empty column), not the NA-null sentinel.
+TEST_CASE("integration::list_array::array_equality_subquery") {
+    auto config = test_create_config("/tmp/test_list_array/array_eq_subquery");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.a (id bigint, v int[3]);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (1, ARRAY[7,8,9]);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.a (id, v) VALUES (2, ARRAY[1,2,3]);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.src (x int);")->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO db.src (x) VALUES (7), (8), (9);")->is_success());
+
+    auto ok = [&](const std::string& sql) {
+        INFO(sql);
+        return exec(dispatcher, sql);
+    };
+
+    SECTION("matching length and values") {
+        auto cur = ok("SELECT id FROM db.a WHERE v = ARRAY(SELECT x FROM db.src);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // only row 1 ([7,8,9]) equals the sub-query array [7,8,9]
+    }
+    SECTION("different length is unequal (no truncate/pad)") {
+        auto cur = ok("SELECT id FROM db.a WHERE v = ARRAY(SELECT x FROM db.src WHERE x < 9);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0); // sub-query yields [7,8] (length 2) != any int[3]
+    }
+    SECTION("empty sub-query is a real empty array, unequal to a non-empty column") {
+        auto cur = ok("SELECT id FROM db.a WHERE v = ARRAY(SELECT x FROM db.src WHERE x > 100);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0); // {} != [7,8,9] and != [1,2,3]
+    }
+}

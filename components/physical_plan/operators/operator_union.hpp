@@ -16,6 +16,13 @@ namespace components::operators {
     public:
         operator_union_t(std::pmr::memory_resource* resource, log_t log, bool all);
 
+        // The validator-stamped union output schema: validate_schema reconciles the two
+        // branches' column types data-INDEPENDENTLY (a genuine mismatch is rejected, a
+        // bare NULL-literal branch adopts the other side's type, column names come from
+        // the first SELECT) and create_plan_union forwards the stamp here, so
+        // emit_union_() types its result from the plan, never from row contents.
+        void set_output_types(const std::pmr::vector<types::complex_logical_type>& types) override;
+
         [[nodiscard]] core::error_t
         push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) override;
 
@@ -23,6 +30,7 @@ namespace components::operators {
 
     private:
         bool all_;
+        std::pmr::vector<types::complex_logical_type> output_types_;
 
         // The shared dedup/concat core: emit the union of `left_chunks` then
         // `right_chunks` into `out` (allocated from `res`). UNION ALL concatenates;

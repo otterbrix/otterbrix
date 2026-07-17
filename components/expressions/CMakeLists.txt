@@ -3,6 +3,7 @@ project(expressions CXX)
 set(SOURCE_${PROJECT_NAME}
         forward.cpp
         expression.cpp
+        clone_expression.cpp
         compare_expression.cpp
         aggregate_expression.cpp
         scalar_expression.cpp

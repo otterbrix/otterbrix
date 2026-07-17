@@ -171,6 +171,11 @@ namespace components::vector {
     }
 
     vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) {
+        // A top-level ordinal past the chunk's width is "column not found" — the same
+        // nullptr contract callers already handle for unresolvable nested paths.
+        if (col_path.front() >= data.size()) {
+            return nullptr;
+        }
         vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
             if (sub_column->type().type() == types::logical_type::ARRAY ||
@@ -184,6 +189,10 @@ namespace components::vector {
     }
 
     const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) const {
+        // Same "column not found" -> nullptr contract as the non-const overload.
+        if (col_path.front() >= data.size()) {
+            return nullptr;
+        }
         const vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
             if (sub_column->type().type() == types::logical_type::ARRAY ||

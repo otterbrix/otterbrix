@@ -334,6 +334,51 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
     }
 }
 
+// A CASE-WHEN whose condition compares a NULL column value used to hit
+// evaluate_row_condition's type-mismatch cast branch (the NULL resolves to an
+// NA-typed value), where cast_as previously threw std::logic_error -> SIGABRT.
+// Now cast_as returns an error and the condition is guarded: a NULL operand makes
+// the comparison UNKNOWN, so the row falls through to ELSE. The query must succeed.
+TEST_CASE("integration::cpp::correctness_bugs::case_condition_null_operand") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/case_condition_null_operand");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.z (id INT, score INT);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        // id=2 has a NULL score -> its CASE condition operand is NULL.
+        REQUIRE(dispatcher
+                    ->execute_sql(session, "INSERT INTO t.z (id, score) VALUES (1, 72), (2, NULL), (3, 50);")
+                    ->is_success());
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        // `score = 72` for the NULL row is UNKNOWN -> ELSE branch. Before the fix this
+        // aborted the process; now it succeeds and returns the ELSE value.
+        auto cur = dispatcher->execute_sql(
+            session,
+            "SELECT id, CASE WHEN score = 72 THEN 1 ELSE 0 END AS hit FROM t.z ORDER BY id;");
+        INFO("CASE null-operand error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->value(1, 0).value<int32_t>() == 1); // id=1: 72 = 72 -> 1
+        REQUIRE(cur->value(1, 1).value<int32_t>() == 0); // id=2: NULL = 72 -> UNKNOWN -> ELSE 0
+        REQUIRE(cur->value(1, 2).value<int32_t>() == 0); // id=3: 50 = 72 -> 0
+    }
+}
+
 TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
     auto config = test_create_config("/tmp/test_correctness_bugs/enum_scan_predicate");
     test_clear_directory(config);
@@ -756,4 +801,152 @@ TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
     // no-group projection type resolution and still drops to 0 columns over empty input.
     // Tracked as a follow-up (group-path case_when type resolution + operator) — its
     // red-first test lands with that fix.
+}
+
+// `col LIKE NULL` (and NOT LIKE / ILIKE / NOT ILIKE NULL) is UNKNOWN for every row in
+// PostgreSQL (three-valued logic; NOT UNKNOWN is still UNKNOWN) -> ZERO rows for BOTH the
+// plain and the negated form. The transformer used to feed the NULL pattern's (nullptr)
+// string storage straight into like_to_regex and crash the process at transform time.
+TEST_CASE("integration::cpp::correctness_bugs::like_null_pattern") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/like_null_pattern");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE t;")->is_success());
+    REQUIRE(run("CREATE TABLE t.s (id bigint, name string);")->is_success());
+    REQUIRE(run("INSERT INTO t.s (id, name) VALUES (1, 'alice'), (2, 'bob');")->is_success());
+
+    INFO("LIKE NULL -> UNKNOWN for every row -> 0 rows");
+    {
+        auto cur = run("SELECT id FROM t.s WHERE name LIKE NULL;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("NOT LIKE NULL -> NOT UNKNOWN is still UNKNOWN -> 0 rows, not match-everything");
+    {
+        auto cur = run("SELECT id FROM t.s WHERE name NOT LIKE NULL;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("ILIKE NULL and NOT ILIKE NULL -> 0 rows each");
+    {
+        auto cur = run("SELECT id FROM t.s WHERE name ILIKE NULL;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+
+        auto neg = run("SELECT id FROM t.s WHERE name NOT ILIKE NULL;");
+        REQUIRE(neg->is_success());
+        REQUIRE(neg->size() == 0);
+    }
+}
+
+// Scalar NOT LIKE / NOT ILIKE must DROP a NULL-subject row (PostgreSQL: `NULL NOT LIKE p`
+// is UNKNOWN). The bare union_not(regex) shape flipped the regex's NULL-subject FALSE into
+// TRUE and kept the row; the scalar negated form now carries the same is_not_null guard
+// the negated ANY/ALL forms already had (one canonical shape, disk pushdown included —
+// this test runs with disk on so the guarded filter goes through the storage scan).
+TEST_CASE("integration::cpp::correctness_bugs::scalar_not_like_null_subject") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/scalar_not_like_null_subject");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE t;")->is_success());
+    REQUIRE(run("CREATE TABLE t.s (id bigint, name string);")->is_success());
+    REQUIRE(run("INSERT INTO t.s (id, name) VALUES (1, 'alice'), (2, 'bob'), (3, NULL);")->is_success());
+
+    INFO("NOT ILIKE drops the NULL-subject row: only 'bob' survives 'a%'");
+    {
+        auto cur = run("SELECT id FROM t.s WHERE name NOT ILIKE 'a%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+    INFO("NOT LIKE drops the NULL-subject row (case-sensitive: alice + bob survive 'A%')");
+    {
+        auto cur = run("SELECT id FROM t.s WHERE name NOT LIKE 'A%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    INFO("positive LIKE is untouched by the guard: only 'alice' matches 'a%'");
+    {
+        auto cur = run("SELECT id FROM t.s WHERE name LIKE 'a%';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+    }
+}
+
+// A DECIMAL operand coerced to the other side's integer type in a comparison must be DESCALED
+// (round, overflow -> NULL/unknown), never handed over as the raw scaled storage payload.
+// logical_value_t::cast_as's raw-numeric branch used to fire for a DECIMAL SOURCE too and
+// static_cast the scaled payload (NUMERIC(10,2) 3.00 -> 300; 100000.00 wraps int16 to -27008),
+// leaving the dedicated descaling DECIMAL->numeric branch unreachable. Every comparator funnels
+// through cast_as — simple_predicate's bidirectional coercion AND the pushed col-vs-col scan
+// filter — so `a < b` over (SMALLINT, NUMERIC) compared garbage on both storage modes. Values
+// are pinned, not counts: the wrong and the right row set both have 2 rows for `a < b`, and
+// 1 row for `a > b`.
+TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descale") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/decimal_operand_comparison_descale");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE t;")->is_success());
+    REQUIRE(run("CREATE TABLE t.deccmp (a smallint, b numeric(10, 2));")->is_success());
+    REQUIRE(run("INSERT INTO t.deccmp (a, b) VALUES (5, 3.00), (5, 100000.00), (40, 41.25);")->is_success());
+
+    // NUMERIC(10,2) is INT64-backed; the cursor exposes the scaled payload (value * 100),
+    // which pins WHICH physical row came back.
+    constexpr int64_t payload_3_00 = 300;
+    constexpr int64_t payload_41_25 = 4125;
+    constexpr int64_t payload_100000_00 = 10000000;
+
+    INFO("a < b matches (5, 100000.00) and (40, 41.25) but NOT (5, 3.00)");
+    {
+        auto cur = run("SELECT a, b FROM t.deccmp WHERE a < b ORDER BY a;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int16_t>() == 5);
+        REQUIRE(cur->value(1, 0).type().type() == components::types::logical_type::DECIMAL);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == payload_100000_00);
+        REQUIRE(cur->value(0, 1).value<int16_t>() == 40);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == payload_41_25);
+    }
+
+    INFO("a > b matches ONLY (5, 3.00): 5 > 100000.00 must be false, never true via the "
+         "int16 wraparound of the scaled payload (out-of-range coercion is unknown, not -27008)");
+    {
+        auto cur = run("SELECT a, b FROM t.deccmp WHERE a > b;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int16_t>() == 5);
+        REQUIRE(cur->value(1, 0).type().type() == components::types::logical_type::DECIMAL);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == payload_3_00);
+    }
 }

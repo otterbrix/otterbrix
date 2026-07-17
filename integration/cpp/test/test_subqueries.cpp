@@ -89,6 +89,21 @@ namespace {
         }
     }
 
+    // Flatten an EXPLAIN cursor's "QUERY PLAN" column into a single searchable string.
+    std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            auto v = cur->value(0, r);
+            out += std::string(v.value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    }
+
+    bool contains(const std::string& hay, const std::string& needle) {
+        return hay.find(needle) != std::string::npos;
+    }
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -323,6 +338,119 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Correlated EXISTS / NOT EXISTS routed to a semi- / anti-join
+//
+// A correlated `WHERE EXISTS (SELECT ... WHERE inner.k = outer.k)` is the
+// canonical SEMI join (emit each outer row at most once, iff the inner side
+// produces >=1 row for it); the NOT EXISTS form is the ANTI join (emit each
+// outer row iff the inner side produces zero rows). These were previously
+// unsupported (the SubLink flatten path cannot resolve the outer column); they
+// now lower to a LATERAL semi/anti join that binds the correlation per outer
+// row and re-runs the inner sub-plan.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
+    auto config = test_create_config("/tmp/test_subqueries/correlated_exists_semi_anti");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    INFO("correlated EXISTS -> semi-join: departments with a >85000 earner");
+    {
+        // Only Engineering has an employee earning > 85000 (Alice = 90000) -> 1 row.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 85000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
+    }
+
+    INFO("correlated NOT EXISTS -> anti-join: departments with no >50000 earner");
+    {
+        // HR: Eve(45000), Frank(40000) -- neither exceeds 50000 -> 1 row.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE NOT EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 50000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "HR");
+    }
+
+    INFO("correlated EXISTS -> semi-join: every dept has employees (all rows)");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+
+    INFO("correlated NOT EXISTS -> anti-join: inner never matches (all rows)");
+    {
+        // No department has an employee earning > 999999 -> NOT EXISTS true for all -> 5 rows.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE NOT EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 999999"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+
+    INFO("correlated EXISTS -> anti-join: inner always matches (no rows)");
+    {
+        // Every department has an employee earning > 30000 -> NOT EXISTS false for all -> 0 rows.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE NOT EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 30000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("EXPLAIN: correlated EXISTS lowers to a join (Nested Loop), not a Filter");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session,
+                                           "EXPLAIN SELECT d.name FROM TestDatabase.Departments d "
+                                           "WHERE EXISTS ("
+                                           "  SELECT 1 FROM TestDatabase.Employees e "
+                                           "  WHERE e.dept_id = d.id AND e.salary > 85000"
+                                           ");");
+        REQUIRE(cur->is_success());
+        REQUIRE(contains(plan_text(cur), "Nested Loop"));
+    }
+}
+
+// NOTE: NOT IN is deliberately NOT routed to an anti-join — a plain anti-join
+// cannot reproduce SQL three-valued logic (a single NULL in the subquery makes
+// `x NOT IN (S)` never TRUE, yielding zero rows), so it stays on the existing
+// membership-test path.
 
 // ---------------------------------------------------------------------------
 // Subqueries in SELECT list and in FROM (derived tables)
@@ -2307,5 +2435,677 @@ TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+}
+
+// #563: a SubLink as a comparison operand is lowered by kind. `flag = EXISTS (SELECT ...)`
+// must compare against the BOOLEAN result of EXISTS (compact_to_bool_value), not the first value of the
+// sub-query (the pre-fix silent-wrong behaviour).
+TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
+    auto config = test_create_config("/tmp/test_subqueries/exists_operand");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (x bigint, flag boolean);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (x, flag) VALUES (1, true), (2, false);")->is_success());
+
+    INFO("EXISTS is TRUE (sub-query has rows) → matches the flag=true row");
+    {
+        auto cur = run("SELECT x FROM db.t WHERE flag = EXISTS (SELECT x FROM db.t WHERE x > 0);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+    }
+    INFO("EXISTS is FALSE (sub-query empty) → matches the flag=false row");
+    {
+        auto cur = run("SELECT x FROM db.t WHERE flag = EXISTS (SELECT x FROM db.t WHERE x > 100);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+}
+
+// #559: scalar sub-queries in value position — projected in the SELECT list and as an arithmetic
+// operand — plus a NULL/0-row scalar sub-query returning a typed NULL row.
+TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
+    auto config = test_create_config("/tmp/test_subqueries/value_position_scalar");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (x bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (x) VALUES (10), (20), (30);")->is_success());
+    REQUIRE(run("CREATE TABLE db.one (id bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.one (id) VALUES (1);")->is_success());
+    REQUIRE(run("CREATE TABLE db.empty (y bigint);")->is_success());
+
+    INFO("M4a: scalar sub-query projected in the SELECT list");
+    {
+        auto cur = run("SELECT (SELECT count(*) FROM db.t) FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+    }
+    INFO("M4b: scalar sub-query as an arithmetic operand (per outer row)");
+    {
+        auto cur = run("SELECT x + (SELECT max(x) FROM db.t) FROM db.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // 10+30, 20+30, 30+30
+    }
+    INFO("Reentrancy: outer aggregate + value-position sub-query in the same list");
+    {
+        auto cur = run("SELECT sum(x) + (SELECT count(*) FROM db.t) FROM db.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 63); // sum=60 + count=3
+    }
+    INFO("M4-NULL: a 0-row scalar sub-query projects a typed NULL row");
+    {
+        auto cur = run("SELECT (SELECT max(y) FROM db.empty) FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+    }
+}
+
+// #559/#563: a bare NULL literal in value position is typed (PG unknown->text) instead of rejected,
+// and `NULL::T` is a proper NULL rather than a garbage non-null value.
+TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
+    auto config = test_create_config("/tmp/test_subqueries/null_literal_typing");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.one (id bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.one (id) VALUES (1);")->is_success());
+
+    INFO("bare NULL literal projects a typed NULL row (was rule-6 rejected)");
+    {
+        auto cur = run("SELECT NULL FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+    }
+    INFO("NULL::int is a proper NULL, not a garbage non-null value");
+    {
+        auto cur = run("SELECT NULL::int FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+    }
+    INFO("SELECT (SELECT NULL ...) — scalar sub-query yielding NULL projects a typed NULL row");
+    {
+        auto cur = run("SELECT (SELECT NULL FROM db.one) FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+    }
+}
+
+// #563: the LIKE/ILIKE family for `<op> ANY (SELECT ...)` and scalar ILIKE. LIKE ANY
+// converts each sub-query pattern via like_to_regex (%/_), ILIKE ANY matches case-insensitively, NOT LIKE
+// ANY negates per element before the ANY fold; scalar ILIKE / NOT ILIKE match case-insensitively.
+TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
+    auto config = test_create_config("/tmp/test_subqueries/like_ilike_family");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, s string);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, s) VALUES (1, 'apple'), (2, 'Banana'), (3, 'cherry');")->is_success());
+    REQUIRE(run("CREATE TABLE db.pat (p string);")->is_success());
+    // UPPERCASE glob patterns: LIKE ANY (case-sensitive) matches none; ILIKE ANY matches apple + cherry.
+    REQUIRE(run("INSERT INTO db.pat (p) VALUES ('A%'), ('C%');")->is_success());
+
+    INFO("LIKE ANY (case-sensitive, %/_): uppercase patterns match no lowercase row");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("ILIKE ANY (case-insensitive): 'A%'/'C%' match apple and cherry");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s ILIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    INFO("NOT LIKE ANY: every row fails at least one uppercase pattern (case-sensitive)");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+    INFO("scalar ILIKE matches case-insensitively");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s ILIKE 'banana';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+    INFO("scalar NOT ILIKE");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT ILIKE 'banana';");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}
+
+// A COMPARISON ANY/ALL over a sub-query (= ANY / IN / > ALL / <> ALL) is pushed into the disk
+// scan as a conjunction of per-element constant_filters (the array is bound once — non-correlated). An empty
+// sub-query leaves the conjunction empty: `= ANY(empty)` matches nothing, `<> ALL(empty)` matches everything.
+TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
+    auto config = test_create_config("/tmp/test_subqueries/any_subquery_disk_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, v bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);")->is_success());
+    REQUIRE(run("CREATE TABLE db.keys (k bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.keys (k) VALUES (20), (40);")->is_success());
+
+    INFO("= ANY (SELECT ...) -> disk conjunction_or of eq filters");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v = ANY (SELECT k FROM db.keys);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // v in {20, 40}
+    }
+    INFO("IN (SELECT ...)");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v IN (SELECT k FROM db.keys);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    INFO("> ALL (SELECT ...) -> disk conjunction_and of gt filters");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v > ALL (SELECT k FROM db.keys);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1); // only 50 > both 20 and 40
+    }
+    INFO("<> ALL (SELECT ...) == NOT IN");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v <> ALL (SELECT k FROM db.keys);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // 10, 30, 50
+    }
+    INFO("= ANY (empty sub-query) matches nothing");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v = ANY (SELECT k FROM db.keys WHERE k > 1000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("<> ALL (empty sub-query) matches everything");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE v <> ALL (SELECT k FROM db.keys WHERE k > 1000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+    }
+}
+
+// POSITIVE LIKE/ILIKE ANY|ALL over a sub-query pushes into the disk scan as a conjunction of
+// regex_filter_t (per-element, pmr::string pattern, RE2, no logical_value_t). ILIKE case-insensitivity is
+// a filter option. NOT LIKE ANY stays in-memory (per-element negation is not a conjunction of positives).
+TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
+    auto config = test_create_config("/tmp/test_subqueries/like_any_disk_pushdown");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, s string);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, s) VALUES (1, 'apple'), (2, 'Banana'), (3, 'cherry'), (4, 'avocado');")
+                ->is_success());
+    REQUIRE(run("CREATE TABLE db.pat (p string);")->is_success());
+    // UPPERCASE patterns: case-sensitive LIKE matches nothing; case-insensitive ILIKE matches a*/c* rows.
+    REQUIRE(run("INSERT INTO db.pat (p) VALUES ('A%'), ('C%');")->is_success());
+
+    INFO("LIKE ANY (disk, case-sensitive): uppercase patterns match no lowercase row");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("ILIKE ANY (disk, case-insensitive): 'A%'/'C%' match apple, cherry, avocado");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s ILIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3); // apple, cherry, avocado (Banana starts with B)
+    }
+    INFO("ILIKE ALL (disk): no row starts with both A and C");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s ILIKE ALL (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("NOT LIKE ANY (disk conjunction_not): every row fails at least one uppercase pattern");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+    }
+    // NULL subject: `NULL NOT LIKE p` is NULL -> excluded (the is_not_null guard). Without it the disk
+    // regex reads NULL as empty, negates to true, and would wrongly include the row.
+    REQUIRE(run("INSERT INTO db.t (id, s) VALUES (99, NULL);")->is_success());
+    INFO("NOT LIKE ANY excludes a NULL subject");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ANY (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4); // still 4 — the NULL row is excluded
+    }
+    INFO("NOT LIKE ALL excludes a NULL subject");
+    {
+        auto cur = run("SELECT id FROM db.t WHERE s NOT LIKE ALL (SELECT p FROM db.pat);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4); // apple/Banana/cherry/avocado each fail all patterns; NULL excluded
+    }
+}
+
+// #559/#563: a bare NULL literal in one UNION branch reconciles to the other branch's type
+// (PostgreSQL), instead of a spurious "UNION column type mismatch". A genuine text-vs-int mismatch still errors.
+TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
+    auto config = test_create_config("/tmp/test_subqueries/union_null_reconcile");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.one (id bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.one (id) VALUES (1);")->is_success());
+
+    INFO("NULL on the right branch reconciles to the left (bigint) type");
+    {
+        auto cur = run("SELECT id FROM db.one UNION SELECT NULL FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2); // {1, NULL}
+    }
+    INFO("NULL on the left branch reconciles to the right (bigint) type");
+    {
+        auto cur = run("SELECT NULL FROM db.one UNION SELECT id FROM db.one;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SORT ELIMINATION for a provably-unobservable sub-query ORDER BY.
+//
+// An `ORDER BY` WITHOUT `LIMIT`/`OFFSET` inside a sub-query whose result is
+// COMPACTED (IN / ANY / ALL via compact_to_array_value, EXISTS via
+// compact_to_bool_value, scalar via compact_to_single_value) is dead work: it
+// builds a full blocking sort feeding an order-insensitive membership / exists /
+// single-value test. The transformer strips such a bare sort from the flattened
+// sub-query. HARD guard: a sort carrying a LIMIT/OFFSET (top-N) is OBSERVABLE and
+// MUST stay, and a TOP-LEVEL ORDER BY (the main query) is never touched.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
+    auto config = test_create_config("/tmp/test_subqueries/sort_elimination");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    INFO("IN (SELECT ... ORDER BY) is order-insensitive: identical result, sub-query Sort stripped");
+    {
+        // High-budget departments (budget > 60000): 1,4,5 -> 6 employees, same as without ORDER BY.
+        auto cur = run("SELECT name FROM TestDatabase.Employees "
+                       "WHERE dept_id IN (SELECT id FROM TestDatabase.Departments "
+                       "                  WHERE budget > 60000 ORDER BY id);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 6);
+
+        auto ex = run("EXPLAIN ANALYZE SELECT name FROM TestDatabase.Employees "
+                      "WHERE dept_id IN (SELECT id FROM TestDatabase.Departments "
+                      "                  WHERE budget > 60000 ORDER BY id);");
+        REQUIRE(ex->is_success());
+        const auto t = plan_text(ex);
+        REQUIRE(contains(t, "InitPlan"));   // the sub-query is still flattened + present
+        REQUIRE_FALSE(contains(t, "Sort")); // its bare ORDER BY was eliminated
+    }
+
+    INFO("EXISTS (SELECT ... ORDER BY) is order-insensitive: identical result, sub-query Sort stripped");
+    {
+        // Sub-query has rows -> EXISTS true for every one of the 10 outer rows.
+        auto cur = run("SELECT name FROM TestDatabase.Employees "
+                       "WHERE EXISTS (SELECT id FROM TestDatabase.Departments ORDER BY id);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
+
+        auto ex = run("EXPLAIN ANALYZE SELECT name FROM TestDatabase.Employees "
+                      "WHERE EXISTS (SELECT id FROM TestDatabase.Departments ORDER BY id);");
+        REQUIRE(ex->is_success());
+        const auto t = plan_text(ex);
+        REQUIRE(contains(t, "InitPlan"));
+        REQUIRE_FALSE(contains(t, "Sort"));
+    }
+
+    INFO("ANY (SELECT ... ORDER BY) is order-insensitive: identical result, sub-query Sort stripped");
+    {
+        // salary = ANY (dept-1 salaries {90000,80000}) -> Alice, Bob (2 rows), order-independent.
+        auto cur = run("SELECT name FROM TestDatabase.Employees "
+                       "WHERE salary = ANY (SELECT salary FROM TestDatabase.Employees "
+                       "                    WHERE dept_id = 1 ORDER BY salary);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+
+        auto ex = run("EXPLAIN ANALYZE SELECT name FROM TestDatabase.Employees "
+                      "WHERE salary = ANY (SELECT salary FROM TestDatabase.Employees "
+                      "                    WHERE dept_id = 1 ORDER BY salary);");
+        REQUIRE(ex->is_success());
+        REQUIRE_FALSE(contains(plan_text(ex), "Sort"));
+    }
+
+    INFO("NEGATIVE: scalar (SELECT ... ORDER BY ... LIMIT 1) is a top-N — the Sort is OBSERVABLE and stays");
+    {
+        // Highest salary via ORDER BY salary DESC LIMIT 1 = 90000 -> Alice.
+        auto cur = run("SELECT name FROM TestDatabase.Employees "
+                       "WHERE salary = (SELECT salary FROM TestDatabase.Employees "
+                       "                ORDER BY salary DESC LIMIT 1);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
+
+        auto ex = run("EXPLAIN ANALYZE SELECT name FROM TestDatabase.Employees "
+                      "WHERE salary = (SELECT salary FROM TestDatabase.Employees "
+                      "                ORDER BY salary DESC LIMIT 1);");
+        REQUIRE(ex->is_success());
+        REQUIRE(contains(plan_text(ex), "Sort")); // top-N sort MUST survive
+    }
+
+    INFO("NEGATIVE: a TOP-LEVEL ORDER BY (the main query, not a sub-query) is never touched");
+    {
+        auto cur = run("SELECT name FROM TestDatabase.Employees ORDER BY salary DESC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 10);
+        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice"); // highest salary first — order preserved
+
+        auto ex = run("EXPLAIN SELECT name FROM TestDatabase.Employees ORDER BY salary DESC;");
+        REQUIRE(ex->is_success());
+        REQUIRE(contains(plan_text(ex), "Sort"));
+    }
+}
+// ---------------------------------------------------------------------------
+// Three-valued (NULL) semantics for  x IN / NOT IN (subquery)  when the
+// sub-query result set contains a NULL element.
+//
+// PostgreSQL SQL semantics (membership is three-valued):
+//   x IN (S):
+//     * x = some non-NULL element         -> TRUE  (row kept)
+//     * no non-NULL match, S has a NULL    -> UNKNOWN -> row DROPPED
+//     * no element match, S has no NULL    -> FALSE -> row dropped
+//   x NOT IN (S):
+//     * x = some non-NULL element         -> FALSE -> dropped
+//     * no non-NULL match, S has a NULL    -> UNKNOWN -> row DROPPED (classic surprise)
+//     * no element match, S has no NULL    -> TRUE  -> row KEPT
+//   S empty: IN -> FALSE for all x ; NOT IN -> TRUE for all x.
+//   x itself NULL: UNKNOWN -> dropped (unless S empty for NOT IN, which is TRUE).
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
+    auto config = test_create_config("/tmp/test_subqueries/in_not_in_null_semantics");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    INFO("setup: outer with x in {10,20,30}; needles with a NULL element {10,NULL,30}");
+    {
+        REQUIRE(run("CREATE DATABASE nulldb;")->is_success());
+        REQUIRE(run("CREATE TABLE nulldb.outer (id bigint, x bigint);")->is_success());
+        REQUIRE(run("INSERT INTO nulldb.outer (id, x) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
+        // needles.v = {10, NULL, 30}
+        REQUIRE(run("CREATE TABLE nulldb.needles (id bigint, v bigint);")->is_success());
+        REQUIRE(run("INSERT INTO nulldb.needles (id, v) VALUES (1, 10), (2, NULL), (3, 30);")->is_success());
+        // pure = {10, 30} (no NULL)
+        REQUIRE(run("CREATE TABLE nulldb.pure (id bigint, v bigint);")->is_success());
+        REQUIRE(run("INSERT INTO nulldb.pure (id, v) VALUES (1, 10), (2, 30);")->is_success());
+    }
+
+    INFO("IN with a NULL element: x=10 and x=30 match; x=20 is UNKNOWN -> dropped");
+    {
+        // {10,20,30} IN {10,NULL,30}: 10 -> TRUE, 20 -> UNKNOWN(drop), 30 -> TRUE => 2 rows.
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x IN (SELECT v FROM nulldb.needles);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("NOT IN with a NULL element: yields ZERO rows (no non-matched row survives the NULL)");
+    {
+        // {10,20,30} NOT IN {10,NULL,30}: 10 -> FALSE, 20 -> UNKNOWN(drop), 30 -> FALSE => 0 rows.
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x NOT IN (SELECT v FROM nulldb.needles);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("IN over a no-NULL set is a plain FALSE for the non-member (regression)");
+    {
+        // {10,20,30} IN {10,30}: 10,30 -> TRUE; 20 -> FALSE => 2 rows.
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x IN (SELECT v FROM nulldb.pure);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+
+    INFO("NOT IN over a no-NULL set keeps the non-member (regression)");
+    {
+        // {10,20,30} NOT IN {10,30}: only 20 -> TRUE => 1 row (id=2).
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x NOT IN (SELECT v FROM nulldb.pure);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    }
+
+    INFO("IN over an EMPTY sub-query is FALSE for all -> zero rows");
+    {
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x IN (SELECT v FROM nulldb.pure WHERE v > 1000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("NOT IN over an EMPTY sub-query is TRUE for all -> every row");
+    {
+        auto cur = run("SELECT id FROM nulldb.outer WHERE x NOT IN (SELECT v FROM nulldb.pure WHERE v > 1000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("Sub-query is ALL NULLs: IN -> zero rows; NOT IN -> zero rows");
+    {
+        auto in_cur = run("SELECT id FROM nulldb.outer "
+                          "WHERE x IN (SELECT v FROM nulldb.needles WHERE v IS NULL);");
+        REQUIRE(in_cur->is_success());
+        REQUIRE(in_cur->size() == 0);
+
+        auto notin_cur = run("SELECT id FROM nulldb.outer "
+                             "WHERE x NOT IN (SELECT v FROM nulldb.needles WHERE v IS NULL);");
+        REQUIRE(notin_cur->is_success());
+        REQUIRE(notin_cur->size() == 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The pending internal-aggregate stash (an aggregate hidden inside SELECT-
+// list arithmetic, e.g. `SELECT sum(x) + 1`) must SURVIVE a sub-query transform
+// that runs BEFORE the stash is flushed into this level's group (WHERE is
+// transformed between the SELECT list and the flush). The inner
+// transform_select epilogue flushes + clears the stash; without a save/restore
+// around every inner transform the OUTER aggregate leaks into the INNER group
+// and the outer projection references a never-computed column.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_subquery") {
+    auto config = test_create_config("/tmp/test_subqueries/outer_agg_where_subquery");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    INFO("setup");
+    { setup_subquery_db(dispatcher); }
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    INFO("scalar (EXPR) sub-query as a WHERE comparison operand");
+    {
+        // avg(budget) = 66000; salaries above it: 90000+80000+70000+75000+72000 = 387000.
+        auto cur = run("SELECT SUM(salary) + 10 AS s FROM TestDatabase.Employees "
+                       "WHERE salary > (SELECT AVG(budget) FROM TestDatabase.Departments);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 387010);
+    }
+
+    INFO("EXISTS sub-query in WHERE (speculative semi/anti probe + flatten path)");
+    {
+        // EXISTS is true -> all 10 rows aggregated: sum(salary) = 652000.
+        auto cur = run("SELECT SUM(salary) + 10 AS s FROM TestDatabase.Employees "
+                       "WHERE EXISTS (SELECT id FROM TestDatabase.Departments WHERE budget > 60000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 652010);
+    }
+
+    INFO("ANY sub-query in WHERE");
+    {
+        // High-budget depts {1,4,5}: 90000+80000+70000+65000+75000+72000 = 452000.
+        auto cur = run("SELECT SUM(salary) + 10 AS s FROM TestDatabase.Employees "
+                       "WHERE dept_id = ANY (SELECT id FROM TestDatabase.Departments WHERE budget > 60000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 452010);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DISTINCT ON makes a sub-query ORDER BY OBSERVABLE without any LIMIT — it
+// keeps the FIRST row per ON-key group in ORDER BY order. The bare-sort
+// elimination for order-insensitively compacted sub-queries (IN / ANY / ALL /
+// EXISTS / scalar) must NOT strip the sort under a DISTINCT ON aggregate.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
+    auto config = test_create_config("/tmp/test_subqueries/distinct_on_subquery_sort");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.events (k bigint, ts bigint, v bigint);")->is_success());
+    // Insertion order = oldest-ts first, so a stripped sort would keep the OLDEST
+    // row per k (scan order) instead of the latest-ts row DISTINCT ON demands.
+    REQUIRE(run("INSERT INTO db.events (k, ts, v) VALUES "
+                "(1, 1, 100), (2, 1, 300), (1, 2, 200), (2, 2, 400);")
+                ->is_success());
+    REQUIRE(run("CREATE TABLE db.vals (x bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.vals (x) VALUES (200), (400), (100), (300);")->is_success());
+
+    INFO("IN (SELECT DISTINCT ON (k) v ... ORDER BY k, ts DESC) keeps the latest row per k");
+    {
+        auto cur = run("SELECT x FROM db.vals WHERE x IN "
+                       "(SELECT DISTINCT ON (k) v FROM db.events ORDER BY k, ts DESC);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        // Latest-ts rows are v=200 (k=1) and v=400 (k=2), in either output order.
+        const auto a = cur->value(0, 0).value<int64_t>();
+        const auto b = cur->value(0, 1).value<int64_t>();
+        const bool latest_pair = (a == 200 && b == 400) || (a == 400 && b == 200);
+        REQUIRE(latest_pair);
+    }
+
+    INFO("the sub-query Sort survives in the plan (it feeds DISTINCT ON, not a LIMIT)");
+    {
+        auto ex = run("EXPLAIN ANALYZE SELECT x FROM db.vals WHERE x IN "
+                      "(SELECT DISTINCT ON (k) v FROM db.events ORDER BY k, ts DESC);");
+        REQUIRE(ex->is_success());
+        const auto t = plan_text(ex);
+        REQUIRE(contains(t, "InitPlan"));
+        REQUIRE(contains(t, "Sort"));
     }
 }

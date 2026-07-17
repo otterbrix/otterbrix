@@ -224,7 +224,12 @@ namespace services::dispatcher { namespace {
                     for (std::uint64_t row = 0; row < rows; ++row) {
                         auto v = col.value(row);
                         if (!v.is_null() && v.type() != *target_type) {
-                            v = v.cast_as(*target_type, session_tz);
+                            // No error channel here (void enrich); a non-castable value keeps its
+                            // original form, so a bad retype degrades gracefully instead of aborting.
+                            auto casted = v.cast_as(*target_type, session_tz);
+                            if (!casted.has_error()) {
+                                v = std::move(casted.value());
+                            }
                         }
                         replacement.set_value(row, v);
                     }
@@ -675,40 +680,6 @@ namespace services::catalog_resolve {
     }
 
     // === Plan-routing helpers ===
-
-    const components::logical_plan::node_t* effective_root_node(const components::logical_plan::node_t* n) {
-        if (!n)
-            return nullptr;
-        if (n->type() != components::logical_plan::node_type::sequence_t) {
-            return n;
-        }
-        using nt = components::logical_plan::node_type;
-        auto is_catalog_resolve = [](nt t) { return t == nt::catalog_resolve_t; };
-        const auto& kids = n->children();
-        // Only descend if the first child is a catalog_resolve_* — this
-        // distinguishes the transformer's resolve-wrapping sequence_t from
-        // the planner's DDL/DML rewrite sequence_t (which has e.g.
-        // create_collection_t + catalog-write node_insert_t children, no resolves).
-        if (kids.empty() || !kids.front() || !is_catalog_resolve(kids.front()->type())) {
-            return n;
-        }
-        // Walk children back-to-front: the real consumer is the last
-        // non-resolve child. (Resolve nodes are positioned at the front of
-        // the sequence by the transformer.)
-        for (auto it = kids.rbegin(); it != kids.rend(); ++it) {
-            if (!*it)
-                continue;
-            if (!is_catalog_resolve((*it)->type())) {
-                return it->get();
-            }
-        }
-        return n;
-    }
-
-    components::logical_plan::node_t* effective_root_node(components::logical_plan::node_t* n) {
-        return const_cast<components::logical_plan::node_t*>(
-            effective_root_node(static_cast<const components::logical_plan::node_t*>(n)));
-    }
 
     std::pair<std::string, std::string>
     drop_target_names_from_resolves(const components::logical_plan::node_t* plan_root) {

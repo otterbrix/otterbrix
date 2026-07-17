@@ -278,6 +278,34 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
         return;
     }
 
+    // Explain mode: load each group once (so tables/data resolve, and disk row counts
+    // are populated for the build-side decision), then print the physical plan for each
+    // selected benchmark's query via EXPLAIN. No timing.
+    if (config.explain_mode) {
+        benchmark_instance_t instance(config);
+        benchmark_state_t state;
+        state.dispatcher = instance.dispatcher();
+        state.session = session_id_t();
+        state.io = benchmark_io_options_t::from_config(config);
+
+        std::set<std::string> loaded_groups;
+        for (auto* b : filtered) {
+            if (!config.skip_load && !loaded_groups.count(b->group())) {
+                loaded_groups.insert(b->group());
+                state.failed = false;
+                b->load(state);
+                checkpoint_if_disk(state, "after explain-load");
+                if (state.failed) {
+                    std::cerr << "Error loading group " << b->group() << " (see stderr above)\n";
+                    continue;
+                }
+            }
+            std::cout << "==== " << b->name() << " ====\n";
+            std::cout << b->explain(state) << "\n";
+        }
+        return;
+    }
+
     std::ofstream csv_file;
     if (!config.output_file.empty()) {
         csv_file.open(config.output_file);

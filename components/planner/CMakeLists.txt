@@ -5,6 +5,8 @@ set(SOURCE_${PROJECT_NAME}
         optimizer.cpp
         optimizer/rules/constant_folding.cpp
         optimizer/rules/column_pruning.cpp
+        optimizer/rules/drop_redundant_distinct.cpp
+        optimizer/rules/eager_aggregation.cpp
         optimizer/rules/promote_cross_join.cpp
         optimizer/rules/pushdown_filter.cpp
         optimizer/rules/hash_join.cpp

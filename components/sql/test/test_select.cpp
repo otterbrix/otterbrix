@@ -187,9 +187,13 @@ TEST_CASE("components::sql::select_from_where") {
                        R"_($aggregate: {$match: {"name": {$regex: #0}}})_",
                        vec({v(&resource, "^pre.fix$")}));
 
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE '%test%';)_",
-                       R"_($aggregate: {$match: {$not: ["name": {$regex: #0}]}})_",
-                       vec({v(&resource, "^.*test.*$")}));
+    // NULL NOT LIKE p is UNKNOWN, so the scalar negated LIKE carries the same
+    // is_not_null guard the negated ANY/ALL forms get (three-valued semantics).
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE '%test%';)_",
+        R"_($aggregate: {$match: {$and: ["name": {$is_not_null: #1}, $not: ["name": {$regex: #0}]]}})_",
+        vec({v(&resource, "^.*test.*$"),
+             v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL AND count IN (1, 2);)_",

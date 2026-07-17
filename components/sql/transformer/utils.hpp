@@ -225,7 +225,6 @@ namespace components::sql::transform {
 
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
-    std::string like_to_regex(const std::string& pattern);
 
     // Deparse a CHECK constraint raw expression node back to SQL text.
     // Handles: column refs, integer/float/string constants, comparison operators,

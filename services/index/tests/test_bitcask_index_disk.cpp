@@ -1126,8 +1126,9 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
                                std::move(shared));
 
     index.insert(logical_value_t(&resource, int64_t(987)), 986);
-    const auto encoded = codec::encode_disk_hash_key(
-        logical_value_t(&resource, int64_t(987)).cast_as(complex_logical_type(logical_type::BIGINT), {}));
+    auto encoded_cast = logical_value_t(&resource, int64_t(987)).cast_as(complex_logical_type(logical_type::BIGINT), {});
+    REQUIRE_FALSE(encoded_cast.has_error());
+    const auto encoded = codec::encode_disk_hash_key(encoded_cast.value());
     REQUIRE(shared_ptr->get(encoded, false).has_value());
 
     index.clear();

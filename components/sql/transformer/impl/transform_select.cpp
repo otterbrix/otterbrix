@@ -1164,6 +1164,44 @@ namespace components::sql::transform {
                         select_node->append_expression(expr);
                         break;
                     }
+                    case T_SubLink: {
+                        auto sub = pg_ptr_cast<SubLink>(res->val);
+                        if (sub->subLinkType != EXPR_SUBLINK) {
+                            // ARRAY(SELECT ...) / EXISTS(...) / other sub-link kinds projected in the SELECT
+                            // list are not yet supported (deferred, tracked in #559); only a scalar
+                            // EXPR_SUBLINK is handled. Report it clearly rather than as an "unknown node type".
+                            error_ = core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"unsupported subquery in the SELECT list; only a scalar subquery "
+                                                 "is supported",
+                                                 resource_});
+                            return nullptr;
+                        }
+                        has_non_star = true;
+                        // Scalar sub-query as a projected value: flatten it into a sub-query whose single
+                        // compacted result binds to a parameter, then project that parameter as a constant
+                        // column (read live at execution; a NULL/0-row result is typed from the sub-query's
+                        // output types). Save/restore the pending internal-aggregate stash so the
+                        // inner transform's clear() does not drop this level's aggregates.
+                        auto param_id =
+                            plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                        auto prev_pending = std::move(pending_internal_aggs_);
+                        pending_internal_aggs_.clear();
+                        auto sub_node = transform(*sub->subselect, plan);
+                        pending_internal_aggs_ = std::move(prev_pending);
+                        if (has_error()) {
+                            return nullptr;
+                        }
+                        plan->sub_query_results.emplace_back(&vector::compact_to_single_value, param_id);
+                        plan->sub_queries.emplace_back(std::move(sub_node));
+                        auto expr = make_scalar_expression(resource_,
+                                                           scalar_type::constant,
+                                                           res->name ? expressions::key_t{resource_, res->name}
+                                                                     : expressions::key_t{resource_});
+                        expr->append_param(param_id);
+                        select_node->append_expression(expr);
+                        break;
+                    }
                     default:
                         error_ = core::error_t(core::error_code_t::sql_parse_error,
                                                std::pmr::string{"Unknown node type in field clause: " +
@@ -1186,8 +1224,132 @@ namespace components::sql::transform {
             }
         }
 
+        // Correlated EXISTS / NOT EXISTS in WHERE -> LATERAL semi- / anti-join.
+        // A sole-predicate `WHERE EXISTS (SELECT ... WHERE inner.k = outer.k)` is the
+        // canonical SEMI join (emit each outer row iff the inner side has >=1 match);
+        // `WHERE NOT EXISTS (...)` is the ANTI join (emit iff the inner side has none).
+        // The flatten path cannot resolve an outer column, so we speculatively
+        // transform the EXISTS body with lateral correlation scope active: if it
+        // references an outer column (correlations captured), the outer FROM source
+        // becomes the join's left child and the inner sub-plan its right child,
+        // re-rooted under a fresh container aggregate. An UNCORRELATED EXISTS keeps
+        // the (single-pass) flatten path. Only a correct plan can result: a
+        // mis-detected correlation either errors or runs a slower-but-correct
+        // per-row lateral join — never a wrong answer.
+        bool where_consumed_by_semi_anti = false;
+        if (node.whereClause && agg) {
+            SubLink* exists_sub = nullptr;
+            logical_plan::join_type semi_anti_type = logical_plan::join_type::invalid;
+            if (nodeTag(node.whereClause) == T_SubLink) {
+                auto* sl = pg_ptr_cast<SubLink>(node.whereClause);
+                if (sl->subLinkType == EXISTS_SUBLINK) {
+                    exists_sub = sl;
+                    semi_anti_type = logical_plan::join_type::semi;
+                }
+            } else if (nodeTag(node.whereClause) == T_A_Expr) {
+                // `NOT EXISTS (...)` parses as A_Expr(AEXPR_NOT, rexpr = SubLink[EXISTS]).
+                auto* ae = pg_ptr_cast<A_Expr>(node.whereClause);
+                if (ae->kind == AEXPR_NOT && ae->rexpr && nodeTag(ae->rexpr) == T_SubLink) {
+                    auto* sl = pg_ptr_cast<SubLink>(ae->rexpr);
+                    if (sl->subLinkType == EXISTS_SUBLINK) {
+                        exists_sub = sl;
+                        semi_anti_type = logical_plan::join_type::anti;
+                    }
+                }
+            }
+            if (exists_sub && exists_sub->subselect && nodeTag(exists_sub->subselect) == T_SelectStmt) {
+                auto join =
+                    logical_plan::make_node_join(resource_, core::dbname_t{}, core::relname_t{}, semi_anti_type);
+                join->set_lateral(true);
+                join->append_child(agg); // outer / left = the FROM source (single-table or FROM-join)
+
+                const std::size_t saved_subq = plan->sub_queries.size();
+
+                // Expose the outer scope so a correlated inner column lowers to a
+                // correlation parameter (see try_lateral_correlate); mirrors join_dfs's
+                // FROM-clause LATERAL path.
+                auto* prev_outer = lateral_outer_names_;
+                auto* prev_join = lateral_join_;
+                auto* prev_plan = lateral_plan_;
+                auto prev_map = std::move(lateral_correlation_map_);
+                lateral_correlation_map_.clear();
+                // The speculative inner transform must not steal this level's pending
+                // internal aggregates (its epilogue flushes + clears the stash) — the
+                // clobber would persist even when the speculative build is discarded.
+                auto prev_pending = std::move(pending_internal_aggs_);
+                pending_internal_aggs_.clear();
+                lateral_outer_names_ = &names;
+                lateral_join_ = join.get();
+                lateral_plan_ = plan;
+                auto body = transform_select(*pg_ptr_cast<SelectStmt>(exists_sub->subselect), plan);
+                lateral_outer_names_ = prev_outer;
+                lateral_join_ = prev_join;
+                lateral_plan_ = prev_plan;
+                lateral_correlation_map_ = std::move(prev_map);
+                pending_internal_aggs_ = std::move(prev_pending);
+                if (has_error()) {
+                    return nullptr;
+                }
+
+                // Route to the semi/anti join when the body is correlated. If it was
+                // uncorrelated but its speculative transform already appended nested
+                // sub-queries, keep the (correct, per-row) lateral join rather than
+                // rebuild it as a flattened duplicate. Otherwise (the common
+                // uncorrelated case) the ALREADY-transformed body is reused on the
+                // flatten path below — one transform, no re-parse and no dead
+                // parameter bindings from a discarded pass left in plan->parameters.
+                const bool correlated = !join->correlations().empty();
+                if (correlated || plan->sub_queries.size() != saved_subq) {
+                    auto inner_agg =
+                        logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    inner_agg->append_child(std::move(body));
+                    join->append_child(inner_agg);
+                    // ON = all_true: the inner sub-plan already filters via the bound
+                    // correlation parameters, so the existence of any inner row is the match.
+                    join->append_expression(make_compare_expression(resource_, compare_type::all_true));
+                    auto container = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    container->append_child(join);
+                    agg = container;
+                } else {
+                    // Uncorrelated EXISTS: flatten the reused body exactly like
+                    // transform_sublink_expr's EXISTS_SUBLINK arm (plus the AEXPR_NOT
+                    // union_not wrap for NOT EXISTS) and transform()'s T_SelectStmt
+                    // resolve wrap for the sub-query's primary table.
+                    auto param_true = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
+                    auto param_exists =
+                        plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                    plan->sub_query_results.emplace_back(&vector::compact_to_bool_value, param_exists);
+                    if (body && body->type() == logical_plan::node_type::aggregate_t) {
+                        const auto* body_agg = static_cast<const logical_plan::node_aggregate_t*>(body.get());
+                        const auto& rel = static_cast<const std::string&>(body_agg->relname());
+                        if (!rel.empty()) {
+                            body = maybe_wrap_with_catalog_resolve_table(
+                                resource_,
+                                static_cast<const std::string&>(body_agg->dbname()),
+                                rel,
+                                std::move(body));
+                        }
+                    }
+                    plan->sub_queries.emplace_back(std::move(body));
+                    auto exists_eq = make_compare_expression(resource_, compare_type::eq, param_true, param_exists);
+                    exists_eq->make_unfoldable();
+                    expression_ptr where_expr = exists_eq;
+                    if (semi_anti_type == logical_plan::join_type::anti) {
+                        auto not_expr = make_compare_union_expression(resource_, compare_type::union_not);
+                        not_expr->append_child(std::move(exists_eq));
+                        where_expr = std::move(not_expr);
+                    }
+                    agg->append_child(logical_plan::make_node_match(resource_,
+                                                                    core::dbname_t{agg->dbname()},
+                                                                    core::relname_t{agg->relname()},
+                                                                    std::move(where_expr)));
+                }
+                where_consumed_by_semi_anti = true;
+            }
+        }
+
         // where
-        if (node.whereClause) {
+        if (node.whereClause && !where_consumed_by_semi_anti) {
             expression_ptr expr = transform_predicate(node.whereClause, names, plan);
             if (has_error()) {
                 return nullptr;

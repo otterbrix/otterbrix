@@ -229,6 +229,19 @@ namespace components::operators {
                             value = &it->second;
                         }
                     }
+                    if (value->is_null()) {
+                        // A NULL constant (a 0-row/NULL scalar sub-query, a bare NULL literal, or NULL::T)
+                        // is projected as a typed column: the type is the plan-resolved col.result_type
+                        // (authoritative even over zero rows), and the null lives in the vector's validity
+                        // mask — never a typed-NULL logical_value_t. Built like the case_when path.
+                        vector::vector_t vec(resource, col.result_type, cap);
+                        for (uint64_t row = 0; row < num_rows; ++row) {
+                            vec.set_value(row, *value);
+                        }
+                        vec.set_type_alias(std::string{col.key.name});
+                        result.data.push_back(std::move(vec));
+                        break;
+                    }
                     vector::vector_t vec(resource, *value, cap);
                     if (num_rows > 0) {
                         vec.flatten(num_rows);

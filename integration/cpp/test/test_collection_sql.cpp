@@ -928,3 +928,84 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
         REQUIRE(cur->is_error());
     }
 }
+
+// UNION runtime retype must not depend on row contents: the validator reconciles the
+// union schema data-INDEPENDENTLY (PostgreSQL rules) and stamps it on the union node,
+// and operator_union must trust that stamp — a genuinely-typed all-NULL INTEGER column
+// must not flip to the NULL-literal branch's text type based on what the table holds.
+TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_stamped_type") {
+    auto config = test_create_config("/tmp/test_collection_sql/union_stamped_type");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.t (a integer);")->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.t (a) VALUES (NULL);")->is_success());
+
+    INFO("typed all-NULL column UNION ALL a NULL literal keeps the stamped INTEGER type");
+    {
+        auto cur = exec("SELECT a FROM TestDatabase.t UNION ALL SELECT NULL FROM TestDatabase.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE_FALSE(cur->chunks().empty());
+        for (const auto& chunk : cur->chunks()) {
+            REQUIRE(chunk.column_count() == 1);
+            // The result column type is the stamped union schema type (the left branch's
+            // INTEGER; the right branch is the reconciled NULL literal). It must not flip
+            // to the right branch's text type just because the left DATA is all-NULL.
+            REQUIRE(chunk.data[0].type().type() == types::logical_type::INTEGER);
+            for (uint64_t row = 0; row < chunk.size(); ++row) {
+                REQUIRE(chunk.is_null(0, row));
+            }
+        }
+    }
+}
+
+// The UNION NULL-literal reconciliation must take only the RIGHT branch's TYPE, never
+// its alias: PostgreSQL keeps the FIRST SELECT's output names, and renaming the output
+// column breaks outer references to the left branch's alias through a derived table.
+TEST_CASE("integration::cpp::test_collection::sql::union_null_branch_keeps_left_column_name") {
+    auto config = test_create_config("/tmp/test_collection_sql/union_null_alias");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.prices (price integer);")->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.prices (price) VALUES (10), (20);")->is_success());
+
+    INFO("outer reference to the NULL branch's alias resolves through the derived table");
+    {
+        auto cur = exec("SELECT x FROM (SELECT NULL AS x FROM TestDatabase.prices "
+                        "UNION ALL SELECT price FROM TestDatabase.prices) AS sub;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE_FALSE(cur->chunks().empty());
+        // Position 0 keeps the LEFT branch's name 'x' (with the right branch's TYPE).
+        REQUIRE(cur->chunks().front().data[0].type().alias() == "x");
+        REQUIRE(cur->chunks().front().data[0].type().type() == types::logical_type::INTEGER);
+    }
+    INFO("filtering on the preserved name returns exactly the NULL-branch rows");
+    {
+        auto cur = exec("SELECT x FROM (SELECT NULL AS x FROM TestDatabase.prices "
+                        "UNION ALL SELECT price FROM TestDatabase.prices) AS sub "
+                        "WHERE x IS NULL;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}

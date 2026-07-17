@@ -97,16 +97,6 @@ namespace services::catalog_resolve {
 
     // When the SQL transformer wraps a DML/DDL plan in
     //   sequence_t(catalog_resolve_namespace_t, catalog_resolve_table_t, <real_root>)
-    // callers needs to route based on <real_root> (insert_t, select_t, ...)
-    // not the wrapping sequence_t. This helper descends a sequence_t root and
-    // returns the LAST non-catalog_resolve_* child (the "consumer" node, after
-    // all resolution-only prefix children). For non-sequence_t roots it returns
-    // the node itself unchanged. Returns nullptr only when the input is null or
-    // a sequence_t with no non-resolve children.
-    const components::logical_plan::node_t* effective_root_node(const components::logical_plan::node_t* n);
-    // Mutable-pointer overload, for call sites that mutate the consumer node.
-    components::logical_plan::node_t* effective_root_node(components::logical_plan::node_t* n);
-
     // drop_* nodes no longer carry user-typed dbname/relname; their sibling
     // resolve_namespace / resolve_table nodes inside the wrapping sequence_t
     // do. Extract (db, rel) from the resolve siblings so routing code that

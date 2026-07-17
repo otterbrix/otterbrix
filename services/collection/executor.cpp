@@ -27,6 +27,7 @@
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/logical_plan/plan_root.hpp>
 // The executor only sees the base operator_t: each operator's DML I/O
 // intercept lives in its own await_async_and_resume, not here. The commit
 // pipeline's commit_id comes back via pipeline::context_t::committed_id.
@@ -136,13 +137,14 @@ namespace services::collection::executor {
             }
         };
 
-        // Build-side selection: collect the resolved child table oids of
+        // Build-side selection: collect the EFFECTIVE child table oids of
         // every INNER hash join in the optimized plan tree. execute_plan_full
         // fetches each oid's live row count so create_plan_join can put the
         // smaller table on the hash build side. Recurses the whole tree because
-        // q2-q4 lower to several stacked joins. A child that is not a single base
-        // table (nested join / subquery -> INVALID_OID) is dropped here, so it is
-        // never sent to disk. Duplicate oids collapse in the set.
+        // q2-q4 lower to several stacked joins. A child that is not a single
+        // (possibly filter-wrapped) base table (nested join / subquery ->
+        // INVALID_OID) is dropped here, so it is never sent to disk. Duplicate
+        // oids collapse in the set.
         void collect_inner_hash_join_oids(const components::logical_plan::node_ptr& node,
                                           std::pmr::set<components::catalog::oid_t>& out) {
             if (!node) {
@@ -153,8 +155,8 @@ namespace services::collection::executor {
                 if (join->type() == components::logical_plan::join_type::inner &&
                     join->algo() == components::logical_plan::node_join_t::join_algo::hash &&
                     !node->children().empty()) {
-                    const auto left_oid = node->children().front()->table_oid();
-                    const auto right_oid = node->children().back()->table_oid();
+                    const auto left_oid = components::logical_plan::effective_table_oid(node->children().front());
+                    const auto right_oid = components::logical_plan::effective_table_oid(node->children().back());
                     if (left_oid != components::catalog::INVALID_OID) {
                         out.insert(left_oid);
                     }
@@ -448,7 +450,7 @@ namespace services::collection::executor {
         const bool capture_ir = plan.explain == components::logical_plan::explain_type::analyze;
         std::pmr::vector<explain_plan_node> captured_subplans{resource()};
         for (std::size_t i = 0; (run_sub_queries || plan_only) && i + 1 < plan.sub_queries.size(); ++i) {
-            auto* sub_root = services::catalog_resolve::effective_root_node(plan.sub_queries[i].get());
+            auto* sub_root = components::logical_plan::effective_root_node(plan.sub_queries[i].get());
             const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
             // SQL standard: a sub-query is a query expression — never DML/DDL.
             if (sub_type == node_type::insert_t || sub_type == node_type::update_t || sub_type == node_type::delete_t) {
@@ -517,6 +519,20 @@ namespace services::collection::executor {
             if (compacted.has_error()) {
                 co_return execute_result_t{make_cursor(resource(), compacted.error())};
             }
+            if (mapping.array_equality && compacted.value().is_null()) {
+                // A 0-row `col = ARRAY(SELECT ...)`: bind a typed EMPTY array {} (not the NA-null sentinel
+                // that IN / ANY / ALL rely on) so length-aware equality compares against a real empty
+                // array. The element type is the sub-query's schema-derived output type (stamped by its
+                // own validation in the recursive execute_plan_full above).
+                const auto& sub_node = plan.sub_queries[i];
+                assert(sub_node->has_output_types() && "array-equality sub-query must be schema-stamped");
+                plan.parameters->set_parameter(mapping.id,
+                                               components::types::logical_value_t::create_array(
+                                                   resource(),
+                                                   sub_node->output_types().front(),
+                                                   {}));
+                continue;
+            }
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
         }
 
@@ -545,7 +561,7 @@ namespace services::collection::executor {
         // branch dispatch, the txn-kind decision, and the pass2 rewrite gates
         // below (the planner wraps/replaces nodes destructively later).
         const node_type original_type = [&] {
-            auto* r = services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
+            auto* r = components::logical_plan::effective_root_node(plan.sub_queries.back().get());
             return r ? r->type() : node_type::unused;
         }();
 
@@ -555,7 +571,7 @@ namespace services::collection::executor {
         std::pmr::string pending_set_tz_name{resource()};
         if (original_type == node_type::set_timezone_t) {
             auto* tz_node = static_cast<components::logical_plan::node_set_timezone_t*>(
-                services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
             pending_set_tz_name.assign(tz_node->timezone_name().c_str(), tz_node->timezone_name().size());
         }
 
@@ -985,7 +1001,7 @@ namespace services::collection::executor {
         // Build identification name from the effective consumer node, not
         // the (potentially transformer-wrapping) sequence_t.
         table_id id(resource(),
-                    build_id_cfn(services::catalog_resolve::effective_root_node(plan.sub_queries.back().get())));
+                    build_id_cfn(components::logical_plan::effective_root_node(plan.sub_queries.back().get())));
         cursor_t_ptr error;
         // Existence checks read from the explicit dispatcher_idx populated
         // above (mirrors the dispatcher's pre-execute pass).
@@ -993,7 +1009,7 @@ namespace services::collection::executor {
             case node_type::create_database_t:
                 if (!services::dispatcher::check_namespace_exists(resource(), &dispatcher_idx, id).contains_error()) {
                     auto* d = static_cast<const node_create_database_t*>(
-                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                        components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
                     if (d && d->if_not_exists()) {
                         error = make_cursor(resource());
                     } else {
@@ -1006,7 +1022,7 @@ namespace services::collection::executor {
             case node_type::create_collection_t: {
                 if (!services::dispatcher::check_collection_exists(resource(), &dispatcher_idx, id).contains_error()) {
                     auto* cc = static_cast<const node_create_collection_t*>(
-                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                        components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
                     if (cc && cc->if_not_exists()) {
                         error = make_cursor(resource());
                     } else {
@@ -1019,7 +1035,7 @@ namespace services::collection::executor {
                         id.get_namespace().empty() ? std::string{} : std::string(id.get_namespace().front());
                     const auto str_path = services::catalog_resolve::build_type_search_path_str(target_db);
                     auto* n = static_cast<node_create_collection_t*>(
-                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                        components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
                     for (auto& col_def : n->column_definitions()) {
                         if (col_def.type().type() == logical_type::UNKNOWN) {
                             if (col_def.type().type_name().empty()) {
@@ -1063,7 +1079,7 @@ namespace services::collection::executor {
             }
             case node_type::create_type_t: {
                 auto* n = static_cast<node_create_type_t*>(
-                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                    components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
                 components::catalog::oid_t target_ns = components::catalog::well_known_oid::public_namespace;
                 const std::string default_path[] = {"public", "pg_catalog"};
                 std::span<const std::string> str_path(default_path);
@@ -1123,7 +1139,7 @@ namespace services::collection::executor {
                 using components::logical_plan::drop_target_kind;
                 using components::logical_plan::node_drop_t;
                 const auto* drop_node = static_cast<const node_drop_t*>(
-                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                    components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
                 switch (drop_node->kind()) {
                     case drop_target_kind::database:
                         if (auto err = services::dispatcher::check_namespace_exists(resource(), &dispatcher_idx, id);
@@ -1212,7 +1228,7 @@ namespace services::collection::executor {
                 }
                 if (!error && !id.get_namespace().empty()) {
                     auto* cstr = static_cast<node_create_constraint_t*>(
-                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                        components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
                     if (cstr->kind() == constraint_kind::foreign_key || cstr->kind() == constraint_kind::check) {
                         const auto* tbl_local =
                             services::catalog_resolve::tbl_md_for(&dispatcher_idx,
@@ -1259,10 +1275,39 @@ namespace services::collection::executor {
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
+                    // A value-position scalar sub-query that yielded NULL / 0 rows is bound as an
+                    // untyped NA-null, which the projection type resolver would reject. Give it a
+                    // concrete type from the sub-query's schema-derived output type, in a VALIDATION-ONLY
+                    // copy of the parameter map — the runtime param stays NA-null so operator_select projects
+                    // a typed NULL from the resolved column type. Mirrors the LATERAL correlation override.
+                    // The map copy is built lazily, on the FIRST parameter that actually needs retyping:
+                    // the common no-override execution validates against the bound map directly.
+                    const auto& bound_params = plan.parameters->parameters();
+                    components::logical_plan::storage_parameters validate_params(resource());
+                    bool overridden = false;
+                    for (size_t i = 0; i + 1 < plan.sub_queries.size(); ++i) {
+                        const auto& m = plan.sub_query_results[i];
+                        if (m.compacter != &components::vector::compact_to_single_value) {
+                            continue;
+                        }
+                        auto it = bound_params.parameters.find(m.id);
+                        if (it == bound_params.parameters.end() || !it->second.is_null() ||
+                            !plan.sub_queries[i]->has_output_types()) {
+                            continue;
+                        }
+                        if (!overridden) {
+                            validate_params.parameters = bound_params.parameters;
+                            overridden = true;
+                        }
+                        validate_params.parameters.find(m.id)->second =
+                            components::types::logical_value_t(resource(),
+                                                               plan.sub_queries[i]->output_types().front());
+                    }
                     auto schema_res = services::dispatcher::validate_schema(resource(),
                                                                             &dispatcher_idx,
                                                                             plan.sub_queries.back().get(),
-                                                                            plan.parameters->parameters());
+                                                                            overridden ? validate_params
+                                                                                       : bound_params);
                     if (schema_res.has_error()) {
                         error = make_cursor(resource(), schema_res.error());
                     }
@@ -1402,7 +1447,7 @@ namespace services::collection::executor {
                 components::catalog::oid_t resolved_tbl_oid = components::catalog::INVALID_OID;
                 bool is_computing = false;
                 auto* effective_insert_node =
-                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
+                    components::logical_plan::effective_root_node(plan.sub_queries.back().get());
                 auto enriched_oid =
                     effective_insert_node ? effective_insert_node->table_oid() : plan.sub_queries.back()->table_oid();
                 if (enriched_oid == components::catalog::INVALID_OID && !plan.sub_queries.back()->children().empty()) {
@@ -1420,7 +1465,7 @@ namespace services::collection::executor {
                 if (is_computing) {
                     std::pmr::vector<components::table::column_definition_t> registered_cols(resource());
                     auto* effective_insert =
-                        services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
+                        components::logical_plan::effective_root_node(plan.sub_queries.back().get());
                     if (effective_insert) {
                         for (const auto& child : effective_insert->children()) {
                             if (!child || child->type() != components::logical_plan::node_type::data_t) {
@@ -1488,11 +1533,11 @@ namespace services::collection::executor {
                     return false;
                 }
                 const auto* dn = static_cast<const components::logical_plan::node_drop_t*>(
-                    services::catalog_resolve::effective_root_node(plan.sub_queries.back().get()));
+                    components::logical_plan::effective_root_node(plan.sub_queries.back().get()));
                 return dn && dn->kind() == components::logical_plan::drop_target_kind::index;
             }();
             if (is_ddl_oid_rewrite(original_type) && (is_drop_index || has_disk)) {
-                auto* eff = services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
+                auto* eff = components::logical_plan::effective_root_node(plan.sub_queries.back().get());
 
                 // CREATE CONSTRAINT: reject an empty/invalid CHECK before allocating an OID.
                 if (original_type == node_type::create_constraint_t) {
@@ -1525,7 +1570,7 @@ namespace services::collection::executor {
                 // create_index_t (last child of the rewritten sequence_t) carries
                 // the pg_index row oid (set by rewrite_create_index) and the name.
                 if (original_type == node_type::create_index_t) {
-                    if (auto* eff2 = services::catalog_resolve::effective_root_node(plan.sub_queries.back().get());
+                    if (auto* eff2 = components::logical_plan::effective_root_node(plan.sub_queries.back().get());
                         eff2 && !eff2->children().empty()) {
                         auto* back = eff2->children().back().get();
                         if (back && back->type() == node_type::create_index_t) {
@@ -1592,8 +1637,9 @@ namespace services::collection::executor {
         // Build-side selection: fetch live row counts for the child
         // tables of every INNER hash join so create_plan_join can put the smaller
         // side on the hash build. Gated on an owning agent existing (reuse
-        // can_push_to_agent); in-memory mode leaves row_counts empty and the swap
-        // no-ops. The sequential co_await loop is safe (actor-zeta inter-await
+        // can_push_to_agent); the pool-as-store disk manager is spawned even with
+        // disk off, so live counts are fetched in-memory too and the count-based
+        // decision runs. The sequential co_await loop is safe (actor-zeta inter-await
         // guard; operator_vacuum drains storage_total_rows the same way), and a
         // wrong/absent count only picks a slower-but-correct plan (the join output
         // is orientation-restored regardless). INVALID_OID children are dropped by

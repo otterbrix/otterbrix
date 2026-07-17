@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <core/operations_helper.hpp>
 #include <services/disk/agent_disk.hpp>
 
 // End-to-end coverage for aggregate-pushdown-to-owning-agent, run over BOTH
@@ -177,3 +178,86 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::scalar_static_schema") { ru
 TEST_CASE("integration::cpp::aggregate_pushdown_e2e::scalar_computed_schema") { run_scalar('g'); }
 TEST_CASE("integration::cpp::aggregate_pushdown_e2e::grouped_static_schema") { run_grouped('r'); }
 TEST_CASE("integration::cpp::aggregate_pushdown_e2e::grouped_computed_schema") { run_grouped('g'); }
+
+// ----------------------------------------------------------------------------
+// eager_aggregation vs a RESIDUAL cross-side WHERE. `WHERE t1.a > t2.b`
+// references BOTH join sides, so pushdown_filter leaves it as a match_t child of
+// the outer aggregate, addressed in the join's MERGED column space. The
+// eager-aggregation rule must bail on that residual match (as it does for a
+// having_t child): splicing the MIN partial under the join would pre-aggregate
+// rows the post-join filter is required to drop, and would leave the match's
+// merged paths pointing into t1's collapsed [g, k, MIN(x)] layout.
+//
+// Data design: the ONLY row the true filter drops, (g=1, x=5, a=0), holds its
+// group's SMALLEST x, so a wrong pre-aggregation is observable as MIN 5 for
+// g=1. (With a non-minimal x the fold is invisible and the plan would be
+// coincidentally green — exactly what this regression test must not be.)
+// Correct result: TWO groups, g=1 -> MIN 10 and g=2 -> MIN 30.
+// ----------------------------------------------------------------------------
+TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_under_residual_cross_side_where") {
+    auto config = make_test_config("/tmp/test_aggregate_pushdown_e2e/eager_residual_where");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    exec(dispatcher, "CREATE DATABASE TestDatabase;");
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.t1 (g bigint, x bigint, k bigint, a bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.t2 (k bigint, b bigint, c bigint);")->is_success());
+    REQUIRE(exec(dispatcher,
+                 "INSERT INTO TestDatabase.t1 (g, x, k, a) VALUES (1, 10, 1, 100), (1, 5, 1, 0), (2, 30, 2, 100);")
+                ->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.t2 (k, b, c) VALUES (1, 50, 0), (2, 50, 5);")->is_success());
+
+    auto cur = exec(dispatcher,
+                    "SELECT t1.g, MIN(t1.x) AS m FROM TestDatabase.t1 JOIN TestDatabase.t2 ON t1.k = t2.k "
+                    "WHERE t1.a > t2.b GROUP BY t1.g ORDER BY t1.g ASC;");
+    INFO("residual-where error: " << (cur->is_error() ? cur->get_error().what : "none"));
+    REQUIRE(cur->is_success());
+    // Correct semantics: rows surviving t1.a > t2.b are (g=1,x=10,a=100) and
+    // (g=2,x=30,a=100); the (g=1,x=5,a=0) row joins on k=1 but fails the WHERE,
+    // so it is dropped AFTER the join and must NOT contribute to MIN(x) — a
+    // wrong eager splice folds it into the partial and returns MIN 5 here.
+    REQUIRE(cur->size() == 2);
+    REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+    REQUIRE(cur->value(1, 0).value<int64_t>() == 10);
+    REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
+    REQUIRE(cur->value(1, 1).value<int64_t>() == 30);
+}
+
+// ----------------------------------------------------------------------------
+// eager_aggregation must re-stamp the pushed node's output_types with the true
+// partial layout [keys..., MIN(x)]: create_plan_aggregate forwards that stamp
+// as the authoritative output layout (operator_group's output_types_ / the
+// pushed reduce spec), which types the aggregate output column at ordinal
+// key_count + a. A stale base-table stamp mistypes that slot — here
+// a = (x double, g bigint, k bigint) puts BIGINT k at the ordinal where the
+// partial layout [g, k, MIN(x)] emits the DOUBLE minimum, and
+// vector_t::set_value refuses the mistyped cell (assert in Debug; the cell is
+// skipped in Release), so MIN(x) never comes back as 1.5 / 10.25.
+// ----------------------------------------------------------------------------
+TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_partial_min_keeps_double_type") {
+    auto config = make_test_config("/tmp/test_aggregate_pushdown_e2e/eager_partial_types");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    exec(dispatcher, "CREATE DATABASE TestDatabase;");
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.a (x double, g bigint, k bigint);")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.b (k bigint);")->is_success());
+    REQUIRE(exec(dispatcher,
+                 "INSERT INTO TestDatabase.a (x, g, k) VALUES "
+                 "(1.5, 1, 100), (2.5, 1, 101), (10.25, 2, 100), (20.5, 2, 101);")
+                ->is_success());
+    REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.b (k) VALUES (100), (101);")->is_success());
+
+    auto cur = exec(dispatcher,
+                    "SELECT g, MIN(x) AS m FROM TestDatabase.a JOIN TestDatabase.b ON a.k = b.k "
+                    "GROUP BY g ORDER BY g ASC;");
+    INFO("partial-types error: " << (cur->is_error() ? cur->get_error().what : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 2);
+    REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+    REQUIRE(cur->value(1, 0).type().type() == components::types::logical_type::DOUBLE);
+    REQUIRE(core::is_equals(cur->value(1, 0).value<double>(), 1.5)); // exactly representable
+    REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
+    REQUIRE(cur->value(1, 1).type().type() == components::types::logical_type::DOUBLE);
+    REQUIRE(core::is_equals(cur->value(1, 1).value<double>(), 10.25)); // exactly representable
+}

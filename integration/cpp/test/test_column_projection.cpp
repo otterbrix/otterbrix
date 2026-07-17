@@ -20,6 +20,130 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+using namespace test_helpers;
+
+// Disk-backed (disk.on=true) end-to-end coverage: the column_pruning optimizer rule
+// populates node_aggregate_t::projected_cols, so the owning disk agent's
+// storage_fetch_next_batch reads ONLY the projected storage columns (a WIDE chunk
+// whose non-projected slots are placeholders, indexed by original storage position).
+// Wrong projection here would return garbage / crash, so pinning concrete values
+// validates the on-disk projection path end to end — the path the in-memory tests
+// below do NOT exercise.
+TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
+    auto config = make_test_config("/tmp/col_proj/disk_backed", /*disk_on=*/true, /*wal_on=*/true);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.wide (a bigint, b bigint, c bigint, d bigint, e bigint);")->is_success());
+    REQUIRE(exec(dispatcher,
+                 "INSERT INTO db.wide (a, b, c, d, e) VALUES "
+                 "(1, 10, 100, 1000, 10000),"
+                 "(2, 20, 200, 2000, 20000),"
+                 "(3, 30, 300, 3000, 30000),"
+                 "(4, 40, 400, 4000, 40000);")
+                ->is_success());
+
+    INFO("SELECT a single (first) column");
+    {
+        auto cur = exec(dispatcher, "SELECT a FROM db.wide ORDER BY a ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(0, 3).value<int64_t>() == 4);
+    }
+
+    INFO("SELECT a middle column (projection must land at the right storage index)");
+    {
+        auto cur = exec(dispatcher, "SELECT c FROM db.wide ORDER BY c ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 100);
+        REQUIRE(cur->value(0, 3).value<int64_t>() == 400);
+    }
+
+    INFO("WHERE on a NON-selected column — it must still be read");
+    {
+        auto cur = exec(dispatcher, "SELECT a FROM db.wide WHERE e > 20000 ORDER BY a ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 4);
+    }
+
+    INFO("ORDER BY on a NON-selected column — it must still be read");
+    {
+        auto cur = exec(dispatcher, "SELECT a FROM db.wide ORDER BY b DESC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
+        REQUIRE(cur->value(0, 3).value<int64_t>() == 1);
+    }
+
+    INFO("SELECT * still returns every column");
+    {
+        auto cur = exec(dispatcher, "SELECT * FROM db.wide ORDER BY a ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->column_count() == 5);
+        REQUIRE(cur->value(4, 3).value<int64_t>() == 40000);
+    }
+
+    INFO("Projecting a non-first column over an EMPTY table (drained scan)");
+    {
+        REQUIRE(exec(dispatcher, "CREATE TABLE db.empty_wide (a bigint, b bigint, c bigint);")->is_success());
+        auto cur = exec(dispatcher, "SELECT c FROM db.empty_wide WHERE c > 0 ORDER BY c ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
+TEST_CASE("integration::cpp::column_projection::disk_backed_join_and_group") {
+    auto config = make_test_config("/tmp/col_proj/disk_backed_join", /*disk_on=*/true, /*wal_on=*/true);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.orders (oid bigint, cid bigint, amount bigint, note string);")
+                ->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.customers (cid bigint, name string, city string, tier string);")
+                ->is_success());
+    REQUIRE(exec(dispatcher,
+                 "INSERT INTO db.orders (oid, cid, amount, note) VALUES "
+                 "(1, 10, 100, 'n1'),(2, 10, 200, 'n2'),(3, 20, 300, 'n3'),(4, 30, 400, 'n4'),(5, 10, 500, 'n5');")
+                ->is_success());
+    REQUIRE(exec(dispatcher,
+                 "INSERT INTO db.customers (cid, name, city, tier) VALUES "
+                 "(10, 'Alice', 'NYC', 'gold'),(20, 'Bob', 'SF', 'silver'),(30, 'Carol', 'LA', 'gold');")
+                ->is_success());
+
+    INFO("INNER JOIN reading one column from each side; join keys not selected");
+    {
+        // Each side must still read its join key (cid) even though it is not in SELECT.
+        auto cur = exec(dispatcher,
+                        "SELECT c.name, o.amount FROM db.orders o "
+                        "INNER JOIN db.customers c ON o.cid = c.cid ORDER BY o.oid ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 100);
+        REQUIRE(cur->value(1, 4).value<int64_t>() == 500);
+    }
+
+    INFO("JOIN + GROUP BY with WHERE on a non-selected column");
+    {
+        auto cur = exec(dispatcher,
+                        "SELECT c.name, SUM(o.amount) AS total FROM db.orders o "
+                        "INNER JOIN db.customers c ON o.cid = c.cid "
+                        "GROUP BY c.name ORDER BY c.name ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        // Alice: 100+200+500 = 800, Bob: 300, Carol: 400
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 800);
+        REQUIRE(cur->value(1, 1).value<int64_t>() == 300);
+        REQUIRE(cur->value(1, 2).value<int64_t>() == 400);
+    }
+}
+
 TEST_CASE("integration::cpp::column_projection::plain_select") {
     auto config = test_create_config("/tmp/col_proj/plain_select");
     test_clear_directory(config);
@@ -520,5 +644,65 @@ TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection"
         REQUIRE(cur->size() == 2);
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[0] == 1);
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 2);
+    }
+}
+
+// The schema'd 0-row empty-guard a drained scan emits (so a scalar aggregate still
+// produces its COUNT=0 row, and an OUTER join can NULL-pad) must obey the same
+// contract as real pruned batches (PR #477): FULL table width, with buffer-less
+// placeholders in the non-projected slots, so operators above keep indexing by
+// table ordinal (e.g. the COUNT(e) arg path is e's storage ordinal). A guard
+// narrowed to the projected types makes those ordinal reads out-of-bounds — silent
+// in a regular build, a heap-buffer-overflow under ASAN. These queries pass
+// pre-fix in non-ASAN builds; their job is to lock the guard-chunk shape and act
+// as the ASAN tripwire.
+TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_guard") {
+    auto config = make_test_config("/tmp/col_proj/empty_guard", /*disk_on=*/true, /*wal_on=*/true);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.wide (a bigint, b bigint, c bigint, d bigint, e bigint);")->is_success());
+    REQUIRE(exec(dispatcher,
+                 "INSERT INTO db.wide (a, b, c, d, e) VALUES "
+                 "(1, 10, 100, 1000, 10000),"
+                 "(2, 20, 200, 2000, 20000);")
+                ->is_success());
+
+    INFO("pruned filtered scan (full_scan) + WHERE filtering everything + scalar aggregate");
+    {
+        // projected_cols = {c, e}; the COUNT arg resolves at e's table ordinal inside
+        // the 0-row guard chunk the drained scan emits.
+        auto cur = exec(dispatcher, "SELECT COUNT(e) AS cnt FROM db.wide WHERE c > 999999;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
+    }
+
+    INFO("same shape + HAVING keeps the empty-input scalar row");
+    {
+        auto cur = exec(dispatcher, "SELECT COUNT(e) AS cnt FROM db.wide WHERE c > 999999 HAVING COUNT(e) = 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("pruned plain SELECT + WHERE filtering everything (guard flows into operator_select)");
+    {
+        auto cur = exec(dispatcher, "SELECT c FROM db.wide WHERE e > 999999;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("typed EMPTY table (transfer_scan, no WHERE) + scalar aggregate + HAVING");
+    {
+        REQUIRE(exec(dispatcher, "CREATE TABLE db.empty3 (a bigint, b bigint, c bigint);")->is_success());
+        auto cur = exec(dispatcher, "SELECT COUNT(c) AS cnt FROM db.empty3 HAVING COUNT(c) = 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+
+        auto plain = exec(dispatcher, "SELECT COUNT(c) AS cnt FROM db.empty3;");
+        REQUIRE(plain->is_success());
+        REQUIRE(plain->size() == 1);
+        REQUIRE(plain->value(0, 0).value<uint64_t>() == 0);
     }
 }

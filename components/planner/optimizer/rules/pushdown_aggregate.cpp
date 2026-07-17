@@ -9,6 +9,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/expressions/udf_references.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 
@@ -57,98 +58,17 @@ namespace components::planner::optimizer {
             return false;
         }
 
-        // A user-defined function is any resolved function_uid at or beyond the
-        // builtin set. register_default_functions registers EXACTLY the
-        // DEFAULT_FUNCTIONS entries (uids [0, N)); the owning agent rebuilds its
-        // registry with the SAME register_default_functions and NOTHING else (it has
-        // no access to the coordinator's UDF registrations). So a uid >= N is a UDF
-        // the agent cannot resolve — building the pushed fragment there would look up
-        // a null function pointer and deref it. invalid_function_uid (unresolved) is
-        // NOT treated as a UDF: it is left to the coordinator's normal resolution.
-        bool is_udf_uid(components::compute::function_uid uid) noexcept {
-            return uid != components::compute::invalid_function_uid &&
-                   uid >= components::compute::DEFAULT_FUNCTIONS.size();
-        }
-
-        bool expr_references_udf(const ce::expression_ptr& expr);
-
-        // param_storage is variant<parameter_id_t, key_t, expression_ptr>; only the
-        // nested-expression alternative can carry a further function reference.
-        bool param_references_udf(const ce::param_storage& param) {
-            if (std::holds_alternative<ce::expression_ptr>(param)) {
-                return expr_references_udf(std::get<ce::expression_ptr>(param));
-            }
-            return false;
-        }
-
-        // True iff any function_expression / aggregate_expression in the tree is a
-        // UDF (or one of their nested argument expressions is). Recurses through
-        // function/aggregate/scalar params and compare children/operands. R14: tag
-        // via group() + static_cast (NO dynamic_cast).
-        bool expr_references_udf(const ce::expression_ptr& expr) {
-            if (!expr) {
-                return false;
-            }
-            switch (expr->group()) {
-                case ce::expression_group::function: {
-                    const auto* f = static_cast<const ce::function_expression_t*>(expr.get());
-                    if (is_udf_uid(f->function_uid())) {
-                        return true;
-                    }
-                    for (const auto& a : f->args()) {
-                        if (param_references_udf(a)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-                case ce::expression_group::aggregate: {
-                    const auto* a = static_cast<const ce::aggregate_expression_t*>(expr.get());
-                    if (is_udf_uid(a->function_uid())) {
-                        return true;
-                    }
-                    for (const auto& p : a->params()) {
-                        if (param_references_udf(p)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-                case ce::expression_group::scalar: {
-                    const auto* s = static_cast<const ce::scalar_expression_t*>(expr.get());
-                    for (const auto& p : s->params()) {
-                        if (param_references_udf(p)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-                case ce::expression_group::compare: {
-                    const auto* c = static_cast<const ce::compare_expression_t*>(expr.get());
-                    if (param_references_udf(c->left()) || param_references_udf(c->right())) {
-                        return true;
-                    }
-                    for (const auto& child : c->children()) {
-                        if (expr_references_udf(child)) {
-                            return true;
-                        }
-                    }
-                    return false;
-                }
-                default:
-                    return false;
-            }
-        }
-
         // Walk the whole aggregate fragment sub-tree (WHERE filter, group/aggregate
         // exprs, projections, group keys — every node carries its exprs in
-        // expressions()) checking for any UDF reference.
+        // expressions()) checking for any UDF reference. The UDF boundary rule
+        // (is_udf_uid) and the per-expression walker are shared with the disk-filter
+        // lowering — see components/expressions/udf_references.hpp.
         bool subtree_references_udf(const lp::node_ptr& node) {
             if (!node) {
                 return false;
             }
             for (const auto& expr : node->expressions()) {
-                if (expr_references_udf(expr)) {
+                if (ce::expr_references_udf(expr)) {
                     return true;
                 }
             }

@@ -19,6 +19,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/predicates/simple_predicate.cpp
         operators/predicates/function_predicate.cpp
         operators/predicates/utils.cpp
+        operators/predicates/expression_filter_bridge.cpp
 
         operators/scan/full_scan.cpp
         operators/scan/pushed_reduce_scan.cpp
@@ -100,6 +101,7 @@ target_link_libraries(
         otterbrix::index
         otterbrix::logical_plan
         otterbrix::catalog
+        otterbrix::regex
         spdlog::spdlog
         absl::flat_hash_map
         absl::node_hash_map

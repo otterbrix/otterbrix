@@ -326,3 +326,173 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     CHECK(j_dd->children()[0].get() == fct.get()); // fact at the bottom-left
     CHECK(j_dd->children()[1].get() == dd.get());
 }
+
+// ============================================================================
+// Eager (partial) aggregation pushdown through an inner join — end-to-end.
+//
+// `SELECT g, MIN/MAX(x) FROM a JOIN b ON a.k = b.k GROUP BY g` where g, k and x
+// all live on `a`, and `a` has many rows per (g, k). The eager_aggregation rule
+// pushes a MIN/MAX PARTIAL reduce (grouped by g, k) onto side `a` before the
+// join, leaving a FINAL merge above it. Part A proves the rewritten plan still
+// returns the correct rows; the plan asserts the partial is physically pushed
+// under the Hash Join for MIN/MAX and NOT for SUM (which is excluded).
+// ============================================================================
+TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
+    auto config = test_create_config("/tmp/test_eager_agg/rows");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto dispatcher = space.dispatcher();
+    auto session = otterbrix::session_id_t();
+
+    const std::string edb = "eageraggdb";
+    dispatcher->execute_sql(session, "CREATE DATABASE " + edb + ";");
+    auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
+    REQUIRE(run("CREATE TABLE " + edb + ".a ();")->is_success()); // (g, k, x)
+    REQUIRE(run("CREATE TABLE " + edb + ".b ();")->is_success()); // (k) dimension
+    // a: many rows per (g, k). b matches keys 100 and 101 (key 999 has no match).
+    REQUIRE(run("INSERT INTO " + edb + ".a (g, k, x) VALUES "
+                "(1,100,1),(1,100,2),(1,100,3),(1,101,4),(1,101,5),"
+                "(2,100,10),(2,100,20),(2,999,7);")
+                ->is_success());
+    REQUIRE(run("INSERT INTO " + edb + ".b (k) VALUES (100),(101);")->is_success());
+
+    auto plan_text = [&](const std::string& sql) {
+        auto c = run("EXPLAIN " + sql);
+        REQUIRE(c->is_success());
+        std::string t;
+        for (size_t r = 0; r < c->size(); ++r) {
+            t += std::string(c->value(0, r).value<std::string_view>());
+            t += '\n';
+        }
+        return t;
+    };
+    auto has = [](const std::string& hay, const std::string& needle) {
+        return hay.find(needle) != std::string::npos;
+    };
+
+    const std::string min_sql = "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb +
+                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string max_sql = "SELECT g, MAX(x) AS m FROM " + edb + ".a JOIN " + edb +
+                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string sum_sql = "SELECT g, SUM(x) AS s FROM " + edb + ".a JOIN " + edb +
+                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
+
+    // --- Plan: MIN/MAX push a partial aggregate under the Hash Join; SUM does not.
+    const std::string min_plan = plan_text(min_sql);
+    INFO(min_plan);
+    CHECK(has(min_plan, "Hash Join"));
+    CHECK(has(min_plan, "Pushed Aggregate Scan on a")); // partial reduce pushed onto a
+    CHECK(has(plan_text(max_sql), "Pushed Aggregate Scan on a"));
+    const std::string sum_plan = plan_text(sum_sql);
+    INFO(sum_plan);
+    CHECK(has(sum_plan, "Hash Join"));
+    CHECK_FALSE(has(sum_plan, "Pushed Aggregate Scan")); // SUM is excluded — not pushed
+
+    // --- Rows: the rewrite is result-preserving. Key 999 has no match in b, so its
+    // a-rows (group 2) are dropped by the inner join before contributing.
+    //   g=1: x in {1,2,3,4,5}  -> MIN 1,  MAX 5,  SUM 15
+    //   g=2: x in {10,20}      -> MIN 10, MAX 20, SUM 30   (x=7 @ k=999 dropped)
+    auto mn = run(min_sql);
+    REQUIRE(mn->is_success());
+    REQUIRE(mn->size() == 2);
+    CHECK(mn->value(0, 0).value<int64_t>() == 1);
+    CHECK(mn->value(1, 0).value<int64_t>() == 1);
+    CHECK(mn->value(0, 1).value<int64_t>() == 2);
+    CHECK(mn->value(1, 1).value<int64_t>() == 10);
+
+    auto mx = run(max_sql);
+    REQUIRE(mx->is_success());
+    REQUIRE(mx->size() == 2);
+    CHECK(mx->value(1, 0).value<int64_t>() == 5);
+    CHECK(mx->value(1, 1).value<int64_t>() == 20);
+
+    auto sm = run(sum_sql);
+    REQUIRE(sm->is_success());
+    REQUIRE(sm->size() == 2);
+    CHECK(sm->value(1, 0).value<int64_t>() == 15);
+    CHECK(sm->value(1, 1).value<int64_t>() == 30);
+}
+
+// ----------------------------------------------------------------------------
+// The crux of the MIN/MAX-only envelope: a DUPLICATING dimension. When `b` has a
+// repeated join key, the inner join duplicates each `a` row. MIN/MAX absorb that
+// duplication (MIN(MIN over dups) == MIN over originals), so eager-pushing them is
+// result-preserving even though `a`-rows are multiplied. SUM does NOT absorb it
+// (the join inflates the total), which is exactly why SUM stays un-pushed. This
+// test proves both: the duplication is real (SUM is inflated) AND MIN/MAX are
+// unchanged with the partial physically pushed.
+// ----------------------------------------------------------------------------
+TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_safe") {
+    auto config = test_create_config("/tmp/test_eager_agg/dup");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto dispatcher = space.dispatcher();
+    auto session = otterbrix::session_id_t();
+
+    const std::string edb = "eageraggdupdb";
+    dispatcher->execute_sql(session, "CREATE DATABASE " + edb + ";");
+    auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
+    REQUIRE(run("CREATE TABLE " + edb + ".a ();")->is_success()); // (g, k, x)
+    REQUIRE(run("CREATE TABLE " + edb + ".b ();")->is_success()); // (k) dimension
+    // a: many rows per (g, k).
+    REQUIRE(run("INSERT INTO " + edb + ".a (g, k, x) VALUES "
+                "(1,100,1),(1,100,2),(1,100,3),(2,200,10),(2,200,20);")
+                ->is_success());
+    // b DUPLICATES key 100 (x2) and carries key 200 once -> every a-row @k=100 is
+    // doubled by the inner join; a-rows @k=200 appear once.
+    REQUIRE(run("INSERT INTO " + edb + ".b (k) VALUES (100),(100),(200);")->is_success());
+
+    auto plan_text = [&](const std::string& sql) {
+        auto c = run("EXPLAIN " + sql);
+        REQUIRE(c->is_success());
+        std::string t;
+        for (size_t r = 0; r < c->size(); ++r) {
+            t += std::string(c->value(0, r).value<std::string_view>());
+            t += '\n';
+        }
+        return t;
+    };
+    auto has = [](const std::string& hay, const std::string& needle) {
+        return hay.find(needle) != std::string::npos;
+    };
+
+    const std::string min_sql = "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb +
+                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string max_sql = "SELECT g, MAX(x) AS m FROM " + edb + ".a JOIN " + edb +
+                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
+    const std::string sum_sql = "SELECT g, SUM(x) AS s FROM " + edb + ".a JOIN " + edb +
+                                ".b ON a.k = b.k GROUP BY g ORDER BY g";
+
+    // MIN/MAX push the partial under the join; SUM does not.
+    CHECK(has(plan_text(min_sql), "Pushed Aggregate Scan on a"));
+    CHECK(has(plan_text(max_sql), "Pushed Aggregate Scan on a"));
+    CHECK_FALSE(has(plan_text(sum_sql), "Pushed Aggregate Scan"));
+
+    // MIN/MAX absorb the k=100 duplication -> identical to the no-duplication oracle:
+    //   g=1: x in {1,2,3} (each doubled) -> MIN 1,  MAX 3
+    //   g=2: x in {10,20}                -> MIN 10, MAX 20
+    auto mn = run(min_sql);
+    REQUIRE(mn->is_success());
+    REQUIRE(mn->size() == 2);
+    CHECK(mn->value(1, 0).value<int64_t>() == 1);
+    CHECK(mn->value(1, 1).value<int64_t>() == 10);
+
+    auto mx = run(max_sql);
+    REQUIRE(mx->is_success());
+    REQUIRE(mx->size() == 2);
+    CHECK(mx->value(1, 0).value<int64_t>() == 3);
+    CHECK(mx->value(1, 1).value<int64_t>() == 20);
+
+    // SUM is inflated by the duplication -> proves the join really doubles k=100 and
+    // therefore why SUM must NOT be eager-pushed:
+    //   g=1: (1+2+3) * 2 = 12   g=2: (10+20) * 1 = 30
+    auto sm = run(sum_sql);
+    REQUIRE(sm->is_success());
+    REQUIRE(sm->size() == 2);
+    CHECK(sm->value(1, 0).value<int64_t>() == 12);
+    CHECK(sm->value(1, 1).value<int64_t>() == 30);
+}

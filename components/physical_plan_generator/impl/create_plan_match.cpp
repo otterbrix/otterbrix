@@ -4,7 +4,7 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/function_expression.hpp>
+#include <components/expressions/udf_references.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_having.hpp>
@@ -80,7 +80,11 @@ namespace services::planner::impl {
                 return false;
             }
             auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(expr);
-            if (comp_expr->type() == compare_type::regex || comp_expr->do_not_fold()) {
+            // A regex leaf (LIKE / ILIKE, pattern pre-converted by like_to_regex) is pushable to disk:
+            // constant_filter_t compares it via RE2 (case-insensitively when regex_icase). It still needs the
+            // `column OP constant` shape enforced below; an exotic non-key/expression operand falls back to
+            // operator_match. do_not_fold() (correlated / sub-query-array compares) stays in-memory.
+            if (comp_expr->do_not_fold()) {
                 return false;
             }
             for (const auto& child : comp_expr->children()) {
@@ -90,21 +94,33 @@ namespace services::planner::impl {
             }
 
             // A LEAF compare (not a union AND/OR of sub-compares) is pushable into a disk
-            // table_filter_t ONLY as `column OP constant` — one operand a key_t (the column),
-            // the other a bound parameter_id_t. A column-vs-column comparison (both key_t), an
-            // expression operand, or any other shape is NOT representable as a table_filter_t
-            // and MUST be evaluated by operator_match instead: pushing it into full_scan makes
-            // transform_predicate's std::get<parameter_id_t>(right()) throw (bad_variant_access).
-            // (union compare expressions carry nullptr in the left/right slots — handled above.)
+            // table_filter_t only in the shapes (A)/(B)/(C) checked below; any other shape
+            // MUST be evaluated by operator_match instead. (union compare expressions carry
+            // nullptr in the left/right slots — handled above.)
             if (!is_union_compare_condition(comp_expr->type())) {
                 // param_storage is variant<parameter_id_t, key_t, expression_ptr>: a bound
-                // parameter is the alternative that is neither a key nor a nested expression.
-                // "column OP constant" = neither operand a nested expression AND exactly one
-                // operand a key (so the other is a bound parameter). Uses the is_key/is_expr
-                // accessors, not std::holds_alternative (Rule 14: no new std::variant site).
-                const bool col_op_const = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right()) &&
-                                          (is_key(comp_expr->left()) != is_key(comp_expr->right()));
-                if (!col_op_const) {
+                // parameter is the alternative that is neither a key nor a nested expression. Uses the
+                // is_key/is_expr/is_parameter accessors, not std::holds_alternative.
+                const bool no_expr = !is_expr(comp_expr->left()) && !is_expr(comp_expr->right());
+                // (A) column OP constant: exactly one operand a key, the other a bound parameter.
+                const bool col_op_const = no_expr && (is_key(comp_expr->left()) != is_key(comp_expr->right()));
+                // (B) column-vs-column: both operands columns, a plain comparison -> a column_column_filter_t
+                // (fetch both values, compare per row). regex/any/all with two keys are NOT this shape.
+                const auto t = comp_expr->type();
+                const bool plain_cmp = t == compare_type::eq || t == compare_type::ne || t == compare_type::lt ||
+                                       t == compare_type::lte || t == compare_type::gt || t == compare_type::gte;
+                const bool col_op_col =
+                    no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
+                // (C) f(column...) OP constant: one operand a function/arithmetic expression over column(s),
+                // the other a bound parameter -> an expression_filter_t evaluated per row on the agent. Only
+                // when UDF-free (the disk agent cannot resolve a UDF, see
+                // components/expressions/udf_references.hpp).
+                const bool expr_op_const =
+                    ((is_expr(comp_expr->left()) && is_parameter(comp_expr->right())) ||
+                     (is_expr(comp_expr->right()) && is_parameter(comp_expr->left()))) &&
+                    !expr::param_references_udf(comp_expr->left()) &&
+                    !expr::param_references_udf(comp_expr->right());
+                if (!col_op_const && !col_op_col && !expr_op_const) {
                     return false;
                 }
             }

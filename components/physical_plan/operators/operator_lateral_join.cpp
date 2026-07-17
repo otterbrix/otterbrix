@@ -127,23 +127,33 @@ namespace components::operators {
         // Output layout: (outer columns ++ inner columns), fixed from the plan-time
         // schemas. Built once, up front — so a LEFT join can NULL-pad an outer row
         // even when the inner side produces zero rows for every outer row.
+        // Semi-/anti-join output is the OUTER (left) schema ONLY: each outer row is
+        // emitted at most once (semi iff the inner side has >=1 matching row, anti iff
+        // it has none), with no inner columns. inner/left keep the (outer ++ inner) layout.
+        const bool semi_anti = (type_ == join_type::semi || type_ == join_type::anti);
         std::pmr::vector<types::complex_logical_type> out_types(res);
-        out_types.reserve(outer_count + inner_count);
+        out_types.reserve(outer_count + (semi_anti ? 0 : inner_count));
         for (const auto& t : outer_schema_) {
             out_types.emplace_back(t);
         }
-        for (const auto& t : inner_schema_) {
-            out_types.emplace_back(t);
+        if (!semi_anti) {
+            for (const auto& t : inner_schema_) {
+                out_types.emplace_back(t);
+            }
         }
         std::vector<size_t> indices_left;
         indices_left.reserve(outer_count);
         for (size_t i = 0; i < outer_count; ++i) {
             indices_left.push_back(i);
         }
+        // Empty for semi/anti: emit_left_only then NULL-pads no right columns, i.e. emits
+        // the bare outer row.
         std::vector<size_t> indices_right;
-        indices_right.reserve(inner_count);
-        for (size_t i = 0; i < inner_count; ++i) {
-            indices_right.push_back(outer_count + i);
+        if (!semi_anti) {
+            indices_right.reserve(inner_count);
+            for (size_t i = 0; i < inner_count; ++i) {
+                indices_right.push_back(outer_count + i);
+            }
         }
 
         chunks_vector_t result(res);
@@ -152,14 +162,19 @@ namespace components::operators {
         // outer (left/probe) and inner (right/build) schemas. all_true for the comma /
         // ON true forms passes every inner row. Correlation parameters are read live
         // per row-check, so rebinding them per outer row re-uses this one predicate.
-        predicates::predicate_ptr predicate = on_expression_ ? predicates::create_predicate(res,
-                                                                                            ctx->function_registry,
-                                                                                            on_expression_,
-                                                                                            outer_schema_,
-                                                                                            inner_schema_,
-                                                                                            &ctx->parameters,
-                                                                                            ctx->session_tz)
-                                                             : predicates::create_all_true_predicate(res);
+        // Semi/anti never carry a real ON (EXISTS filters inside the inner sub-plan), so
+        // they use the schema-free all_true predicate — the inner side of an EXISTS body
+        // may project an alias-less constant, which the schema-bound predicate builder
+        // would reject.
+        predicates::predicate_ptr predicate =
+            (on_expression_ && !semi_anti) ? predicates::create_predicate(res,
+                                                                          ctx->function_registry,
+                                                                          on_expression_,
+                                                                          outer_schema_,
+                                                                          inner_schema_,
+                                                                          &ctx->parameters,
+                                                                          ctx->session_tz)
+                                           : predicates::create_all_true_predicate(res);
 
         auto outer_res = co_await ctx->runner->run_subplan(outer_, ctx);
         if (outer_res.has_error()) {
@@ -196,12 +211,27 @@ namespace components::operators {
                     const auto& mask = mask_res.value();
                     for (uint64_t inner_row = 0; inner_row < inner_chunk.size(); ++inner_row) {
                         if (mask[inner_row]) {
-                            builder.emit_matched(outer_chunk, row, inner_chunk, inner_row);
                             matched = true;
+                            // inner/left emit every matched (outer ++ inner) pair; semi/anti
+                            // only need the EXISTENCE of a match, not the matched rows —
+                            // the first hit settles existence, skip the rest of the chunk.
+                            if (semi_anti) {
+                                break;
+                            }
+                            builder.emit_matched(outer_chunk, row, inner_chunk, inner_row);
                         }
                     }
+                    if (matched && semi_anti) {
+                        break; // existence settled — stop scanning inner chunks
+                    }
                 }
-                if (!matched && type_ == join_type::left) {
+                // Emit the OUTER row once per join semantics:
+                //   semi -> iff matched; anti / left -> iff NOT matched (left NULL-pads the right).
+                if (type_ == join_type::semi) {
+                    if (matched) {
+                        builder.emit_left_only(outer_chunk, row);
+                    }
+                } else if (!matched && (type_ == join_type::anti || type_ == join_type::left)) {
                     builder.emit_left_only(outer_chunk, row);
                 }
             }

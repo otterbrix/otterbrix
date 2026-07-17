@@ -136,18 +136,7 @@ if(BUILD_PYTHON)
     find_package(tabulate CONFIG REQUIRED)
 endif()
 
-if (ENABLE_ASAN AND NOT APPLE)
-    # build abseil-cpp locally to avoid ABI issues with ASAN-instrumented code
-    include(FetchContent)
-    FetchContent_Declare(
-            absl
-            URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20260107.1.zip
-    )
-    FetchContent_MakeAvailable(absl)
-else()
-    find_package(absl CONFIG REQUIRED)
-endif()
-
+find_package(absl CONFIG REQUIRED)
 find_package(re2 CONFIG REQUIRED)
 
 

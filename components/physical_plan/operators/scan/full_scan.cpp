@@ -498,18 +498,16 @@ namespace components::operators {
         , projected_cols_(std::move(projected_cols)) {}
 
     vector::data_chunk_t full_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
-        std::pmr::vector<types::complex_logical_type> projected_types(resource_);
         if (projected_cols_.empty()) {
-            projected_types = types;
-        } else {
-            projected_types.reserve(projected_cols_.size());
-            for (auto idx : projected_cols_) {
-                if (idx < types.size()) {
-                    projected_types.push_back(types[idx]);
-                }
-            }
+            return vector::data_chunk_t{resource_, types, 0};
         }
-        return vector::data_chunk_t{resource_, projected_types, 0};
+        // Pruned-scan contract (PR #477): pruned scans emit FULL-WIDTH chunks whose
+        // non-projected columns are buffer-less placeholders, so column ordinals stay
+        // stable plan-wide (expression key paths are never remapped after prune_columns).
+        // The schema'd 0-row empty-guard must honor the same shape as real batches —
+        // operators above index it by table ordinal. An empty `types` (the 0-column
+        // drain sentinel) still degrades to a 0-column chunk here.
+        return vector::data_chunk_t{resource_, types, projected_cols_, 0};
     }
 
     // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---

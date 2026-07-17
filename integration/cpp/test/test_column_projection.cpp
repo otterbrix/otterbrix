@@ -646,3 +646,63 @@ TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection"
         REQUIRE(cur->chunks().front().data[0].data<int64_t>()[1] == 2);
     }
 }
+
+// The schema'd 0-row empty-guard a drained scan emits (so a scalar aggregate still
+// produces its COUNT=0 row, and an OUTER join can NULL-pad) must obey the same
+// contract as real pruned batches (PR #477): FULL table width, with buffer-less
+// placeholders in the non-projected slots, so operators above keep indexing by
+// table ordinal (e.g. the COUNT(e) arg path is e's storage ordinal). A guard
+// narrowed to the projected types makes those ordinal reads out-of-bounds — silent
+// in a regular build, a heap-buffer-overflow under ASAN. These queries pass
+// pre-fix in non-ASAN builds; their job is to lock the guard-chunk shape and act
+// as the ASAN tripwire.
+TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_guard") {
+    auto config = make_test_config("/tmp/col_proj/empty_guard", /*disk_on=*/true, /*wal_on=*/true);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE TABLE db.wide (a bigint, b bigint, c bigint, d bigint, e bigint);")->is_success());
+    REQUIRE(exec(dispatcher,
+                 "INSERT INTO db.wide (a, b, c, d, e) VALUES "
+                 "(1, 10, 100, 1000, 10000),"
+                 "(2, 20, 200, 2000, 20000);")
+                ->is_success());
+
+    INFO("pruned filtered scan (full_scan) + WHERE filtering everything + scalar aggregate");
+    {
+        // projected_cols = {c, e}; the COUNT arg resolves at e's table ordinal inside
+        // the 0-row guard chunk the drained scan emits.
+        auto cur = exec(dispatcher, "SELECT COUNT(e) AS cnt FROM db.wide WHERE c > 999999;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
+    }
+
+    INFO("same shape + HAVING keeps the empty-input scalar row");
+    {
+        auto cur = exec(dispatcher, "SELECT COUNT(e) AS cnt FROM db.wide WHERE c > 999999 HAVING COUNT(e) = 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
+
+    INFO("pruned plain SELECT + WHERE filtering everything (guard flows into operator_select)");
+    {
+        auto cur = exec(dispatcher, "SELECT c FROM db.wide WHERE e > 999999;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("typed EMPTY table (transfer_scan, no WHERE) + scalar aggregate + HAVING");
+    {
+        REQUIRE(exec(dispatcher, "CREATE TABLE db.empty3 (a bigint, b bigint, c bigint);")->is_success());
+        auto cur = exec(dispatcher, "SELECT COUNT(c) AS cnt FROM db.empty3 HAVING COUNT(c) = 0;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+
+        auto plain = exec(dispatcher, "SELECT COUNT(c) AS cnt FROM db.empty3;");
+        REQUIRE(plain->is_success());
+        REQUIRE(plain->size() == 1);
+        REQUIRE(plain->value(0, 0).value<uint64_t>() == 0);
+    }
+}

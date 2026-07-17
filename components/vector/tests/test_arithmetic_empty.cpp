@@ -15,14 +15,11 @@ using namespace components;
 // then dereferenced those operand vectors (left.type()) before checking the row
 // count, causing EXC_BAD_ACCESS.
 //
-// This test reproduces that exact shape at the vector layer: a 0-row, 0-column
-// chunk whose operand pointers are resolved with at(path) (the same call the
-// arithmetic operator uses). With the count==0 guard in place the call must NOT
-// crash and must return an empty (0-row) result vector.
-//
-// NOTE: the operand pointers are intentionally dangling/out-of-bounds — the test
-// itself never dereferences them; only the function-under-test would, which is
-// precisely the bug being guarded.
+// This test pins the two guarantees that shape now meets, layer by layer:
+// data_chunk_t::at(path) answers nullptr for an ordinal past the chunk's width
+// ("column not found", handled as a clean error by the arithmetic operator), and
+// compute_binary_arithmetic with count==0 touches no operand rows and returns an
+// empty (0-row) result vector of the promoted type.
 TEST_CASE("compute_binary_arithmetic: empty chunk operands, count==0 does not deref") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -34,21 +31,28 @@ TEST_CASE("compute_binary_arithmetic: empty chunk operands, count==0 does not de
     REQUIRE(chunk.column_count() == 0);
 
     // Resolve operand vectors the same way the arithmetic operator does: by
-    // column path. With an empty column array these yield out-of-bounds pointers.
+    // column path. An ordinal past the chunk's width is "column not found" —
+    // data_chunk_t::at now answers nullptr instead of handing out an
+    // out-of-bounds pointer, and the arithmetic operator converts that into a
+    // clean error before compute_binary_arithmetic can ever see the operand.
     std::pmr::vector<size_t> left_path(&resource);
     left_path.push_back(9); // lo_extendedprice index in the real SSB chunk
     std::pmr::vector<size_t> right_path(&resource);
     right_path.push_back(11); // lo_discount index
 
-    components::vector::vector_t* left = chunk.at(left_path);
-    components::vector::vector_t* right = chunk.at(right_path);
+    REQUIRE(chunk.at(left_path) == nullptr);
+    REQUIRE(chunk.at(right_path) == nullptr);
 
-    // Without the count==0 guard this dereferences left->type() on a dangling
-    // vector → SIGSEGV. Reaching the assertions below proves the guard ran.
+    // The count==0 guard of compute_binary_arithmetic itself still must not
+    // touch operand ROWS: 0-row operands of the SSB q1-1 types multiply into an
+    // empty result. (Element access on an empty vector would be OOB — the ASAN
+    // suite keeps this honest.)
+    components::vector::vector_t left(&resource, types::logical_type::DOUBLE, /*capacity=*/0);
+    components::vector::vector_t right(&resource, types::logical_type::BIGINT, /*capacity=*/0);
     auto out = components::vector::compute_binary_arithmetic(&resource,
                                                              components::vector::arithmetic_op::multiply,
-                                                             *left,
-                                                             *right,
+                                                             left,
+                                                             right,
                                                              /*count=*/0);
 
     // A flat numeric result vector of the promoted arithmetic type, carrying no

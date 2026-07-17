@@ -478,6 +478,21 @@ void sql_benchmark_t::run(benchmark_state_t& state) {
     }
 }
 
+std::string sql_benchmark_t::explain(benchmark_state_t& state) {
+    auto qualified = qualify_sql(sql_);
+    auto cursor = state.dispatcher->execute_sql(state.session, "EXPLAIN " + qualified);
+    if (cursor->is_error()) {
+        return std::string("EXPLAIN error: ") + cursor->get_error().what.c_str();
+    }
+    // EXPLAIN returns the plan as one text line per row in column 0.
+    std::string plan;
+    for (size_t r = 0; r < cursor->size(); ++r) {
+        plan += std::string(cursor->value(0, r).value<std::string_view>());
+        plan += '\n';
+    }
+    return plan;
+}
+
 std::vector<std::unique_ptr<sql_benchmark_t>>
 sql_benchmark_t::load_from_file(const std::filesystem::path& path, const std::filesystem::path& base_dir) {
     std::ifstream file(path);

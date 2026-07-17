@@ -25,6 +25,7 @@ public:
 
     void load(benchmark_state_t& state) override;
     void run(benchmark_state_t& state) override;
+    std::string explain(benchmark_state_t& state) override;
     void set_disable_setup(bool disable) override { disable_setup_ = disable; }
 
     static std::vector<std::unique_ptr<sql_benchmark_t>>

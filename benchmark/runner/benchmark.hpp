@@ -90,6 +90,11 @@ public:
     // runner can request it uniformly without a dynamic_cast.
     virtual void set_disable_setup(bool /*disable*/) {}
 
+    // Return the physical plan text for this benchmark's query (via EXPLAIN), for the
+    // runner's --explain mode. Default empty so the runner can request it uniformly
+    // without a dynamic_cast; only SQL benchmarks produce a plan.
+    virtual std::string explain(benchmark_state_t& /*state*/) { return ""; }
+
     virtual uint64_t nruns() const { return 5; }
     virtual uint64_t timeout_seconds() const { return 30; }
 };

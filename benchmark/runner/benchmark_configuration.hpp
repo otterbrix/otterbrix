@@ -26,6 +26,7 @@ struct benchmark_configuration_t {
     bool list_groups = false;
     bool show_query = false;
     bool show_info = false;
+    bool explain_mode = false;
     std::string output_file;
     std::string single_file;
     bool disk_on = false;

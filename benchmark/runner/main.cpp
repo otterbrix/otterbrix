@@ -69,6 +69,8 @@ int main(int argc, char* argv[]) {
             config.show_info = true;
         } else if (arg == "--query") {
             config.show_query = true;
+        } else if (arg == "--explain") {
+            config.explain_mode = true;
         } else if (arg == "--disk") {
             config.disk_on = true;
         } else if (arg == "--wal") {

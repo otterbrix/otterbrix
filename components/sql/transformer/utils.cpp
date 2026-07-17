@@ -791,8 +791,11 @@ namespace components::sql::transform {
         // (e.g. parameter-only statements, schemaless DDL) — skip the resolve
         // node so the wrapped plan still carries useful structure.
         auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
+        logical_plan::node_catalog_resolve_t* ns_node_ptr = nullptr;
         if (!dbname.empty()) {
-            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{dbname}));
+            auto ns_node = logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{dbname});
+            ns_node_ptr = ns_node.get();
+            seq->append_child(std::move(ns_node));
         }
         logical_plan::node_catalog_resolve_t* table_node_ptr = nullptr;
         if (!relname.empty()) {
@@ -800,6 +803,11 @@ namespace components::sql::transform {
                                                                             core::dbname_t{dbname},
                                                                             core::relname_t{relname});
             table_node_ptr = table_node.get();
+            // Namespace fast path: the ns sibling executes first in Pass 1, so
+            // operator_resolve_table_t can read its stamp instead of doing its
+            // own pg_namespace scan (it still self-resolves when the link is
+            // absent or unstamped — the link is never a correctness dependency).
+            table_node_ptr->set_target(ns_node_ptr);
             seq->append_child(std::move(table_node));
         }
         if (with_constraints != constraint_resolve_kind::none && table_node_ptr) {
@@ -836,27 +844,37 @@ namespace components::sql::transform {
         }
         auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource));
         // Dedupe dbname for namespace resolves; preserve table order.
-        std::vector<std::string> seen_dbs;
+        std::vector<std::pair<std::string, logical_plan::node_catalog_resolve_t*>> seen_dbs;
         for (const auto& [db, rel] : targets) {
             if (db.empty())
                 continue;
             bool already = false;
             for (const auto& s : seen_dbs) {
-                if (s == db) {
+                if (s.first == db) {
                     already = true;
                     break;
                 }
             }
             if (already)
                 continue;
-            seen_dbs.push_back(db);
-            seq->append_child(logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{db}));
+            auto ns_node = logical_plan::make_node_catalog_resolve_namespace(resource, core::dbname_t{db});
+            seen_dbs.emplace_back(db, ns_node.get());
+            seq->append_child(std::move(ns_node));
         }
         for (auto& [db, rel] : targets) {
             if (rel.empty())
                 continue;
-            seq->append_child(
-                logical_plan::make_node_catalog_resolve_table(resource, core::dbname_t{db}, core::relname_t{rel}));
+            auto table_node =
+                logical_plan::make_node_catalog_resolve_table(resource, core::dbname_t{db}, core::relname_t{rel});
+            // Namespace fast path (see maybe_wrap_with_catalog_resolve_table):
+            // link each table node to the deduped ns sibling of its dbname.
+            for (const auto& s : seen_dbs) {
+                if (s.first == db) {
+                    table_node->set_target(s.second);
+                    break;
+                }
+            }
+            seq->append_child(std::move(table_node));
         }
         seq->append_child(std::move(main_node));
         return seq;

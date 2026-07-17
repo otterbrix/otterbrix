@@ -80,19 +80,28 @@ namespace components::sql::transform {
         // of an outer sequence_t. Pass 1 walks the sequence's leading
         // catalog_resolve_*_t children and stamps oids + metadata.
         auto outer = boost::intrusive_ptr(new logical_plan::node_sequence_t(resource_));
+        logical_plan::node_catalog_resolve_t* mv_ns_ptr = nullptr;
         if (!mv_db.empty()) {
-            outer->append_child(logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{mv_db}));
+            auto mv_ns = logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{mv_db});
+            mv_ns_ptr = mv_ns.get();
+            outer->append_child(std::move(mv_ns));
         }
         // Source's namespace + table resolve so Pass 1 stamps source's
         // resolved_metadata.columns for the planner's derive_output_schema.
+        logical_plan::node_catalog_resolve_t* source_ns_ptr = (source_db == mv_db) ? mv_ns_ptr : nullptr;
         if (!source_db.empty() && source_db != mv_db) {
-            outer->append_child(
-                logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{source_db}));
+            auto source_ns = logical_plan::make_node_catalog_resolve_namespace(resource_, core::dbname_t{source_db});
+            source_ns_ptr = source_ns.get();
+            outer->append_child(std::move(source_ns));
         }
         if (!source_rel.empty()) {
-            outer->append_child(logical_plan::make_node_catalog_resolve_table(resource_,
+            auto source_table = logical_plan::make_node_catalog_resolve_table(resource_,
                                                                               core::dbname_t{source_db},
-                                                                              core::relname_t{source_rel}));
+                                                                              core::relname_t{source_rel});
+            // Namespace fast path: link the source table resolve to its
+            // matching-dbname ns sibling (see maybe_wrap_with_catalog_resolve_table).
+            source_table->set_target(source_ns_ptr);
+            outer->append_child(std::move(source_table));
         }
         outer->append_child(matview_node);
         return outer;

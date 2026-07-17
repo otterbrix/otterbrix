@@ -42,33 +42,13 @@ namespace components::operators {
 
     operator_resolve_table_t::operator_resolve_table_t(std::pmr::memory_resource* resource,
                                                        log_t log,
-                                                       catalog::oid_t table_oid)
-        : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
-        , table_oid_(table_oid)
-        , output_schema_(resource) {
-        build_output_schema(output_schema_);
-    }
-
-    operator_resolve_table_t::operator_resolve_table_t(std::pmr::memory_resource* resource,
-                                                       log_t log,
                                                        catalog::oid_t namespace_oid,
-                                                       std::string relname)
-        : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
-        , table_oid_(catalog::INVALID_OID)
-        , input_namespace_oid_(namespace_oid)
-        , relname_(std::move(relname))
-        , output_schema_(resource) {
-        build_output_schema(output_schema_);
-    }
-
-    operator_resolve_table_t::operator_resolve_table_t(std::pmr::memory_resource* resource,
-                                                       log_t log,
-                                                       catalog::oid_t namespace_oid,
+                                                       std::string dbname,
                                                        std::string relname,
                                                        components::logical_plan::node_catalog_resolve_t* target_node)
         : read_write_operator_t(resource, std::move(log), operator_type::resolve_table)
-        , table_oid_(catalog::INVALID_OID)
         , input_namespace_oid_(namespace_oid)
+        , dbname_(std::move(dbname))
         , relname_(std::move(relname))
         , target_node_(target_node)
         , output_schema_(resource) {
@@ -76,6 +56,7 @@ namespace components::operators {
     }
 
     actor_zeta::unique_future<void> operator_resolve_table_t::await_async_and_resume(pipeline::context_t* ctx) {
+        constexpr catalog::oid_t kPgNamespace = catalog::well_known_oid::pg_namespace_table;
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
         constexpr catalog::oid_t kPgAttribute = catalog::well_known_oid::pg_attribute_table;
         constexpr catalog::oid_t kPgComputedColumn = catalog::well_known_oid::pg_computed_column_table;
@@ -95,9 +76,8 @@ namespace components::operators {
             co_return;
         }
 
-        // (name-form only): when only (namespace_oid, relname) is known,
-        // first resolve table_oid via pg_class scan by (relname, relnamespace).
-        // If relname_ is empty we cannot resolve — emit empty output.
+        // (name-form): resolve table_oid via pg_class scan. If relname_ is
+        // empty we cannot resolve — emit empty output.
         if (table_oid_ == catalog::INVALID_OID) {
             if (relname_.empty()) {
                 output_ = make_operator_data(resource_, output_schema_, 0);
@@ -105,6 +85,60 @@ namespace components::operators {
                 mark_executed();
                 co_return;
             }
+            // Database-qualified name: translate dbname -> namespace_oid at
+            // EXECUTION time via a pg_namespace read (mirrors
+            // operator_resolve_type_t). This cannot be a plan-generation-time
+            // constructor argument: the sibling resolve_namespace operator only
+            // stamps its own node after the whole resolve sub-plan is already
+            // built, so a ctor-frozen oid is always INVALID — which used to
+            // degrade the pg_class scan to relname-only and leak the first
+            // same-named table from ANY database (issue #557). A namespace
+            // miss is a hard not-found: validate then reports
+            // database_not_exists. Deliberately NO ""->public defaulting
+            // (unlike resolve_type): unqualified CREATE TABLE writes
+            // relnamespace=INVALID, so mapping ""->public would break every
+            // unqualified table.
+            // Fast path: the transformer links the table-resolve node to its
+            // sibling namespace-resolve node (same dbname), and the sibling's
+            // operator executes earlier in the Pass-1 chain — read its stamp
+            // instead of re-scanning pg_namespace. Never a correctness
+            // dependency: absent link or unstamped sibling falls through to
+            // the self-resolve read below.
+            if (input_namespace_oid_ == catalog::INVALID_OID && !dbname_.empty() && target_node_) {
+                if (auto* ns = target_node_->target();
+                    ns && ns->kind() == components::logical_plan::resolve_kind::namespace_ &&
+                    ns->dbname() == dbname_ && ns->namespace_oid() != catalog::INVALID_OID) {
+                    input_namespace_oid_ = ns->namespace_oid();
+                }
+            }
+            if (input_namespace_oid_ == catalog::INVALID_OID && !dbname_.empty()) {
+                std::pmr::vector<std::string> ns_keys(resource_);
+                ns_keys.emplace_back("nspname");
+                auto [_ns, nsf] =
+                    actor_zeta::send(ctx->disk_address,
+                                     &services::disk::manager_disk_t::read_chunks_by_key,
+                                     exec_ctx,
+                                     kPgNamespace,
+                                     std::move(ns_keys),
+                                     components::operators::make_key_chunk(resource_, std::string_view{dbname_}));
+                auto ns_batches = co_await std::move(nsf);
+                if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&
+                    !ns_batches[0].is_null(0, 0)) {
+                    input_namespace_oid_ = static_cast<catalog::oid_t>(ns_batches[0].get_value<std::uint32_t>(0, 0));
+                } else {
+                    // Database does not exist — emit empty output, leave
+                    // found_=false. Never fall through to a relname-only scan.
+                    output_ = make_operator_data(resource_, output_schema_, 0);
+                    output_->chunks().front().set_cardinality(0);
+                    mark_executed();
+                    co_return;
+                }
+            }
+            // Two-key (relname, relnamespace) scan whenever a namespace is
+            // known — i.e. always for qualified names. The relname-only scan
+            // remains ONLY for unqualified names (dbname_ empty): no session
+            // default-database substitution exists, so it is what makes
+            // unqualified access work.
             std::pmr::vector<std::string> key_cols(resource_);
             key_cols.emplace_back("relname");
             auto keys_chunk = [&] {

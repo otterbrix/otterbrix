@@ -140,12 +140,4 @@ namespace services {
         }
     };
 
-    // Defined after context_storage_t is complete. Returns a null operator_t ptr
-    // (no host operator) — a default-constructed intrusive_ptr instantiates
-    // nothing, so operator_t stays forward-declared here.
-    inline boost::intrusive_ptr<components::operators::operator_t>
-    no_extension_operator(const context_storage_t&, const components::logical_plan::node_extension_t&) {
-        return {};
-    }
-
 } //namespace services

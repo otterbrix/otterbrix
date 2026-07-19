@@ -7,6 +7,7 @@ set( ${PROJECT_NAME}_HEADERS
 
 set(${PROJECT_NAME}_SOURCES
     # collection
+        collection/context_storage.cpp
         collection/executor.cpp
         collection/explain/explain_plan.cpp
         collection/explain/renderer_postgres.cpp

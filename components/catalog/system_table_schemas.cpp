@@ -631,15 +631,15 @@ namespace components::catalog {
     std::string encode_type_spec(const types::complex_logical_type& t) {
         using LT = types::logical_type;
         switch (t.type()) {
+            // Empty spec = "decode from atttypid" — ONLY types with a well-known
+            // pg_type oid in builtin_type_to_oid may appear here, else read-back
+            // decodes to UNKNOWN. Unsigned ints have no well-known oid and fall
+            // through to the flat-text spec ("uint1".."uint8") below instead.
             case LT::BOOLEAN:
             case LT::TINYINT:
-            case LT::UTINYINT:
             case LT::SMALLINT:
-            case LT::USMALLINT:
             case LT::INTEGER:
-            case LT::UINTEGER:
             case LT::BIGINT:
-            case LT::UBIGINT:
             case LT::FLOAT:
             case LT::DOUBLE:
             case LT::STRING_LITERAL:
@@ -836,6 +836,10 @@ namespace components::catalog {
                 return LT::TIME_TZ;
             case ns::interval_type:
                 return LT::INTERVAL;
+            case ns::blob_type:
+                return LT::BLOB;
+            case ns::uuid_type:
+                return LT::UUID;
             default:
                 return LT::UNKNOWN;
         }
@@ -873,6 +877,10 @@ namespace components::catalog {
                 return ns::time_tz_type;
             case LT::INTERVAL:
                 return ns::interval_type;
+            case LT::BLOB:
+                return ns::blob_type;
+            case LT::UUID:
+                return ns::uuid_type;
             default:
                 return INVALID_OID;
         }

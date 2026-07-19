@@ -1,6 +1,8 @@
 #pragma once
 
 #include "wrapper_dispatcher.hpp"
+
+#include <services/collection/context_storage.hpp>
 #include <actor-zeta/detail/memory.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
@@ -50,7 +52,11 @@ namespace otterbrix {
         ~base_otterbrix_t();
 
     protected:
-        explicit base_otterbrix_t(const configuration::config& config);
+        // extension_factory: host-injected factory that lowers extension nodes to
+        // host operators (see context_storage.hpp). Null = no extension operators.
+        explicit base_otterbrix_t(const configuration::config& config,
+                                  services::extension_operator_factory_t extension_factory =
+                                      &services::no_extension_operator);
         std::filesystem::path main_path_;
 #if defined(OTTERBRIX_TSAN_ENABLED)
         // TSAN cannot see through synchronized_pool_resource's internal mutex,

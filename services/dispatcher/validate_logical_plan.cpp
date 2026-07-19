@@ -33,6 +33,7 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_fk_check.hpp>
 #include <components/logical_plan/node_function.hpp>
@@ -1185,6 +1186,56 @@ namespace services::dispatcher {
         // Mirrors the node_select resolution: get_field keys and arithmetic
         // operands get their column paths stamped; star_expand with a table
         // qualifier is validated to expand; bare '*' and constants need nothing.
+        // Derive the RETURNING projection's output schema from the RESOLVED
+        // returning expressions (run resolve_returning_columns first — it stamps
+        // key paths/sides and expands qualified stars). This is what a DML
+        // statement RETURNS, i.e. its describe/output_types schema. Column names
+        // ride as type aliases. Conservative: an expression shape this can't type
+        // (constants, computed expressions) yields an EMPTY schema — the node
+        // stays unstamped and describe answers NoData rather than a wrong schema.
+        [[nodiscard]] named_schema returning_schema(std::pmr::memory_resource* resource,
+                                                    const std::pmr::vector<expression_ptr>& returning,
+                                                    const named_schema& schema_left,
+                                                    const named_schema& schema_right) {
+            named_schema out{resource};
+            for (const auto& e : returning) {
+                if (!e || e->group() != expression_group::scalar) {
+                    return named_schema{resource};
+                }
+                const auto* scalar_expr = static_cast<const scalar_expression_t*>(e.get());
+                switch (scalar_expr->type()) {
+                    case scalar_type::get_field: {
+                        const auto& key =
+                            scalar_expr->params().empty()
+                                ? scalar_expr->key()
+                                : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        const named_schema& side_schema =
+                            key.side() == side_t::right && !schema_right.empty() ? schema_right : schema_left;
+                        if (key.path().empty() || key.path()[0] >= side_schema.size()) {
+                            return named_schema{resource};
+                        }
+                        type_from_t entry;
+                        entry.type = side_schema[key.path()[0]].type;
+                        if (!key.storage().empty()) {
+                            entry.type.set_alias(std::string(key.storage().back()));
+                        }
+                        out.push_back(std::move(entry));
+                        break;
+                    }
+                    case scalar_type::star_expand: {
+                        // Bare '*': the whole destination row, in table order.
+                        for (const auto& column : schema_left) {
+                            out.push_back(column);
+                        }
+                        break;
+                    }
+                    default:
+                        return named_schema{resource};
+                }
+            }
+            return out;
+        }
+
         [[nodiscard]] core::error_t resolve_returning_columns(std::pmr::memory_resource* resource,
                                                               std::pmr::vector<expression_ptr>* returning,
                                                               const named_schema& schema_left,
@@ -1603,6 +1654,41 @@ namespace services::dispatcher {
         named_schema result{resource};
 
         switch (node->type()) {
+            // Host-extension: a REGISTERED CATALOG TABLE lowered by a host operator.
+            //   - SINK (has a child): a federated WRITE (INSERT..SELECT into a
+            //     backend). Validate the child (the rows to write) so they are
+            //     typed; the statement returns an affected-count, so its output
+            //     schema is empty (NoData) — like a plain DML without RETURNING.
+            //   - SOURCE (leaf): typed exactly like any table — from the catalog by
+            //     its (db, rel), resolved into the plan-tree idx by the standard
+            //     catalog-resolve wrap. Surfacing the columns lets parents (JOIN /
+            //     GROUP BY / SELECT) type normally and the wrapper stamp output_types().
+            // An unregistered target/source (missing tbl_md) is a host bug.
+            case node_type::extension_t: {
+                const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node);
+                if (!node->children().empty()) {
+                    auto child = validate_schema(resource, idx, node->children().front().get(), parameters);
+                    if (child.has_error()) {
+                        return child;
+                    }
+                    return result; // empty = affected-count / NoData
+                }
+                const auto* tbl = impl::tbl_md_for(idx, ext->dbname(), ext->relname());
+                if (!tbl) {
+                    return core::error_t(
+                        core::error_code_t::table_not_exists,
+                        std::pmr::string{"extension table is not registered in the catalog", resource});
+                }
+                const std::string& visible_alias =
+                    node->result_alias().empty() ? ext->relname() : node->result_alias();
+                for (const auto& column : tbl->columns) {
+                    type_from_t entry;
+                    entry.result_alias = visible_alias;
+                    entry.type = column.type;
+                    result.push_back(std::move(entry));
+                }
+                return result;
+            }
             // SQL transaction-control leaf (BEGIN/COMMIT/ROLLBACK): no table
             // schema to validate — empty schema, like an all-resolve sequence_t.
             // Defensive mirror of the executor's validate break-group; without
@@ -2759,6 +2845,11 @@ namespace services::dispatcher {
                         if (ret_err.contains_error()) {
                             return ret_err;
                         }
+                        // The RETURNING projection IS this statement's output schema —
+                        // surface it so the wrapper stamps output_types() and describe
+                        // answers the real RowDescription (plain DML stays unstamped =
+                        // correct NoData).
+                        result = impl::returning_schema(resource, insert_node->returning(), table_schema, table_schema);
                     }
                     // relkind='g' (dynamic-schema) tables accept INSERTs
                     // whose shape differs from the catalog's currently-registered columns,
@@ -3041,6 +3132,13 @@ namespace services::dispatcher {
                         if (ret_err.contains_error()) {
                             return ret_err;
                         }
+                        // Surface the RETURNING projection as this statement's output
+                        // schema (see the insert_t arm) — describe answers the real
+                        // RowDescription; plain DML stays unstamped = NoData.
+                        result = impl::returning_schema(resource,
+                                                        *returning,
+                                                        table_schema,
+                                                        has_join ? incoming_schema : table_schema);
                     }
                 }
                 return result;

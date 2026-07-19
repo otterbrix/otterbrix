@@ -46,8 +46,11 @@ test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
 
 class test_spaces final : public otterbrix::base_otterbrix_t {
 public:
-    test_spaces(const configuration::config& config)
-        : otterbrix::base_otterbrix_t(config) {
+    // extension_factory: forwarded to the engine so an extension node lowers to a
+    // host operator (see context_storage.hpp). Null for non-federation tests.
+    test_spaces(const configuration::config& config,
+                services::extension_operator_factory_t extension_factory = &services::no_extension_operator)
+        : otterbrix::base_otterbrix_t(config, extension_factory) {
         // Isolate the process-global UDF registry between test cases: each test
         // gets a fresh builtins-only default registry so user functions from a
         // previous test don't leak into this one (which crashed test_batch_join

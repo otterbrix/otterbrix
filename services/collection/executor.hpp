@@ -192,7 +192,8 @@ namespace services::collection::executor {
                    actor_zeta::address_t disk_address,
                    actor_zeta::address_t index_address,
                    log_t&& log,
-                   uint64_t dml_flush_row_threshold = 0);
+                   uint64_t dml_flush_row_threshold = 0,
+                   services::extension_operator_factory_t extension_factory = &services::no_extension_operator);
         ~executor_t() = default;
 
         // Operator-pipeline run over an already-rewritten plan. INTERNAL:
@@ -324,6 +325,11 @@ namespace services::collection::executor {
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
         log_t log_;
         components::compute::function_registry_t function_registry_;
+        // Host-injected extension operator factory (see context_storage.hpp).
+        // Null when the host registers no extension operators; stamped onto every
+        // per-query context_storage so the physical-plan generator can lower an
+        // extension node through it.
+        services::extension_operator_factory_t extension_factory_{&services::no_extension_operator};
         // Config-gated bound on rows buffered by a streaming DML sink before the
         // execute_pipeline pump forces an incremental async flush. 0 = disabled
         // (the mid-pump gate never fires).

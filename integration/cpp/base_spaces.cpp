@@ -22,7 +22,8 @@ namespace otterbrix {
 
     using services::dispatcher::manager_dispatcher_t;
 
-    base_otterbrix_t::base_otterbrix_t(const configuration::config& config)
+    base_otterbrix_t::base_otterbrix_t(const configuration::config& config,
+                                       services::extension_operator_factory_t extension_factory)
         : main_path_(config.main_path)
         , resource()
         , scheduler_(new actor_zeta::shared_work(3, 1000))
@@ -132,7 +133,8 @@ namespace otterbrix {
             services::dispatcher::manager_dispatcher_t::sync_pack{effective_wal_address,
                                                                   manager_disk_address,
                                                                   manager_index_address,
-                                                                  config.execution.dml_flush_row_threshold});
+                                                                  config.execution.dml_flush_row_threshold,
+                                                                  extension_factory});
 
         wal_ptr->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_address),
                                                      manager_dispatcher_->address(),

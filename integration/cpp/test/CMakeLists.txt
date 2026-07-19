@@ -20,6 +20,9 @@ set( ${PROJECT_NAME}_SOURCES
         test_dispatcher_watchdog_log.cpp
         test_production_scenarios.cpp
         test_join.cpp
+        test_describe_plan.cpp
+        test_extension_source.cpp
+        test_host_tables.cpp
         test_join_raw.cpp
         test_connections.cpp
         test_udfs.cpp

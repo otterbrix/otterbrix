@@ -16,6 +16,7 @@ set(SOURCE_${PROJECT_NAME}
         node_unregister_udf.cpp
         node_transaction.cpp
         node_catalog_resolve.cpp
+        node_extension.cpp
         node_allocate_oids.cpp
         node_checkpoint.cpp
         node_create_collection.cpp

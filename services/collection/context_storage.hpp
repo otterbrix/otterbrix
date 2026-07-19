@@ -11,12 +11,38 @@
 #include <unordered_map>
 #include <unordered_set>
 
+namespace components::logical_plan {
+    class node_extension_t;
+}
+namespace components::operators {
+    class operator_t;
+}
+
 namespace services {
+
+    struct context_storage_t;
+
+    // Host-injected factory that lowers a node_extension_t to the host's own
+    // operator_t. Set at engine construction (base_spaces -> dispatcher -> executor)
+    // and stamped onto context_storage per query; the physical-plan generator's
+    // `case extension_t` calls it. Plain fn-ptr (no std::function). NEVER null —
+    // defaults to no_extension_operator (a Null Object), so callers invoke it
+    // unconditionally without a nullptr guard.
+    using extension_operator_factory_t = boost::intrusive_ptr<components::operators::operator_t> (*)(
+        const context_storage_t&,
+        const components::logical_plan::node_extension_t&);
+
+    // Default factory: the embedding host registered no extension operators, so an
+    // extension node has no host operator to build (its plan errors downstream).
+    boost::intrusive_ptr<components::operators::operator_t>
+    no_extension_operator(const context_storage_t&, const components::logical_plan::node_extension_t&);
 
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
         core::date::timezone_offset_t session_timezone;
+        // See extension_operator_factory_t. Never null (Null Object default).
+        extension_operator_factory_t extension_factory = &no_extension_operator;
         // oid-only routing. Plan generators ask "do we know about this table?"
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.
@@ -113,5 +139,13 @@ namespace services {
             return components::logical_plan::index_type::no_valid;
         }
     };
+
+    // Defined after context_storage_t is complete. Returns a null operator_t ptr
+    // (no host operator) — a default-constructed intrusive_ptr instantiates
+    // nothing, so operator_t stays forward-declared here.
+    inline boost::intrusive_ptr<components::operators::operator_t>
+    no_extension_operator(const context_storage_t&, const components::logical_plan::node_extension_t&) {
+        return {};
+    }
 
 } //namespace services

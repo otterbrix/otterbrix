@@ -61,6 +61,10 @@ namespace services::dispatcher {
             // Config-gated DML flush bound (0 = disabled).
             // Trailing so existing 3-field aggregate inits (tests) stay valid.
             uint64_t dml_flush_row_threshold = 0;
+            // Host-injected extension operator factory (see context_storage.hpp);
+            // forwarded to every spawned executor. Defaults to the Null Object
+            // (no extension operators) so it is never null.
+            services::extension_operator_factory_t extension_factory = &services::no_extension_operator;
         };
 
         // One in-flight message in the event loop. behavior is created lazily;

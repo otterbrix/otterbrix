@@ -75,6 +75,13 @@ namespace components::logical_plan {
         // the DDL planner reads the batch via node_allocate_oids_t::oids().
         allocate_oids_t,
         set_timezone_t,
+        // Host-extension carrier: a leaf owned by embedding-host code (federation
+        // gateways, custom sources). Carries an opaque intrusive payload plus an
+        // engine-readable declared output schema; physgen delegates operator
+        // construction to the payload's factory. The optimizer treats it as an
+        // opaque barrier (no pushdown across, no column pruning). See
+        // node_extension.hpp.
+        extension_t,
         unused
     };
 

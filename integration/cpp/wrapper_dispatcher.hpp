@@ -58,6 +58,15 @@ namespace otterbrix {
                             const std::pmr::vector<components::types::complex_logical_type>& inputs) -> bool;
         auto execute_plan(const session_id_t& session, components::logical_plan::execution_plan_t plan)
             -> components::cursor::cursor_t_ptr;
+        // DESCRIBE: answer "what columns/types will this plan return" WITHOUT
+        // executing it — the full pre-execution pipeline runs (resolve → validate →
+        // enrich → optimize → physical build), then a zero-row cursor typed from the
+        // root's resolved output schema is returned (column names ride as type
+        // aliases; column_count()==0 means the statement returns no rows — NoData).
+        // Errors surface exactly like execute_plan (error cursor + implicit-txn
+        // abort). Sugar over execute_plan with execution_plan_t::describe set.
+        auto describe_plan(const session_id_t& session, components::logical_plan::execution_plan_t plan)
+            -> components::cursor::cursor_t_ptr;
         // `render_id` selects the per-query EXPLAIN renderer slot (0 = built-in postgres default);
         // stamped onto the plan before send. Inert for non-EXPLAIN queries.
         auto execute_sql(const session_id_t& session, const std::string& query, uint32_t render_id = 0)

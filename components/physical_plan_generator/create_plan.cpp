@@ -41,6 +41,7 @@
 
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 
 namespace services::planner {
@@ -163,6 +164,26 @@ namespace services::planner {
                 return impl::create_plan_allocate_oids(context, node);
             case node_type::function_t:
                 return impl::create_plan_function(context, node);
+            case node_type::extension_t: {
+                // Host-extension: physgen builds the host operator through the factory
+                // injected on context_storage (base_spaces -> dispatcher -> executor).
+                // The logical node holds only data (db.rel + payload).
+                //   - SOURCE (leaf, no child): a host operator that reads a backend.
+                //   - SINK (has a child): a host operator that WRITES a backend; the
+                //     child sub-plan (e.g. the SELECT of INSERT..SELECT) feeds its rows.
+                // The host's own operator picks source vs sink by role(); the engine
+                // just wires the child when present.
+                const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node.get());
+                auto op = context.extension_factory(context, *ext); // never null (Null Object default)
+                if (op && !node->children().empty()) {
+                    op->set_children(create_plan(context,
+                                                 function_registry,
+                                                 node->children().front(),
+                                                 components::logical_plan::limit_t::unlimit(),
+                                                 params));
+                }
+                return op;
+            }
             default:
                 break;
         }

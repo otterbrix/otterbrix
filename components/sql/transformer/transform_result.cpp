@@ -283,6 +283,22 @@ namespace components::sql::transform {
         return plan_;
     }
 
+    core::result_wrapper_t<logical_plan::execution_plan_t> transform_result::finalize_for_describe() {
+        if (last_error_.contains_error()) {
+            return last_error_;
+        }
+        // Forward whatever IS bound (typed wildcarding of the rest happens in
+        // validate); leave the plan itself untouched — no INSERT splice, no
+        // deferred-limit resolution — and do NOT flip finalized_: the caller may
+        // still bind-all and finalize() the same transform_result for execution.
+        logical_plan::execution_plan_t describe_plan = plan_;
+        if (!taken_params_.parameters.empty()) {
+            describe_plan.parameters->set_parameters(taken_params_);
+        }
+        describe_plan.describe = true;
+        return describe_plan;
+    }
+
     bool transform_result::has_error() const noexcept { return last_error_.contains_error(); }
 
     const core::error_t& transform_result::get_error() const noexcept { return last_error_; }

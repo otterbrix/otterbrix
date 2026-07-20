@@ -28,7 +28,13 @@ namespace components::vector {
 
     template<typename T>
     T sequence_entry(int64_t value) {
-        assert(value >= std::numeric_limits<T>::min() && value <= std::numeric_limits<T>::max());
+        if constexpr (std::is_floating_point_v<T>) {
+            // no bounds check
+        } else if constexpr (std::is_unsigned_v<T>) {
+            assert(value >= 0 && static_cast<uint64_t>(value) <= static_cast<uint64_t>(std::numeric_limits<T>::max()));
+        } else {
+            assert(value >= std::numeric_limits<T>::min() && value <= std::numeric_limits<T>::max());
+        }
         return static_cast<T>(value);
     }
 

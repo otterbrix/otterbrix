@@ -1,5 +1,6 @@
 include_directories(${CMAKE_SOURCE_DIR})
 
+add_subdirectory(casts)
 add_subdirectory(catalog)
 add_subdirectory(compute)
 add_subdirectory(cursor)

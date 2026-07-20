@@ -226,6 +226,8 @@ namespace components::types {
                 return sizeof(int32_t);
             case physical_type::INT64:
                 return sizeof(int64_t);
+            case physical_type::INT128:
+                return sizeof(int128_t);
             case physical_type::FLOAT:
                 return sizeof(float);
             case physical_type::DOUBLE:
@@ -238,8 +240,6 @@ namespace components::types {
                 return sizeof(uint32_t);
             case physical_type::UINT64:
                 return sizeof(uint64_t);
-            case physical_type::INT128:
-                return sizeof(int128_t);
             case physical_type::UINT128:
                 return sizeof(uint128_t);
             case physical_type::STRING:
@@ -272,6 +272,8 @@ namespace components::types {
                 return alignof(int32_t);
             case physical_type::INT64:
                 return alignof(int64_t);
+            case physical_type::INT128:
+                return alignof(int128_t);
             case physical_type::FLOAT:
                 return alignof(float);
             case physical_type::DOUBLE:
@@ -284,8 +286,6 @@ namespace components::types {
                 return alignof(uint32_t);
             case physical_type::UINT64:
                 return alignof(uint64_t);
-            case physical_type::INT128:
-                return alignof(int128_t);
             case physical_type::UINT128:
                 return alignof(uint128_t);
             case physical_type::STRING:
@@ -726,6 +726,44 @@ namespace components::types {
 
     bool decimal_logical_type_extension::operator==(const decimal_logical_type_extension& rhs) const {
         return stored_as_ == rhs.stored_as_ && width_ == rhs.width_ && scale_ == rhs.scale_;
+    }
+
+    int128_t decimal_special::positive_infinity(physical_type stored_as) noexcept {
+        switch (stored_as) {
+            case physical_type::INT16:
+                return std::numeric_limits<int16_t>::max();
+            case physical_type::INT32:
+                return std::numeric_limits<int32_t>::max();
+            case physical_type::INT64:
+                return std::numeric_limits<int64_t>::max();
+            case physical_type::INT128:
+                return absl::Int128Max();
+            default:
+                return 0; // not a decimal storage width
+        }
+    }
+
+    int128_t decimal_special::negative_infinity(physical_type stored_as) noexcept {
+        switch (stored_as) {
+            case physical_type::INT16:
+                return std::numeric_limits<int16_t>::min();
+            case physical_type::INT32:
+                return std::numeric_limits<int32_t>::min();
+            case physical_type::INT64:
+                return std::numeric_limits<int64_t>::min();
+            case physical_type::INT128:
+                return absl::Int128Min();
+            default:
+                return 0;
+        }
+    }
+
+    int128_t decimal_special::not_a_number(physical_type stored_as) noexcept {
+        return negative_infinity(stored_as) + 1; // min + 1, per the storage encoding
+    }
+
+    bool decimal_special::is_special(physical_type stored_as, int128_t raw) noexcept {
+        return raw >= positive_infinity(stored_as) || raw <= not_a_number(stored_as);
     }
 
     enum_logical_type_extension::enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries)

@@ -416,6 +416,12 @@ namespace components::types {
         const std::pmr::vector<complex_logical_type>& child_types() const;
         logical_type_extension* extension() const;
 
+        template<typename Extension>
+        requires std::is_base_of_v<logical_type_extension, Extension> [[nodiscard]] const Extension*
+        extension_as() const noexcept {
+            return static_cast<const Extension*>(extension());
+        }
+
         bool is_convertable_to(const complex_logical_type& other) const;
 
         template<typename T>
@@ -608,6 +614,14 @@ namespace components::types {
         physical_type stored_as_;
         uint8_t width_;
         uint8_t scale_;
+    };
+
+    // Special values for decimal
+    struct decimal_special {
+        static int128_t positive_infinity(physical_type stored_as) noexcept;
+        static int128_t negative_infinity(physical_type stored_as) noexcept;
+        static int128_t not_a_number(physical_type stored_as) noexcept;
+        static bool is_special(physical_type stored_as, int128_t raw) noexcept;
     };
 
     class function_logical_type_extension : public logical_type_extension {

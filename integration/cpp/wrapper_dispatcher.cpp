@@ -99,13 +99,6 @@ namespace otterbrix {
         return send_plan(session, std::move(plan));
     }
 
-    auto wrapper_dispatcher_t::describe_plan(const session_id_t& session,
-                                             components::logical_plan::execution_plan_t plan) -> cursor_t_ptr {
-        trace(log_, "wrapper_dispatcher_t::describe session: {}", session.data());
-        plan.describe = true;
-        return execute_plan(session, std::move(plan));
-    }
-
     cursor_t_ptr wrapper_dispatcher_t::execute_sql(const components::session::session_id_t& session,
                                                    const std::string& query,
                                                    uint32_t render_id) {

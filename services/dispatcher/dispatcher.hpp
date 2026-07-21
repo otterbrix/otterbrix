@@ -61,10 +61,6 @@ namespace services::dispatcher {
             // Config-gated DML flush bound (0 = disabled).
             // Trailing so existing 3-field aggregate inits (tests) stay valid.
             uint64_t dml_flush_row_threshold = 0;
-            // Host-injected extension operator factory (see context_storage.hpp);
-            // forwarded to every spawned executor. Defaults to the Null Object
-            // (no extension operators) so it is never null.
-            services::extension_operator_factory_t extension_factory = &services::no_extension_operator;
         };
 
         // One in-flight message in the event loop. behavior is created lazily;
@@ -83,7 +79,15 @@ namespace services::dispatcher {
             uint32_t poke_rounds{0};
         };
 
-        manager_dispatcher_t(std::pmr::memory_resource*, actor_zeta::scheduler_raw, log_t& log);
+        // Host-injected customization hooks (create_plan rule + optimizer pass) arrive
+        // through THIS constructor (not sync_pack, which carries only late-wired actor
+        // addresses) and are forwarded to every executor spawned in sync(). Both plain
+        // fn-ptrs, defaulting to their Null Objects so they are never null.
+        manager_dispatcher_t(std::pmr::memory_resource*,
+                             actor_zeta::scheduler_raw,
+                             log_t& log,
+                             planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
+                             components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass);
         ~manager_dispatcher_t();
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
@@ -206,6 +210,10 @@ namespace services::dispatcher {
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
+
+        // Host-injected customization, ctor-provided, forwarded to each executor.
+        planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
+        components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};
 
         static constexpr std::size_t executor_pool_size_ = 4;
 

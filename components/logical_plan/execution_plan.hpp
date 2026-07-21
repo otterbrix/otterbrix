@@ -75,18 +75,6 @@ namespace components::logical_plan {
         // (see set_explain_renderer). 0 = the built-in postgres renderer (default). Set only from
         // the host C++ API, never SQL; rides the plan by value into the executor like `explain`.
         uint32_t explain_render_id{0};
-
-        // DESCRIBE mode: run the full pre-execution pipeline (resolve → validate →
-        // enrich → optimize → physical build) but STOP before execution and return a
-        // zero-row cursor typed from the root's resolved output schema (column names
-        // ride as type aliases). The engine-side answer to "what columns/types will
-        // this plan return" that wire protocols need BEFORE execution (PG
-        // Parse/Describe, MySQL COM_STMT_PREPARE, Flight GetFlightInfo, Spark
-        // AnalyzePlan). Set only from the host C++ API, never SQL; rides the plan by
-        // value like `explain`. DDL/utility statements describe to an empty cursor
-        // (no result schema) after validation, with no OID allocation and no commit
-        // tail — describe is strictly side-effect-free.
-        bool describe{false};
     };
 
 } // namespace components::logical_plan

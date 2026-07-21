@@ -54,18 +54,6 @@ namespace components::sql::transform {
 
         core::result_wrapper_t<logical_plan::execution_plan_t> finalize();
 
-        // DESCRIBE-time finalize: produce an execution_plan_t for schema derivation
-        // BEFORE Bind — wire protocols (PG Parse/Describe, MySQL COM_STMT_PREPARE)
-        // must answer the result schema while $n parameters are still unbound.
-        // Differences from finalize(): the all-bound gate is skipped (already-bound
-        // params are forwarded; unbound ones stay absent — validate types them as
-        // wildcards / from context), the INSERT bound-row splice is skipped (the
-        // VALUES shape is irrelevant to the output schema), and a parameterized
-        // LIMIT/OFFSET keeps the parser default instead of erroring. The plan is
-        // stamped describe=true; the transform_result is NOT marked finalized, so a
-        // later bind-all + finalize() still produces the executable plan.
-        core::result_wrapper_t<logical_plan::execution_plan_t> finalize_for_describe();
-
         [[nodiscard]] bool has_error() const noexcept;
 
         const core::error_t& get_error() const noexcept;

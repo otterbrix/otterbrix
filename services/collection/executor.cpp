@@ -40,9 +40,6 @@
 #include <components/catalog/table_id.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_extension.hpp>
-#include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_update.hpp>
-#include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -189,7 +186,8 @@ namespace services::collection::executor {
                            actor_zeta::address_t index_address,
                            log_t&& log,
                            uint64_t dml_flush_row_threshold,
-                           services::extension_operator_factory_t extension_factory)
+                           planner::create_plan_rule_t create_plan_rule,
+                           components::planner::optimizer_pass_t optimizer_pass)
         : actor_zeta::basic_actor<executor_t>{resource}
         , parent_address_(std::move(parent_address))
         , wal_address_(std::move(wal_address))
@@ -197,7 +195,8 @@ namespace services::collection::executor {
         , index_address_(std::move(index_address))
         , log_(log)
         , function_registry_(resource)
-        , extension_factory_(extension_factory)
+        , create_plan_rule_(create_plan_rule)
+        , optimizer_pass_(optimizer_pass)
         , dml_flush_row_threshold_(dml_flush_row_threshold)
         , explain_renderers_(resource) {
         register_default_functions(function_registry_);
@@ -284,6 +283,9 @@ namespace services::collection::executor {
         // pointer is consumed only at plan-build time (inside create_plan),
         // before the move into plan_data below.
         context_storage.parameters = &plan.parameters->parameters();
+        // Host-injected: create_plan reads this at its extension arm to lower a
+        // node_extension leaf through the host operator (ctor chain -> executor).
+        context_storage.create_plan_rule = create_plan_rule_;
         components::operators::operator_ptr node = planner::create_plan(context_storage,
                                                                         function_registry_,
                                                                         plan.sub_queries.back(),
@@ -316,7 +318,7 @@ namespace services::collection::executor {
             explain_name_collector nc{context_storage, explain_names};
             explain_root->explain(nc.sink());
         }
-        if (plan.explain == components::logical_plan::explain_type::plan && !plan.describe) {
+        if (plan.explain == components::logical_plan::explain_type::plan) {
             // Plan-only EXPLAIN: build the physical tree's IR WITHOUT executing. context_storage is still
             // alive, so the builder resolves scan names from the live catalog (no collector).
             if (plan.explain_capture_ir) {
@@ -339,64 +341,6 @@ namespace services::collection::executor {
                                                        std::move(captured_subplans))};
         }
 
-        // === DESCRIBE ===
-        // Same seam as plan-only EXPLAIN: the physical tree was built (so lowering
-        // errors surface exactly as they would at execution) but nothing runs.
-        // Answer a ZERO-ROW cursor typed from the logical root's resolved output
-        // schema — validate_schema stamped output_types() data-independently, and
-        // the optimizer re-stamps on every reshape, so these are precisely the
-        // columns execution would return (names ride as type aliases). An unstamped
-        // root (plain DML without RETURNING) answers an empty cursor = NoData.
-        // Describe OF an EXPLAIN statement: EXPLAIN's result shape is its single
-        // text column — answer that as a zero-row "QUERY PLAN" cursor (the
-        // explain branches above already returned for non-describe runs).
-        if (plan.describe && plan.explain != components::logical_plan::explain_type::none) {
-            std::pmr::vector<components::types::complex_logical_type> types{resource()};
-            types.emplace_back(components::types::logical_type::STRING_LITERAL, "QUERY PLAN");
-            components::vector::data_chunk_t typed_empty(resource(), std::move(types), 1u);
-            typed_empty.set_cardinality(0);
-            co_return execute_result_t{make_cursor(resource(), std::move(typed_empty))};
-        }
-        if (plan.describe) {
-            const auto* root = components::logical_plan::effective_root_node(plan.sub_queries.back().get());
-            if (root != nullptr && root->has_output_types()) {
-                std::pmr::vector<components::types::complex_logical_type> types{resource()};
-                types.reserve(root->output_types().size());
-                for (const auto& t : root->output_types()) {
-                    types.push_back(t);
-                }
-                components::vector::data_chunk_t typed_empty(resource(), std::move(types), 1u);
-                typed_empty.set_cardinality(0);
-                co_return execute_result_t{make_cursor(resource(), std::move(typed_empty))};
-            }
-            // A DML statement WITH a RETURNING clause returns rows, so describe must
-            // produce their schema. An unstamped root here means validate could not
-            // type the RETURNING projection (a constant / computed expression it does
-            // not yet handle — otterbrix#582). Do NOT silently answer NoData (that
-            // would misreport a row-returning statement as returning nothing); error
-            // out. Plain DML (no RETURNING) legitimately falls through to NoData.
-            const auto returning_empty = [&](const node_t* n) {
-                switch (n->type()) {
-                    case node_type::insert_t:
-                        return static_cast<const components::logical_plan::node_insert_t*>(n)->returning().empty();
-                    case node_type::update_t:
-                        return static_cast<const components::logical_plan::node_update_t*>(n)->returning().empty();
-                    case node_type::delete_t:
-                        return static_cast<const components::logical_plan::node_delete_t*>(n)->returning().empty();
-                    default:
-                        return true;
-                }
-            };
-            if (root != nullptr && !returning_empty(root)) {
-                co_return execute_result_t{make_cursor(
-                    resource(),
-                    core::error_t{core::error_code_t::unimplemented_yet,
-                                  std::pmr::string{"describe of RETURNING with a constant or computed expression is "
-                                                   "not supported yet (otterbrix#582)",
-                                                   resource()}})};
-            }
-            co_return execute_result_t{make_cursor(resource())};
-        }
 
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
         plan_data.analyze = explain_analyze;
@@ -510,17 +454,11 @@ namespace services::collection::executor {
         // (with per-operator stats); normal execution captures nothing. Both EXPLAIN modes hang the captured
         // IRs on the main IR root as InitPlans (PG-faithful attach-at-root — otterbrix runs/plans them all
         // top-level).
-        // DESCRIBE mirrors plan-only EXPLAIN's no-execution contract: sub-queries are
-        // validated recursively (their output_types stamps feed the main validate's
-        // unbound-parameter typing below) but never executed.
-        const bool describe_only = plan.describe;
-        const bool run_sub_queries =
-            plan.explain != components::logical_plan::explain_type::plan && !describe_only;
+        const bool run_sub_queries = plan.explain != components::logical_plan::explain_type::plan;
         const bool plan_only = plan.explain == components::logical_plan::explain_type::plan;
         const bool capture_ir = plan.explain == components::logical_plan::explain_type::analyze;
         std::pmr::vector<explain_plan_node> captured_subplans{resource()};
-        for (std::size_t i = 0; (run_sub_queries || plan_only || describe_only) && i + 1 < plan.sub_queries.size();
-             ++i) {
+        for (std::size_t i = 0; (run_sub_queries || plan_only) && i + 1 < plan.sub_queries.size(); ++i) {
             auto* sub_root = components::logical_plan::effective_root_node(plan.sub_queries[i].get());
             const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
             // SQL standard: a sub-query is a query expression — never DML/DDL.
@@ -531,11 +469,7 @@ namespace services::collection::executor {
                                   std::pmr::string{"DML statement is not allowed in a sub-query", resource()}})};
             }
             components::logical_plan::execution_plan_t sub_plan{resource(), plan.sub_queries[i], plan.parameters};
-            if (describe_only) {
-                // Validate + stamp output_types recursively, NO execution; the typed
-                // zero-row result cursor is discarded (only the stamps matter here).
-                sub_plan.describe = true;
-            } else if (plan_only) {
+            if (plan_only) {
                 // Build the sub-query's physical plan + IR, NO execution (returned via captured_explain_ir).
                 sub_plan.explain = components::logical_plan::explain_type::plan;
                 sub_plan.explain_capture_ir = true;
@@ -575,10 +509,9 @@ namespace services::collection::executor {
                 sub_result.captured_explain_ir->subplan_returns = static_cast<uint32_t>(mapping.id);
                 captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
             }
-            if (plan_only || describe_only) {
-                // Plan-only / describe: no execution ran — there is no data cursor to
-                // compact or param to bind (validate retypes unbound sub-query params
-                // from the stamped output_types instead).
+            if (plan_only) {
+                // Plan-only EXPLAIN: no execution ran — there is no data cursor to
+                // compact or param to bind.
                 continue;
             }
             trace(log_,
@@ -814,9 +747,6 @@ namespace services::collection::executor {
         // Executor-owned plan context. session_tz arrives from the dispatcher
         // (the sole owner of default_tz_cat_) in the session-context bundle.
         services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.session_tz);
-        // Host-injected: lets the physical-plan generator lower an extension node
-        // through the host's operator factory (create_plan.cpp `case extension_t`).
-        context_storage.extension_factory = extension_factory_;
 
         // Which commit tail runs after the pipeline. DDL needs a real txn so a
         // mid-DDL crash → WAL replay rolls back partially-written pg_catalog
@@ -834,9 +764,7 @@ namespace services::collection::executor {
         // empty commit pipeline (WAL marker + ProcArray barrier for a zero-change txn). EXPLAIN
         // ANALYZE keeps needs_dml_txn true → commits normally.
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
-        // DESCRIBE of DML shares plan-only EXPLAIN's no-op contract: no DML txn, so
-        // the statement flows through the read-only releases_resolve_txn path.
-        const bool needs_dml_txn = !is_plan_only_explain && !plan.describe &&
+        const bool needs_dml_txn = !is_plan_only_explain &&
                                    (original_type == node_type::insert_t || original_type == node_type::update_t ||
                                     original_type == node_type::delete_t);
         // SET TIMEZONE and VACUUM are append/delete-shaped catalog writers that
@@ -1410,27 +1338,6 @@ namespace services::collection::executor {
             co_return execute_result_t{std::move(error)};
         }
 
-        // DESCRIBE of a statement with no result schema (DDL / txn control /
-        // utility): answer an EMPTY success cursor right after validation — no OID
-        // allocation, no DDL rewrite, no commit tails (describe is strictly
-        // side-effect-free; PostgreSQL Describe of such statements answers NoData).
-        // Query-shaped statements — including DML, whose RETURNING projection is
-        // their result schema — continue through enrich/optimize so the root's
-        // output_types() match what execution would return.
-        if (plan.describe) {
-            const bool describable = original_type == node_type::aggregate_t ||
-                                     original_type == node_type::union_t || original_type == node_type::join_t ||
-                                     original_type == node_type::function_t || original_type == node_type::data_t ||
-                                     original_type == node_type::recursive_cte_t ||
-                                     original_type == node_type::cte_scan_t ||
-                                     original_type == node_type::extension_t ||
-                                     original_type == node_type::insert_t || original_type == node_type::update_t ||
-                                     original_type == node_type::delete_t;
-            if (!describable) {
-                co_return execute_result_t{make_cursor(resource())};
-            }
-        }
-
         // A DDL statement inside an explicit BEGIN..COMMIT accumulates its catalog
         // rows + created/dropped artifacts onto the session's transaction_t (just
         // like DML) and DEFERS its publish to the SQL COMMIT. Same-txn visibility
@@ -1743,7 +1650,8 @@ namespace services::collection::executor {
         plan.sub_queries.back() = components::planner::optimize(resource(),
                                                                std::move(plan.sub_queries.back()),
                                                                plan.parameters.get(),
-                                                               can_push_to_agent);
+                                                               can_push_to_agent,
+                                                               optimizer_pass_);
 
         // Build-side selection: fetch live row counts for the child
         // tables of every INNER hash join so create_plan_join can put the smaller

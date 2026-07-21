@@ -888,7 +888,6 @@ namespace components::planner::optimizer {
 
                     // Only push below a row-preserving side of an outer join
                     // Left preserves left, right preserves right, full preserves none, inner/cross preserve both.
-                    // Only push below a row-preserving side of an outer join.
                     const auto jt = join->type();
                     const bool can_push_left =
                         jt == join_type::inner || jt == join_type::cross || jt == join_type::left;

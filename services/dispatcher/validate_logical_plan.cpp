@@ -1181,60 +1181,6 @@ namespace services::dispatcher {
             return named_schema{resource};
         }
 
-        // Resolve key paths in a DML node's RETURNING projection expressions
-        // against the schema of the affected rows (the target table's columns).
-        // Mirrors the node_select resolution: get_field keys and arithmetic
-        // operands get their column paths stamped; star_expand with a table
-        // qualifier is validated to expand; bare '*' and constants need nothing.
-        // Derive the RETURNING projection's output schema from the RESOLVED
-        // returning expressions (run resolve_returning_columns first — it stamps
-        // key paths/sides and expands qualified stars). This is what a DML
-        // statement RETURNS, i.e. its describe/output_types schema. Column names
-        // ride as type aliases. Conservative: an expression shape this can't type
-        // (constants, computed expressions) yields an EMPTY schema — the node
-        // stays unstamped and describe answers NoData rather than a wrong schema.
-        [[nodiscard]] named_schema returning_schema(std::pmr::memory_resource* resource,
-                                                    const std::pmr::vector<expression_ptr>& returning,
-                                                    const named_schema& schema_left,
-                                                    const named_schema& schema_right) {
-            named_schema out{resource};
-            for (const auto& e : returning) {
-                if (!e || e->group() != expression_group::scalar) {
-                    return named_schema{resource};
-                }
-                const auto* scalar_expr = static_cast<const scalar_expression_t*>(e.get());
-                switch (scalar_expr->type()) {
-                    case scalar_type::get_field: {
-                        const auto& key =
-                            scalar_expr->params().empty()
-                                ? scalar_expr->key()
-                                : std::get<components::expressions::key_t>(scalar_expr->params().front());
-                        const named_schema& side_schema =
-                            key.side() == side_t::right && !schema_right.empty() ? schema_right : schema_left;
-                        if (key.path().empty() || key.path()[0] >= side_schema.size()) {
-                            return named_schema{resource};
-                        }
-                        type_from_t entry;
-                        entry.type = side_schema[key.path()[0]].type;
-                        if (!key.storage().empty()) {
-                            entry.type.set_alias(std::string(key.storage().back()));
-                        }
-                        out.push_back(std::move(entry));
-                        break;
-                    }
-                    case scalar_type::star_expand: {
-                        // Bare '*': the whole destination row, in table order.
-                        for (const auto& column : schema_left) {
-                            out.push_back(column);
-                        }
-                        break;
-                    }
-                    default:
-                        return named_schema{resource};
-                }
-            }
-            return out;
-        }
 
         [[nodiscard]] core::error_t resolve_returning_columns(std::pmr::memory_resource* resource,
                                                               std::pmr::vector<expression_ptr>* returning,
@@ -2845,11 +2791,6 @@ namespace services::dispatcher {
                         if (ret_err.contains_error()) {
                             return ret_err;
                         }
-                        // The RETURNING projection IS this statement's output schema —
-                        // surface it so the wrapper stamps output_types() and describe
-                        // answers the real RowDescription (plain DML stays unstamped =
-                        // correct NoData).
-                        result = impl::returning_schema(resource, insert_node->returning(), table_schema, table_schema);
                     }
                     // relkind='g' (dynamic-schema) tables accept INSERTs
                     // whose shape differs from the catalog's currently-registered columns,
@@ -3132,13 +3073,6 @@ namespace services::dispatcher {
                         if (ret_err.contains_error()) {
                             return ret_err;
                         }
-                        // Surface the RETURNING projection as this statement's output
-                        // schema (see the insert_t arm) — describe answers the real
-                        // RowDescription; plain DML stays unstamped = NoData.
-                        result = impl::returning_schema(resource,
-                                                        *returning,
-                                                        table_schema,
-                                                        has_join ? incoming_schema : table_schema);
                     }
                 }
                 return result;

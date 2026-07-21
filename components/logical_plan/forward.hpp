@@ -76,11 +76,13 @@ namespace components::logical_plan {
         allocate_oids_t,
         set_timezone_t,
         // Host-extension carrier: a leaf owned by embedding-host code (federation
-        // gateways, custom sources). Carries an opaque intrusive payload plus an
-        // engine-readable declared output schema; physgen delegates operator
-        // construction to the payload's factory. The optimizer treats it as an
-        // opaque barrier (no pushdown across, no column pruning). See
-        // node_extension.hpp.
+        // gateways, custom sources). Pure DATA — just its (db, rel) logical identity;
+        // it resolves / types / EXPLAIN-names from the catalog like any table. Its
+        // ONE difference is LOWERING: physgen builds a host operator via the injected
+        // create_plan rule (create_plan.cpp), not a disk scan. It stays opaque to the
+        // optimizer STRUCTURALLY — a childless, expression-less, oid-bearing scan leaf
+        // the restructuring rules pass through unchanged (asserted by the extension
+        // barrier test); there is no dedicated barrier rule. See node_extension.hpp.
         extension_t,
         unused
     };

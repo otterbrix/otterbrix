@@ -41,12 +41,21 @@
 
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 
 namespace services::planner {
 
     using components::logical_plan::node_type;
+
+    // Null-Object default for context_storage_t::create_plan_rule (see
+    // context_storage.hpp): no host lowering registered -> a node_extension leaf
+    // has no host operator, so its plan errors downstream. Defined here (operator_t
+    // complete) so the returned intrusive_ptr<operator_t> temporary is destructible.
+    components::operators::operator_ptr no_custom_lowering(const context_storage_t&,
+                                                          const components::compute::function_registry_t&,
+                                                          const components::logical_plan::node_ptr&) {
+        return {};
+    }
 
     components::operators::operator_ptr create_plan(const context_storage_t& context,
                                                     const components::compute::function_registry_t& function_registry,
@@ -165,16 +174,14 @@ namespace services::planner {
             case node_type::function_t:
                 return impl::create_plan_function(context, node);
             case node_type::extension_t: {
-                // Host-extension: physgen builds the host operator through the factory
-                // injected on context_storage (base_spaces -> dispatcher -> executor).
-                // The logical node holds only data (db.rel + payload).
-                //   - SOURCE (leaf, no child): a host operator that reads a backend.
-                //   - SINK (has a child): a host operator that WRITES a backend; the
-                //     child sub-plan (e.g. the SELECT of INSERT..SELECT) feeds its rows.
-                // The host's own operator picks source vs sink by role(); the engine
-                // just wires the child when present.
-                const auto* ext = static_cast<const components::logical_plan::node_extension_t*>(node.get());
-                auto op = context.extension_factory(context, *ext); // never null (Null Object default)
+                // Host-custom node (node_extension): the engine cannot lower it — the
+                // host-injected create_plan rule (stamped on context_storage, see
+                // context_storage.hpp) builds the host operator. A SOURCE is a childless
+                // leaf; a SINK is a node WITH a child (e.g. INSERT..SELECT into a
+                // backend) whose child sub-plan the engine wires. The rule is never null
+                // (Null Object default); the operator it RETURNS may be null ("no host
+                // lowering"), and the plan then errors downstream (create_physical_plan_error).
+                auto op = context.create_plan_rule(context, function_registry, node);
                 if (op && !node->children().empty()) {
                     op->set_children(create_plan(context,
                                                  function_registry,

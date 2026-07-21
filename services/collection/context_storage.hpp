@@ -11,8 +11,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace components::logical_plan {
-    class node_extension_t;
+namespace components::compute {
+    class function_registry_t;
 }
 namespace components::operators {
     class operator_t;
@@ -22,27 +22,33 @@ namespace services {
 
     struct context_storage_t;
 
-    // Host-injected factory that lowers a node_extension_t to the host's own
-    // operator_t. Set at engine construction (base_spaces -> dispatcher -> executor)
-    // and stamped onto context_storage per query; the physical-plan generator's
-    // `case extension_t` calls it. Plain fn-ptr (no std::function). NEVER null —
-    // defaults to no_extension_operator (a Null Object), so callers invoke it
-    // unconditionally without a nullptr guard.
-    using extension_operator_factory_t = boost::intrusive_ptr<components::operators::operator_t> (*)(
-        const context_storage_t&,
-        const components::logical_plan::node_extension_t&);
+    namespace planner {
+        // Host-injected physical-plan rule: lowers a host-custom logical node
+        // (node_extension) the engine cannot lower itself, into the host's own
+        // operator. Delivered through the constructor chain (base_spaces ->
+        // dispatcher -> executor) and stamped onto context_storage per query; the
+        // physical-plan generator reads it at the `case node_type::extension_t` arm.
+        // Plain fn-ptr (no std::function). NEVER null — defaults to no_custom_lowering
+        // (a Null Object returning {}); the returned operator MAY be null, meaning
+        // "no host lowering for this node".
+        using create_plan_rule_t = boost::intrusive_ptr<components::operators::operator_t> (*)(
+            const context_storage_t&,
+            const components::compute::function_registry_t&,
+            const components::logical_plan::node_ptr&);
 
-    // Default factory: the embedding host registered no extension operators, so an
-    // extension node has no host operator to build (its plan errors downstream).
-    boost::intrusive_ptr<components::operators::operator_t>
-    no_extension_operator(const context_storage_t&, const components::logical_plan::node_extension_t&);
+        boost::intrusive_ptr<components::operators::operator_t>
+        no_custom_lowering(const context_storage_t&,
+                           const components::compute::function_registry_t&,
+                           const components::logical_plan::node_ptr&);
+    } // namespace planner
 
     struct context_storage_t {
         std::pmr::memory_resource* resource;
         log_t log;
         core::date::timezone_offset_t session_timezone;
-        // See extension_operator_factory_t. Never null (Null Object default).
-        extension_operator_factory_t extension_factory = &no_extension_operator;
+        // Host-injected create_plan rule (see planner::create_plan_rule_t). Stamped
+        // per query by the executor; read at create_plan's extension arm. Never null.
+        planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering;
         // oid-only routing. Plan generators ask "do we know about this table?"
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.

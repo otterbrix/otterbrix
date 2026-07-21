@@ -9,21 +9,13 @@ namespace components::logical_plan {
     class node_extension_t;
     using node_extension_ptr = boost::intrusive_ptr<node_extension_t>;
 
-    // Opaque host data riding on the extension node. The engine NEVER looks
-    // inside — the host subclasses this with whatever its factory needs
-    // (backend actor address, connection key, dialect SQL, ...).
-    class node_extension_payload_t : public boost::intrusive_ref_counter<node_extension_payload_t> {
-    public:
-        virtual ~node_extension_payload_t() = default;
-    };
-    using node_extension_payload_ptr = boost::intrusive_ptr<node_extension_payload_t>;
-
     // Extension carrier leaf — the host-customization source node. Pure DATA:
-    // (dbname, relname) + opaque host payload. No operator factory here — the
-    // node never builds a physical operator (that would invert layering). The
-    // host registers ONE factory at engine construction (base_spaces -> dispatcher
-    // -> executor -> context_storage.extension_factory); the physical-plan
-    // generator's `case extension_t` calls it, reading this node's payload.
+    // just its (dbname, relname) logical identity. It carries NO host state and
+    // NO operator factory — a logical-plan node is not a storage slot. The host
+    // keeps its own per-source runtime data in its own structures, keyed by this
+    // node's identity ((db, rel) or the resolved oid); the physical-plan
+    // generator's injected create_plan rule reads that identity to build the
+    // host operator.
     //
     // Identity is a REGISTERED CATALOG TABLE: the host registers the external
     // table in the engine catalog (create_collection) and gives the node its
@@ -34,14 +26,10 @@ namespace components::logical_plan {
     // disk scan.
     class node_extension_t final : public node_t {
     public:
-        node_extension_t(std::pmr::memory_resource* resource,
-                         core::dbname_t dbname,
-                         core::relname_t relname,
-                         node_extension_payload_ptr payload);
+        node_extension_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
         const std::string& dbname() const noexcept { return dbname_; }
         const std::string& relname() const noexcept { return relname_; }
-        const node_extension_payload_ptr& payload() const noexcept { return payload_; }
 
     private:
         hash_t hash_impl() const override;
@@ -49,12 +37,9 @@ namespace components::logical_plan {
 
         std::string dbname_;
         std::string relname_;
-        node_extension_payload_ptr payload_;
     };
 
-    node_extension_ptr make_node_extension(std::pmr::memory_resource* resource,
-                                           core::dbname_t dbname,
-                                           core::relname_t relname,
-                                           node_extension_payload_ptr payload);
+    node_extension_ptr
+    make_node_extension(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
 } // namespace components::logical_plan

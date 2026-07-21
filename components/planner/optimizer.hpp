@@ -5,6 +5,19 @@
 
 namespace components::planner {
 
+    // Host-injected optimizer pass: a final rewrite the embedding host runs on the
+    // fully-optimized logical tree (e.g. federation-specific reshaping). Injected
+    // through the CONSTRUCTOR chain (base_spaces -> dispatcher -> executor) and
+    // passed as a scalar argument here — the optimizer lives in components/planner,
+    // which must not depend on services/context_storage, so it cannot ride the
+    // context. Plain fn-ptr (no std::function). NEVER null — defaults to no_op_pass
+    // (a Null Object returning the tree unchanged).
+    using optimizer_pass_t = logical_plan::node_ptr (*)(std::pmr::memory_resource*, logical_plan::node_ptr);
+
+    inline logical_plan::node_ptr no_op_pass(std::pmr::memory_resource*, logical_plan::node_ptr node) {
+        return node;
+    }
+
     // Single optimization pass. Runs AFTER the planner rewrite, i.e. after
     // resolve → validate → enrich → planner.create_plan, so node->table_oid()
     // is populated, sibling node_catalog_resolve_t (resolve_kind::table) nodes
@@ -26,6 +39,7 @@ namespace components::planner {
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
-                                    bool can_push_to_agent = false);
+                                    bool can_push_to_agent = false,
+                                    optimizer_pass_t host_pass = &no_op_pass);
 
 } // namespace components::planner

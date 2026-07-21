@@ -46,11 +46,13 @@ test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
 
 class test_spaces final : public otterbrix::base_otterbrix_t {
 public:
-    // extension_factory: forwarded to the engine so an extension node lowers to a
-    // host operator (see context_storage.hpp). Null for non-federation tests.
+    // create_plan_rule / optimizer_pass: host customization hooks forwarded to the
+    // engine through the constructor chain (physgen lowering of node_extension /
+    // custom nodes; a final optimizer pass). Null Objects for non-federation tests.
     test_spaces(const configuration::config& config,
-                services::extension_operator_factory_t extension_factory = &services::no_extension_operator)
-        : otterbrix::base_otterbrix_t(config, extension_factory) {
+                services::planner::create_plan_rule_t create_plan_rule = &services::planner::no_custom_lowering,
+                components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass)
+        : otterbrix::base_otterbrix_t(config, create_plan_rule, optimizer_pass) {
         // Isolate the process-global UDF registry between test cases: each test
         // gets a fresh builtins-only default registry so user functions from a
         // previous test don't leak into this one (which crashed test_batch_join

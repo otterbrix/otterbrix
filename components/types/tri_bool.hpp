@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 
 namespace components::types {
 
@@ -20,6 +21,17 @@ namespace components::types {
         yes = 1,
         unknown = 2
     };
+
+    // tri_bool_t deliberately has no operator bool, no operator&&/||/!, and no implicit bool
+    // interop: in three-valued logic `if (v)` and `a && b` have no single right meaning, and the
+    // classic library pitfalls (boost::tribool's implicit conversions, its always-indeterminate
+    // `== indeterminate`) stem exactly from pretending they do. Combining goes through
+    // tri_and/tri_or/tri_not; collapsing to a bool goes through selects()/permits(), which name
+    // the SQL rule being applied. (`unknown` is the SQL standard's name for the third truth
+    // value — keep it, not boost's `indeterminate`.) These asserts pin the absence of implicit
+    // interop so a convenience operator cannot be added without tripping them.
+    static_assert(!std::is_convertible_v<tri_bool_t, bool>, "tri_bool_t must never implicitly become bool");
+    static_assert(!std::is_convertible_v<bool, tri_bool_t>, "bool must never implicitly become tri_bool_t");
 
     constexpr tri_bool_t tri_of(bool b) noexcept { return b ? tri_bool_t::yes : tri_bool_t::no; }
 

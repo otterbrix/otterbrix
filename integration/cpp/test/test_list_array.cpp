@@ -763,4 +763,25 @@ TEST_CASE("integration::list_array::null_elements") {
         REQUIRE(cur2->size() == 1);
         REQUIRE(cur2->value(0, 0).value<int32_t>() == 1);
     }
+    SECTION("IS NULL / IS NOT NULL on a subscript") {
+        // row 1's arr[2]=20 (not null), row 2's arr[2]=NULL.
+        auto isnull = ok("SELECT id FROM db.a WHERE arr[2] IS NULL;");
+        REQUIRE(isnull->size() == 1);
+        REQUIRE(isnull->value(0, 0).value<int32_t>() == 2);
+        auto notnull = ok("SELECT id FROM db.a WHERE lst[2] IS NOT NULL;");
+        REQUIRE(notnull->size() == 1);
+        REQUIRE(notnull->value(0, 0).value<int32_t>() == 1);
+    }
+    SECTION("ORDER BY a subscript orders by the element, NULLs last") {
+        // arr[2] is 20 (id 1) and NULL (id 2): ascending places 20 first, the NULL last.
+        auto cur = ok("SELECT id FROM db.a ORDER BY arr[2];");
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 1);
+        REQUIRE(cur->value(0, 1).value<int32_t>() == 2);
+        // Explicit NULLS FIRST places the NULL row (id 2) first.
+        auto nf = ok("SELECT id FROM db.a ORDER BY lst[2] NULLS FIRST;");
+        REQUIRE(nf->size() == 2);
+        REQUIRE(nf->value(0, 0).value<int32_t>() == 2);
+        REQUIRE(nf->value(0, 1).value<int32_t>() == 1);
+    }
 }

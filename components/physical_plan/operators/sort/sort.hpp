@@ -13,8 +13,7 @@ namespace components::sort {
         ascending = 1
     };
 
-    // Resolved NULL placement for a sort key. Unlike sort direction, this is independent of
-    // ascending/descending: `first` always places NULLs before non-NULLs, `last` always after.
+    // NULL placement, independent of ascending/descending: `first` always before non-NULLs, `last` after.
     enum class null_order
     {
         first,
@@ -26,7 +25,6 @@ namespace components::sort {
             std::pmr::vector<size_t> col_path;
             order order_ = order::ascending;
             null_order null_order_ = null_order::last;
-            const vector::vector_t* vec = nullptr; // cached pointer set in set_chunk()
         };
 
     public:
@@ -41,9 +39,7 @@ namespace components::sort {
 
         bool operator()(size_t row_a, size_t row_b) const {
             for (const auto& k : keys_) {
-                if (!k.vec)
-                    continue;
-                int cmp = compare_raw(*k.vec, row_a, *k.vec, row_b, k.order_, k.null_order_);
+                int cmp = compare_key(*chunk_, row_a, *chunk_, row_b, k);
                 if (cmp == 0)
                     continue;
                 return cmp < 0;
@@ -51,20 +47,20 @@ namespace components::sort {
             return false;
         }
 
-        // Compare a row from one chunk against a row from a (possibly different) chunk.
-        // Does not use cached k.vec pointers; resolves col_path on each side per comparison.
-        // Returns <0 if (a,ra) should sort before (b,rb), >0 if after, 0 if equal under the
-        // configured sort keys and orders.
+        // Compare a row from one chunk against a row from a (possibly different) chunk under the configured
+        // sort keys. Returns <0 if (a,ra) sorts before (b,rb), >0 if after, 0 if equal.
         int
         compare_cross(const vector::data_chunk_t& a, size_t row_a, const vector::data_chunk_t& b, size_t row_b) const;
 
     private:
-        static int compare_raw(const vector::vector_t& va,
-                               size_t a,
-                               const vector::vector_t& vb,
-                               size_t b,
-                               order ord,
-                               null_order nord);
+        // One sort key between (a,row_a) and (b,row_b). Resolves each side through col_path — so a plain
+        // column, a struct field and an ARRAY/LIST element subscript (v[i]) all read the correct leaf — and
+        // compares raw. NULL placement (null_order_) is independent of the ascending/descending sign.
+        static int compare_key(const vector::data_chunk_t& a,
+                               size_t row_a,
+                               const vector::data_chunk_t& b,
+                               size_t row_b,
+                               const sort_key& key);
 
         std::vector<sort_key> keys_;
         const vector::data_chunk_t* chunk_ = nullptr;

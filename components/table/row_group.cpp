@@ -269,6 +269,31 @@ namespace components::table {
         return filter->cast<constant_filter_t>().compare(element_value);
     }
 
+    // Whether element `element_index` of an ARRAY/LIST column value at `row_id` is SQL NULL. A NULL
+    // whole array/list, or an out-of-range index (PostgreSQL yields NULL for an OOB subscript), both
+    // count as a NULL element. Mirrors check_array_element_predicate's element resolution.
+    static bool array_element_is_null(column_data_t& column,
+                                      int64_t row_id,
+                                      uint64_t element_index,
+                                      core::error_t& error) {
+        column_fetch_state fetch_state;
+        vector::vector_t result(column.resource(), column.type(), 1);
+        column.fetch_row(fetch_state, row_id, result, 0);
+        if (fetch_state.fetch_error.contains_error()) {
+            error = fetch_state.fetch_error;
+            return false;
+        }
+        if (!result.validity().row_is_valid(0)) {
+            return true;
+        }
+        auto array_value = result.value(0);
+        const auto& elements = array_value.children();
+        if (element_index >= elements.size()) {
+            return true;
+        }
+        return elements[element_index].is_null();
+    }
+
     bool row_group_t::check_expression_predicate(int64_t row_id,
                                                  const expression_filter_t& filter,
                                                  expression_filter_layout_cache_t& expression_layouts,
@@ -394,10 +419,19 @@ namespace components::table {
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
                 auto& null_filter = filter->cast<is_null_filter_t>();
-                column_data_t* column = &get_column(null_filter.table_indices.front());
-                for (size_t i = 1; i < null_filter.table_indices.size(); i++) {
-                    column =
-                        static_cast<struct_column_data_t*>(column)->sub_columns[null_filter.table_indices[i]].get();
+                const auto& indices = null_filter.table_indices;
+                column_data_t* column = &get_column(indices.front());
+                for (size_t i = 1; i < indices.size(); i++) {
+                    // A subscript into an ARRAY/LIST (v[i]) resolves to an element, not a struct field:
+                    // check that element's null-ness (a NULL array or an OOB index is a NULL element).
+                    // Blindly walking sub_columns here would reinterpret an array_column as a struct.
+                    if (column->type().type() == types::logical_type::ARRAY ||
+                        column->type().type() == types::logical_type::LIST) {
+                        bool element_is_null = array_element_is_null(*column, row_id, indices[i], error);
+                        return filter->filter_type == expressions::compare_type::is_null ? element_is_null
+                                                                                         : !element_is_null;
+                    }
+                    column = static_cast<struct_column_data_t*>(column)->sub_columns[indices[i]].get();
                 }
                 bool is_valid = column->check_validity(row_id);
                 return filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;

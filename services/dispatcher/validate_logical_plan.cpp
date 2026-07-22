@@ -715,25 +715,26 @@ namespace services::dispatcher {
                     }
                 } else if (sub->group() == expression_group::compare) {
                     auto* cmp = static_cast<compare_expression_t*>(sub.get());
-                    auto res = resolve_key_path(resource, cmp->left(), schema);
-                    if (res.has_error()) {
-                        return res;
-                    }
-                    res = resolve_key_path(resource, cmp->right(), schema);
-                    if (res.has_error()) {
-                        return res;
-                    }
-                    for (auto& child : cmp->children()) {
-                        if (child->group() == expression_group::compare) {
-                            auto* child_cmp = static_cast<compare_expression_t*>(child.get());
-                            res = resolve_key_path(resource, child_cmp->left(), schema);
+                    if (cmp->is_union()) {
+                        // Union compares (AND/OR/NOT — e.g. from IN, or the union_and(is_not_null,
+                        // union_not(regex)) that NOT LIKE expands into) carry their operands as CHILDREN
+                        // and have no left/right, so recurse into each child instead of touching left/right
+                        // (which are null for a union and would be dereferenced blindly).
+                        for (auto& child : cmp->children()) {
+                            param_storage child_param{child};
+                            auto res = resolve_key_path(resource, child_param, schema);
                             if (res.has_error()) {
                                 return res;
                             }
-                            res = resolve_key_path(resource, child_cmp->right(), schema);
-                            if (res.has_error()) {
-                                return res;
-                            }
+                        }
+                    } else {
+                        auto res = resolve_key_path(resource, cmp->left(), schema);
+                        if (res.has_error()) {
+                            return res;
+                        }
+                        res = resolve_key_path(resource, cmp->right(), schema);
+                        if (res.has_error()) {
+                            return res;
                         }
                     }
                 }

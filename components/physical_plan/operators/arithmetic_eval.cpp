@@ -1,5 +1,6 @@
 #include "arithmetic_eval.hpp"
 
+#include <core/regex/regex.hpp>
 #include <core/result_wrapper.hpp>
 
 namespace components::operators {
@@ -273,9 +274,21 @@ namespace components::operators {
             if (condition->group() != expressions::expression_group::compare)
                 return false;
             auto* cmp = static_cast<const expressions::compare_expression_t*>(condition.get());
+            const auto op = cmp->type();
 
             if (cmp->is_union()) {
-                bool is_and = (cmp->type() == expressions::compare_type::union_and);
+                if (op == expressions::compare_type::union_not) {
+                    // Negation wrapper (e.g. NOT LIKE): a single child whose truth value is inverted. The
+                    // NULL-subject guard, when needed, is the union_and the transformer wraps around this.
+                    if (cmp->children().empty())
+                        return false;
+                    auto child_result =
+                        evaluate_row_condition(resource, cmp->children().front(), chunk, params, row_idx, session_tz);
+                    if (child_result.has_error())
+                        return child_result;
+                    return !child_result.value();
+                }
+                bool is_and = (op == expressions::compare_type::union_and);
                 for (auto& child : cmp->children()) {
                     auto child_result = evaluate_row_condition(resource, child, chunk, params, row_idx, session_tz);
                     if (child_result.has_error())
@@ -286,6 +299,16 @@ namespace components::operators {
                         return true;
                 }
                 return is_and;
+            }
+
+            // IS NULL / IS NOT NULL: only the left operand's null-ness matters (right is a dummy param), so
+            // this must run BEFORE the NULL-operand short-circuit below (a NULL subject is the point here).
+            if (op == expressions::compare_type::is_null || op == expressions::compare_type::is_not_null) {
+                auto subject = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz);
+                if (subject.has_error())
+                    return subject.convert_error<bool>();
+                const bool subject_is_null = subject.value().is_null();
+                return op == expressions::compare_type::is_null ? subject_is_null : !subject_is_null;
             }
 
             auto left_rw = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz);
@@ -303,6 +326,25 @@ namespace components::operators {
             if (left_val.is_null() || right_val.is_null()) {
                 return false;
             }
+
+            // LIKE / ILIKE: the pattern (right) is already like_to_regex-converted on the scalar path, so
+            // compile it as a regex (case-insensitively for ILIKE) and partial-match the subject. NOT LIKE
+            // reaches here inside a union_not wrapper, so only the positive match is performed.
+            if (op == expressions::compare_type::regex) {
+                if (!types::is_string(left_val.type().type()) || !types::is_string(right_val.type().type())) {
+                    return core::error_t{core::error_code_t::comparison_failure,
+                                         std::pmr::string{"incorrect argument type for LIKE in CASE", resource}};
+                }
+                auto compiled =
+                    core::regex_t::compile(resource, right_val.value<std::string_view>(), cmp->regex_icase());
+                if (compiled.has_error())
+                    return compiled.error();
+                bool matched = compiled.value().match(left_val.value<std::string_view>());
+                if (cmp->regex_negate())
+                    matched = !matched;
+                return matched;
+            }
+
             if (left_val.type() != right_val.type()) {
                 auto cast_right = right_val.cast_as(left_val.type(), session_tz);
                 if (cast_right.has_error()) {

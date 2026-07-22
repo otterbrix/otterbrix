@@ -1435,6 +1435,11 @@ namespace components::sql::transform {
                     auto condition =
                         transform_a_expr_func(pg_ptr_cast<FuncCall>(cond_node), names, plan->parameters.get());
                     expr->append_param(condition);
+                } else if (nodeTag(cond_node) == T_NullTest) {
+                    // CASE WHEN col IS [NOT] NULL THEN ...
+                    auto condition =
+                        transform_null_test(pg_ptr_cast<NullTest>(cond_node), names, plan->parameters.get());
+                    expr->append_param(condition);
                 } else {
                     error_ = core::error_t(core::error_code_t::sql_parse_error,
                                            std::pmr::string{"Unsupported WHEN condition type", resource_});

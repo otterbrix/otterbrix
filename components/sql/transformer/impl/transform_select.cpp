@@ -1595,7 +1595,7 @@ namespace components::sql::transform {
                     // Arithmetic ORDER BY: encode as scalar_expression_t with sort order in key.path()[0]
                     // (0 = ascending, 1 = descending) and the NULLS placement in key.path()[1]
                     // (0 = default, 1 = first, 2 = last). create_plan_sort detects this and builds a
-                    // computed_sort_key_t instead of a regular sort key.
+                    // computed sort-key spec instead of a regular sort key.
                     auto a_expr = pg_ptr_cast<A_Expr>(sort_node);
                     if (!a_expr->name || a_expr->name->lst.empty()) {
                         error_ = core::error_t(core::error_code_t::sql_parse_error,

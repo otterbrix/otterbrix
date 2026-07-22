@@ -205,6 +205,109 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_double_column") {
     REQUIRE((cur->value(0, 2).value<double>() > -2.6 && cur->value(0, 2).value<double>() < -2.4));
 }
 
+TEST_CASE("integration::cpp::order_by_expressions::mixed_key_priority") {
+    auto config = test_create_config("/tmp/test_order_by_expressions/mixed_keys");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    setup(dispatcher);
+
+    {
+        INFO("a leading computed key outranks a plain tie-breaker: ORDER BY g + 0 DESC, v ASC");
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT v FROM db.t ORDER BY g + 0 DESC, v ASC;");
+        // g DESC groups {2,2} before {1,1}; v ASC inside each group.
+        check_order(cur, {20, 30, 10, 40});
+    }
+
+    {
+        INFO("the same ordering with a plain leading key is the reference");
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT v FROM db.t ORDER BY g DESC, v ASC;");
+        check_order(cur, {20, 30, 10, 40});
+    }
+
+    {
+        INFO("a trailing computed key stays the tie-breaker: ORDER BY g ASC, v + 0 DESC");
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT v FROM db.t ORDER BY g ASC, v + 0 DESC;");
+        // g ASC groups {1,1} before {2,2}; v DESC inside each group.
+        check_order(cur, {40, 10, 30, 20});
+    }
+
+    {
+        INFO("a computed key sandwiched between plain keys keeps its rank");
+        auto session = otterbrix::session_id_t();
+        // id % never ties, so use g twice: g ASC, then -v (computed) breaks ties descending v last.
+        auto cur = dispatcher->execute_sql(session, "SELECT v FROM db.t ORDER BY g ASC, -v ASC, id ASC;");
+        // g ASC: {10(g1), 40(g1)} then {30(g2), 20(g2)}; -v ASC = v DESC inside each group.
+        check_order(cur, {40, 10, 30, 20});
+    }
+
+    {
+        INFO("two computed keys keep their relative priority: ORDER BY g + 0 ASC, v + 0 DESC");
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT v FROM db.t ORDER BY g + 0 ASC, v + 0 DESC;");
+        check_order(cur, {40, 10, 30, 20});
+    }
+
+    {
+        INFO("computed temp columns never leak into the result schema");
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT v, g FROM db.t ORDER BY g + 0 DESC, v ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(cur->chunks().front().column_count() == 2);
+    }
+}
+
+TEST_CASE("integration::cpp::order_by_expressions::mixed_key_priority_multichunk") {
+    auto config = test_create_config("/tmp/test_order_by_expressions/mixed_multichunk");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.big (id INT, grp INT);")->is_success());
+    }
+    // > DEFAULT_VECTOR_CAPACITY rows so the k-way merge runs with computed keys at
+    // interleaved priorities across several chunks.
+    {
+        std::string values;
+        for (int i = 0; i < 3000; ++i) {
+            if (i) {
+                values += ", ";
+            }
+            values += "(" + std::to_string(i) + ", " + std::to_string(i % 3) + ")";
+        }
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.big (id, grp) VALUES " + values + ";")->is_success());
+    }
+
+    {
+        INFO("leading computed key over 3000 rows: ORDER BY grp + 0 DESC, id ASC");
+        auto session = otterbrix::session_id_t();
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT id, grp FROM db.big ORDER BY grp + 0 DESC, id ASC LIMIT 4;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        // grp DESC puts grp==2 first; within it id ASC: 2, 5, 8, 11.
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 2);
+        REQUIRE(cur->value(0, 1).value<int32_t>() == 5);
+        REQUIRE(cur->value(0, 2).value<int32_t>() == 8);
+        REQUIRE(cur->value(0, 3).value<int32_t>() == 11);
+    }
+}
+
 TEST_CASE("integration::cpp::order_by_expressions::unary_minus_empty_table") {
     auto config = test_create_config("/tmp/test_order_by_expressions/unary_empty");
     test_clear_directory(config);

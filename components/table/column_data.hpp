@@ -31,8 +31,6 @@ namespace components::table {
     // under NOT, so collapsing UNKNOWN into FALSE would let NOT resurrect NULL rows.
     using filter_match_t = types::tri_bool_t;
 
-    inline constexpr filter_match_t filter_match_not(filter_match_t v) noexcept { return types::tri_not(v); }
-
     constexpr uint64_t MAX_ROW_ID = 1ULL << 55; // 2^55
 
     class column_data_t {

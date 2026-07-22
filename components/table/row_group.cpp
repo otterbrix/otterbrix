@@ -385,41 +385,41 @@ namespace components::table {
         }
         switch (filter->filter_type) {
             case expressions::compare_type::union_or: {
-                // TRUE if any child is TRUE; otherwise UNKNOWN if any child is UNKNOWN.
-                // (UNKNOWN OR TRUE = TRUE, so a TRUE disjunct still rescues a NULL row.)
+                // OR fold via tri_or: TRUE dominates (a TRUE disjunct still rescues a NULL row),
+                // UNKNOWN otherwise absorbs.
                 auto& conjunction_or = filter->cast<conjunction_or_filter_t>();
-                bool saw_unknown = false;
+                auto acc = filter_match_t::no;
                 for (auto& child_filter : conjunction_or.child_filters) {
                     auto child = check_predicate(row_id, child_filter.get(), expression_layouts, error);
                     if (error.contains_error()) {
                         return filter_match_t::no;
                     }
-                    if (child == filter_match_t::yes) {
-                        return filter_match_t::yes;
+                    acc = types::tri_or(acc, child);
+                    if (acc == filter_match_t::yes) {
+                        break; // TRUE dominates OR — no later child can change it
                     }
-                    saw_unknown |= (child == filter_match_t::unknown);
                 }
-                return saw_unknown ? filter_match_t::unknown : filter_match_t::no;
+                return acc;
             }
             case expressions::compare_type::union_and: {
-                // FALSE if any child is FALSE; otherwise UNKNOWN if any child is UNKNOWN.
-                // (UNKNOWN AND FALSE = FALSE, so a FALSE conjunct still excludes decisively.)
+                // AND fold via tri_and: FALSE dominates (a FALSE conjunct excludes decisively),
+                // UNKNOWN otherwise absorbs.
                 auto& conjunction_and = filter->cast<conjunction_and_filter_t>();
-                bool saw_unknown = false;
+                auto acc = filter_match_t::yes;
                 for (auto& child_filter : conjunction_and.child_filters) {
                     auto child = check_predicate(row_id, child_filter.get(), expression_layouts, error);
                     if (error.contains_error()) {
                         return filter_match_t::no;
                     }
-                    if (child == filter_match_t::no) {
-                        return filter_match_t::no;
+                    acc = types::tri_and(acc, child);
+                    if (acc == filter_match_t::no) {
+                        break; // FALSE dominates AND — no later child can change it
                     }
-                    saw_unknown |= (child == filter_match_t::unknown);
                 }
-                return saw_unknown ? filter_match_t::unknown : filter_match_t::yes;
+                return acc;
             }
             case expressions::compare_type::union_not: {
-                // NOT over the disjunction of the children: negate the OR result.
+                // NOT over the disjunction of the children: tri_or the children, then tri_not.
                 // Crucially NOT UNKNOWN is UNKNOWN — a row excluded because its operand was
                 // NULL must not be flipped back in. This is what makes the validity gate in
                 // column_data_t::check_predicate safe to add.
@@ -430,15 +430,12 @@ namespace components::table {
                     if (error.contains_error()) {
                         return filter_match_t::no;
                     }
-                    if (child == filter_match_t::yes) {
-                        acc = filter_match_t::yes;
-                        break;
-                    }
-                    if (child == filter_match_t::unknown) {
-                        acc = filter_match_t::unknown;
+                    acc = types::tri_or(acc, child);
+                    if (acc == filter_match_t::yes) {
+                        break; // the negation is already settled to FALSE
                     }
                 }
-                return filter_match_not(acc);
+                return types::tri_not(acc);
             }
             case expressions::compare_type::invalid: {
                 assert(false && "invalid type for filter selection");

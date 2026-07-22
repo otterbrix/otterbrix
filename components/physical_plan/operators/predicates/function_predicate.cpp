@@ -88,8 +88,7 @@ namespace {
                                      batch.resource()});
             }
             for (size_t k = 0; k < N; ++k) {
-                results[k] = (any_arg_null[k] || values[k].is_null()) ? types::tri_bool_t::unknown
-                                                                      : types::tri_of(values[k].value<bool>());
+                results[k] = types::tri_of(values[k].value<bool>(), any_arg_null[k] || values[k].is_null());
             }
         } else {
             // vector_function returns data_chunk_t; result column is data[0]
@@ -102,6 +101,8 @@ namespace {
             }
             const auto& out_col = chunk.data.front();
             for (size_t k = 0; k < N; ++k) {
+                // Not the two-arg tri_of: an invalid row's slot may be uninitialized, so the
+                // get_value read must stay behind the short-circuiting guard.
                 const bool null_out = any_arg_null[k] || !out_col.validity().row_is_valid(k);
                 results[k] = null_out ? types::tri_bool_t::unknown : types::tri_of(out_col.get_value<bool>(k));
             }
@@ -208,7 +209,7 @@ namespace components::operators::predicates {
                 return res.convert_error<types::tri_bool_t>();
             }
             const auto& out = std::get<std::pmr::vector<types::logical_value_t>>(res.value())[0];
-            return out.is_null() ? types::tri_bool_t::unknown : types::tri_of(out.value<bool>());
+            return types::tri_of(out.value<bool>(), out.is_null());
         };
         return {new function_predicate(std::move(row_func), std::move(batch_func))};
     }
@@ -262,7 +263,7 @@ namespace components::operators::predicates {
                 return res.convert_error<types::tri_bool_t>();
             }
             const auto& out = std::get<std::pmr::vector<types::logical_value_t>>(res.value())[0];
-            return out.is_null() ? types::tri_bool_t::unknown : types::tri_of(out.value<bool>());
+            return types::tri_of(out.value<bool>(), out.is_null());
         };
         return {
             new function_predicate(std::move(row_func), make_batch_func(resource, std::move(arg_getters), function))};

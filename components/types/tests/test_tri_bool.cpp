@@ -21,6 +21,12 @@ namespace {
     static_assert(tri_of(true) == T);
     static_assert(tri_of(false) == F);
 
+    // Nullable-boolean seam: NULL is UNKNOWN regardless of what the (meaningless) payload holds.
+    static_assert(tri_of(true, false) == T);
+    static_assert(tri_of(false, false) == F);
+    static_assert(tri_of(true, true) == U);
+    static_assert(tri_of(false, true) == U);
+
     static_assert(tri_not(T) == F);
     static_assert(tri_not(F) == T);
     static_assert(tri_not(U) == U); // the load-bearing case

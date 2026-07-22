@@ -391,15 +391,51 @@ namespace components::operators {
             bool has_default = (operands.size() % 2 == 1);
             size_t num_whens = operands.size() / 2;
 
-            // Determine result type from first matching value for row 0
+            // The CASE result type is the COMMON type across every THEN result and the ELSE, so a wider
+            // later branch (e.g. a BIGINT ELSE after an INT THEN) is not truncated by coerce_to_result.
+            // A branch's type is taken structurally (a column's from its vector, a constant's from the
+            // parameter) rather than from a row-0 value, which would be NA for a NULL row and lose the type.
+            auto operand_type = [&](const expressions::param_storage& operand) -> types::complex_logical_type {
+                if (std::holds_alternative<expressions::key_t>(operand)) {
+                    const auto& key = std::get<expressions::key_t>(operand);
+                    if (!key.path().empty()) {
+                        if (const auto* vec = chunk.at(key.path())) {
+                            return vec->type();
+                        }
+                    }
+                } else if (std::holds_alternative<core::parameter_id_t>(operand)) {
+                    return params.parameters.at(std::get<core::parameter_id_t>(operand)).type();
+                }
+                auto val = resolve_row_value(resource, operand, chunk, params, 0, session_tz);
+                if (!val.has_error()) {
+                    return val.value().type();
+                }
+                return types::complex_logical_type(types::logical_type::NA);
+            };
+
             types::complex_logical_type result_type(types::logical_type::NA);
             if (count > 0) {
-                // Try first THEN result
-                auto val = resolve_row_value(resource, operands[1], chunk, params, 0, session_tz);
-                if (val.has_error()) {
-                    return val.convert_error<vector::vector_t>();
+                auto fold_branch = [&](const types::complex_logical_type& branch_type) {
+                    if (branch_type.type() == types::logical_type::NA ||
+                        branch_type.type() == types::logical_type::UNKNOWN) {
+                        return;
+                    }
+                    if (result_type.type() == types::logical_type::NA) {
+                        result_type = branch_type;
+                    } else if (result_type.type() != branch_type.type() && types::is_numeric(result_type.type()) &&
+                               types::is_numeric(branch_type.type())) {
+                        auto promoted = types::promote_type(result_type.type(), branch_type.type());
+                        if (promoted != types::logical_type::NA) {
+                            result_type = types::complex_logical_type(promoted);
+                        }
+                    }
+                };
+                for (size_t when_index = 0; when_index < num_whens; when_index++) {
+                    fold_branch(operand_type(operands[when_index * 2 + 1]));
                 }
-                result_type = val.value().type();
+                if (has_default) {
+                    fold_branch(operand_type(operands.back()));
+                }
             }
 
             vector::vector_t output(resource, result_type, count);

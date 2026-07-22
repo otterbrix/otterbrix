@@ -330,7 +330,14 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
         INFO("baseline MIN(CASE ELSE) error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int32_t>() == 72);
+        // The CASE result type is the common type across its branches: the ELSE literal 999999 is a
+        // BIGINT, so THEN score (INT) widens to BIGINT (issue #571 #2 — a wider branch is not truncated).
+        auto v = cur->value(0, 0);
+        if (v.type().type() == components::types::logical_type::BIGINT) {
+            REQUIRE(v.value<int64_t>() == 72);
+        } else {
+            REQUIRE(v.value<int32_t>() == 72);
+        }
     }
 }
 

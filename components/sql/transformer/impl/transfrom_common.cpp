@@ -825,16 +825,13 @@ namespace components::sql::transform {
                         }
                     }
                 }
-                auto expr = make_compare_union_expression(resource_, compare_type::union_not);
-                if (expr->group() == right->group()) {
-                    auto comp_expr = reinterpret_cast<const compare_expression_ptr&>(right);
-                    if (expr->type() == comp_expr->type()) {
-                        for (auto& child : comp_expr->children()) {
-                            expr->append_child(child);
-                        }
-                        return expr;
+                if (right->group() == expression_group::compare) {
+                    auto& inner = reinterpret_cast<const compare_expression_ptr&>(right);
+                    if (inner->type() == compare_type::union_not && inner->children().size() == 1) {
+                        return inner->children().front();
                     }
                 }
+                auto expr = make_compare_union_expression(resource_, compare_type::union_not);
                 expr->append_child(right);
                 return expr;
             }

@@ -519,6 +519,12 @@ namespace components::types {
             std::vector<logical_value_t> elems;
             elems.reserve(src.size());
             for (const auto& child : src) {
+                // A NULL element (logical_type NA) stays a NULL slot; the scalar cast can not convert
+                // a NA source, and a NULL is representable only as NA (is_null() == (type == NA)).
+                if (child.type().type() == logical_type::NA) {
+                    elems.emplace_back(child);
+                    continue;
+                }
                 auto casted = child.cast_as(target_elem_type, session_tz);
                 if (casted.has_error()) {
                     return casted.error();
@@ -534,6 +540,12 @@ namespace components::types {
             std::vector<logical_value_t> elems;
             elems.reserve(children().size());
             for (const auto& child : children()) {
+                // A NULL element (logical_type NA) stays a NULL slot; the scalar cast can not convert
+                // a NA source, and a NULL is representable only as NA (is_null() == (type == NA)).
+                if (child.type().type() == logical_type::NA) {
+                    elems.emplace_back(child);
+                    continue;
+                }
                 auto casted = child.cast_as(target_elem_type, session_tz);
                 if (casted.has_error()) {
                     return casted.error();

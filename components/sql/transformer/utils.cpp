@@ -474,22 +474,26 @@ namespace components::sql::transform {
                 values.emplace_back(std::move(res.value()));
             }
         }
-        if (values.empty()) {
-            // Empty array literal (ARRAY[]): the element type is indeterminate at parse
-            // time. Use UNKNOWN as a placeholder; it is resolved against the target column's
-            // element type when the value is cast/reconciled on the INSERT path.
-            return types::logical_value_t::create_array(resource,
-                                                        types::complex_logical_type{types::logical_type::UNKNOWN},
-                                                        std::move(values));
-        }
-        auto fist_type = values.front().type();
-        for (auto it = ++values.begin(); it != values.end(); ++it) {
-            if (fist_type != it->type()) {
+        // The element type comes from the first NON-NULL element. A NULL element (logical_type NA)
+        // is a valid null slot compatible with any element type, so it is skipped both when inferring
+        // the element type and when checking element-type consistency. An empty array (ARRAY[]) or an
+        // all-NULL array leaves the element type indeterminate (UNKNOWN), resolved against the target
+        // column's element type when the value is cast/reconciled on the INSERT path.
+        types::complex_logical_type element_type{types::logical_type::UNKNOWN};
+        bool element_type_found = false;
+        for (const auto& value : values) {
+            if (value.type().type() == types::logical_type::NA) {
+                continue;
+            }
+            if (!element_type_found) {
+                element_type = value.type();
+                element_type_found = true;
+            } else if (element_type != value.type()) {
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"array has inconsistent element types", resource});
             }
         }
-        return types::logical_value_t::create_array(resource, fist_type, std::move(values));
+        return types::logical_value_t::create_array(resource, element_type, std::move(values));
     }
 
     core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,

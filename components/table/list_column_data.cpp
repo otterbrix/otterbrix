@@ -117,7 +117,9 @@ namespace components::table {
             }
             state.child_states[1].result_offset = prev_size;
             result.reserve(prev_size + child_scan_count);
-            child_column->scan_count_with_updates(state.child_states[1], child_entry, child_scan_count);
+            // scan_count (not scan_count_with_updates) so the child's validity sub-column is restored:
+            // a NULL list element must survive the round trip. Mirrors the ARRAY child scan.
+            child_column->scan_count(state.child_states[1], child_entry, child_scan_count);
         }
         state.last_offset = current_offset;
 
@@ -368,7 +370,8 @@ namespace components::table {
             assert(child_type.to_physical_type() == types::physical_type::STRUCT ||
                    static_cast<uint64_t>(child_state->row_index) + child_scan_count - static_cast<uint64_t>(start_) <=
                        child_column->max_entry());
-            child_column->scan_count_with_updates(*child_state, child_scan, child_scan_count);
+            // scan_count (validity-aware) so NULL list elements survive a point fetch too.
+            child_column->scan_count(*child_state, child_scan, child_scan_count);
 
             result.append(child_scan, child_scan_count);
         }

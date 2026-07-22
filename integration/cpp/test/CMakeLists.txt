@@ -17,6 +17,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_unique_constraint_operator.cpp
         test_create_index_backfill_batched.cpp
         test_correctness_bugs.cpp
+        test_order_by_nulls.cpp
         test_multi_database_isolation.cpp
         test_dispatcher_watchdog_log.cpp
         test_production_scenarios.cpp

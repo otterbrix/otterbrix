@@ -13,19 +13,29 @@ namespace components::sort {
         ascending = 1
     };
 
+    // Resolved NULL placement for a sort key. Unlike sort direction, this is independent of
+    // ascending/descending: `first` always places NULLs before non-NULLs, `last` always after.
+    enum class null_order
+    {
+        first,
+        last
+    };
+
     class columnar_sorter_t {
         struct sort_key {
             std::pmr::vector<size_t> col_path;
             order order_ = order::ascending;
+            null_order null_order_ = null_order::last;
             const vector::vector_t* vec = nullptr; // cached pointer set in set_chunk()
         };
 
     public:
         explicit columnar_sorter_t() = default;
-        explicit columnar_sorter_t(size_t index, order order_ = order::ascending);
+        explicit columnar_sorter_t(size_t index, order order_ = order::ascending, null_order null_order_ = null_order::last);
 
-        void add(size_t index, order order_ = order::ascending);
-        void add(const std::pmr::vector<size_t>& col_path, order order_ = order::ascending);
+        void add(size_t index, order order_ = order::ascending, null_order null_order_ = null_order::last);
+        void
+        add(const std::pmr::vector<size_t>& col_path, order order_ = order::ascending, null_order null_order_ = null_order::last);
 
         void set_chunk(const vector::data_chunk_t& chunk);
 
@@ -33,10 +43,10 @@ namespace components::sort {
             for (const auto& k : keys_) {
                 if (!k.vec)
                     continue;
-                int cmp = compare_raw(*k.vec, row_a, *k.vec, row_b);
+                int cmp = compare_raw(*k.vec, row_a, *k.vec, row_b, k.order_, k.null_order_);
                 if (cmp == 0)
                     continue;
-                return (k.order_ == order::ascending) ? (cmp < 0) : (cmp > 0);
+                return cmp < 0;
             }
             return false;
         }
@@ -49,7 +59,12 @@ namespace components::sort {
         compare_cross(const vector::data_chunk_t& a, size_t row_a, const vector::data_chunk_t& b, size_t row_b) const;
 
     private:
-        static int compare_raw(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b);
+        static int compare_raw(const vector::vector_t& va,
+                               size_t a,
+                               const vector::vector_t& vb,
+                               size_t b,
+                               order ord,
+                               null_order nord);
 
         std::vector<sort_key> keys_;
         const vector::data_chunk_t* chunk_ = nullptr;

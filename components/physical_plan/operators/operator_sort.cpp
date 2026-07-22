@@ -13,9 +13,15 @@ namespace components::operators {
         : read_only_operator_t(resource, log, operator_type::sort)
         , computed_keys_(resource) {}
 
-    void operator_sort_t::add(size_t index, operator_sort_t::order order_) { sorter_.add(index, order_); }
+    void operator_sort_t::add(size_t index, operator_sort_t::order order_, operator_sort_t::null_order null_order_) {
+        sorter_.add(index, order_, null_order_);
+    }
 
-    void operator_sort_t::add(const std::pmr::vector<size_t>& col_path, order order_) { sorter_.add(col_path, order_); }
+    void operator_sort_t::add(const std::pmr::vector<size_t>& col_path,
+                              order order_,
+                              operator_sort_t::null_order null_order_) {
+        sorter_.add(col_path, order_, null_order_);
+    }
 
     void operator_sort_t::add_computed(computed_sort_key_t&& key) { computed_keys_.push_back(std::move(key)); }
 
@@ -66,7 +72,7 @@ namespace components::operators {
                     return result_vec.error();
                 }
                 if (!computed_added) {
-                    sorter_.add(chunk.data.size(), ck.order_);
+                    sorter_.add(chunk.data.size(), ck.order_, ck.null_order_);
                 }
                 chunk.data.emplace_back(std::move(result_vec.value()));
             }

@@ -25,6 +25,19 @@ using namespace components::expressions;
 
 namespace components::sql::transform {
 
+    namespace {
+        expressions::sort_null_order map_sortby_nulls(SortByNulls nulls) {
+            switch (nulls) {
+                case SORTBY_NULLS_FIRST:
+                    return expressions::sort_null_order::nulls_first;
+                case SORTBY_NULLS_LAST:
+                    return expressions::sort_null_order::nulls_last;
+                default:
+                    return expressions::sort_null_order::nulls_default;
+            }
+        }
+    } // namespace
+
     logical_plan::node_aggregate_ptr transformer::build_recursive_cte_ref(const std::string& cte_name,
                                                                           const std::string& effective_alias,
                                                                           logical_plan::execution_plan_t* plan) {
@@ -677,8 +690,9 @@ namespace components::sql::transform {
                             std::pmr::string{"ORDER BY over UNION supports only column references", resource_});
                         return nullptr;
                     }
-                    sort_exprs.emplace_back(
-                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
+                    sort_exprs.emplace_back(make_sort_expression(field.field,
+                                                                 is_desc ? sort_order::desc : sort_order::asc,
+                                                                 map_sortby_nulls(sortby->sortby_nulls)));
                 }
                 agg->append_child(
                     logical_plan::make_node_sort(resource_, core::dbname_t{}, core::relname_t{}, sort_exprs));
@@ -1512,18 +1526,20 @@ namespace components::sql::transform {
             for (auto sort_it : node.sortClause->lst) {
                 auto sortby = pg_ptr_cast<SortBy>(sort_it.data);
                 bool is_desc = sortby->sortby_dir == SORTBY_DESC;
+                auto null_ord = map_sortby_nulls(sortby->sortby_nulls);
                 if (nodeTag(sortby->node) == T_ColumnRef) {
                     column_ref_t field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names);
                     sort_exprs.emplace_back(
-                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
+                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc, null_ord));
                 } else if (nodeTag(sortby->node) == T_A_Indirection) {
                     column_ref_t field =
                         indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names);
                     sort_exprs.emplace_back(
-                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
+                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc, null_ord));
                 } else if (nodeTag(sortby->node) == T_A_Expr) {
                     // Arithmetic ORDER BY: encode as scalar_expression_t with sort order in key.path()[0]
-                    // (0 = ascending, 1 = descending). create_plan_sort detects this and builds a
+                    // (0 = ascending, 1 = descending) and the NULLS placement in key.path()[1]
+                    // (0 = default, 1 = first, 2 = last). create_plan_sort detects this and builds a
                     // computed_sort_key_t instead of a regular sort key.
                     auto a_expr = pg_ptr_cast<A_Expr>(sortby->node);
                     auto op_str = std::string_view(strVal(a_expr->name->lst.front().data));
@@ -1535,7 +1551,7 @@ namespace components::sql::transform {
                     std::string sort_alias = "__sort_expr_" + std::to_string(aggregate_counter_++);
                     auto stype = get_arithmetic_scalar_type(op_str);
                     expressions::key_t order_key(resource_);
-                    order_key.set_path({is_desc ? size_t(1) : size_t(0)});
+                    order_key.set_path({is_desc ? size_t(1) : size_t(0), static_cast<size_t>(null_ord)});
                     auto computed_sort = make_scalar_expression(resource_, stype, std::move(order_key));
                     // Resolve operands (without appending to any node — purely for sort)
                     logical_plan::node_ptr dummy_node = group; // resolve_select_operand needs a node_ptr
@@ -1557,7 +1573,7 @@ namespace components::sql::transform {
                         return nullptr; // positional_sort_field set error_
                     }
                     sort_exprs.emplace_back(
-                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc));
+                        make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc, null_ord));
                 } else {
                     error_ = core::error_t(
                         core::error_code_t::sql_parse_error,

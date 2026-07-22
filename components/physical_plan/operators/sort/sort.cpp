@@ -2,17 +2,19 @@
 
 namespace components::sort {
 
-    columnar_sorter_t::columnar_sorter_t(size_t index, order order_) { add(index, order_); }
-
-    void columnar_sorter_t::add(size_t index, order order_) {
-        std::pmr::vector<size_t> path;
-        path.push_back(index);
-        keys_.push_back({std::move(path), order_, nullptr});
+    columnar_sorter_t::columnar_sorter_t(size_t index, order order_, null_order null_order_) {
+        add(index, order_, null_order_);
     }
 
-    void columnar_sorter_t::add(const std::pmr::vector<size_t>& col_path, order order_) {
+    void columnar_sorter_t::add(size_t index, order order_, null_order null_order_) {
+        std::pmr::vector<size_t> path;
+        path.push_back(index);
+        keys_.push_back({std::move(path), order_, null_order_, nullptr});
+    }
+
+    void columnar_sorter_t::add(const std::pmr::vector<size_t>& col_path, order order_, null_order null_order_) {
         assert(!col_path.empty());
-        keys_.push_back({col_path, order_, nullptr});
+        keys_.push_back({col_path, order_, null_order_, nullptr});
     }
 
     void columnar_sorter_t::set_chunk(const vector::data_chunk_t& chunk) {
@@ -34,18 +36,10 @@ namespace components::sort {
 
     } // anonymous namespace
 
-    int columnar_sorter_t::compare_raw(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b) {
-        // Handle NULLs: NULLs sort last
-        bool a_null = va.is_null(a);
-        bool b_null = vb.is_null(b);
-        if (a_null && b_null)
-            return 0;
-        if (a_null)
-            return 1;
-        if (b_null)
-            return -1;
+    namespace {
 
-        switch (va.type().to_physical_type()) {
+        int compare_values(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b) {
+            switch (va.type().to_physical_type()) {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:
                 return compare_typed<int8_t>(va, a, vb, b);
@@ -82,7 +76,32 @@ namespace components::sort {
                 auto cmp = lva.compare(lvb);
                 return (cmp == types::compare_t::less) ? -1 : (cmp == types::compare_t::more) ? 1 : 0;
             }
+            }
         }
+
+    } // anonymous namespace
+
+    int columnar_sorter_t::compare_raw(const vector::vector_t& va,
+                                       size_t a,
+                                       const vector::vector_t& vb,
+                                       size_t b,
+                                       order ord,
+                                       null_order nord) {
+        const bool a_null = va.is_null(a);
+        const bool b_null = vb.is_null(b);
+        if (a_null || b_null) {
+            // NULL placement is fixed by nord and is NOT flipped by the ascending/descending sign.
+            if (a_null && b_null) {
+                return 0;
+            }
+            const bool nulls_first = nord == null_order::first;
+            if (a_null) {
+                return nulls_first ? -1 : 1;
+            }
+            return nulls_first ? 1 : -1;
+        }
+        const int cmp = compare_values(va, a, vb, b);
+        return (ord == order::ascending) ? cmp : -cmp;
     }
 
     int columnar_sorter_t::compare_cross(const vector::data_chunk_t& a,
@@ -95,10 +114,10 @@ namespace components::sort {
             const auto* vb = b.at(k.col_path);
             if (!va || !vb)
                 continue;
-            int cmp = compare_raw(*va, row_a, *vb, row_b);
+            int cmp = compare_raw(*va, row_a, *vb, row_b, k.order_, k.null_order_);
             if (cmp == 0)
                 continue;
-            return (k.order_ == order::ascending) ? cmp : -cmp;
+            return cmp;
         }
         return 0;
     }

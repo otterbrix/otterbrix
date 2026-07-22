@@ -17,16 +17,20 @@ namespace components::operators {
         expressions::scalar_type op{expressions::scalar_type::invalid};
         std::pmr::vector<expressions::param_storage> operands;
         sort::order order_{sort::order::ascending};
+        sort::null_order null_order_{sort::null_order::last};
     };
 
     class operator_sort_t final : public read_only_operator_t {
     public:
         using order = sort::order;
+        using null_order = sort::null_order;
 
         operator_sort_t(std::pmr::memory_resource* resource, log_t log);
 
-        void add(size_t index, order order_ = order::ascending);
-        void add(const std::pmr::vector<size_t>& col_path, order order_ = order::ascending);
+        void add(size_t index, order order_ = order::ascending, null_order null_order_ = null_order::last);
+        void add(const std::pmr::vector<size_t>& col_path,
+                 order order_ = order::ascending,
+                 null_order null_order_ = null_order::last);
         void add_computed(computed_sort_key_t&& key);
 
         void set_expected_output_count(size_t n) { expected_output_count_ = n; }

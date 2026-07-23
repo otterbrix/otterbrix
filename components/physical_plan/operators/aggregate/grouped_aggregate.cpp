@@ -253,12 +253,16 @@ namespace components::operators::aggregate {
                                           builtin_agg agg,
                                           const raw_agg_state_t& state,
                                           types::logical_type col_type) {
-        if (!state.initialized) {
-            return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+        // COUNT is defined for an empty or all-NULL group: it is 0, never NULL. It must be
+        // answered before the uninitialized-state NULL that every value aggregate returns.
+        // Guard the read explicitly: a state that never counted a row has u64 == 0 by the
+        // union's default initializer, but do not rely on that alone.
+        if (agg == builtin_agg::COUNT) {
+            return types::logical_value_t(resource, state.initialized ? state.u64 : uint64_t{0});
         }
 
-        if (agg == builtin_agg::COUNT) {
-            return types::logical_value_t(resource, state.u64);
+        if (!state.initialized) {
+            return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
         }
 
         if (agg == builtin_agg::AVG) {

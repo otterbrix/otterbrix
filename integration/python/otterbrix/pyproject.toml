@@ -1,38 +1,26 @@
 [build-system]
 requires = [
-    "setuptools>=42",
-    "scikit-build>=0.13",
+    "scikit-build-core>=0.10",
     "pybind11>=2.10.0",
-    "cmake",
-    "ninja; platform_system!='Windows'",
 ]
+build-backend = "scikit_build_core.build"
 
-build-backend = "setuptools.build_meta"
-
-[tool.scikit-build]
-cmake.args = ["-DCMAKE_TOOLCHAIN_FILE=./cmake-build/build/Release/generators"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = [
-    "--import-mode=importlib",
-]
 [project]
 name = "otterbrix"
-dynamic = ["version"]
-requires-python = ">= 3.9"
+version = "1.0.1a9"
+description = "Otterbrix: computation framework for Semi-structured data processing."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "BSD-3-Clause" }
+authors = [
+    { name = "Otterbrix Team", email = "team@otterbrix.com" },
+]
 dependencies = [
     "numpy",
     "pandas>=2.2,<4",
     "pyarrow>=14.0.0",
     "typing_extensions",
 ]
-authors = [
-    { name = "Otterbrix Team", email = "team@otterbrix.com" },
-]
-description = "Otterbrix: computation framework for Semi-structured data processing."
-readme = "README.md"
-license = { text = "BSD-3-Clause" }
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -59,4 +47,26 @@ classifiers = [
     "Operating System :: POSIX",
     "Operating System :: Unix",
     "Operating System :: MacOS",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+# CI copies this file to the repo root and builds there, so source-dir is "." (top-level CMakeLists.txt)
+[tool.scikit-build]
+cmake.version = ">=3.20"
+cmake.source-dir = "."
+cmake.build-type = "Release"
+build-dir = "build/{wheel_tag}"
+build.verbose = true
+# The wheel is populated by the CMake install() rules under if(SKBUILD), not a Python package.
+wheel.packages = []
+
+[tool.scikit-build.cmake.define]
+BUILD_PYTHON = "ON"
+
+[tool.pytest.ini_options]
+testpaths = ["integration/python/tests"]
+addopts = [
+    "--import-mode=importlib",
 ]

@@ -210,7 +210,9 @@ namespace components::operators {
                     }
                     const auto& mask = mask_res.value();
                     for (uint64_t inner_row = 0; inner_row < inner_chunk.size(); ++inner_row) {
-                        if (mask[inner_row]) {
+                        // selects(): only a definite TRUE joins the pair — an UNKNOWN (NULL
+                        // operand) ON result matches nothing, exactly as in operator_join.
+                        if (types::selects(mask[inner_row])) {
                             matched = true;
                             // inner/left emit every matched (outer ++ inner) pair; semi/anti
                             // only need the EXISTENCE of a match, not the matched rows —

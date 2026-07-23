@@ -114,7 +114,8 @@ namespace components::operators {
             if (res.has_error()) {
                 return res.error();
             }
-            if (!res.value()) {
+            // Only a definitely-TRUE predicate updates the row; UNKNOWN (NULL operand) skips it.
+            if (!types::selects(res.value())) {
                 continue;
             }
             if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
@@ -216,7 +217,7 @@ namespace components::operators {
                     return results.error();
                 }
                 for (size_t j = 0; j < chunk_right.size(); ++j) {
-                    if (!results.value()[j]) {
+                    if (!types::selects(results.value()[j])) {
                         continue;
                     }
                     // Storage / index update keys on the ABSOLUTE table row id of the

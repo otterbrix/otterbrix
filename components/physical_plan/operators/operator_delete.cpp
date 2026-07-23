@@ -77,7 +77,8 @@ namespace components::operators {
             if (check_result.has_error()) {
                 return check_result.error();
             }
-            if (!check_result.value()) {
+            // Only a definitely-TRUE predicate deletes the row; UNKNOWN (NULL operand) keeps it.
+            if (!types::selects(check_result.value())) {
                 continue;
             }
             int64_t abs_id;
@@ -211,7 +212,7 @@ namespace components::operators {
                     if (check_result.has_error()) {
                         return check_result.error();
                     }
-                    if (!check_result.value()) {
+                    if (!types::selects(check_result.value())) {
                         continue;
                     }
                     // Storage / index delete keys on the ABSOLUTE table row id of the

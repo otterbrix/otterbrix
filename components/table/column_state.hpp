@@ -1,4 +1,5 @@
 #pragma once
+#include <components/types/tri_bool.hpp>
 #include <components/types/types.hpp>
 #include <core/date/date_types.hpp>
 #include <core/operations_helper.hpp>
@@ -390,7 +391,10 @@ namespace components::table {
         virtual ~expression_evaluator_t() = default;
         // Evaluate the whole compare over `row` at `index`; `row` presents each referenced column
         // at its ORIGINAL storage column index (path[0]) so the value_getters resolve correctly.
-        virtual core::result_wrapper_t<bool> evaluate(const vector::data_chunk_t& row, size_t index) const = 0;
+        // Three-valued (SQL): a NULL operand yields UNKNOWN, which must stay distinct from FALSE
+        // so a NOT above the filter cannot resurrect the row (see filter_match_t).
+        virtual core::result_wrapper_t<types::tri_bool_t> evaluate(const vector::data_chunk_t& row,
+                                                                   size_t index) const = 0;
     };
 
     // A comparison whose one operand is a function/arithmetic expression over column(s) and whose

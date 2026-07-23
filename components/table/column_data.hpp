@@ -5,6 +5,7 @@
 #include "column_state.hpp"
 #include "segment_tree.hpp"
 #include "update_segment.hpp"
+#include <components/types/tri_bool.hpp>
 
 namespace components::table {
 
@@ -23,6 +24,13 @@ namespace components::table {
         TRUE_OR_NULL = 3,
         FALSE_OR_NULL = 4
     };
+    // The storage-scan filter answers in SQL three-valued logic. filter_match_t is the table
+    // component's spelling of the shared types::tri_bool_t vocabulary (tri_bool.hpp), so the scan
+    // filter and the in-memory predicate evaluator share one definition of TRUE/FALSE/UNKNOWN and
+    // cannot drift. A value comparison against a NULL operand is UNKNOWN, not FALSE: the two differ
+    // under NOT, so collapsing UNKNOWN into FALSE would let NOT resurrect NULL rows.
+    using filter_match_t = types::tri_bool_t;
+
     constexpr uint64_t MAX_ROW_ID = 1ULL << 55; // 2^55
 
     class column_data_t {
@@ -117,7 +125,9 @@ namespace components::table {
 
         // `error` carries an out_of_memory error_t when a pin fails during the predicate check;
         // on error the bool return is meaningless and the scan loop stops.
-        virtual bool check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error);
+        // Returns `unknown` when the row's value is NULL — a NULL operand never satisfies a
+        // value comparison, and must stay distinguishable from a genuine `no` (see filter_match_t).
+        virtual filter_match_t check_predicate(int64_t row_id, const table_filter_t* filter, core::error_t& error);
         virtual bool check_validity(int64_t row_id);
         virtual uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result);
         virtual void

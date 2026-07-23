@@ -13,16 +13,17 @@ namespace components::operators::predicates {
                          expressions::compare_type nested_type);
 
     private:
-        core::result_wrapper_t<bool> check_impl(const vector::data_chunk_t& chunk_left,
-                                                const vector::data_chunk_t& chunk_right,
-                                                size_t index_left,
-                                                size_t index_right) override;
+        core::result_wrapper_t<types::tri_bool_t> check_impl(const vector::data_chunk_t& chunk_left,
+                                                             const vector::data_chunk_t& chunk_right,
+                                                             size_t index_left,
+                                                             size_t index_right) override;
 
-        core::result_wrapper_t<std::vector<bool>> batch_check_impl(const vector::data_chunk_t& left,
-                                                                   const vector::data_chunk_t& right,
-                                                                   const vector::indexing_vector_t& left_indices,
-                                                                   const vector::indexing_vector_t& right_indices,
-                                                                   uint64_t count) override;
+        core::result_wrapper_t<std::vector<types::tri_bool_t>>
+        batch_check_impl(const vector::data_chunk_t& left,
+                         const vector::data_chunk_t& right,
+                         const vector::indexing_vector_t& left_indices,
+                         const vector::indexing_vector_t& right_indices,
+                         uint64_t count) override;
 
         std::pmr::memory_resource* resource_;
         row_check_fn_t func_;

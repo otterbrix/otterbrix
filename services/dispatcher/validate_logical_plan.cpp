@@ -707,6 +707,12 @@ namespace services::dispatcher {
                 return find_types(resource, key, schema);
             } else if (std::holds_alternative<expression_ptr>(param)) {
                 auto& sub = std::get<expression_ptr>(param);
+                if (!sub) {
+                    // A null operand slot -- e.g. the unused right() of a unary IS NULL, or the
+                    // left()/right() sentinels of a union node whose operands live in children_.
+                    // Nothing to resolve, and dereferencing sub->group() below would crash.
+                    return type_paths{resource};
+                }
                 if (sub->group() == expression_group::scalar) {
                     auto* scalar = static_cast<scalar_expression_t*>(sub.get());
                     auto res = resolve_key_paths_in_group(resource, scalar->params(), schema);

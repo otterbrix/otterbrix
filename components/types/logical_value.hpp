@@ -5,6 +5,7 @@
 #include <cstring>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 
 #include "types.hpp"
 #include <core/date/date_types.hpp>
@@ -43,7 +44,13 @@ namespace components::types {
         bool operator<=(const logical_value_t& rhs) const;
         bool operator>=(const logical_value_t& rhs) const;
 
+        // Total-order comparison used for sorting, indexing and container keys (NULLs order last;
+        // NULL == NULL). operator</operator== implement it. Never use it to answer a SQL predicate.
         compare_t compare(const logical_value_t& rhs) const;
+
+        // SQL value comparison: nullopt when either operand is NULL (the comparison is UNKNOWN in
+        // three-valued logic). Use this — not compare() — to evaluate a predicate over values.
+        std::optional<compare_t> compare_sql(const logical_value_t& rhs) const;
 
         const std::vector<logical_value_t>& children() const;
 

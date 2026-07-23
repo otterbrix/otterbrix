@@ -707,6 +707,12 @@ namespace services::dispatcher {
                 return find_types(resource, key, schema);
             } else if (std::holds_alternative<expression_ptr>(param)) {
                 auto& sub = std::get<expression_ptr>(param);
+                if (!sub) {
+                    // A null operand slot -- e.g. the unused right() of a unary IS NULL, or the
+                    // left()/right() sentinels of a union node whose operands live in children_.
+                    // Nothing to resolve, and dereferencing sub->group() below would crash.
+                    return type_paths{resource};
+                }
                 if (sub->group() == expression_group::scalar) {
                     auto* scalar = static_cast<scalar_expression_t*>(sub.get());
                     auto res = resolve_key_paths_in_group(resource, scalar->params(), schema);
@@ -715,25 +721,26 @@ namespace services::dispatcher {
                     }
                 } else if (sub->group() == expression_group::compare) {
                     auto* cmp = static_cast<compare_expression_t*>(sub.get());
-                    auto res = resolve_key_path(resource, cmp->left(), schema);
-                    if (res.has_error()) {
-                        return res;
-                    }
-                    res = resolve_key_path(resource, cmp->right(), schema);
-                    if (res.has_error()) {
-                        return res;
-                    }
-                    for (auto& child : cmp->children()) {
-                        if (child->group() == expression_group::compare) {
-                            auto* child_cmp = static_cast<compare_expression_t*>(child.get());
-                            res = resolve_key_path(resource, child_cmp->left(), schema);
+                    if (cmp->is_union()) {
+                        // union_and / union_or / union_not: the operands are the children_; the
+                        // left()/right() slots are null sentinels and must not be dereferenced.
+                        // Recurse so keys nested arbitrarily deep (NOT (a AND b), ...) resolve.
+                        for (auto& child : cmp->children()) {
+                            param_storage child_param{child};
+                            auto res = resolve_key_path(resource, child_param, schema);
                             if (res.has_error()) {
                                 return res;
                             }
-                            res = resolve_key_path(resource, child_cmp->right(), schema);
-                            if (res.has_error()) {
-                                return res;
-                            }
+                        }
+                    } else {
+                        // Leaf comparison: the operands live in left()/right().
+                        auto res = resolve_key_path(resource, cmp->left(), schema);
+                        if (res.has_error()) {
+                            return res;
+                        }
+                        res = resolve_key_path(resource, cmp->right(), schema);
+                        if (res.has_error()) {
+                            return res;
                         }
                     }
                 }

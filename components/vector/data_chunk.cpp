@@ -105,6 +105,14 @@ namespace components::vector {
     types::logical_value_t data_chunk_t::value(const std::pmr::vector<size_t>& col_path, uint64_t index) const {
         const vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
+            // Descending a path stops at the first NULL level: a NULL STRUCT/ARRAY/LIST cell has
+            // no interior to read. Without this, the ARRAY branch would index the flat child by a
+            // stride computed from a NULL row, and the LIST branch would read a garbage
+            // (offset,length) entry and return an arbitrary element of the flat child buffer.
+            if (!sub_column->validity().row_is_valid(index)) {
+                return types::logical_value_t{sub_column->resource(),
+                                              types::complex_logical_type{types::logical_type::NA}};
+            }
             if (std::next(it) == col_path.end()) {
                 if (sub_column->type().type() == types::logical_type::ARRAY) {
                     auto stride =

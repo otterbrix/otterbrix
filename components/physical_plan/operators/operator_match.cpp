@@ -106,7 +106,9 @@ namespace components::operators {
         }
         int64_t out_count = 0;
         for (size_t i = 0; i < chunk.size(); i++) {
-            if (results.value()[i]) {
+            // WHERE filter: a row is emitted only when the predicate is definitely TRUE. A NULL
+            // operand yields UNKNOWN, which does not select (and NOT does not turn it into TRUE).
+            if (types::selects(results.value()[i])) {
                 for (size_t j : populated_cols) {
                     out_chunk.set_value(j, static_cast<uint64_t>(out_count), chunk.data[j].value(i));
                 }

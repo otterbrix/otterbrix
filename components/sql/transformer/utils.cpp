@@ -727,6 +727,16 @@ namespace components::sql::transform {
                     }
                     return "(" + std::move(left.value()) + ")" + sep + "(" + std::move(right.value()) + ")";
                 }
+                if (e->kind == AEXPR_NOT) {
+                    // Unary NOT in A_Expr form: the operand is rexpr (lexpr is null). Emit the same
+                    // "NOT (...)" shape that the BoolExpr NOT branch produces so build_check_predicate
+                    // recognises it.
+                    auto inner = deparse_check_expr(resource, e->rexpr);
+                    if (inner.has_error() || inner.value().empty()) {
+                        return inner;
+                    }
+                    return "NOT (" + std::move(inner.value()) + ")";
+                }
                 return "";
             }
             case T_BoolExpr: {

@@ -829,6 +829,13 @@ namespace components::sql::transform {
                             }
                         }
 
+                        // FILTER (WHERE p): lower to a CASE over each argument (or COUNT(CASE ...)
+                        // for a bare aggregate) so only qualifying rows reach the aggregate.
+                        args = apply_aggregate_filter(func->agg_filter, std::move(args), names, plan);
+                        if (has_error()) {
+                            return nullptr;
+                        }
+
                         std::string expr_name;
                         if (res->name) {
                             expr_name = res->name;

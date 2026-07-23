@@ -18,9 +18,12 @@ namespace components::operators::aggregate {
     builtin_agg classify(const std::string& func_name);
 
     struct raw_agg_state_t {
+        // Exactly one union member may carry a default initializer; it zero-initializes the
+        // shared storage so an aggregate that finalizes without ever seeing a value (e.g. COUNT
+        // over an all-NULL group) reads a deterministic 0 rather than indeterminate bytes.
         union {
             int64_t i64;
-            uint64_t u64;
+            uint64_t u64{0};
             double f64;
         };
         uint64_t count{0};

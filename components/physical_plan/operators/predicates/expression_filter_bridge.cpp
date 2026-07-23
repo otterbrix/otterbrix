@@ -65,7 +65,8 @@ namespace components::operators::predicates {
                     create_predicate(resource, &registry_->registry, expression, no_types, no_types, &params_, session_tz);
             }
 
-            core::result_wrapper_t<bool> evaluate(const vector::data_chunk_t& row, size_t index) const override {
+            core::result_wrapper_t<types::tri_bool_t> evaluate(const vector::data_chunk_t& row,
+                                                               size_t index) const override {
                 // predicate::check is non-const; a const intrusive_ptr still yields a mutable pointee
                 // (like a raw pointer), so this stays a const evaluate().
                 return predicate_->check(row, index);

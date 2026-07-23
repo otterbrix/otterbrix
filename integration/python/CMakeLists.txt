@@ -77,7 +77,12 @@ if(CMAKE_CONFIGURATION_TYPES)
 endif()
 
 if(SKBUILD)
-    install(DIRECTORY otterbrix DESTINATION .)
+    # Exclude dev-only leftovers from the wheel.
+    install(DIRECTORY otterbrix DESTINATION .
+        PATTERN "pyproject.toml" EXCLUDE
+        PATTERN "tox.ini" EXCLUDE
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN "*.pyc" EXCLUDE)
     install(TARGETS otterbrix_python DESTINATION ./otterbrix)
 endif()
 

@@ -55,7 +55,10 @@ namespace components::operators {
         [[nodiscard]] pushed_aggregate_spec_t open_spec();
 
     private:
-        void explain_impl(const explain_sink& s) const override { explain_begin(s, table_oid_); s.end(); }
+        void explain_impl(const explain_sink& s) const override {
+            explain_begin(s, table_oid_);
+            s.end();
+        }
 
         components::catalog::oid_t table_oid_;
         expressions::compare_expression_ptr expression_;

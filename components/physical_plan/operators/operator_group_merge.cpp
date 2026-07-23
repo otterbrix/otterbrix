@@ -14,9 +14,8 @@ namespace components::operators {
         , output_types_(std::move(output_types))
         , aggs_(std::move(aggs)) {}
 
-    core::error_t operator_group_merge_t::push(pipeline::context_t* /*ctx*/,
-                                               vector::data_chunk_t&& input,
-                                               chunks_vector_t& out) {
+    core::error_t
+    operator_group_merge_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& out) {
         // Identity passthrough: the single owning agent already returned FINAL rows.
         if (input.size() > 0) {
             saw_rows_ = true;

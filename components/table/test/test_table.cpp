@@ -388,16 +388,14 @@ TEST_CASE("components::table::data_table") {
         table_scan_state state(&resource);
         std::pair row_range{uint64_t(test_size * 0.25f), uint64_t(test_size * 0.75f)};
         auto conj_and = std::make_unique<conjunction_and_filter_t>();
-        conj_and->child_filters.emplace_back(
-            std::make_unique<constant_filter_t>(components::expressions::compare_type::gte,
-                                                logical_value_t{&resource, row_range.first},
-                                                std::pmr::vector<uint64_t>{{uint64_t{0}},
-                                                                           std::pmr::polymorphic_allocator<uint64_t>{&resource}}));
-        conj_and->child_filters.emplace_back(
-            std::make_unique<constant_filter_t>(components::expressions::compare_type::lt,
-                                                logical_value_t{&resource, generate_string(row_range.second)},
-                                                std::pmr::vector<uint64_t>{{uint64_t{1}},
-                                                                           std::pmr::polymorphic_allocator<uint64_t>{&resource}}));
+        conj_and->child_filters.emplace_back(std::make_unique<constant_filter_t>(
+            components::expressions::compare_type::gte,
+            logical_value_t{&resource, row_range.first},
+            std::pmr::vector<uint64_t>{{uint64_t{0}}, std::pmr::polymorphic_allocator<uint64_t>{&resource}}));
+        conj_and->child_filters.emplace_back(std::make_unique<constant_filter_t>(
+            components::expressions::compare_type::lt,
+            logical_value_t{&resource, generate_string(row_range.second)},
+            std::pmr::vector<uint64_t>{{uint64_t{1}}, std::pmr::polymorphic_allocator<uint64_t>{&resource}}));
         data_table->initialize_scan(state, column_indices, conj_and.get());
         scan_and_check(*data_table, state, base_layout, row_range.second - row_range.first, [&](size_t produced) {
             return row_range.first + produced;

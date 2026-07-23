@@ -1,15 +1,15 @@
 #include "agent_disk.hpp"
 #include "inline_scan.hpp" // services::disk::detail::inline_scan (catalog DDL on the agent)
 #include "manager_disk.hpp"
-#include <components/logical_plan/node_group.hpp>              // node_group_t::set_pushdown (re-lowering guard)
+#include <algorithm>                              // std::min
+#include <components/logical_plan/node_group.hpp> // node_group_t::set_pushdown (re-lowering guard)
 #include <components/physical_plan/operators/aggregate/operator_func.hpp> // aggregate::operator_func_t (reduce rebuild)
-#include <components/physical_plan/operators/operator_group.hpp>          // operator_group_t + group_key_t (aggregate-pushdown reduce)
+#include <components/physical_plan/operators/operator_group.hpp> // operator_group_t + group_key_t (aggregate-pushdown reduce)
 #include <components/physical_plan/operators/predicates/expression_filter_bridge.hpp> // attach_expression_evaluators (WHERE f(col) pushdown)
 #include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
-#include <components/physical_plan_generator/create_plan.hpp>  // create_plan + function_registry + context_storage_t
-#include <components/vector/cell_equal.hpp> // components::vector::cells_equal (typed FK hash-verify)
+#include <components/physical_plan_generator/create_plan.hpp> // create_plan + function_registry + context_storage_t
+#include <components/vector/cell_equal.hpp>                   // components::vector::cells_equal (typed FK hash-verify)
 #include <components/vector/vector_operations.hpp>
-#include <algorithm> // std::min
 #include <fstream>
 #include <services/dispatcher/dispatcher.hpp>
 #include <unordered_set>
@@ -26,12 +26,8 @@ namespace services::disk {
     namespace {
         std::atomic<uint64_t> g_pushdown_reply_rows{0};
     } // namespace
-    uint64_t pushdown_reply_rows() noexcept {
-        return g_pushdown_reply_rows.load(std::memory_order_relaxed);
-    }
-    void reset_pushdown_reply_rows() noexcept {
-        g_pushdown_reply_rows.store(0, std::memory_order_relaxed);
-    }
+    uint64_t pushdown_reply_rows() noexcept { return g_pushdown_reply_rows.load(std::memory_order_relaxed); }
+    void reset_pushdown_reply_rows() noexcept { g_pushdown_reply_rows.store(0, std::memory_order_relaxed); }
 #endif
 
     agent_disk_t::agent_disk_t(std::pmr::memory_resource* resource,
@@ -720,9 +716,9 @@ namespace services::disk {
                                 components::types::complex_logical_type{components::types::logical_type::NA}};
                             if (array_target) {
                                 reconciled = components::table::reconcile_to_fixed_array(resource(),
-                                                                                        src_vec.value(row),
-                                                                                        table_columns[i],
-                                                                                        session_tz);
+                                                                                         src_vec.value(row),
+                                                                                         table_columns[i],
+                                                                                         session_tz);
                             } else {
                                 auto casted = src_vec.value(row).cast_as(target_type, session_tz);
                                 if (!casted.has_error()) {
@@ -1103,7 +1099,7 @@ namespace services::disk {
     // loop and returns that error; a clean drain (empty batch) returns no_error(). Peak
     // memory is one batch — nothing pinned survives the round-trip. NOT [[nodiscard]]:
     // fk_hash_semijoin intentionally discards the error to return a PARTIAL result.
-    template <typename PerBatch>
+    template<typename PerBatch>
     static core::error_t for_each_storage_batch(components::storage::storage_t& storage,
                                                 components::storage::scan_position_t& scan_position,
                                                 const components::table::table_filter_t* filter,
@@ -1221,15 +1217,14 @@ namespace services::disk {
             const std::vector<std::size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
             components::storage::scan_position_t pos{};
             ops::chunks_vector_t sink{resource}; // group.push is a sink — appends nothing here
-            if (auto err = for_each_storage_batch(*storage,
-                                                  pos,
-                                                  filter,
-                                                  projected_ptr,
-                                                  txn,
-                                                  resource,
-                                                  [&](components::vector::data_chunk_t& batch) {
-                                                      return group.push(&ctx, std::move(batch), sink);
-                                                  });
+            if (auto err = for_each_storage_batch(
+                    *storage,
+                    pos,
+                    filter,
+                    projected_ptr,
+                    txn,
+                    resource,
+                    [&](components::vector::data_chunk_t& batch) { return group.push(&ctx, std::move(batch), sink); });
                 err.contains_error()) {
                 return err;
             }
@@ -1388,8 +1383,7 @@ namespace services::disk {
                                        components::table::transaction_data txn,
                                        components::operators::pushed_aggregate_spec_t spec) {
         auto it = storages_.find(table_oid);
-        const bool no_storage =
-            (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr);
+        const bool no_storage = (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr);
         // A pushed aggregate can carry an expression WHERE too — attach its per-row evaluators here
         // (same rationale as the raw-scan path: the value_getter closures cannot cross the mailbox).
         components::operators::predicates::attach_expression_evaluators(resource(), filter.get());
@@ -1520,7 +1514,8 @@ namespace services::disk {
             if (src.type().to_physical_type() == stored_key_types[j].to_physical_type()) {
                 components::vector::vector_ops::copy(src, norm_keys.data[j], nkeys, 0, 0);
             } else {
-                norm_keys.data[j] = components::vector::vector_ops::cast_vector(resource, src, stored_key_types[j], nkeys);
+                norm_keys.data[j] =
+                    components::vector::vector_ops::cast_vector(resource, src, stored_key_types[j], nkeys);
             }
         }
 
@@ -1561,7 +1556,12 @@ namespace services::disk {
         // stops the scan and leaves the remaining buckets empty — a PARTIAL result callers
         // already tolerate.
         for_each_storage_batch(
-            storage, pos, /*filter=*/nullptr, &projected_cols, txn, resource,
+            storage,
+            pos,
+            /*filter=*/nullptr,
+            &projected_cols,
+            txn,
+            resource,
             [&](components::vector::data_chunk_t& batch) -> core::error_t {
                 const uint64_t rows = batch.size();
                 // Flatten the projected key columns so the typed verify can read raw cells.
@@ -1597,7 +1597,10 @@ namespace services::disk {
                     for (std::uint64_t cand : it_h->second) {
                         bool match = true;
                         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
-                            if (!components::vector::cells_equal(norm_keys.data[j], cand, batch.data[key_col_indices[j]], r)) {
+                            if (!components::vector::cells_equal(norm_keys.data[j],
+                                                                 cand,
+                                                                 batch.data[key_col_indices[j]],
+                                                                 r)) {
                                 match = false;
                                 break;
                             }

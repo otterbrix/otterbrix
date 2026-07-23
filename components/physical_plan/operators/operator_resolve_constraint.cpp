@@ -400,13 +400,12 @@ namespace components::operators {
         if (!pending_unique_attoids.empty()) {
             std::pmr::vector<std::string> attr_keys(resource_);
             attr_keys.emplace_back("attrelid");
-            auto [_u, fut_attr_u] =
-                actor_zeta::send(ctx->disk_address,
-                                 &services::disk::manager_disk_t::read_chunks_by_key,
-                                 exec_ctx,
-                                 kPgAttribute,
-                                 std::move(attr_keys),
-                                 components::operators::make_key_chunk(resource_, table_oid));
+            auto [_u, fut_attr_u] = actor_zeta::send(ctx->disk_address,
+                                                     &services::disk::manager_disk_t::read_chunks_by_key,
+                                                     exec_ctx,
+                                                     kPgAttribute,
+                                                     std::move(attr_keys),
+                                                     components::operators::make_key_chunk(resource_, table_oid));
             auto attr_batches = co_await std::move(fut_attr_u);
 
             for (std::size_t gi = 0; gi < pending_unique_attoids.size(); ++gi) {
@@ -422,8 +421,8 @@ namespace components::operators {
                             auto row_attoid = static_cast<catalog::oid_t>(
                                 attr_chunk.value(catalog::pg_attribute_col::attoid, ai).value<std::uint32_t>());
                             if (row_attoid == wanted_oid) {
-                                names.emplace_back(std::string(
-                                    attr_chunk.value(catalog::pg_attribute_col::attname, ai).value<std::string_view>()));
+                                names.emplace_back(std::string(attr_chunk.value(catalog::pg_attribute_col::attname, ai)
+                                                                   .value<std::string_view>()));
                                 found = true;
                                 break;
                             }

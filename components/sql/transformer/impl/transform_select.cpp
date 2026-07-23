@@ -502,8 +502,9 @@ namespace components::sql::transform {
                         default:
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
-                                std::pmr::string{"Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
-                                                 resource_});
+                                std::pmr::string{
+                                    "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                    resource_});
                             return nullptr;
                     }
                     break;
@@ -551,7 +552,8 @@ namespace components::sql::transform {
             }
         }
 
-        auto limit_node = logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t(limit_val, offset_val));
+        auto limit_node =
+            logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t(limit_val, offset_val));
         if (limit_param || offset_param) {
             deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
         }
@@ -601,9 +603,9 @@ namespace components::sql::transform {
                 }
             }
             if (res == nullptr) {
-                error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                       std::pmr::string{"ORDER BY position is out of range of the select list",
-                                                        resource_});
+                error_ =
+                    core::error_t(core::error_code_t::sql_parse_error,
+                                  std::pmr::string{"ORDER BY position is out of range of the select list", resource_});
                 return false;
             }
             if (nodeTag(res->val) == T_ColumnRef) {
@@ -614,9 +616,9 @@ namespace components::sql::transform {
                 out.field = expressions::key_t{resource_, res->name};
                 return true;
             }
-            error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                   std::pmr::string{"positional ORDER BY over a computed column requires an alias",
-                                                    resource_});
+            error_ = core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"positional ORDER BY over a computed column requires an alias", resource_});
             return false;
         };
 
@@ -651,9 +653,9 @@ namespace components::sql::transform {
                 // v1: DISTINCT ON over a compound/UNION query is not supported (plain DISTINCT is).
                 // Plain DISTINCT is the NIL List sentinel; a real ON expression is anything else.
                 if (nodeTag(node.distinctClause->lst.front().data) != T_List) {
-                    error_ = core::error_t(
-                        core::error_code_t::unimplemented_yet,
-                        std::pmr::string{"DISTINCT ON is not supported over a UNION query", resource_});
+                    error_ =
+                        core::error_t(core::error_code_t::unimplemented_yet,
+                                      std::pmr::string{"DISTINCT ON is not supported over a UNION query", resource_});
                     return nullptr;
                 }
                 agg->set_distinct(true);
@@ -774,9 +776,9 @@ namespace components::sql::transform {
                 // A top-level VALUES row has no named columns to resolve a sort key against;
                 // ORDER BY over VALUES is not yet supported (LIMIT/OFFSET are). Clean error,
                 // never a silently dropped ORDER BY.
-                error_ = core::error_t(core::error_code_t::unimplemented_yet,
-                                       std::pmr::string{"ORDER BY over a top-level VALUES list is not yet supported",
-                                                        resource_});
+                error_ = core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string{"ORDER BY over a top-level VALUES list is not yet supported", resource_});
                 return nullptr;
             }
             // Honor VALUES … LIMIT/OFFSET: wrap in an aggregate so create_plan_aggregate lowers
@@ -1028,8 +1030,9 @@ namespace components::sql::transform {
                                         for (auto& k : jsonb_path::split_operand(rhs, resource_)) {
                                             std::pmr::vector<std::pmr::string> segs(base);
                                             segs.emplace_back(std::move(k));
-                                            del->append_param(
-                                                expressions::key_t(resource_, jsonb_path::flatten(segs, resource_), side));
+                                            del->append_param(expressions::key_t(resource_,
+                                                                                 jsonb_path::flatten(segs, resource_),
+                                                                                 side));
                                         }
                                         select_node->append_expression(del);
                                         break;
@@ -1314,8 +1317,7 @@ namespace components::sql::transform {
                 // parameter bindings from a discarded pass left in plan->parameters.
                 const bool correlated = !join->correlations().empty();
                 if (correlated || plan->sub_queries.size() != saved_subq) {
-                    auto inner_agg =
-                        logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    auto inner_agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                     inner_agg->append_child(std::move(body));
                     join->append_child(inner_agg);
                     // ON = all_true: the inner sub-plan already filters via the bound
@@ -1501,7 +1503,8 @@ namespace components::sql::transform {
                                 indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names)
                                     .field.as_pmr_string());
                         } else {
-                            lead_sort_names.emplace_back(); // empty sentinel: a non-column sort key can't match an ON key
+                            lead_sort_names
+                                .emplace_back(); // empty sentinel: a non-column sort key can't match an ON key
                         }
                     }
                     for (size_t i = 0; i < on_keys.size(); ++i) {

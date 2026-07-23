@@ -64,7 +64,7 @@ namespace components::operators {
         // Decoded DEFAULTs (name -> value); consulted for columns absent from the
         // write-set by the NOT NULL loop and the compiled CHECK predicates.
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_;
-        bool write_set_named_{false}; // see ctor note
+        bool write_set_named_{false};                                                     // see ctor note
         std::vector<std::pair<std::string, predicates::predicate_ptr>> check_predicates_; // (name, compiled)
         // Fixed-ARRAY columns (NOT NULL, no DEFAULT) and their declared sizes: a value
         // shorter than the size cannot be padded and is rejected with an error.

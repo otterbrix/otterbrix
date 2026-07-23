@@ -399,8 +399,7 @@ TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_val
         std::stringstream q;
         q << "INSERT INTO GatherDb.t (id, s) VALUES ";
         for (unsigned i = 0; i < kGatherRows; ++i) {
-            q << "(" << i << ", 'payload_" << i << "_" << wide_pad << "')"
-              << (i + 1 == kGatherRows ? ";" : ", ");
+            q << "(" << i << ", 'payload_" << i << "_" << wide_pad << "')" << (i + 1 == kGatherRows ? ";" : ", ");
         }
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());

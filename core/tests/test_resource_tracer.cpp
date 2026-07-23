@@ -7,28 +7,26 @@
 
 namespace {
 
-// Upstream memory_resource that counts outstanding (allocated-but-not-freed)
-// blocks, so a test can observe whether resource_tracer_t reclaims its live
-// allocations on destruction. Backed by new_delete_resource.
-struct counting_resource_t final : std::pmr::memory_resource {
-    std::size_t outstanding{0};
+    // Upstream memory_resource that counts outstanding (allocated-but-not-freed)
+    // blocks, so a test can observe whether resource_tracer_t reclaims its live
+    // allocations on destruction. Backed by new_delete_resource.
+    struct counting_resource_t final : std::pmr::memory_resource {
+        std::size_t outstanding{0};
 
-    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
-        ++outstanding;
-        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
-    }
+        void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+            ++outstanding;
+            return std::pmr::new_delete_resource()->allocate(bytes, alignment);
+        }
 
-    void do_deallocate(void* ptr, std::size_t bytes, std::size_t alignment) override {
-        --outstanding;
-        std::pmr::new_delete_resource()->deallocate(ptr, bytes, alignment);
-    }
+        void do_deallocate(void* ptr, std::size_t bytes, std::size_t alignment) override {
+            --outstanding;
+            std::pmr::new_delete_resource()->deallocate(ptr, bytes, alignment);
+        }
 
-    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
-        return this == &other;
-    }
-};
+        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
+    };
 
-}  // namespace
+} // namespace
 
 // Failing-first: before the fix the tracer destructor only PRINTS the leak
 // report and frees nothing, so `outstanding` stays 2 and this CHECK fails.

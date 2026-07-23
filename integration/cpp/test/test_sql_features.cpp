@@ -466,8 +466,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     INFO("LIKE prefix (disk)");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'Al%';");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'Al%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3); // Alice, Alex, Alfred
     }
@@ -475,8 +474,8 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     INFO("LIKE underscore (disk)");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'A___';");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'A___';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1); // Alex
     }
@@ -484,8 +483,8 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     INFO("ILIKE prefix case-insensitive (disk)");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM TestDatabase.TestCollection WHERE name ILIKE 'al%';");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE name ILIKE 'al%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3); // Alice, Alex, Alfred (case-insensitive)
     }
@@ -493,8 +492,8 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     INFO("NOT LIKE (disk)");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE 'Al%';");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE 'Al%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 7);
     }
@@ -502,8 +501,8 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     INFO("NOT ILIKE (disk)");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT * FROM TestDatabase.TestCollection WHERE name NOT ILIKE 'al%';");
+        auto cur =
+            dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection WHERE name NOT ILIKE 'al%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 7);
     }
@@ -536,8 +535,8 @@ TEST_CASE("integration::cpp::test_sql_features::like_non_string_subject_errors")
     }
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session,
-                                           "INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (12, 'abc'), (3, 'zz');");
+        auto cur =
+            dispatcher->execute_sql(session, "INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (12, 'abc'), (3, 'zz');");
         REQUIRE(cur->is_success());
     }
     {
@@ -696,9 +695,8 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
     {
         auto* resource = dispatcher->resource();
         auto session = otterbrix::session_id_t();
-        auto plan = components::logical_plan::make_node_aggregate(resource,
-                                                                  core::dbname_t{"regexdb"},
-                                                                  core::relname_t{"t"});
+        auto plan =
+            components::logical_plan::make_node_aggregate(resource, core::dbname_t{"regexdb"}, core::relname_t{"t"});
         auto expr = components::expressions::make_compare_expression(
             resource,
             components::expressions::compare_type::regex,
@@ -710,9 +708,8 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
                                                                      std::move(expr)));
         auto params = components::logical_plan::make_parameter_node(resource);
         params->add_parameter(core::parameter_id_t{1}, components::types::logical_value_t(resource, "(a)\\1"));
-        auto cur = dispatcher->execute_plan(
-            session,
-            components::logical_plan::execution_plan_t{resource, plan, params});
+        auto cur =
+            dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{resource, plan, params});
         REQUIRE(cur->is_error());
     }
 }
@@ -847,14 +844,17 @@ TEST_CASE("integration::cpp::test_sql_features::distinct_on") {
     }
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(dispatcher
-                    ->execute_sql(s, "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10),(4,20),(5,30);")
-                    ->is_success());
+        REQUIRE(
+            dispatcher
+                ->execute_sql(s,
+                              "INSERT INTO TestDatabase.orders (id, cust) VALUES (1,10),(2,20),(3,10),(4,20),(5,30);")
+                ->is_success());
     }
 
     // DISTINCT ON (cust) keeps ONE row per cust (3 custs), NOT full-row DISTINCT on the projected
     // id (which would keep all 5 distinct ids). This is the core behavior change.
-    INFO("SELECT DISTINCT ON (cust) id ORDER BY cust, id -> one row per cust"); {
+    INFO("SELECT DISTINCT ON (cust) id ORDER BY cust, id -> one row per cust");
+    {
         auto s = otterbrix::session_id_t();
         auto cur =
             dispatcher->execute_sql(s, "SELECT DISTINCT ON (cust) id FROM TestDatabase.orders ORDER BY cust, id;");
@@ -863,7 +863,8 @@ TEST_CASE("integration::cpp::test_sql_features::distinct_on") {
     }
 
     // DISTINCT ON without ORDER BY is allowed: keep-first per input order, still one row per cust.
-    INFO("DISTINCT ON without ORDER BY"); {
+    INFO("DISTINCT ON without ORDER BY");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT DISTINCT ON (cust) id FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
@@ -871,7 +872,8 @@ TEST_CASE("integration::cpp::test_sql_features::distinct_on") {
     }
 
     // Regression: plain DISTINCT is unchanged (3 distinct custs).
-    INFO("plain SELECT DISTINCT cust unchanged"); {
+    INFO("plain SELECT DISTINCT cust unchanged");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT DISTINCT cust FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
@@ -879,15 +881,18 @@ TEST_CASE("integration::cpp::test_sql_features::distinct_on") {
     }
 
     // Error: a computed ON expression is not supported in v1.
-    INFO("DISTINCT ON (computed) -> error"); {
+    INFO("DISTINCT ON (computed) -> error");
+    {
         auto s = otterbrix::session_id_t();
         auto cur =
-            dispatcher->execute_sql(s, "SELECT DISTINCT ON (id + cust) id FROM TestDatabase.orders ORDER BY id + cust;");
+            dispatcher->execute_sql(s,
+                                    "SELECT DISTINCT ON (id + cust) id FROM TestDatabase.orders ORDER BY id + cust;");
         REQUIRE(cur->is_error());
     }
 
     // Error: the ON keys must be the leading ORDER BY keys (cust is not id).
-    INFO("DISTINCT ON not a prefix of ORDER BY -> error"); {
+    INFO("DISTINCT ON not a prefix of ORDER BY -> error");
+    {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT DISTINCT ON (cust) id FROM TestDatabase.orders ORDER BY id;");
         REQUIRE(cur->is_error());
@@ -1146,8 +1151,8 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session,
-                                               "SELECT COUNT(count) FROM TestDatabase.TestCollection HAVING false;");
+            auto cur =
+                dispatcher->execute_sql(session, "SELECT COUNT(count) FROM TestDatabase.TestCollection HAVING false;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
         }
@@ -1532,12 +1537,12 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_null_and_like") {
     }
     SECTION("NOT LIKE condition (union_not) matches and does not crash validation") {
         auto cur = run("SELECT id, CASE WHEN s NOT LIKE 'a%' THEN 'notA' ELSE 'a' END FROM db.t ORDER BY id;");
-        REQUIRE(result_of(cur, 0) == "a");      // 'apple' LIKE 'a%' -> NOT LIKE false
-        REQUIRE(result_of(cur, 1) == "notA");   // 'banana' NOT LIKE 'a%'
+        REQUIRE(result_of(cur, 0) == "a");    // 'apple' LIKE 'a%' -> NOT LIKE false
+        REQUIRE(result_of(cur, 1) == "notA"); // 'banana' NOT LIKE 'a%'
     }
     SECTION("IS NULL combined with a later comparison WHEN") {
-        auto cur =
-            run("SELECT id, CASE WHEN v IS NULL THEN 'n' WHEN v > 5 THEN 'big' ELSE 'small' END FROM db.t ORDER BY id;");
+        auto cur = run(
+            "SELECT id, CASE WHEN v IS NULL THEN 'n' WHEN v > 5 THEN 'big' ELSE 'small' END FROM db.t ORDER BY id;");
         REQUIRE(result_of(cur, 0) == "big");
         REQUIRE(result_of(cur, 1) == "n");
     }
@@ -5357,7 +5362,8 @@ TEST_CASE("integration::cpp::test_sql_features::values_leading_null_column_promo
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
-            session, "INSERT INTO NullFirstDb.t (id, name) VALUES (NULL, 'a'), (1, 'b'), (NULL, 'c'), (2, 'd');");
+            session,
+            "INSERT INTO NullFirstDb.t (id, name) VALUES (NULL, 'a'), (1, 'b'), (NULL, 'c'), (2, 'd');");
         REQUIRE(cur->is_success());
         REQUIRE_FALSE(cur->is_error());
     }
@@ -5421,21 +5427,21 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
     };
 
     SECTION("a bare constant predicate collapses to all rows / no rows") {
-        REQUIRE(rows("1 = 1") == 3);       // always true
-        REQUIRE(rows("1 = 2") == 0);       // always false
-        REQUIRE(rows("1 + 1 = 2") == 3);   // constant arithmetic, true
-        REQUIRE(rows("10 - 5 = 4") == 0);  // constant arithmetic, false
-        REQUIRE(rows("NOT (1 = 2)") == 3); // NOT false -> true (was: crash)
-        REQUIRE(rows("NOT (1 = 1)") == 0); // NOT true  -> false (was: spurious error)
+        REQUIRE(rows("1 = 1") == 3);            // always true
+        REQUIRE(rows("1 = 2") == 0);            // always false
+        REQUIRE(rows("1 + 1 = 2") == 3);        // constant arithmetic, true
+        REQUIRE(rows("10 - 5 = 4") == 0);       // constant arithmetic, false
+        REQUIRE(rows("NOT (1 = 2)") == 3);      // NOT false -> true (was: crash)
+        REQUIRE(rows("NOT (1 = 1)") == 0);      // NOT true  -> false (was: spurious error)
         REQUIRE(rows("NOT (2 * 3 = 6)") == 0);  // NOT true
         REQUIRE(rows("NOT (10 / 2 = 5)") == 0); // NOT true
     }
 
     SECTION("constant predicates nested inside boolean trees") {
-        REQUIRE(rows("(1 = 1) AND (2 = 2)") == 3); // true  AND true
-        REQUIRE(rows("(1 = 1) OR (2 = 3)") == 3);  // true  OR  false
-        REQUIRE(rows("(1 = 2) AND (3 = 3)") == 0); // false AND true
-        REQUIRE(rows("(1 = 2) OR (3 = 4)") == 0);  // false OR  false
+        REQUIRE(rows("(1 = 1) AND (2 = 2)") == 3);       // true  AND true
+        REQUIRE(rows("(1 = 1) OR (2 = 3)") == 3);        // true  OR  false
+        REQUIRE(rows("(1 = 2) AND (3 = 3)") == 0);       // false AND true
+        REQUIRE(rows("(1 = 2) OR (3 = 4)") == 0);        // false OR  false
         REQUIRE(rows("NOT ((1 = 1) AND (2 = 2))") == 0); // NOT true
         REQUIRE(rows("NOT ((1 = 2) OR (3 = 3))") == 0);  // NOT true
         REQUIRE(rows("NOT ((1 = 2) AND (3 = 3))") == 3); // NOT false
@@ -5445,13 +5451,13 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
     }
 
     SECTION("a constant folded together with real column predicates") {
-        REQUIRE(rows("NOT (1 = 2) AND x >= 2") == 2);                 // true  AND x>=2 -> {2,3}
-        REQUIRE(rows("1 = 1 OR x = 999") == 3);                       // true  OR  ...  -> all
-        REQUIRE(rows("NOT (1 = 1) OR (x = 2 AND y = 20)") == 1);      // false OR  {2}
-        REQUIRE(rows("NOT ((1 = 2) OR (5 = 6)) AND y > 15") == 2);    // true  AND y>15 -> {2,3}
-        REQUIRE(rows("x = 1 AND 1 = 1 AND y = 10") == 1);            // {1}
-        REQUIRE(rows("1 = 2 OR x = 3 OR 2 = 2") == 3);              // ... OR true -> all
-        REQUIRE(rows("(x = 1 OR 1 = 1) AND x < 3") == 2);            // (true) AND x<3 -> {1,2}
+        REQUIRE(rows("NOT (1 = 2) AND x >= 2") == 2);              // true  AND x>=2 -> {2,3}
+        REQUIRE(rows("1 = 1 OR x = 999") == 3);                    // true  OR  ...  -> all
+        REQUIRE(rows("NOT (1 = 1) OR (x = 2 AND y = 20)") == 1);   // false OR  {2}
+        REQUIRE(rows("NOT ((1 = 2) OR (5 = 6)) AND y > 15") == 2); // true  AND y>15 -> {2,3}
+        REQUIRE(rows("x = 1 AND 1 = 1 AND y = 10") == 1);          // {1}
+        REQUIRE(rows("1 = 2 OR x = 3 OR 2 = 2") == 3);             // ... OR true -> all
+        REQUIRE(rows("(x = 1 OR 1 = 1) AND x < 3") == 2);          // (true) AND x<3 -> {1,2}
     }
 
     SECTION("NOT over ordinary column predicates still works") {
@@ -5484,21 +5490,49 @@ TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
                 ->is_success());
 
     INFO("x = y");
-    { auto cur = run("SELECT id FROM db.t WHERE x = y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
+    {
+        auto cur = run("SELECT id FROM db.t WHERE x = y;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
     INFO("x < y");
-    { auto cur = run("SELECT id FROM db.t WHERE x < y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
+    {
+        auto cur = run("SELECT id FROM db.t WHERE x < y;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
     INFO("x > y");
-    { auto cur = run("SELECT id FROM db.t WHERE x > y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 1); }
+    {
+        auto cur = run("SELECT id FROM db.t WHERE x > y;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+    }
     INFO("x <> y");
-    { auto cur = run("SELECT id FROM db.t WHERE x <> y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+    {
+        auto cur = run("SELECT id FROM db.t WHERE x <> y;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
     INFO("x >= y");
-    { auto cur = run("SELECT id FROM db.t WHERE x >= y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+    {
+        auto cur = run("SELECT id FROM db.t WHERE x >= y;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
 
     REQUIRE(run("INSERT INTO db.t (id, x, y) VALUES (6, 5, NULL);")->is_success());
     INFO("NULL operand excluded from x = y");
-    { auto cur = run("SELECT id FROM db.t WHERE x = y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 2); }
+    {
+        auto cur = run("SELECT id FROM db.t WHERE x = y;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
     INFO("NULL operand excluded from x <> y");
-    { auto cur = run("SELECT id FROM db.t WHERE x <> y;"); REQUIRE(cur->is_success()); REQUIRE(cur->size() == 3); }
+    {
+        auto cur = run("SELECT id FROM db.t WHERE x <> y;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
 }
 
 // A comparison whose one operand is a FUNCTION or ARITHMETIC expression over columns
@@ -5519,9 +5553,7 @@ TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
         }
         return out;
     };
-    auto contains = [](const std::string& hay, const char* needle) {
-        return hay.find(needle) != std::string::npos;
-    };
+    auto contains = [](const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; };
 
     auto seed = [](auto* d) {
         {
@@ -5530,8 +5562,7 @@ TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
         }
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t (name string, x bigint, s string);")
-                        ->is_success());
+            REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t (name string, x bigint, s string);")->is_success());
         }
         {
             auto s = otterbrix::session_id_t();
@@ -5586,7 +5617,7 @@ TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
     // transformer issue, unrelated to this pushdown). length() is also a function operand and
     // exercises the identical expression_filter_t path.
     const predicate_case cases[] = {
-        {"x + 1 > 5", 3},       // arithmetic operand; x>4 -> {5,10,7}
+        {"x + 1 > 5", 3},        // arithmetic operand; x>4 -> {5,10,7}
         {"length(name) = 5", 2}, // function operand; {'alice','carol'}; NULL name excluded
         {"length(name) = 3", 1}, // function operand; {'bob'}
         {"x * 2 = 20", 1},       // arithmetic operand; {10}
@@ -5646,9 +5677,7 @@ TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
         }
         return out;
     };
-    auto contains = [](const std::string& hay, const char* needle) {
-        return hay.find(needle) != std::string::npos;
-    };
+    auto contains = [](const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; };
 
     auto seed = [](auto* d) {
         {
@@ -5798,9 +5827,7 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
         }
         return out;
     };
-    auto contains = [](const std::string& hay, const char* needle) {
-        return hay.find(needle) != std::string::npos;
-    };
+    auto contains = [](const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; };
 
     auto seed = [](auto* d) {
         {

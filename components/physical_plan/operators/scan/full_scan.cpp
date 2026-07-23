@@ -235,8 +235,7 @@ namespace components::operators {
                                 continue;
                             }
                             if (val.type() == col_type) {
-                                leaves.emplace_back(
-                                    std::make_unique<table::constant_filter_t>(inner_op, val, indices));
+                                leaves.emplace_back(std::make_unique<table::constant_filter_t>(inner_op, val, indices));
                                 continue;
                             }
                             auto coerced = val.cast_as(col_type, session_tz);
@@ -312,14 +311,17 @@ namespace components::operators {
                 return core::error_t{
                     core::error_code_t::physical_plan_error,
                     std::pmr::string{"unsupported compare_type in expression to filter conversion", resource}};
-            case expressions::compare_type::is_null:
-            case expressions::compare_type::is_not_null: {
-                const auto& path = std::get<expressions::key_t>(expression->left()).path();
-                std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
-                return std::unique_ptr<table::table_filter_t>(
-                    std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices)));
-            }
             default: {
+                // IS NULL / IS NOT NULL on a bare column: a direct validity-bitmap filter. A computed
+                // argument has no column path and falls through to the expression_filter_t path below.
+                if ((expression->type() == expressions::compare_type::is_null ||
+                     expression->type() == expressions::compare_type::is_not_null) &&
+                    expressions::is_key(expression->left())) {
+                    const auto& path = expressions::as_key(expression->left()).path();
+                    std::pmr::vector<uint64_t> indices(path.begin(), path.end(), path.get_allocator().resource());
+                    return std::unique_ptr<table::table_filter_t>(
+                        std::make_unique<table::is_null_filter_t>(expression->type(), std::move(indices)));
+                }
                 // One operand is a FUNCTION/ARITHMETIC expression over column(s) and the
                 // other a bound parameter — e.g. WHERE substring(s,1,3)='abc', WHERE x+1>5. Not
                 // representable as a constant_filter_t, so ship an expression_filter_t: a deep clone
@@ -353,11 +355,11 @@ namespace components::operators {
                     // of the smart-pointer object itself is a strict-aliasing violation gcc rejects).
                     expressions::compare_expression_ptr compare_clone{
                         static_cast<expressions::compare_expression_t*>(clone.get())};
-                    return std::unique_ptr<table::table_filter_t>(std::make_unique<table::expression_filter_t>(
-                        std::move(compare_clone),
-                        std::move(column_paths),
-                        std::move(param_snapshot),
-                        session_tz));
+                    return std::unique_ptr<table::table_filter_t>(
+                        std::make_unique<table::expression_filter_t>(std::move(compare_clone),
+                                                                     std::move(column_paths),
+                                                                     std::move(param_snapshot),
+                                                                     session_tz));
                 }
                 // Column-vs-column `a.x OP a.y`: both operands are columns -> a column_column_filter_t that
                 // fetches both values per row and compares (is_pure_compare only accepts a plain comparison).
@@ -436,10 +438,10 @@ namespace components::operators {
                     if (compiled.has_error()) {
                         return compiled.convert_error<std::unique_ptr<table::table_filter_t>>();
                     }
-                    return std::unique_ptr<table::table_filter_t>(
-                        std::make_unique<table::regex_filter_t>(std::pmr::string{pat.value<std::string_view>(), resource},
-                                                                expression->regex_icase(),
-                                                                std::move(indices)));
+                    return std::unique_ptr<table::table_filter_t>(std::make_unique<table::regex_filter_t>(
+                        std::pmr::string{pat.value<std::string_view>(), resource},
+                        expression->regex_icase(),
+                        std::move(indices)));
                 }
                 // Coerce STRING parameter to ENUM ordinal when the target column is an ENUM:
                 // compare semantics see int32 storage on both sides, so the literal must be

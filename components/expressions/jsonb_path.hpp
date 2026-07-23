@@ -47,8 +47,7 @@ namespace components::expressions::jsonb_path {
     //   pg text-array '{a,b}' -> ["a", "b"]   (braces stripped, per-segment spaces trimmed)
     // Empty / all-space segments are dropped. This is the single splitter used by
     // every path-taking operator.
-    inline std::pmr::vector<std::pmr::string> split_operand(std::string_view raw,
-                                                            std::pmr::memory_resource* resource) {
+    inline std::pmr::vector<std::pmr::string> split_operand(std::string_view raw, std::pmr::memory_resource* resource) {
         std::pmr::vector<std::pmr::string> segments(resource);
         auto push = [&](std::string_view s) {
             size_t b = s.find_first_not_of(' ');

@@ -66,9 +66,9 @@ namespace components::logical_plan {
         std::string dbname_;
         std::string relname_;
         std::vector<std::string> not_null_columns_;
-        std::vector<std::pair<std::string, std::string>> check_exprs_;  // (name, expr)
-        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
-        std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
+        std::vector<std::pair<std::string, std::string>> check_exprs_;                // (name, expr)
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
+        std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
         bool write_set_named_{false}; // write-set aliases are statement column names
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};

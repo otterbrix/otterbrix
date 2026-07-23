@@ -253,10 +253,10 @@ TEST_CASE("components::types::logical_value::null_children_safe") {
     REQUIRE(null_value.is_null());
     CHECK(null_value.children().empty());
     // A non-null nested value keeps returning its real elements.
-    auto list = logical_value_t::create_list(
-        resource,
-        complex_logical_type{logical_type::BIGINT},
-        {logical_value_t(resource, int64_t{1}), logical_value_t(resource, int64_t{2})});
+    auto list =
+        logical_value_t::create_list(resource,
+                                     complex_logical_type{logical_type::BIGINT},
+                                     {logical_value_t(resource, int64_t{1}), logical_value_t(resource, int64_t{2})});
     REQUIRE_FALSE(list.is_null());
     CHECK(list.children().size() == 2);
 }

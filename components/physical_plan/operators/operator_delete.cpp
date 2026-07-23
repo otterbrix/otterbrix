@@ -465,8 +465,7 @@ namespace components::operators {
             // Record the delete marker ONCE across all flushes: COMMIT/ABORT key the
             // MVCC swap/revert on the txn id, not on per-flush ranges.
             if (!delete_marker_recorded_) {
-                ctx->dml_deletes.push_back(
-                    components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
+                ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
                 delete_marker_recorded_ = true;
             }
 
@@ -498,8 +497,8 @@ namespace components::operators {
             auto types = co_await std::move(tf);
             // The result carries only the affected-row count as cardinality (no row data),
             // emitted as ≤DEFAULT_VECTOR_CAPACITY-row chunks shaped by the table's types.
-            set_output(make_operator_data(
-                resource_, dml_detail::make_affected_count_chunks(resource_, affected_rows_, types)));
+            set_output(make_operator_data(resource_,
+                                          dml_detail::make_affected_count_chunks(resource_, affected_rows_, types)));
         }
         mark_executed();
     }

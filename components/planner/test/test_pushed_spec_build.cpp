@@ -62,7 +62,8 @@ namespace {
         auto group = make_node_group(r, dbn(), reln(), group_exprs);
         group->set_pushdown(true);
         group->set_table_oid(components::catalog::oid_t{123});
-        auto agg = planner_test::make_agg(r, group, components::catalog::oid_t{123}, std::move(out_types), agg_distinct);
+        auto agg =
+            planner_test::make_agg(r, group, components::catalog::oid_t{123}, std::move(out_types), agg_distinct);
         if (having != nullptr) {
             agg->append_child(make_node_having(r, dbn(), reln(), having));
         }
@@ -140,8 +141,7 @@ TEST_CASE("pushed_spec::disjointness") {
     // from the source expression tree crosses the mailbox by reference.
     const auto& src_name =
         static_cast<const scalar_expression_t*>(group_of(agg)->expressions()[0].get())->key().storage().back();
-    REQUIRE(static_cast<const void*>(spec.group_keys[0].name.data()) !=
-            static_cast<const void*>(src_name.data()));
+    REQUIRE(static_cast<const void*>(spec.group_keys[0].name.data()) != static_cast<const void*>(src_name.data()));
 }
 
 // ================================================================
@@ -150,7 +150,8 @@ TEST_CASE("pushed_spec::disjointness") {
 TEST_CASE("pushed_spec::rejects_having") {
     std::pmr::monotonic_buffer_resource r;
     auto grp = make_scalar_expression(&r, scalar_type::group_field, col(&r, "g", 1));
-    auto having = make_compare_expression(&r, compare_type::gt, key(&r, "cnt", side_t::left), key(&r, "lim", side_t::left));
+    auto having =
+        make_compare_expression(&r, compare_type::gt, key(&r, "cnt", side_t::left), key(&r, "lim", side_t::left));
     std::vector<expression_ptr> exprs{expression_ptr(grp)};
     auto agg = make_agg(&r, exprs, expression_ptr(having), std::pmr::vector<types::complex_logical_type>{&r});
 

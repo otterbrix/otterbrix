@@ -296,8 +296,8 @@ namespace components::vector {
     }
 
     vector_t::nested_element_t vector_t::resolve_nested_element(uint64_t row_index,
-                                                               const std::pmr::vector<uint64_t>& path,
-                                                               size_t element_start) const {
+                                                                const std::pmr::vector<uint64_t>& path,
+                                                                size_t element_start) const {
         const vector_t* vector = this;
         uint64_t index = row_index;
         bool null_seen = false;

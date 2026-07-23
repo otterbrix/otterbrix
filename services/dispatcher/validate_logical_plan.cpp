@@ -1691,11 +1691,10 @@ namespace services::dispatcher {
                         }
                         auto* se = reinterpret_cast<scalar_expression_t*>(expr.get());
                         if (se->type() == scalar_type::jsonb_expand || se->type() == scalar_type::jsonb_delete) {
-                            return core::error_t(
-                                core::error_code_t::schema_error,
-                                std::pmr::string{"table-valued jsonb operator ('->'/'#>'/'-'/'#-') "
-                                                 "is not supported with GROUP BY or aggregation",
-                                                 resource});
+                            return core::error_t(core::error_code_t::schema_error,
+                                                 std::pmr::string{"table-valued jsonb operator ('->'/'#>'/'-'/'#-') "
+                                                                  "is not supported with GROUP BY or aggregation",
+                                                                  resource});
                         }
                     }
                 }
@@ -2057,7 +2056,8 @@ namespace services::dispatcher {
                             // complex_logical_type::alias() asserts on that, so guard it. An
                             // alias-less column keys on the empty string, which is correct for
                             // this duplicate-name check.
-                            std::string col_alias = col.type.has_alias() ? std::string(col.type.alias()) : std::string{};
+                            std::string col_alias =
+                                col.type.has_alias() ? std::string(col.type.alias()) : std::string{};
                             column_key key{col.result_alias, col_alias, col.type.type(), col.side};
                             if (!seen_cols.insert(std::move(key)).second) {
                                 return core::error_t(
@@ -2795,7 +2795,8 @@ namespace services::dispatcher {
                 if (join_node->type() == join_type::semi || join_node->type() == join_type::anti) {
                     result = std::move(left_schema.value());
                 } else {
-                    result = impl::merge_schemas(resource, std::move(left_schema.value()), std::move(right_schema.value()));
+                    result =
+                        impl::merge_schemas(resource, std::move(left_schema.value()), std::move(right_schema.value()));
                 }
                 break;
             }

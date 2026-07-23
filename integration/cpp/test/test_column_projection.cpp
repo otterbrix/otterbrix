@@ -104,8 +104,8 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_join_and_group") {
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
-    REQUIRE(exec(dispatcher, "CREATE TABLE db.orders (oid bigint, cid bigint, amount bigint, note string);")
-                ->is_success());
+    REQUIRE(
+        exec(dispatcher, "CREATE TABLE db.orders (oid bigint, cid bigint, amount bigint, note string);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.customers (cid bigint, name string, city string, tier string);")
                 ->is_success());
     REQUIRE(exec(dispatcher,

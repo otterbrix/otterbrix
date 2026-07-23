@@ -356,8 +356,7 @@ namespace components::sql::transform {
                     // stays NULL via the vector validity mask and the projection resolves a concrete column
                     // type (PG unknown->text) downstream.
                     if (constant->val.type == T_Null) {
-                        return types::logical_value_t(resource,
-                                                      types::complex_logical_type{types::logical_type::NA});
+                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
                     // A numeric literal under a CAST: a T_Float keeps its payload in `str`
                     // (floatVal -> double -> DOUBLE), a T_Integer in `ival` (intVal -> long -> BIGINT).

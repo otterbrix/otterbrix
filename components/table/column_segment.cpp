@@ -1689,8 +1689,7 @@ namespace components::table {
                 if (start_bit % 8 != 0) {
                     uint64_t byte_pos = start_bit / 8;
                     uint64_t bit_end = (byte_pos + 1) * 8;
-                    vector::validity_mask_t mask(buffer_manager.resource(),
-                                                 reinterpret_cast<uint64_t*>(handle.ptr()));
+                    vector::validity_mask_t mask(buffer_manager.resource(), reinterpret_cast<uint64_t*>(handle.ptr()));
                     for (uint64_t i = start_bit; i < bit_end; i++) {
                         mask.set_valid(i);
                     }

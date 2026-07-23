@@ -137,8 +137,8 @@ namespace components::sql::transform {
                         // a null child and crash it.
                         const bool is_unary = type == update_expr_type::sqr_root ||
                                               type == update_expr_type::cube_root ||
-                                              type == update_expr_type::factorial ||
-                                              type == update_expr_type::abs || type == update_expr_type::NOT;
+                                              type == update_expr_type::factorial || type == update_expr_type::abs ||
+                                              type == update_expr_type::NOT;
                         if (is_unary) {
                             if (!res->left() && res->right()) {
                                 res->left() = std::move(res->right());
@@ -155,8 +155,7 @@ namespace components::sql::transform {
                         } else if (!res->left() || !res->right()) {
                             error_ = core::error_t(
                                 core::error_code_t::sql_parse_error,
-                                std::pmr::string{"operator '" + op +
-                                                     "' requires two operands in UPDATE SET expression",
+                                std::pmr::string{"operator '" + op + "' requires two operands in UPDATE SET expression",
                                                  resource_});
                             return nullptr;
                         }
@@ -236,8 +235,7 @@ namespace components::sql::transform {
                 } else {
                     // The set executor nulls whole columns for a NULL literal but has
                     // no NA cast kernel for element writes — reject those here.
-                    if (nodeTag(res->val) == T_A_Const &&
-                        nodeTag(&pg_ptr_cast<A_Const>(res->val)->val) == T_Null) {
+                    if (nodeTag(res->val) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(res->val)->val) == T_Null) {
                         error_ = core::error_t(
                             core::error_code_t::sql_parse_error,
                             std::pmr::string{"setting a nested element to NULL is not supported", resource_});

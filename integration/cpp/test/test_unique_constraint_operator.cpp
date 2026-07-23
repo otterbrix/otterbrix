@@ -55,10 +55,8 @@ namespace {
                     vector::data_chunk_t&& write_set,
                     std::vector<std::vector<std::string>> groups,
                     std::string* err_out = nullptr) {
-        operators::operator_ptr op(new operators::operator_unique_constraint_t(resource,
-                                                                               log_t{},
-                                                                               catalog::INVALID_OID,
-                                                                               std::move(groups)));
+        operators::operator_ptr op(
+            new operators::operator_unique_constraint_t(resource, log_t{}, catalog::INVALID_OID, std::move(groups)));
         op->set_children(make_child(resource, std::move(write_set)));
 
         pipeline::context_t ctx(logical_plan::storage_parameters{resource});
@@ -101,8 +99,7 @@ TEST_CASE("unique constraint operator: composite key duplicate is caught", "[uni
     REQUIRE(run_unique(&resource, std::move(chunk), {{"a", "b"}}));
 }
 
-TEST_CASE("unique constraint operator: composite key with differing second column passes",
-          "[unique_constraint]") {
+TEST_CASE("unique constraint operator: composite key with differing second column passes", "[unique_constraint]") {
     auto resource = std::pmr::synchronized_pool_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);

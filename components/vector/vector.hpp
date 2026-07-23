@@ -212,9 +212,8 @@ namespace components::vector {
         // row_index down to its leaf storage. Descends one level per step, so nested containers
         // (array<array>, list<array>, ...) resolve. An out-of-range list subscript, or a NULL enclosing
         // container, is a NULL element.
-        nested_element_t resolve_nested_element(uint64_t row_index,
-                                                const std::pmr::vector<uint64_t>& path,
-                                                size_t element_start) const;
+        nested_element_t
+        resolve_nested_element(uint64_t row_index, const std::pmr::vector<uint64_t>& path, size_t element_start) const;
 
     private:
         const vector_t* resolve_value_location(uint64_t row_index, uint64_t* index) const;

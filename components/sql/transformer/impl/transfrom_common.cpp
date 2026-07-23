@@ -198,8 +198,7 @@ namespace components::sql::transform {
                 // constant, identical on every row.
                 if (cast->arg && nodeTag(cast->arg) == T_A_Expr) {
                     auto* sub = pg_ptr_cast<A_Expr>(cast->arg);
-                    if (sub->kind == AEXPR_OP && sub->name &&
-                        nodeTag(sub->name->lst.front().data) == T_String &&
+                    if (sub->kind == AEXPR_OP && sub->name && nodeTag(sub->name->lst.front().data) == T_String &&
                         is_jsonb_nav_operator(strVal(sub->name->lst.front().data))) {
                         auto target_type_res = get_type(resource_, cast->typeName);
                         if (target_type_res.has_error()) {
@@ -287,6 +286,10 @@ namespace components::sql::transform {
                     }
                 }
 
+                // FILTER (WHERE p): lower to a CASE over each argument (or COUNT(CASE ...) for a
+                // bare aggregate) so only qualifying rows reach the aggregate.
+                args = apply_aggregate_filter(func->agg_filter, std::move(args), names, plan);
+
                 // Create aggregate with auto-generated alias
                 // TODO: default aggregate aliases should come from function registry, not hardcoded here
                 std::string auto_alias = "__agg_" + funcname + "_" + std::to_string(aggregate_counter_++);
@@ -303,9 +306,9 @@ namespace components::sql::transform {
             case T_SubLink: {
                 auto sub = pg_ptr_cast<SubLink>(node);
                 if (sub->subLinkType != EXPR_SUBLINK) {
-                    error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"Unsupported operand type in SELECT arithmetic", resource_});
+                    error_ =
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"Unsupported operand type in SELECT arithmetic", resource_});
                     return nullptr;
                 }
                 // Scalar sub-query as an arithmetic operand: flatten it and return the bound parameter id
@@ -356,9 +359,9 @@ namespace components::sql::transform {
                     case T_Float:
                         return strVal(value);
                     case T_Null:
-                        error_ = core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"jsonb key must be a constant value, not NULL", resource_});
+                        error_ =
+                            core::error_t(core::error_code_t::sql_parse_error,
+                                          std::pmr::string{"jsonb key must be a constant value, not NULL", resource_});
                         return {};
                     default:
                         break;
@@ -561,10 +564,8 @@ namespace components::sql::transform {
                         // the negated ANY/ALL forms, so disk pushdown inherits the same shape.
                         auto guard_param = plan->parameters->add_parameter(
                             types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
-                        auto guard = make_compare_expression(resource_,
-                                                             compare_type::is_not_null,
-                                                             key_left.field,
-                                                             guard_param);
+                        auto guard =
+                            make_compare_expression(resource_, compare_type::is_not_null, key_left.field, guard_param);
                         auto guarded = make_compare_union_expression(resource_, compare_type::union_and);
                         guarded->append_child(guard);
                         guarded->append_child(not_expr);
@@ -818,8 +819,7 @@ namespace components::sql::transform {
                         membership->inner_op() != compare_type::regex) {
                         const auto negated = negate_scalar_compare(membership->inner_op());
                         if (negated != compare_type::invalid) {
-                            membership->set_type(ctype == compare_type::any ? compare_type::all
-                                                                            : compare_type::any);
+                            membership->set_type(ctype == compare_type::any ? compare_type::all : compare_type::any);
                             membership->set_inner_op(negated);
                             return right;
                         }
@@ -1458,6 +1458,45 @@ namespace components::sql::transform {
         return expr;
     }
 
+    std::pmr::vector<param_storage> transformer::apply_aggregate_filter(Node* agg_filter,
+                                                                        std::pmr::vector<param_storage> args,
+                                                                        const name_collection_t& names,
+                                                                        logical_plan::execution_plan_t* plan) {
+        if (!agg_filter) {
+            return args;
+        }
+        // Wrap one aggregate argument `x` into `CASE WHEN p THEN x END`. The predicate is
+        // re-transformed per argument so each CASE owns an independent condition tree (constant
+        // folding mutates compare nodes in place, so a shared one would be unsafe); aggregates
+        // almost always take a single argument, so the duplication is immaterial.
+        auto wrap = [&](param_storage result) -> param_storage {
+            auto cond = transform_predicate(agg_filter, names, plan);
+            if (has_error()) {
+                return result;
+            }
+            auto case_expr = make_scalar_expression(
+                resource_,
+                scalar_type::case_expr,
+                expressions::key_t{resource_, "__aggfilter_" + std::to_string(aggregate_counter_++)});
+            case_expr->append_param(cond);              // WHEN p
+            case_expr->append_param(std::move(result)); // THEN <arg>   (no ELSE -> NULL when p not TRUE)
+            return expressions::expression_ptr(case_expr);
+        };
+
+        if (args.empty()) {
+            // count(*) / a parameterless aggregate: count the rows where p by counting the non-NULL
+            // results of CASE WHEN p THEN 1 END.
+            auto one = plan->parameters->add_parameter(static_cast<int64_t>(1));
+            std::pmr::vector<param_storage> filtered(resource_);
+            filtered.emplace_back(wrap(one));
+            return filtered;
+        }
+        for (auto& arg : args) {
+            arg = wrap(std::move(arg));
+        }
+        return args;
+    }
+
     void transformer::transform_select_case_expr(CaseExpr* node,
                                                  const char* alias,
                                                  const name_collection_t& names,
@@ -1502,6 +1541,9 @@ namespace components::sql::transform {
                         }
                     }
                 }
+                // FILTER (WHERE p): lower to a CASE over each argument (or COUNT(CASE ...) for a
+                // bare aggregate) so only qualifying rows reach the aggregate.
+                args = apply_aggregate_filter(func->agg_filter, std::move(args), names, plan);
                 std::string alias = "__having_" + funcname + "_" + std::to_string(aggregate_counter_++);
                 auto agg_expr = make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, alias});
                 for (auto& arg : args) {
@@ -1616,21 +1658,26 @@ namespace components::sql::transform {
     expression_ptr transformer::transform_null_test(NullTest* node,
                                                     const name_collection_t& names,
                                                     logical_plan::parameter_node_t* params) {
-        if (nodeTag(node->arg) != T_ColumnRef && nodeTag(node->arg) != T_A_Indirection) {
-            error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                   std::pmr::string{"IS NULL: argument must be a column reference", resource_});
-            return nullptr;
-        }
-        auto key = nodeTag(node->arg) == T_ColumnRef
-                       ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->arg), names)
-                       : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->arg), names);
-        key.deduce_side(names);
-
         auto cmp = node->nulltesttype == IS_NULL ? compare_type::is_null : compare_type::is_not_null;
         // is_null/is_not_null don't need a value, use a dummy parameter
         auto param_id = params->add_parameter(
             types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
-        return make_compare_expression(resource_, cmp, key.field, param_id);
+
+        // A bare column keeps the fast validity-bitmap path in the predicate operator.
+        if (nodeTag(node->arg) == T_ColumnRef || nodeTag(node->arg) == T_A_Indirection) {
+            auto key = nodeTag(node->arg) == T_ColumnRef
+                           ? columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(node->arg), names)
+                           : indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(node->arg), names);
+            key.deduce_side(names);
+            return make_compare_expression(resource_, cmp, key.field, param_id);
+        }
+
+        // A computed argument — `(expr) IS NULL`
+        auto operand = transform_a_expr_operand(pg_ptr_cast<Node>(node->arg), names, params);
+        if (error_.contains_error()) {
+            return nullptr;
+        }
+        return make_compare_expression(resource_, cmp, operand, param_id);
     }
 
 } // namespace components::sql::transform

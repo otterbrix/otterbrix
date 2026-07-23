@@ -80,8 +80,7 @@ namespace {
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
-        REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c, x) VALUES (1, 10, 20, 'p'), (2, 30, 40, 'q');")
-                    ->is_success());
+        REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c, x) VALUES (1, 10, 20, 'p'), (2, 30, 40, 'q');")->is_success());
         REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c) VALUES (3, 50, 60);")->is_success());
         REQUIRE(exec(d, "INSERT INTO jp.t (id, a.c) VALUES (4, 70);")->is_success());
     }
@@ -167,8 +166,8 @@ TEST_CASE("integration::cpp::test_jsonb_support::flattened_storage_model") {
     CHECK(i64(cur, "a/b", 0) == 10);
     CHECK(i64(cur, "a/c", 0) == 20);
     CHECK(str(cur, "x", 0) == "p");
-    CHECK(is_null(cur, "x", 2));    // row 3 never supplied x
-    CHECK(is_null(cur, "a/b", 3));  // row 4 never supplied a.b
+    CHECK(is_null(cur, "x", 2));   // row 3 never supplied x
+    CHECK(is_null(cur, "a/b", 3)); // row 4 never supplied a.b
     CHECK(i64(cur, "a/c", 3) == 70);
 }
 
@@ -221,9 +220,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::extract_scalar") {
         CHECK(i64(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t AS tt ORDER BY id;"), "v", 0) == 10);
     }
 
-    SECTION("keys are case-sensitive") {
-        CHECK_FALSE(exec(d, "SELECT t ->> 'X' AS v FROM jp.t;")->is_success());
-    }
+    SECTION("keys are case-sensitive") { CHECK_FALSE(exec(d, "SELECT t ->> 'X' AS v FROM jp.t;")->is_success()); }
 }
 
 // -> and #> : object expansion. These are table-valued — they widen the projection
@@ -592,8 +589,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::compare_two_navigations") {
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
     // rows 2 and 3 have a.b == a.c; row 4 leaves a.b absent (NULL)
-    REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c) VALUES (1, 10, 20), (2, 30, 30), (3, 99, 99);")
-                ->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c) VALUES (1, 10, 20), (2, 30, 30), (3, 99, 99);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.t (id, a.c) VALUES (4, 70);")->is_success());
 
     SECTION("returns exactly the equal-leaf rows; a NULL leaf never matches") {
@@ -770,8 +766,8 @@ TEST_CASE("integration::cpp::test_jsonb_support::cast_nav_in_arithmetic_reads_th
     // the cast composes on either side of the operator, still per row
     auto both2 = exec(d, "SELECT id, 100 - (t #>> 'a.b')::bigint AS v FROM jp.t WHERE id < 3 ORDER BY id;");
     REQUIRE(both2->is_success());
-    CHECK(i64(both2, "v", 0) == 90);  // 100 - 10
-    CHECK(i64(both2, "v", 1) == 70);  // 100 - 30
+    CHECK(i64(both2, "v", 0) == 90); // 100 - 10
+    CHECK(i64(both2, "v", 1) == 70); // 100 - 30
 
     // the same shape over a plain column was always fine — this was nav-specific
     auto plain = exec(d, "SELECT id, (id)::bigint + 1 AS v FROM jp.t ORDER BY id;");
@@ -892,10 +888,8 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
     CHECK(aliases(exec(d, "SELECT t - '{x,a}' FROM jp.t;")) == std::set<std::string>{"id", "y"});
 
     // the empty array deletes nothing; an unknown key deletes nothing (no error)
-    CHECK(aliases(exec(d, "SELECT t - '{}' FROM jp.t;")) ==
-          std::set<std::string>{"id", "a/b", "a/c", "x", "y"});
-    CHECK(aliases(exec(d, "SELECT t - '{nokey}' FROM jp.t;")) ==
-          std::set<std::string>{"id", "a/b", "a/c", "x", "y"});
+    CHECK(aliases(exec(d, "SELECT t - '{}' FROM jp.t;")) == std::set<std::string>{"id", "a/b", "a/c", "x", "y"});
+    CHECK(aliases(exec(d, "SELECT t - '{nokey}' FROM jp.t;")) == std::set<std::string>{"id", "a/b", "a/c", "x", "y"});
 
     // #- with an array is still a single nested PATH delete, not multi-key
     CHECK(aliases(exec(d, "SELECT t #- '{a,b}' FROM jp.t;")) == std::set<std::string>{"id", "a/c", "x", "y"});
@@ -1013,8 +1007,8 @@ TEST_CASE("integration::cpp::test_jsonb_support::navigation_over_missing_key_sti
     auto* d = space.dispatcher();
     seed(d);
 
-    CHECK_FALSE(exec(d, "SELECT t ->> 'nokey' AS v FROM jp.t;")->is_success());   // deferred: NULL every row
-    CHECK_FALSE(exec(d, "SELECT t #>> 'no.key' AS v FROM jp.t;")->is_success());  // deferred: NULL every row
+    CHECK_FALSE(exec(d, "SELECT t ->> 'nokey' AS v FROM jp.t;")->is_success());           // deferred: NULL every row
+    CHECK_FALSE(exec(d, "SELECT t #>> 'no.key' AS v FROM jp.t;")->is_success());          // deferred: NULL every row
     CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' IS NULL;")->is_success()); // deferred: row 4
 }
 
@@ -1100,8 +1094,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_inside_join_is_side_awar
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.l ();")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.m ();")->is_success());
-    REQUIRE(exec(d, "INSERT INTO jp.l (k, lv, d.e, d.f) VALUES (1, 100, 111, 112), (2, 200, 222, 223);")
-                ->is_success());
+    REQUIRE(exec(d, "INSERT INTO jp.l (k, lv, d.e, d.f) VALUES (1, 100, 111, 112), (2, 200, 222, 223);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.m (k, mv, d.e, d.f) VALUES (1, 10, 11, 12), (2, 20, 22, 23);")->is_success());
 
     // Scalar navigation resolves each side correctly — this always worked.

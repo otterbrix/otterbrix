@@ -234,77 +234,55 @@ namespace components::table {
 
     // A trailing subscript index into an ARRAY/LIST column (e.g. WHERE v[k] = x)
     // addresses an element, not a STRUCT sub-column. Materialize the row's list
-    // value and compare the addressed (0-based) element against the filter. A
-    // NULL list, an out-of-range index, or a NULL element does not match.
-    static bool check_array_element_predicate(column_data_t& column,
-                                              int64_t row_id,
-                                              uint64_t element_index,
-                                              const table_filter_t* filter,
-                                              core::error_t& error) {
+    // value and compare the addressed (0-based) element against the filter.
+    //
+    // A NULL list, an out-of-range subscript, or a NULL element all yield a NULL
+    // operand, so the comparison is UNKNOWN — not FALSE (see filter_match_t).
+    static filter_match_t check_array_element_predicate(column_data_t& column,
+                                                        int64_t row_id,
+                                                        uint64_t element_index,
+                                                        const table_filter_t* filter,
+                                                        core::error_t& error) {
         column_fetch_state fetch_state;
         vector::vector_t result(column.resource(), column.type(), 1);
         column.fetch_row(fetch_state, row_id, result, 0);
         if (fetch_state.fetch_error.contains_error()) {
             error = fetch_state.fetch_error;
-            return false;
+            return filter_match_t::no;
         }
         if (!result.validity().row_is_valid(0)) {
-            return false;
+            return filter_match_t::unknown;
         }
         auto list_value = result.value(0);
         const auto& elements = list_value.children();
         if (element_index >= elements.size()) {
-            return false;
+            return filter_match_t::unknown;
         }
         const auto& element_value = elements[element_index];
         if (element_value.is_null()) {
-            return false;
+            return filter_match_t::unknown;
         }
         if (auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
-            return set->contains(element_value);
+            return set->contains(element_value) ? filter_match_t::yes : filter_match_t::no;
         }
         if (filter->filter_type == expressions::compare_type::regex) {
-            return filter->cast<regex_filter_t>().matches(element_value.value<std::string_view>());
+            return filter->cast<regex_filter_t>().matches(element_value.value<std::string_view>()) ? filter_match_t::yes
+                                                                                                   : filter_match_t::no;
         }
-        return filter->cast<constant_filter_t>().compare(element_value);
+        return filter->cast<constant_filter_t>().compare(element_value) ? filter_match_t::yes : filter_match_t::no;
     }
 
-    // Whether element `element_index` of an ARRAY/LIST column value at `row_id` is SQL NULL. A NULL
-    // whole array/list, or an out-of-range index (PostgreSQL yields NULL for an OOB subscript), both
-    // count as a NULL element. Mirrors check_array_element_predicate's element resolution.
-    static bool array_element_is_null(column_data_t& column,
-                                      int64_t row_id,
-                                      uint64_t element_index,
-                                      core::error_t& error) {
-        column_fetch_state fetch_state;
-        vector::vector_t result(column.resource(), column.type(), 1);
-        column.fetch_row(fetch_state, row_id, result, 0);
-        if (fetch_state.fetch_error.contains_error()) {
-            error = fetch_state.fetch_error;
-            return false;
-        }
-        if (!result.validity().row_is_valid(0)) {
-            return true;
-        }
-        auto array_value = result.value(0);
-        const auto& elements = array_value.children();
-        if (element_index >= elements.size()) {
-            return true;
-        }
-        return elements[element_index].is_null();
-    }
-
-    bool row_group_t::check_expression_predicate(int64_t row_id,
-                                                 const expression_filter_t& filter,
-                                                 expression_filter_layout_cache_t& expression_layouts,
-                                                 core::error_t& error) {
+    filter_match_t row_group_t::check_expression_predicate(int64_t row_id,
+                                                           const expression_filter_t& filter,
+                                                           expression_filter_layout_cache_t& expression_layouts,
+                                                           core::error_t& error) {
         if (!filter.evaluator) {
             // Reached the per-row check without an agent-attached evaluator (see
             // expression_evaluator_t). Fail cleanly with an error instead of dereferencing null.
             error = core::error_t{core::error_code_t::physical_plan_error,
                                   std::pmr::string{"expression_filter_t reached check_predicate without an evaluator",
                                                    collection_->resource()}};
-            return false;
+            return filter_match_t::no;
         }
         auto* res = collection_->resource();
         auto* layout = expression_layouts.find(&filter);
@@ -338,8 +316,8 @@ namespace components::table {
                 }
             }
             vector::data_chunk_t row{res, chunk_types, referenced, 1};
-            layout = &expression_layouts.insert(&filter,
-                                                {std::move(referenced), std::move(chunk_types), std::move(row)});
+            layout =
+                &expression_layouts.insert(&filter, {std::move(referenced), std::move(chunk_types), std::move(row)});
         }
         // fetch_row only flips validity valid->invalid (a reused slot would keep a previous row's
         // NULL sticky) and a LIST fetch appends to the child vector, so the referenced column
@@ -353,22 +331,51 @@ namespace components::table {
             get_column(top).fetch_row(fetch_state, row_id, layout->row.data[top], 0);
             if (fetch_state.fetch_error.contains_error()) {
                 error = fetch_state.fetch_error;
-                return false;
+                return filter_match_t::no;
             }
         }
         layout->row.set_cardinality(1);
         auto checked = filter.evaluator->evaluate(layout->row, 0);
         if (checked.has_error()) {
             error = checked.error();
-            return false;
+            return filter_match_t::no;
         }
+        // The evaluator is three-valued (filter_match_t aliases types::tri_bool_t): an UNKNOWN
+        // from a NULL operand flows through, so a NOT above this filter cannot resurrect the row.
         return checked.value();
     }
 
-    bool row_group_t::check_predicate(int64_t row_id,
-                                      const table_filter_t* filter,
-                                      expression_filter_layout_cache_t& expression_layouts,
-                                      core::error_t& error) {
+    // IS NULL / IS NOT NULL over an ARRAY/LIST element. Nullness is always TRUE or FALSE, never
+    // UNKNOWN: an element is NULL when the whole cell is NULL, when the subscript is out of range,
+    // or when that element itself is NULL.
+    static filter_match_t check_array_element_is_null(column_data_t& column,
+                                                      int64_t row_id,
+                                                      uint64_t element_index,
+                                                      bool want_null,
+                                                      core::error_t& error) {
+        column_fetch_state fetch_state;
+        vector::vector_t result(column.resource(), column.type(), 1);
+        column.fetch_row(fetch_state, row_id, result, 0);
+        if (fetch_state.fetch_error.contains_error()) {
+            error = fetch_state.fetch_error;
+            return filter_match_t::no;
+        }
+        bool element_is_null;
+        if (!result.validity().row_is_valid(0)) {
+            element_is_null = true;
+        } else {
+            auto array_value = result.value(0);
+            const auto& elements = array_value.children();
+            element_is_null = element_index >= elements.size() || elements[element_index].is_null();
+        }
+        const bool matches = want_null ? element_is_null : !element_is_null;
+        return matches ? filter_match_t::yes : filter_match_t::no;
+    }
+
+    filter_match_t row_group_t::check_predicate(int64_t row_id,
+                                                const table_filter_t* filter,
+                                                expression_filter_layout_cache_t& expression_layouts,
+                                                core::error_t& error) {
         // An expression_filter_t (WHERE f(col) OP const) aliases a constant comparison filter_type
         // but has a different layout and its own multi-column evaluation, so intercept it BEFORE the
         // filter_type switch (which would mis-cast it to constant_filter_t in the default arm).
@@ -377,40 +384,57 @@ namespace components::table {
         }
         switch (filter->filter_type) {
             case expressions::compare_type::union_or: {
+                // OR fold via tri_or: TRUE dominates (a TRUE disjunct still rescues a NULL row),
+                // UNKNOWN otherwise absorbs.
                 auto& conjunction_or = filter->cast<conjunction_or_filter_t>();
+                auto acc = filter_match_t::no;
                 for (auto& child_filter : conjunction_or.child_filters) {
-                    if (check_predicate(row_id, child_filter.get(), expression_layouts, error)) {
-                        return true;
-                    }
+                    auto child = check_predicate(row_id, child_filter.get(), expression_layouts, error);
                     if (error.contains_error()) {
-                        return false;
+                        return filter_match_t::no;
+                    }
+                    acc = types::tri_or(acc, child);
+                    if (acc == filter_match_t::yes) {
+                        break; // TRUE dominates OR — no later child can change it
                     }
                 }
-                return false;
+                return acc;
             }
             case expressions::compare_type::union_and: {
+                // AND fold via tri_and: FALSE dominates (a FALSE conjunct excludes decisively),
+                // UNKNOWN otherwise absorbs.
                 auto& conjunction_and = filter->cast<conjunction_and_filter_t>();
+                auto acc = filter_match_t::yes;
                 for (auto& child_filter : conjunction_and.child_filters) {
-                    if (!check_predicate(row_id, child_filter.get(), expression_layouts, error)) {
-                        return false;
-                    }
+                    auto child = check_predicate(row_id, child_filter.get(), expression_layouts, error);
                     if (error.contains_error()) {
-                        return false;
+                        return filter_match_t::no;
+                    }
+                    acc = types::tri_and(acc, child);
+                    if (acc == filter_match_t::no) {
+                        break; // FALSE dominates AND — no later child can change it
                     }
                 }
-                return true;
+                return acc;
             }
             case expressions::compare_type::union_not: {
+                // NOT over the disjunction of the children: tri_or the children, then tri_not.
+                // Crucially NOT UNKNOWN is UNKNOWN — a row excluded because its operand was
+                // NULL must not be flipped back in. This is what makes the validity gate in
+                // column_data_t::check_predicate safe to add.
                 auto& conjunction_not = filter->cast<conjunction_not_filter_t>();
+                auto acc = filter_match_t::no;
                 for (auto& child_filter : conjunction_not.child_filters) {
-                    if (check_predicate(row_id, child_filter.get(), expression_layouts, error)) {
-                        return false;
-                    }
+                    auto child = check_predicate(row_id, child_filter.get(), expression_layouts, error);
                     if (error.contains_error()) {
-                        return false;
+                        return filter_match_t::no;
+                    }
+                    acc = types::tri_or(acc, child);
+                    if (acc == filter_match_t::yes) {
+                        break; // the negation is already settled to FALSE
                     }
                 }
-                return true;
+                return types::tri_not(acc);
             }
             case expressions::compare_type::invalid: {
                 assert(false && "invalid type for filter selection");
@@ -419,27 +443,33 @@ namespace components::table {
             case expressions::compare_type::is_null:
             case expressions::compare_type::is_not_null: {
                 auto& null_filter = filter->cast<is_null_filter_t>();
-                const auto& indices = null_filter.table_indices;
-                column_data_t* column = &get_column(indices.front());
-                for (size_t i = 1; i < indices.size(); i++) {
-                    // A subscript into an ARRAY/LIST (v[i]) resolves to an element, not a struct field:
-                    // check that element's null-ness (a NULL array or an OOB index is a NULL element).
-                    // Blindly walking sub_columns here would reinterpret an array_column as a struct.
+                const bool want_null = filter->filter_type == expressions::compare_type::is_null;
+                column_data_t* column = &get_column(null_filter.table_indices.front());
+                for (size_t i = 1; i < null_filter.table_indices.size(); i++) {
+                    // An intermediate ARRAY/LIST index addresses an element, not a STRUCT
+                    // sub-column: descend it through the element accessor rather than casting the
+                    // array column to a struct (which would dereference a bogus sub-columns entry).
                     if (column->type().type() == types::logical_type::ARRAY ||
                         column->type().type() == types::logical_type::LIST) {
-                        bool element_is_null = array_element_is_null(*column, row_id, indices[i], error);
-                        return filter->filter_type == expressions::compare_type::is_null ? element_is_null
-                                                                                         : !element_is_null;
+                        return check_array_element_is_null(*column,
+                                                           row_id,
+                                                           null_filter.table_indices[i],
+                                                           want_null,
+                                                           error);
                     }
-                    column = static_cast<struct_column_data_t*>(column)->sub_columns[indices[i]].get();
+                    column =
+                        static_cast<struct_column_data_t*>(column)->sub_columns[null_filter.table_indices[i]].get();
                 }
+                // IS NULL / IS NOT NULL are the two predicates that interrogate nullness
+                // itself: they are always TRUE or FALSE, never UNKNOWN.
                 bool is_valid = column->check_validity(row_id);
-                return filter->filter_type == expressions::compare_type::is_null ? !is_valid : is_valid;
+                bool matches = want_null ? !is_valid : is_valid;
+                return matches ? filter_match_t::yes : filter_match_t::no;
             }
             default: {
                 // Column-vs-column (`a.x OP a.y`): fetch both column values for this row and compare. A NULL
-                // operand yields false (SQL three-valued logic). Checked before the single-column dispatch
-                // below (a distinct multi-column filter type).
+                // operand makes the comparison UNKNOWN (see filter_match_t). Checked before the
+                // single-column dispatch below (a distinct multi-column filter type).
                 if (auto* cc = dynamic_cast<const column_column_filter_t*>(filter)) {
                     auto resolve = [&](const std::pmr::vector<uint64_t>& path) -> column_data_t* {
                         column_data_t* c = &get_column(path.front());
@@ -456,30 +486,40 @@ namespace components::table {
                     lcol->fetch_row(lstate, row_id, lvec, 0);
                     if (lstate.fetch_error.contains_error()) {
                         error = lstate.fetch_error;
-                        return false;
+                        return filter_match_t::no;
                     }
                     rcol->fetch_row(rstate, row_id, rvec, 0);
                     if (rstate.fetch_error.contains_error()) {
                         error = rstate.fetch_error;
-                        return false;
+                        return filter_match_t::no;
                     }
                     if (!lvec.validity().row_is_valid(0) || !rvec.validity().row_is_valid(0)) {
-                        return false;
+                        return filter_match_t::unknown;
                     }
                     auto lval = lvec.value(0);
                     auto rval = rvec.value(0);
                     // Canonical comparator semantics (the shared helper simple_predicate's
                     // make_comparator also runs): bidirectional promotion with the session timezone
                     // the filter captured at plan time — never a one-way zero-tz cast that drops a
-                    // row whose value merely overflows the narrower side's type.
+                    // row whose value merely overflows the narrower side's type. NULL operands never
+                    // reach it (gated to unknown above).
                     auto matched = compare_values_promoting(lval, rval, cc->filter_type, cc->session_tz);
                     if (matched.has_error()) {
                         error = matched.error();
-                        return false;
+                        return filter_match_t::no;
                     }
-                    return matched.value();
+                    return matched.value() ? filter_match_t::yes : filter_match_t::no;
                 }
                 // Works for both constant_filter_t and set_membership_filter_t.
+
+                // A NULL on the CONSTANT side is UNKNOWN for every row, exactly as a NULL column
+                // value is: `WHERE x > NULL` selects nothing, and must not be flipped in by NOT.
+                // This is decided before the column is even read.
+                if (const auto* const_filter = dynamic_cast<const constant_filter_t*>(filter);
+                    const_filter && const_filter->constant.is_null()) {
+                    return filter_match_t::unknown;
+                }
+
                 const auto& indices = table_filter_table_indices(filter);
                 column_data_t* column = &get_column(indices.front());
                 for (size_t i = 1; i < indices.size(); i++) {
@@ -489,7 +529,20 @@ namespace components::table {
                     }
                     column = static_cast<struct_column_data_t*>(column)->sub_columns[indices[i]].get();
                 }
-                return column->check_predicate(row_id, filter, error);
+                auto match = column->check_predicate(row_id, filter, error);
+
+                // `x IN (1, NULL)`: a hit is TRUE, but a miss is UNKNOWN rather than FALSE, because
+                // the NULL element might have been the match.
+                if (match == filter_match_t::no) {
+                    if (const auto* set = dynamic_cast<const set_membership_filter_t*>(filter)) {
+                        for (const auto& v : set->values) {
+                            if (v.is_null()) {
+                                return filter_match_t::unknown;
+                            }
+                        }
+                    }
+                }
+                return match;
             }
         }
     }
@@ -539,10 +592,12 @@ namespace components::table {
         for (uint64_t i = 0; i < approved_tuple_count; i++) {
             auto idx = indexing.get_index(i);
             new_indexing.set_index(result_count, idx);
-            result_count += check_predicate(static_cast<int64_t>(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY),
-                                            filter,
-                                            expression_layouts,
-                                            error);
+            // Only TRUE selects a row: UNKNOWN (a NULL operand) is excluded, exactly as FALSE is.
+            auto match = check_predicate(static_cast<int64_t>(idx + vector_index * vector::DEFAULT_VECTOR_CAPACITY),
+                                         filter,
+                                         expression_layouts,
+                                         error);
+            result_count += (match == filter_match_t::yes) ? 1 : 0;
             if (error.contains_error()) {
                 // OOM during predicate evaluation: stop; caller copies to scan_error.
                 return;

@@ -706,8 +706,7 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < result.size(); i++) {
-                rows.emplace_back(result.data[0].value(i).value<int64_t>(),
-                                  result.data[1].value(i).value<int64_t>());
+                rows.emplace_back(result.data[0].value(i).value<int64_t>(), result.data[1].value(i).value<int64_t>());
             }
         }
         return rows;

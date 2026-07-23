@@ -322,8 +322,7 @@ namespace components::index::codec {
         return v;
     }
 
-    inline components::types::physical_value
-    read_logical_value_as_view(const char* data, size_t size, size_t& pos) {
+    inline components::types::physical_value read_logical_value_as_view(const char* data, size_t size, size_t& pos) {
         const auto logical = static_cast<logical_type_t>(read_le_raw<uint8_t>(data, size, pos));
         assert(logical != logical_type_t::DECIMAL && "DECIMAL not supported in physical_value");
         const auto physical = components::types::to_physical_type(logical);
@@ -373,28 +372,61 @@ namespace components::index::codec {
             read_le_raw<uint8_t>(data, size, pos);
             const auto decimal_type = components::types::complex_logical_type::create_decimal(width, 0);
             switch (decimal_type.to_physical_type()) {
-                case physical_type_t::INT16:  pos += sizeof(int16_t); break;
-                case physical_type_t::INT32:  pos += sizeof(int32_t); break;
-                case physical_type_t::INT64:  pos += sizeof(int64_t); break;
-                case physical_type_t::INT128: pos += sizeof(components::types::int128_t); break;
-                default: assert(false && "skip_logical_value: unsupported DECIMAL storage"); break;
+                case physical_type_t::INT16:
+                    pos += sizeof(int16_t);
+                    break;
+                case physical_type_t::INT32:
+                    pos += sizeof(int32_t);
+                    break;
+                case physical_type_t::INT64:
+                    pos += sizeof(int64_t);
+                    break;
+                case physical_type_t::INT128:
+                    pos += sizeof(components::types::int128_t);
+                    break;
+                default:
+                    assert(false && "skip_logical_value: unsupported DECIMAL storage");
+                    break;
             }
             return;
         }
         const auto physical = components::types::to_physical_type(logical);
         switch (physical) {
-            case physical_type_t::NA:                               break;
-            case physical_type_t::BOOL:  pos += sizeof(uint8_t);    break;
-            case physical_type_t::INT8:  pos += sizeof(int8_t);     break;
-            case physical_type_t::UINT8: pos += sizeof(uint8_t);    break;
-            case physical_type_t::INT16: pos += sizeof(int16_t);    break;
-            case physical_type_t::UINT16:pos += sizeof(uint16_t);   break;
-            case physical_type_t::INT32: pos += sizeof(int32_t);    break;
-            case physical_type_t::UINT32:pos += sizeof(uint32_t);   break;
-            case physical_type_t::INT64: pos += sizeof(int64_t);    break;
-            case physical_type_t::UINT64:pos += sizeof(uint64_t);   break;
-            case physical_type_t::FLOAT: pos += sizeof(float);      break;
-            case physical_type_t::DOUBLE:pos += sizeof(double);     break;
+            case physical_type_t::NA:
+                break;
+            case physical_type_t::BOOL:
+                pos += sizeof(uint8_t);
+                break;
+            case physical_type_t::INT8:
+                pos += sizeof(int8_t);
+                break;
+            case physical_type_t::UINT8:
+                pos += sizeof(uint8_t);
+                break;
+            case physical_type_t::INT16:
+                pos += sizeof(int16_t);
+                break;
+            case physical_type_t::UINT16:
+                pos += sizeof(uint16_t);
+                break;
+            case physical_type_t::INT32:
+                pos += sizeof(int32_t);
+                break;
+            case physical_type_t::UINT32:
+                pos += sizeof(uint32_t);
+                break;
+            case physical_type_t::INT64:
+                pos += sizeof(int64_t);
+                break;
+            case physical_type_t::UINT64:
+                pos += sizeof(uint64_t);
+                break;
+            case physical_type_t::FLOAT:
+                pos += sizeof(float);
+                break;
+            case physical_type_t::DOUBLE:
+                pos += sizeof(double);
+                break;
             case physical_type_t::STRING: {
                 const auto n = read_le_raw<uint32_t>(data, size, pos);
                 assert(pos + n <= size);

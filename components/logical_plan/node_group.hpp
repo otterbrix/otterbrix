@@ -48,8 +48,7 @@ namespace components::logical_plan {
 
     using node_group_ptr = boost::intrusive_ptr<node_group_t>;
 
-    node_group_ptr
-    make_node_group(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
+    node_group_ptr make_node_group(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
                                    core::dbname_t dbname,

@@ -121,7 +121,8 @@ namespace components::vector {
     // Sub-query result compacters: fold ALL of a cursor's chunks (not just the first) into one bound
     // parameter value, so a >1024-row or multi-branch result is not silently truncated.
     core::result_wrapper_t<types::logical_value_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks);
-    core::result_wrapper_t<types::logical_value_t> compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks);
+    core::result_wrapper_t<types::logical_value_t>
+    compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks);
     core::result_wrapper_t<types::logical_value_t> compact_to_array_value(const std::pmr::vector<data_chunk_t>& chunks);
     core::result_wrapper_t<types::logical_value_t> compact_to_row_value(const std::pmr::vector<data_chunk_t>& chunks);
 

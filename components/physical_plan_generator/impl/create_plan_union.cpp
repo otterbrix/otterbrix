@@ -13,10 +13,16 @@ namespace services::planner::impl {
                       const components::logical_plan::storage_parameters* params) {
         const auto* union_node = static_cast<const components::logical_plan::node_union_t*>(node.get());
 
-        auto left_op =
-            create_plan(context, function_registry, node->children()[0], components::logical_plan::limit_t::unlimit(), params);
-        auto right_op =
-            create_plan(context, function_registry, node->children()[1], components::logical_plan::limit_t::unlimit(), params);
+        auto left_op = create_plan(context,
+                                   function_registry,
+                                   node->children()[0],
+                                   components::logical_plan::limit_t::unlimit(),
+                                   params);
+        auto right_op = create_plan(context,
+                                    function_registry,
+                                    node->children()[1],
+                                    components::logical_plan::limit_t::unlimit(),
+                                    params);
 
         auto op = boost::intrusive_ptr(
             new components::operators::operator_union_t(context.resource, context.log.clone(), union_node->all()));

@@ -597,10 +597,11 @@ namespace services::dispatcher {
         std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
         ack_futures.reserve(executor_addresses_.size());
         for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[i],
-                                                                  &collection::executor::executor_t::set_explain_renderer,
-                                                                  id,
-                                                                  fn);
+            auto [needs_sched, fut] =
+                actor_zeta::otterbrix::send(executor_addresses_[i],
+                                            &collection::executor::executor_t::set_explain_renderer,
+                                            id,
+                                            fn);
             if (needs_sched && executors_[i]) {
                 scheduler_->enqueue(executors_[i].get());
             }

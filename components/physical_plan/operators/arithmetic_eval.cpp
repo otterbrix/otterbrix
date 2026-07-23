@@ -1,5 +1,6 @@
 #include "arithmetic_eval.hpp"
 
+#include "compare_3vl.hpp"
 #include <core/regex/regex.hpp>
 #include <core/result_wrapper.hpp>
 
@@ -202,7 +203,7 @@ namespace components::operators {
                                 if (matched.has_error()) {
                                     return matched.convert_error<types::logical_value_t>();
                                 }
-                                if (matched.value()) {
+                                if (types::selects(matched.value())) {
                                     return resolve_row_value(resource,
                                                              ops[w * 2 + 1],
                                                              chunk,
@@ -265,40 +266,65 @@ namespace components::operators {
             }
         }
 
-        core::result_wrapper_t<bool> evaluate_row_condition(std::pmr::memory_resource* resource,
-                                                            const expressions::expression_ptr& condition,
-                                                            const vector::data_chunk_t& chunk,
-                                                            const logical_plan::storage_parameters& params,
-                                                            size_t row_idx,
-                                                            core::date::timezone_offset_t session_tz) {
-            if (condition->group() != expressions::expression_group::compare)
-                return false;
+        // Evaluate a CASE WHEN condition in SQL three-valued logic. A WHEN fires only when the
+        // result is definitely TRUE (the caller applies selects()); UNKNOWN and FALSE fall through.
+        core::result_wrapper_t<types::tri_bool_t> evaluate_row_condition(std::pmr::memory_resource* resource,
+                                                                         const expressions::expression_ptr& condition,
+                                                                         const vector::data_chunk_t& chunk,
+                                                                         const logical_plan::storage_parameters& params,
+                                                                         size_t row_idx,
+                                                                         core::date::timezone_offset_t session_tz) {
+            using types::tri_bool_t;
+            if (!condition || condition->group() != expressions::expression_group::compare)
+                return tri_bool_t::unknown;
             auto* cmp = static_cast<const expressions::compare_expression_t*>(condition.get());
             const auto op = cmp->type();
 
+            // Boolean combinators fold with three-valued logic. Crucially a NOT (union_not) NEGATES
+            // its child rather than behaving like an OR, and UNKNOWN under NOT stays UNKNOWN -- so a
+            // NULL operand under NOT does not resurrect a match.
             if (cmp->is_union()) {
-                if (op == expressions::compare_type::union_not) {
-                    // Negation wrapper (e.g. NOT LIKE): a single child whose truth value is inverted. The
-                    // NULL-subject guard, when needed, is the union_and the transformer wraps around this.
-                    if (cmp->children().empty())
-                        return false;
-                    auto child_result =
-                        evaluate_row_condition(resource, cmp->children().front(), chunk, params, row_idx, session_tz);
-                    if (child_result.has_error())
-                        return child_result;
-                    return !child_result.value();
+                switch (cmp->type()) {
+                    case expressions::compare_type::union_and: {
+                        tri_bool_t acc = tri_bool_t::yes;
+                        for (const auto& child : cmp->children()) {
+                            auto r = evaluate_row_condition(resource, child, chunk, params, row_idx, session_tz);
+                            if (r.has_error())
+                                return r;
+                            acc = types::tri_and(acc, r.value());
+                            if (acc == tri_bool_t::no)
+                                return acc;
+                        }
+                        return acc;
+                    }
+                    case expressions::compare_type::union_or: {
+                        tri_bool_t acc = tri_bool_t::no;
+                        for (const auto& child : cmp->children()) {
+                            auto r = evaluate_row_condition(resource, child, chunk, params, row_idx, session_tz);
+                            if (r.has_error())
+                                return r;
+                            acc = types::tri_or(acc, r.value());
+                            if (acc == tri_bool_t::yes)
+                                return acc;
+                        }
+                        return acc;
+                    }
+                    case expressions::compare_type::union_not: {
+                        if (cmp->children().empty())
+                            return tri_bool_t::unknown;
+                        auto r = evaluate_row_condition(resource,
+                                                        cmp->children().front(),
+                                                        chunk,
+                                                        params,
+                                                        row_idx,
+                                                        session_tz);
+                        if (r.has_error())
+                            return r;
+                        return types::tri_not(r.value());
+                    }
+                    default:
+                        return tri_bool_t::unknown;
                 }
-                bool is_and = (op == expressions::compare_type::union_and);
-                for (auto& child : cmp->children()) {
-                    auto child_result = evaluate_row_condition(resource, child, chunk, params, row_idx, session_tz);
-                    if (child_result.has_error())
-                        return child_result;
-                    if (is_and && !child_result.value())
-                        return false;
-                    if (!is_and && child_result.value())
-                        return true;
-                }
-                return is_and;
             }
 
             // IS NULL / IS NOT NULL: only the left operand's null-ness matters (right is a dummy param), so
@@ -306,25 +332,25 @@ namespace components::operators {
             if (op == expressions::compare_type::is_null || op == expressions::compare_type::is_not_null) {
                 auto subject = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz);
                 if (subject.has_error())
-                    return subject.convert_error<bool>();
+                    return subject.convert_error<types::tri_bool_t>();
                 const bool subject_is_null = subject.value().is_null();
-                return op == expressions::compare_type::is_null ? subject_is_null : !subject_is_null;
+                return types::tri_of(op == expressions::compare_type::is_null ? subject_is_null : !subject_is_null);
             }
 
             auto left_rw = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz);
             if (left_rw.has_error())
-                return left_rw.convert_error<bool>();
+                return left_rw.convert_error<types::tri_bool_t>();
             auto right_rw = resolve_row_value(resource, cmp->right(), chunk, params, row_idx, session_tz);
             if (right_rw.has_error())
-                return right_rw.convert_error<bool>();
+                return right_rw.convert_error<types::tri_bool_t>();
             auto left_val = std::move(left_rw.value());
             auto right_val = std::move(right_rw.value());
-            // A NULL operand makes the comparison UNKNOWN; treat it as false (three-valued
-            // logic, mirroring simple_predicate). This is also what keeps a NULL out of the
-            // type-mismatch cast below: casting to/from an NA-typed NULL is a conversion_failure,
-            // and a CASE-WHEN condition over a nullable column must fall through, not error.
+            // A NULL operand makes the comparison UNKNOWN (three-valued logic, mirroring
+            // simple_predicate). Short-circuit before the type-coercion below: a NULL carries the
+            // NA type, and casting to/from NA is a conversion_failure -- a CASE-WHEN condition
+            // over a nullable column must fall through, not error.
             if (left_val.is_null() || right_val.is_null()) {
-                return false;
+                return tri_bool_t::unknown;
             }
 
             // LIKE / ILIKE: the pattern (right) is already like_to_regex-converted on the scalar path, so
@@ -342,43 +368,117 @@ namespace components::operators {
                 bool matched = compiled.value().match(left_val.value<std::string_view>());
                 if (cmp->regex_negate())
                     matched = !matched;
-                return matched;
+                return types::tri_of(matched);
             }
 
             if (left_val.type() != right_val.type()) {
                 auto cast_right = right_val.cast_as(left_val.type(), session_tz);
                 if (cast_right.has_error()) {
-                    return cast_right.convert_error<bool>();
+                    return cast_right.convert_error<types::tri_bool_t>();
                 }
                 if (!cast_right.value().is_null()) {
                     right_val = std::move(cast_right.value());
                 } else {
                     auto cast_left = left_val.cast_as(right_val.type(), session_tz);
                     if (cast_left.has_error()) {
-                        return cast_left.convert_error<bool>();
+                        return cast_left.convert_error<types::tri_bool_t>();
                     }
                     if (!cast_left.value().is_null()) {
                         left_val = std::move(cast_left.value());
                     }
                 }
             }
-            auto cmp_result = left_val.compare(right_val);
             switch (cmp->type()) {
                 case expressions::compare_type::gt:
-                    return cmp_result == types::compare_t::more;
                 case expressions::compare_type::gte:
-                    return cmp_result >= types::compare_t::equals;
                 case expressions::compare_type::lt:
-                    return cmp_result == types::compare_t::less;
                 case expressions::compare_type::lte:
-                    return cmp_result <= types::compare_t::equals;
                 case expressions::compare_type::eq:
-                    return cmp_result == types::compare_t::equals;
                 case expressions::compare_type::ne:
-                    return cmp_result != types::compare_t::equals;
+                    return eval_compare_3vl(cmp->type(), left_val, right_val);
                 default:
-                    return false;
+                    return tri_bool_t::unknown;
             }
+        }
+
+        // Best-effort STATIC type of a CASE branch (a THEN or ELSE operand), resolved from the
+        // chunk's column types / bound parameters -- WITHOUT evaluating any row. Needed to type the
+        // output vector when NO row produces a value (an all-NULL CASE column must still carry the
+        // branch's type; the unsized NA sentinel would bad_alloc on vector construction). Returns NA
+        // only when the type genuinely cannot be determined.
+        static types::complex_logical_type branch_static_type(const expressions::param_storage& param,
+                                                              const vector::data_chunk_t& chunk,
+                                                              const logical_plan::storage_parameters& params) {
+            using types::complex_logical_type;
+            using types::logical_type;
+            if (std::holds_alternative<expressions::key_t>(param)) {
+                auto& key = std::get<expressions::key_t>(param);
+                if (!key.path().empty()) {
+                    if (auto* vec = chunk.at(key.path())) {
+                        return vec->type();
+                    }
+                }
+                return complex_logical_type(logical_type::NA);
+            } else if (std::holds_alternative<core::parameter_id_t>(param)) {
+                auto it = params.parameters.find(std::get<core::parameter_id_t>(param));
+                if (it != params.parameters.end()) {
+                    return it->second.type();
+                }
+                return complex_logical_type(logical_type::NA);
+            }
+            auto& expr_ptr = std::get<expressions::expression_ptr>(param);
+            if (expr_ptr && expr_ptr->group() == expressions::expression_group::scalar) {
+                auto* scalar = static_cast<const expressions::scalar_expression_t*>(expr_ptr.get());
+                if (scalar->type() == expressions::scalar_type::case_expr) {
+                    // Nested CASE: take the first branch (THEN, then ELSE) whose type is knowable.
+                    auto& ops = scalar->params();
+                    bool nested_default = (ops.size() % 2 == 1);
+                    size_t nested_whens = ops.size() / 2;
+                    for (size_t w = 0; w < nested_whens; ++w) {
+                        auto t = branch_static_type(ops[w * 2 + 1], chunk, params);
+                        if (t.type() != logical_type::NA) {
+                            return t;
+                        }
+                    }
+                    if (nested_default && !ops.empty()) {
+                        auto t = branch_static_type(ops.back(), chunk, params);
+                        if (t.type() != logical_type::NA) {
+                            return t;
+                        }
+                    }
+                    return complex_logical_type(logical_type::NA);
+                }
+                // unary_minus preserves its operand's type.
+                if (scalar->type() == expressions::scalar_type::unary_minus && !scalar->params().empty()) {
+                    auto t = branch_static_type(scalar->params()[0], chunk, params);
+                    if (t.type() != logical_type::NA) {
+                        return t;
+                    }
+                }
+                // Binary arithmetic (add/subtract/multiply/divide/mod): the result type follows the
+                // SAME numeric-promotion / temporal rules the arithmetic kernels apply
+                // (types::arithmetic_result_type), so e.g. INT * DOUBLE resolves to DOUBLE rather
+                // than the first operand's INT.
+                vector::arithmetic_op aop;
+                if (scalar_to_arithmetic_op(scalar->type(), aop) && scalar->params().size() >= 2) {
+                    auto lt = branch_static_type(scalar->params()[0], chunk, params);
+                    auto rt = branch_static_type(scalar->params()[1], chunk, params);
+                    auto res = types::arithmetic_result_type(lt.type(), rt.type(), aop);
+                    if (res != logical_type::NA) {
+                        return complex_logical_type(res);
+                    }
+                }
+                // Fallback for any other scalar shape: the first typeable operand, else BIGINT (the
+                // arithmetic evaluator's own default).
+                if (!scalar->params().empty()) {
+                    auto t = branch_static_type(scalar->params()[0], chunk, params);
+                    if (t.type() != logical_type::NA) {
+                        return t;
+                    }
+                }
+                return complex_logical_type(logical_type::BIGINT);
+            }
+            return complex_logical_type(logical_type::NA);
         }
 
         core::result_wrapper_t<vector::vector_t>
@@ -391,68 +491,41 @@ namespace components::operators {
             bool has_default = (operands.size() % 2 == 1);
             size_t num_whens = operands.size() / 2;
 
-            // The CASE result type is the COMMON type across every THEN result and the ELSE, so a wider
-            // later branch (e.g. a BIGINT ELSE after an INT THEN) is not truncated by coerce_to_result.
-            // A branch's type is taken structurally (a column's from its vector, a constant's from the
-            // parameter) rather than from a row-0 value, which would be NA for a NULL row and lose the type.
-            auto operand_type = [&](const expressions::param_storage& operand) -> types::complex_logical_type {
-                if (std::holds_alternative<expressions::key_t>(operand)) {
-                    const auto& key = std::get<expressions::key_t>(operand);
-                    if (!key.path().empty()) {
-                        if (const auto* vec = chunk.at(key.path())) {
-                            return vec->type();
-                        }
-                    }
-                } else if (std::holds_alternative<core::parameter_id_t>(operand)) {
-                    return params.parameters.at(std::get<core::parameter_id_t>(operand)).type();
-                }
-                auto val = resolve_row_value(resource, operand, chunk, params, 0, session_tz);
-                if (!val.has_error()) {
-                    return val.value().type();
-                }
-                return types::complex_logical_type(types::logical_type::NA);
-            };
-
+            // The CASE output type is the COMMON type across every THEN result and the ELSE, so a
+            // wider later branch (e.g. a BIGINT ELSE after an INT THEN) is not truncated -- this must
+            // match the planner's own CASE type resolution (validate_logical_plan), or the aggregate/
+            // projection column it feeds gets a plan type that the runtime value cannot set_value into.
+            // Each branch's type is taken STATICALLY (branch_static_type: column / parameter / nested
+            // CASE / arithmetic promotion, no row-0 evaluation), so the type is well-defined even for
+            // an all-NULL or empty input that would otherwise bad_alloc on an unsized NA-typed vector.
             types::complex_logical_type result_type(types::logical_type::NA);
-            if (count > 0) {
-                auto fold_branch = [&](const types::complex_logical_type& branch_type) {
-                    if (branch_type.type() == types::logical_type::NA ||
-                        branch_type.type() == types::logical_type::UNKNOWN) {
-                        return;
-                    }
-                    if (result_type.type() == types::logical_type::NA) {
-                        result_type = branch_type;
-                    } else if (result_type.type() != branch_type.type() && types::is_numeric(result_type.type()) &&
-                               types::is_numeric(branch_type.type())) {
-                        auto promoted = types::promote_type(result_type.type(), branch_type.type());
-                        if (promoted != types::logical_type::NA) {
-                            result_type = types::complex_logical_type(promoted);
-                        }
-                    }
-                };
-                for (size_t when_index = 0; when_index < num_whens; when_index++) {
-                    fold_branch(operand_type(operands[when_index * 2 + 1]));
+            auto fold_branch = [&](const types::complex_logical_type& branch_type) {
+                if (branch_type.type() == types::logical_type::NA ||
+                    branch_type.type() == types::logical_type::UNKNOWN) {
+                    return;
                 }
-                if (has_default) {
-                    fold_branch(operand_type(operands.back()));
+                if (result_type.type() == types::logical_type::NA) {
+                    result_type = branch_type;
+                } else if (result_type.type() != branch_type.type() && types::is_numeric(result_type.type()) &&
+                           types::is_numeric(branch_type.type())) {
+                    auto promoted = types::promote_type(result_type.type(), branch_type.type());
+                    if (promoted != types::logical_type::NA) {
+                        result_type = types::complex_logical_type(promoted);
+                    }
                 }
+            };
+            for (size_t w = 0; w < num_whens; ++w) {
+                fold_branch(branch_static_type(operands[w * 2 + 1], chunk, params));
+            }
+            if (has_default) {
+                fold_branch(branch_static_type(operands.back(), chunk, params));
             }
 
-            vector::vector_t output(resource, result_type, count);
-
-            auto coerce_to_result = [&](types::logical_value_t val) -> types::logical_value_t {
-                if (!val.is_null() && val.type() != result_type) {
-                    auto casted = val.cast_as(result_type, session_tz);
-                    // No error channel here (the lambda yields a value); a non-castable pair falls back to
-                    // the uncoerced value instead of aborting.
-                    if (!casted.has_error() && !casted.value().is_null()) {
-                        return std::move(casted.value());
-                    }
-                }
-                return val;
-            };
-
+            // First pass: compute each row's result value.
+            std::pmr::vector<types::logical_value_t> results(resource);
+            results.reserve(count);
             for (uint64_t i = 0; i < count; i++) {
+                types::logical_value_t row_val(resource, types::complex_logical_type{types::logical_type::NA});
                 bool matched = false;
                 for (size_t w = 0; w < num_whens; w++) {
                     auto& cond_param = operands[w * 2];
@@ -462,13 +535,14 @@ namespace components::operators {
                         if (cond.has_error()) {
                             return cond.convert_error<vector::vector_t>();
                         }
-                        if (cond.value()) {
+                        // A WHEN fires only on a definite TRUE; UNKNOWN / FALSE fall through.
+                        if (types::selects(cond.value())) {
                             auto resolved =
                                 resolve_row_value(resource, operands[w * 2 + 1], chunk, params, i, session_tz);
                             if (resolved.has_error()) {
                                 return resolved.convert_error<vector::vector_t>();
                             }
-                            output.set_value(i, coerce_to_result(std::move(resolved.value())));
+                            row_val = std::move(resolved.value());
                             matched = true;
                             break;
                         }
@@ -479,9 +553,43 @@ namespace components::operators {
                     if (resolved.has_error()) {
                         return resolved.convert_error<vector::vector_t>();
                     }
-                    output.set_value(i, coerce_to_result(std::move(resolved.value())));
-                } else if (!matched) {
+                    row_val = std::move(resolved.value());
+                }
+                // Refinement: if the branches were statically untypeable (NA), learn the type from
+                // the first row that produces one. A typed NULL (e.g. a NULL read from a BIGINT
+                // column) still carries its type, so learn from row_val.type() rather than gating on
+                // is_null().
+                if (result_type.type() == types::logical_type::NA && row_val.type().type() != types::logical_type::NA) {
+                    result_type = row_val.type();
+                }
+                results.emplace_back(std::move(row_val));
+            }
+
+            // Last resort (e.g. a bare `THEN NULL` over an empty/all-NULL set): a concrete,
+            // allocatable, nullable type so vector construction never faults on the unsized NA
+            // sentinel. Every value is NULL here, so the choice is immaterial to results.
+            if (result_type.type() == types::logical_type::NA) {
+                result_type = types::complex_logical_type(types::logical_type::BIGINT);
+            }
+
+            // Second pass: build the typed output, coercing each value to the common result type.
+            vector::vector_t output(resource, result_type, count);
+            for (uint64_t i = 0; i < count; i++) {
+                if (results[i].is_null()) {
                     output.set_null(i, true);
+                    continue;
+                }
+                if (results[i].type() != result_type) {
+                    auto casted = results[i].cast_as(result_type, session_tz);
+                    // No error channel would help here (the row already produced a value); a
+                    // non-castable pair keeps the uncoerced value instead of aborting.
+                    if (!casted.has_error() && !casted.value().is_null()) {
+                        output.set_value(i, std::move(casted.value()));
+                    } else {
+                        output.set_value(i, results[i]);
+                    }
+                } else {
+                    output.set_value(i, results[i]);
                 }
             }
             return output;

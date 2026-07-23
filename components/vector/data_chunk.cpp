@@ -105,7 +105,8 @@ namespace components::vector {
     types::logical_value_t data_chunk_t::value(const std::pmr::vector<size_t>& col_path, uint64_t index) const {
         auto element = data[col_path.front()].resolve_nested_element(index, col_path, 1);
         if (element.is_null) {
-            return types::logical_value_t{element.leaf->resource(), types::complex_logical_type{types::logical_type::NA}};
+            return types::logical_value_t{element.leaf->resource(),
+                                          types::complex_logical_type{types::logical_type::NA}};
         }
         return element.leaf->value(element.index);
     }

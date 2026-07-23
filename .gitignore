@@ -267,15 +267,14 @@ integration/python/**/log/
 integration/python/**/wal/
 /integration/python/.coverage
 
-# Python wheel build artifacts — CI generates root-level setup.py,
-# pyproject.toml, get_path.py, and MANIFEST.in by copying from
-# integration/python/otterbrix/, so root copies are derived state.
+# Python wheel build artifacts — CI copies integration/python/otterbrix/pyproject.toml to the
+# repo root (where scikit-build-core builds the wheel via the top-level CMakeLists.txt), so a
+# root-level pyproject.toml is derived state and must not be committed. The tracked source lives
+# at integration/python/otterbrix/pyproject.toml.
 _skbuild/
 *.egg-info/
 /otterbrix.egg-info/
-/setup.py
 /pyproject.toml
-/get_path.py
 /MANIFEST.in
 
 # Local Docker-CI helper script

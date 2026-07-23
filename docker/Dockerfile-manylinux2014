@@ -5,7 +5,7 @@ ENV PYTHONFAULTHANDLER=1
 RUN yum install -y ninja-build python3-pip python3-devel wget unzip zip flex bison
 
 RUN    pip3 install --upgrade pip && \
-       pip3 install --no-cache-dir setuptools wheel scikit-build conan==2.19.0 pytest==6.2.5 cmake==3.28.3 && \
+       pip3 install --no-cache-dir conan==2.19.0 pytest==6.2.5 cmake==3.28.3 && \
        conan profile detect --force && \
        conan remote add otterbrix http://conan.otterbrix.com
 
@@ -28,23 +28,15 @@ COPY ./example ./example
 COPY ./JSONBench ./JSONBench
 COPY ./CMakeLists.txt ./CMakeLists.txt
 
-RUN cp integration/python/otterbrix/* .
-#RUN cp integration/python/otterbrix/MANIFEST.in .
-#RUN cp integration/python/otterbrix/pyproject.toml .
-#RUN cp integration/python/otterbrix/get_path.py .
+COPY ./README.md ./README.md
 
 RUN   PYBIN=(/opt/python/*/bin) && \
       for BIN in "${PYBIN[@]}";  do  \
       if [[  ${BIN} == *"cp310"* ]]; then \
-          ${BIN}/python3 -m pip install --no-cache-dir  wheel setuptools scikit-build  && \
-          mkdir -p $(echo "./$(${BIN}/python3 get_path.py )") && \
-          conan install . -s build_type=Release -s compiler.cppstd=gnu17 -s compiler.libcxx=libstdc++11 -of=$(echo "./$(${BIN}/python3 get_path.py )") && \
-          ${BIN}/python3 setup.py bdist_wheel  --verbose -DDEV_MODE=ON && \
-          #${BIN}/python3 -m pip install --no-index --find-links . dist/otterbrix-*.whl  && \
-          cd $(echo "./$(${BIN}/python3 get_path.py )") && \
-          ctest  -C -V --output-on-failure --timeout 60 && \
-          #pytest -v && \
-          cd /app ; \
+          cp integration/python/otterbrix/pyproject.toml . && \
+          ${BIN}/python3 -m pip install --no-cache-dir build && \
+          conan install . --build missing -s build_type=Release -s compiler.cppstd=gnu17 -s compiler.libcxx=libstdc++11 -o build_python=True -of=./conan_build && \
+          CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$(find "$PWD/conan_build" -name conan_toolchain.cmake -print -quit)" ${BIN}/python3 -m build --wheel --outdir dist . ; \
       fi \
       done
 

@@ -73,20 +73,16 @@ jobs:
       - name: Download and Install conan dependencies
         run: |
           python${{ matrix.PYTHON_VERSION }} -m pip install --user --retries=30 --upgrade pip
-          python${{ matrix.PYTHON_VERSION }} -m pip install wheel setuptools scikit-build pytest==6.2.5 cmake==3.28.3
+          python${{ matrix.PYTHON_VERSION }} -m pip install --user --retries=30 build pytest==6.2.5
           
-          cp integration/python/otterbrix/get_path.py .
-          mkdir -p $(echo "./$(python${{ matrix.PYTHON_VERSION }} get_path.py )")
-          conan install conanfile.py --build missing -s build_type=Release -o build_python=True -of=$(echo "./$(python${{ matrix.PYTHON_VERSION }} get_path.py )")
+          conan install conanfile.py --build missing -s build_type=Release -o build_python=True -of=./conan_build
 
       - name: Build wheel
         run: |
-          cp integration/python/otterbrix/setup.py .
-          cp integration/python/otterbrix/pyproject.toml .
-          touch MANIFEST.in
-        
+          export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$(find "$PWD/conan_build" -name conan_toolchain.cmake -print -quit)"
           
-          python${{ matrix.PYTHON_VERSION }} setup.py bdist_wheel --verbose
+          cp integration/python/otterbrix/pyproject.toml .
+          python${{ matrix.PYTHON_VERSION }} -m build --wheel --outdir dist .
 
       - name: Repair wheel
         run: |

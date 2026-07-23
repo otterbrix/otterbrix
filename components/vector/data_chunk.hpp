@@ -39,8 +39,8 @@ namespace components::vector {
         void set_value(const std::pmr::vector<size_t>& col_path, uint64_t index, const types::logical_value_t& val);
 
         bool is_null(uint64_t col_idx, uint64_t index) const;
-        bool is_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path) const;
-        void set_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path, bool value);
+        bool is_null(uint64_t col_idx, const std::pmr::vector<size_t>& path) const;
+        void set_null(uint64_t col_idx, const std::pmr::vector<size_t>& path, bool value);
         template<typename T>
         T get_value(uint64_t col_idx, uint64_t index) const {
             return data[col_idx].get_value<T>(index);

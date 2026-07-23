@@ -145,10 +145,10 @@ namespace components::vector {
     }
 
     bool data_chunk_t::is_null(uint64_t col_idx, uint64_t index) const { return data[col_idx].is_null(index); }
-    bool data_chunk_t::is_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path) const {
+    bool data_chunk_t::is_null(uint64_t col_idx, const std::pmr::vector<size_t>& path) const {
         return data[col_idx].is_null(path);
     }
-    void data_chunk_t::set_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path, bool value) {
+    void data_chunk_t::set_null(uint64_t col_idx, const std::pmr::vector<size_t>& path, bool value) {
         data[col_idx].set_null(path, value);
     }
 

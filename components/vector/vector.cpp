@@ -296,7 +296,7 @@ namespace components::vector {
     }
 
     vector_t::nested_element_t vector_t::resolve_nested_element(uint64_t row_index,
-                                                                const std::pmr::vector<uint64_t>& path,
+                                                                const std::pmr::vector<size_t>& path,
                                                                 size_t element_start) const {
         const vector_t* vector = this;
         uint64_t index = row_index;
@@ -329,7 +329,7 @@ namespace components::vector {
             if (!vector->validity_.row_is_valid(index)) {
                 null_seen = true;
             }
-            const uint64_t sub = path[step];
+            const size_t sub = path[step];
             switch (vector->type_.type()) {
                 case types::logical_type::LIST:
                 case types::logical_type::MAP: {
@@ -349,13 +349,13 @@ namespace components::vector {
                     vector = &vector->entry();
                     break;
                 }
+                case types::logical_type::STRUCT: {
+                    // Struct field: the row index stays the same, only the child changes.
+                    vector = vector->entries()[sub].get();
+                    break;
+                }
                 default:
-                    if (vector->type_.to_physical_type() == types::physical_type::STRUCT) {
-                        // Struct field: the row index stays the same, only the child changes.
-                        vector = vector->entries()[sub].get();
-                    } else {
-                        throw std::runtime_error("nested element access path is too deep for this type");
-                    }
+                    assert(false);
                     break;
             }
         }
@@ -367,7 +367,7 @@ namespace components::vector {
         return {vector, index, null_seen};
     }
 
-    bool vector_t::is_null(const std::pmr::vector<uint64_t>& path) const {
+    bool vector_t::is_null(const std::pmr::vector<size_t>& path) const {
         assert(!path.empty());
         if (path.size() == 1) {
             return is_null(path[0]);
@@ -375,7 +375,7 @@ namespace components::vector {
         return resolve_nested_element(path[0], path, 1).is_null;
     }
 
-    void vector_t::set_null(const std::pmr::vector<uint64_t>& path, bool value) {
+    void vector_t::set_null(const std::pmr::vector<size_t>& path, bool value) {
         assert(!path.empty());
         if (path.size() == 1) {
             set_null(path[0], value);

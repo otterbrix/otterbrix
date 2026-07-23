@@ -399,7 +399,6 @@ namespace components::operators {
                 default:
                     return tri_bool_t::unknown;
             }
-            return complex_logical_type(logical_type::NA);
         }
 
         // Best-effort STATIC type of a CASE branch (a THEN or ELSE operand), resolved from the

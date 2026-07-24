@@ -62,9 +62,7 @@ namespace planner_test {
     // The canonical scalar+count aggregate group used by the optimizer pushdown tests.
     // `with_group_key` adds a scalar group_field (grouped shape) vs none (scalar shape).
     inline components::logical_plan::node_group_ptr
-    make_agg_group(std::pmr::memory_resource* r,
-                   bool with_group_key,
-                   bool distinct_agg) {
+    make_agg_group(std::pmr::memory_resource* r, bool with_group_key, bool distinct_agg) {
         using namespace components::expressions;
         using key = components::expressions::key_t;
         std::vector<expression_ptr> exprs;

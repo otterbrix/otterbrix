@@ -701,3 +701,87 @@ TEST_CASE("integration::list_array::array_equality_subquery") {
         REQUIRE(cur->size() == 0); // {} != [7,8,9] and != [1,2,3]
     }
 }
+
+// A NULL element inside an ARRAY/LIST literal must be storable and must survive the round trip as a
+// NULL element (validity mask honored), for both fixed ARRAY[n] and variable-length LIST columns.
+TEST_CASE("integration::list_array::null_elements") {
+    auto config = test_create_config("/tmp/test_list_array/null_elements");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto ok = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = exec(dispatcher, sql);
+        REQUIRE(cur->is_success());
+        return cur;
+    };
+
+    ok("CREATE DATABASE db;");
+    ok("CREATE TABLE db.a (id int, arr int[3], lst int[]);");
+    ok("INSERT INTO db.a (id, arr, lst) VALUES (1, ARRAY[10,20,30], ARRAY[10,20,30]);");
+    // A row whose ARRAY and LIST both carry a NULL middle element.
+    ok("INSERT INTO db.a (id, arr, lst) VALUES (2, ARRAY[10,NULL,30], ARRAY[10,NULL,30]);");
+
+    SECTION("whole ARRAY column round-trips the NULL element") {
+        auto cur = ok("SELECT arr FROM db.a WHERE id = 2;");
+        REQUIRE(cur->size() == 1);
+        auto v = cur->value(0, 0);
+        REQUIRE(v.children().size() == 3);
+        REQUIRE(v.children()[0].value<int32_t>() == 10);
+        REQUIRE(v.children()[1].is_null());
+        REQUIRE(v.children()[2].value<int32_t>() == 30);
+    }
+    SECTION("whole LIST column round-trips the NULL element") {
+        auto cur = ok("SELECT lst FROM db.a WHERE id = 2;");
+        REQUIRE(cur->size() == 1);
+        auto v = cur->value(0, 0);
+        REQUIRE(v.children().size() == 3);
+        REQUIRE(v.children()[0].value<int32_t>() == 10);
+        REQUIRE(v.children()[1].is_null());
+        REQUIRE(v.children()[2].value<int32_t>() == 30);
+    }
+    SECTION("subscript of a NULL element yields NULL (ARRAY and LIST)") {
+        auto cur = ok("SELECT arr[2], lst[2] FROM db.a WHERE id = 2;");
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).is_null());
+        REQUIRE(cur->value(1, 0).is_null());
+    }
+    SECTION("subscript of a non-NULL element is unaffected") {
+        auto cur = ok("SELECT arr[1], lst[3] FROM db.a WHERE id = 2;");
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 10);
+        REQUIRE(cur->value(1, 0).value<int32_t>() == 30);
+    }
+    SECTION("a NULL element does not match an equality filter on that position") {
+        // row 2's arr[2]/lst[2] are NULL, so only row 1 (value 20) matches.
+        auto cur = ok("SELECT id FROM db.a WHERE arr[2] = 20;");
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 1);
+        auto cur2 = ok("SELECT id FROM db.a WHERE lst[2] = 20;");
+        REQUIRE(cur2->size() == 1);
+        REQUIRE(cur2->value(0, 0).value<int32_t>() == 1);
+    }
+    SECTION("IS NULL / IS NOT NULL on a subscript") {
+        // row 1's arr[2]=20 (not null), row 2's arr[2]=NULL.
+        auto isnull = ok("SELECT id FROM db.a WHERE arr[2] IS NULL;");
+        REQUIRE(isnull->size() == 1);
+        REQUIRE(isnull->value(0, 0).value<int32_t>() == 2);
+        auto notnull = ok("SELECT id FROM db.a WHERE lst[2] IS NOT NULL;");
+        REQUIRE(notnull->size() == 1);
+        REQUIRE(notnull->value(0, 0).value<int32_t>() == 1);
+    }
+    SECTION("ORDER BY a subscript orders by the element, NULLs last") {
+        // arr[2] is 20 (id 1) and NULL (id 2): ascending places 20 first, the NULL last.
+        auto cur = ok("SELECT id FROM db.a ORDER BY arr[2];");
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 1);
+        REQUIRE(cur->value(0, 1).value<int32_t>() == 2);
+        // Explicit NULLS FIRST places the NULL row (id 2) first.
+        auto nf = ok("SELECT id FROM db.a ORDER BY lst[2] NULLS FIRST;");
+        REQUIRE(nf->size() == 2);
+        REQUIRE(nf->value(0, 0).value<int32_t>() == 2);
+        REQUIRE(nf->value(0, 1).value<int32_t>() == 1);
+    }
+}

@@ -1,6 +1,7 @@
 #include "arithmetic_eval.hpp"
 
 #include "compare_3vl.hpp"
+#include <core/regex/regex.hpp>
 #include <core/result_wrapper.hpp>
 
 namespace components::operators {
@@ -267,17 +268,17 @@ namespace components::operators {
 
         // Evaluate a CASE WHEN condition in SQL three-valued logic. A WHEN fires only when the
         // result is definitely TRUE (the caller applies selects()); UNKNOWN and FALSE fall through.
-        core::result_wrapper_t<types::tri_bool_t> evaluate_row_condition(
-            std::pmr::memory_resource* resource,
-            const expressions::expression_ptr& condition,
-            const vector::data_chunk_t& chunk,
-            const logical_plan::storage_parameters& params,
-            size_t row_idx,
-            core::date::timezone_offset_t session_tz) {
+        core::result_wrapper_t<types::tri_bool_t> evaluate_row_condition(std::pmr::memory_resource* resource,
+                                                                         const expressions::expression_ptr& condition,
+                                                                         const vector::data_chunk_t& chunk,
+                                                                         const logical_plan::storage_parameters& params,
+                                                                         size_t row_idx,
+                                                                         core::date::timezone_offset_t session_tz) {
             using types::tri_bool_t;
             if (!condition || condition->group() != expressions::expression_group::compare)
                 return tri_bool_t::unknown;
             auto* cmp = static_cast<const expressions::compare_expression_t*>(condition.get());
+            const auto op = cmp->type();
 
             // Boolean combinators fold with three-valued logic. Crucially a NOT (union_not) NEGATES
             // its child rather than behaving like an OR, and UNKNOWN under NOT stays UNKNOWN -- so a
@@ -311,8 +312,12 @@ namespace components::operators {
                     case expressions::compare_type::union_not: {
                         if (cmp->children().empty())
                             return tri_bool_t::unknown;
-                        auto r =
-                            evaluate_row_condition(resource, cmp->children().front(), chunk, params, row_idx, session_tz);
+                        auto r = evaluate_row_condition(resource,
+                                                        cmp->children().front(),
+                                                        chunk,
+                                                        params,
+                                                        row_idx,
+                                                        session_tz);
                         if (r.has_error())
                             return r;
                         return types::tri_not(r.value());
@@ -320,6 +325,16 @@ namespace components::operators {
                     default:
                         return tri_bool_t::unknown;
                 }
+            }
+
+            // IS NULL / IS NOT NULL: only the left operand's null-ness matters (right is a dummy param), so
+            // this must run BEFORE the NULL-operand short-circuit below (a NULL subject is the point here).
+            if (op == expressions::compare_type::is_null || op == expressions::compare_type::is_not_null) {
+                auto subject = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz);
+                if (subject.has_error())
+                    return subject.convert_error<types::tri_bool_t>();
+                const bool subject_is_null = subject.value().is_null();
+                return types::tri_of(op == expressions::compare_type::is_null ? subject_is_null : !subject_is_null);
             }
 
             auto left_rw = resolve_row_value(resource, cmp->left(), chunk, params, row_idx, session_tz);
@@ -337,6 +352,25 @@ namespace components::operators {
             if (left_val.is_null() || right_val.is_null()) {
                 return tri_bool_t::unknown;
             }
+
+            // LIKE / ILIKE: the pattern (right) is already like_to_regex-converted on the scalar path, so
+            // compile it as a regex (case-insensitively for ILIKE) and partial-match the subject. NOT LIKE
+            // reaches here inside a union_not wrapper, so only the positive match is performed.
+            if (op == expressions::compare_type::regex) {
+                if (!types::is_string(left_val.type().type()) || !types::is_string(right_val.type().type())) {
+                    return core::error_t{core::error_code_t::comparison_failure,
+                                         std::pmr::string{"incorrect argument type for LIKE in CASE", resource}};
+                }
+                auto compiled =
+                    core::regex_t::compile(resource, right_val.value<std::string_view>(), cmp->regex_icase());
+                if (compiled.has_error())
+                    return compiled.error();
+                bool matched = compiled.value().match(left_val.value<std::string_view>());
+                if (cmp->regex_negate())
+                    matched = !matched;
+                return types::tri_of(matched);
+            }
+
             if (left_val.type() != right_val.type()) {
                 auto cast_right = right_val.cast_as(left_val.type(), session_tz);
                 if (cast_right.has_error()) {
@@ -457,19 +491,34 @@ namespace components::operators {
             bool has_default = (operands.size() % 2 == 1);
             size_t num_whens = operands.size() / 2;
 
-            // The CASE output type is the type of its THEN/ELSE branches, determined STATICALLY from
-            // column / parameter types -- so it is independent of WHICH row matches (and thus stable
-            // whether or not row 0 happens to take the ELSE), and well-defined even when a matched
-            // value is NULL. Prefer the THEN branches, then ELSE. (The previous code typed from the
-            // first THEN evaluated at row 0; resolving it statically reproduces that type while also
-            // covering the NULL-row-0 and all-NULL cases that would otherwise bad_alloc on an unsized
-            // NA-typed vector.)
+            // The CASE output type is the COMMON type across every THEN result and the ELSE, so a
+            // wider later branch (e.g. a BIGINT ELSE after an INT THEN) is not truncated -- this must
+            // match the planner's own CASE type resolution (validate_logical_plan), or the aggregate/
+            // projection column it feeds gets a plan type that the runtime value cannot set_value into.
+            // Each branch's type is taken STATICALLY (branch_static_type: column / parameter / nested
+            // CASE / arithmetic promotion, no row-0 evaluation), so the type is well-defined even for
+            // an all-NULL or empty input that would otherwise bad_alloc on an unsized NA-typed vector.
             types::complex_logical_type result_type(types::logical_type::NA);
-            for (size_t w = 0; w < num_whens && result_type.type() == types::logical_type::NA; ++w) {
-                result_type = branch_static_type(operands[w * 2 + 1], chunk, params);
+            auto fold_branch = [&](const types::complex_logical_type& branch_type) {
+                if (branch_type.type() == types::logical_type::NA ||
+                    branch_type.type() == types::logical_type::UNKNOWN) {
+                    return;
+                }
+                if (result_type.type() == types::logical_type::NA) {
+                    result_type = branch_type;
+                } else if (result_type.type() != branch_type.type() && types::is_numeric(result_type.type()) &&
+                           types::is_numeric(branch_type.type())) {
+                    auto promoted = types::promote_type(result_type.type(), branch_type.type());
+                    if (promoted != types::logical_type::NA) {
+                        result_type = types::complex_logical_type(promoted);
+                    }
+                }
+            };
+            for (size_t w = 0; w < num_whens; ++w) {
+                fold_branch(branch_static_type(operands[w * 2 + 1], chunk, params));
             }
-            if (result_type.type() == types::logical_type::NA && has_default) {
-                result_type = branch_static_type(operands.back(), chunk, params);
+            if (has_default) {
+                fold_branch(branch_static_type(operands.back(), chunk, params));
             }
 
             // First pass: compute each row's result value.
@@ -510,8 +559,7 @@ namespace components::operators {
                 // the first row that produces one. A typed NULL (e.g. a NULL read from a BIGINT
                 // column) still carries its type, so learn from row_val.type() rather than gating on
                 // is_null().
-                if (result_type.type() == types::logical_type::NA &&
-                    row_val.type().type() != types::logical_type::NA) {
+                if (result_type.type() == types::logical_type::NA && row_val.type().type() != types::logical_type::NA) {
                     result_type = row_val.type();
                 }
                 results.emplace_back(std::move(row_val));

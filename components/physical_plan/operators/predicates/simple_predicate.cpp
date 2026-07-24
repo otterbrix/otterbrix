@@ -25,10 +25,11 @@ namespace components::operators::predicates {
         // core::error_t, never a throw.
         // The common `col LIKE/ILIKE/regexp <literal>` shape does NOT come here — it routes to
         // regex_predicate (compile-once) below.
-        inline simple_predicate::row_check_fn_t make_regex_comparator(std::pmr::memory_resource* resource,
-                                                                      const compute::function_registry_t* function_registry,
-                                                                      const expressions::compare_expression_ptr& expr,
-                                                                      const logical_plan::storage_parameters* parameters) {
+        inline simple_predicate::row_check_fn_t
+        make_regex_comparator(std::pmr::memory_resource* resource,
+                              const compute::function_registry_t* function_registry,
+                              const expressions::compare_expression_ptr& expr,
+                              const logical_plan::storage_parameters* parameters) {
             auto left_getter = impl::create_value_getter(resource, function_registry, expr->left(), parameters);
             auto right_getter = impl::create_value_getter(resource, function_registry, expr->right(), parameters);
             const bool icase = expr->regex_icase();
@@ -145,7 +146,8 @@ namespace components::operators::predicates {
                 : resource_(resource)
                 , subject_(std::move(subject))
                 , error_(compiled.has_error() ? std::optional<core::error_t>(compiled.error()) : std::nullopt)
-                , re_(compiled.has_error() ? std::nullopt : std::optional<core::regex_t>(std::move(compiled.value()))) {}
+                , re_(compiled.has_error() ? std::nullopt : std::optional<core::regex_t>(std::move(compiled.value()))) {
+            }
 
             // NULL pattern: `col LIKE NULL` is unknown -> matches nothing.
             regex_predicate(std::pmr::memory_resource* resource, impl::value_getter subject)
@@ -496,9 +498,9 @@ namespace components::operators::predicates {
             case compare_type::lte:
                 // One comparator for all six operators: the op rides expr->type() into the shared
                 // table::compare_values_promoting helper (single source with the pushed disk filter).
-                return {new simple_predicate(
-                    resource,
-                    make_comparator(resource, function_registry, expr, parameters, session_tz))};
+                return {
+                    new simple_predicate(resource,
+                                         make_comparator(resource, function_registry, expr, parameters, session_tz))};
             case compare_type::any:
             case compare_type::all: {
                 // inner_op is guaranteed valid by the transformer (an unmapped ANY/ALL operator is
@@ -647,42 +649,50 @@ namespace components::operators::predicates {
                                              make_regex_comparator(resource, function_registry, expr, parameters))};
             }
             case compare_type::all_false:
-                return {new simple_predicate(resource,
-                                             [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
-                                                 -> core::result_wrapper_t<types::tri_bool_t> {
-                                                 return types::tri_bool_t::no;
-                                             })};
-            case compare_type::is_null: {
+                return {new simple_predicate(
+                    resource,
+                    [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
+                        -> core::result_wrapper_t<types::tri_bool_t> { return types::tri_bool_t::no; })};
+            case compare_type::is_null:
+            case compare_type::is_not_null: {
                 // IS NULL / IS NOT NULL are themselves total predicates (never UNKNOWN): they ask
                 // about validity directly and answer a definite TRUE / FALSE.
-                return {new simple_predicate(
-                    resource,
-                    [column_path = std::get<expressions::key_t>(expr->left()).path()](
-                        const vector::data_chunk_t& chunk_left,
-                        const vector::data_chunk_t&,
-                        size_t index_left,
-                        size_t) -> core::result_wrapper_t<types::tri_bool_t> {
-                        return types::tri_of(!chunk_left.at(column_path)->validity().row_is_valid(index_left));
-                    })};
-            }
-            case compare_type::is_not_null: {
-                return {new simple_predicate(
-                    resource,
-                    [column_path = std::get<expressions::key_t>(expr->left()).path()](
-                        const vector::data_chunk_t& chunk_left,
-                        const vector::data_chunk_t&,
-                        size_t index_left,
-                        size_t) -> core::result_wrapper_t<types::tri_bool_t> {
-                        return types::tri_of(chunk_left.at(column_path)->validity().row_is_valid(index_left));
-                    })};
+                const bool want_null = expr->type() == compare_type::is_null;
+                // A bare column reads the validity bitmap directly; any other operand is evaluated
+                // per row via a value getter and its result's validity is the answer.
+                if (std::holds_alternative<expressions::key_t>(expr->left())) {
+                    return {new simple_predicate(
+                        resource,
+                        [column_path = std::get<expressions::key_t>(expr->left()).path(),
+                         want_null](const vector::data_chunk_t& chunk_left,
+                                    const vector::data_chunk_t&,
+                                    size_t index_left,
+                                    size_t) -> core::result_wrapper_t<types::tri_bool_t> {
+                            const bool valid = chunk_left.at(column_path)->validity().row_is_valid(index_left);
+                            return types::tri_of(want_null ? !valid : valid);
+                        })};
+                }
+                auto getter = impl::create_value_getter(resource, function_registry, expr->left(), parameters);
+                return {new simple_predicate(resource,
+                                             [getter = std::move(getter), want_null](
+                                                 const vector::data_chunk_t& chunk_left,
+                                                 const vector::data_chunk_t& chunk_right,
+                                                 size_t index_left,
+                                                 size_t index_right) -> core::result_wrapper_t<types::tri_bool_t> {
+                                                 auto value = getter(chunk_left, chunk_right, index_left, index_right);
+                                                 if (value.has_error()) {
+                                                     return value.convert_error<types::tri_bool_t>();
+                                                 }
+                                                 return types::tri_of(want_null ? value.value().is_null()
+                                                                                : !value.value().is_null());
+                                             })};
             }
             case compare_type::all_true:
             default:
-                return {new simple_predicate(resource,
-                                             [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
-                                                 -> core::result_wrapper_t<types::tri_bool_t> {
-                                                 return types::tri_bool_t::yes;
-                                             })};
+                return {new simple_predicate(
+                    resource,
+                    [](const vector::data_chunk_t&, const vector::data_chunk_t&, size_t, size_t)
+                        -> core::result_wrapper_t<types::tri_bool_t> { return types::tri_bool_t::yes; })};
         }
     }
 

@@ -69,11 +69,11 @@ namespace {
 
     // Extract the function's boolean output as a tri-state, forcing UNKNOWN for rows whose input was
     // NULL (strict predicate) or whose result the function itself returned as NULL.
-    core::result_wrapper_t<std::vector<types::tri_bool_t>> run_batch_and_extract_tri(
-        const compute::function* function,
-        vector::data_chunk_t& batch,
-        size_t N,
-        const std::vector<bool>& any_arg_null) {
+    core::result_wrapper_t<std::vector<types::tri_bool_t>>
+    run_batch_and_extract_tri(const compute::function* function,
+                              vector::data_chunk_t& batch,
+                              size_t N,
+                              const std::vector<bool>& any_arg_null) {
         auto res = function->execute(batch);
         if (res.has_error()) {
             return res.convert_error<std::vector<types::tri_bool_t>>();

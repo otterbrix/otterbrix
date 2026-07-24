@@ -6,6 +6,7 @@
 #include <actor-zeta/detail/future.hpp>
 
 #include "disk_contract.hpp" // fetch_batch_t reply payload for storage_fetch_next_batch_inner
+#include <atomic>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
@@ -17,7 +18,6 @@
 #include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -615,12 +615,13 @@ namespace services::disk {
         // (session counter), which scopes a source to one query.
         struct active_scan_t {
             components::catalog::oid_t table_oid{components::catalog::INVALID_OID}; // gates compact() on this oid
-            components::storage::scan_position_t pos;         // absolute resume position (re-seek each fetch)
-            std::unique_ptr<components::table::table_filter_t> filter; // owned; bound into the transient state per fetch
-            std::vector<std::size_t> projected_cols;          // empty == all columns
-            components::table::transaction_data txn{0, 0};    // MVCC snapshot for the whole scan
-            int64_t matched_limit{-1};                        // post-filter matched-row cap (-1 == unbounded)
-            uint64_t matched_emitted{0};                      // running matched rows handed out (enforces matched_limit)
+            components::storage::scan_position_t pos; // absolute resume position (re-seek each fetch)
+            std::unique_ptr<components::table::table_filter_t>
+                filter;                                    // owned; bound into the transient state per fetch
+            std::vector<std::size_t> projected_cols;       // empty == all columns
+            components::table::transaction_data txn{0, 0}; // MVCC snapshot for the whole scan
+            int64_t matched_limit{-1};                     // post-filter matched-row cap (-1 == unbounded)
+            uint64_t matched_emitted{0};                   // running matched rows handed out (enforces matched_limit)
         };
         std::pmr::unordered_map<uint64_t, active_scan_t> active_scans_;
         // Monotonic per-agent cursor-id counter, combined with the session at mint time so the id

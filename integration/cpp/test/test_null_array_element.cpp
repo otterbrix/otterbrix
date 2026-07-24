@@ -66,8 +66,8 @@ TEST_CASE("integration::cpp::null_arr_elem::fixed_array_null_padded_element") {
     REQUIRE(ok(d, "INSERT INTO ae.t (id, v) VALUES (2, ARRAY[40]);"));
 
     // v[3] is a real NULL element in row 2: comparison is UNKNOWN, IS NULL is TRUE.
-    CHECK(rows(d, "SELECT id FROM ae.t WHERE v[3] = 30;") == 1);     // id=1 only
-    CHECK(rows(d, "SELECT id FROM ae.t WHERE v[3] IS NULL;") == 1);  // id=2
+    CHECK(rows(d, "SELECT id FROM ae.t WHERE v[3] = 30;") == 1);        // id=1 only
+    CHECK(rows(d, "SELECT id FROM ae.t WHERE v[3] IS NULL;") == 1);     // id=2
     CHECK(rows(d, "SELECT id FROM ae.t WHERE v[3] IS NOT NULL;") == 1); // id=1
     // v[1] is present in both rows.
     CHECK(rows(d, "SELECT id FROM ae.t WHERE v[1] IS NOT NULL;") == 2);
@@ -83,12 +83,12 @@ TEST_CASE("integration::cpp::null_arr_elem::variadic_list") {
     REQUIRE(ok(d, "CREATE DATABASE ae;"));
     REQUIRE(ok(d, "CREATE TABLE ae.l (id bigint, v int[]);"));
     REQUIRE(ok(d, "INSERT INTO ae.l (id, v) VALUES (1, ARRAY[10, 20]);"));
-    REQUIRE(ok(d, "INSERT INTO ae.l (id, v) VALUES (2, NULL);"));    // whole list NULL
+    REQUIRE(ok(d, "INSERT INTO ae.l (id, v) VALUES (2, NULL);"));      // whole list NULL
     REQUIRE(ok(d, "INSERT INTO ae.l (id, v) VALUES (3, ARRAY[30]);")); // v[2] out of range
 
     // v[2]: present in row 1, out of range in row 3, NULL cell in row 2 -> only row 1 has it.
-    CHECK(rows(d, "SELECT id FROM ae.l WHERE v[2] = 20;") == 1);     // id=1
-    CHECK(rows(d, "SELECT id FROM ae.l WHERE v[2] IS NULL;") == 2);  // id=2 (null cell), id=3 (out of range)
+    CHECK(rows(d, "SELECT id FROM ae.l WHERE v[2] = 20;") == 1);        // id=1
+    CHECK(rows(d, "SELECT id FROM ae.l WHERE v[2] IS NULL;") == 2);     // id=2 (null cell), id=3 (out of range)
     CHECK(rows(d, "SELECT id FROM ae.l WHERE v[2] IS NOT NULL;") == 1); // id=1
-    CHECK(rows(d, "SELECT id FROM ae.l WHERE v[1] IS NULL;") == 1);  // id=2 only
+    CHECK(rows(d, "SELECT id FROM ae.l WHERE v[1] IS NULL;") == 1);     // id=2 only
 }

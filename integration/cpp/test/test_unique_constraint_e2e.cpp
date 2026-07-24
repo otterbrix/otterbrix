@@ -34,8 +34,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::unique_existing_row") {
     {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.users (id bigint, name text);")->is_success());
-        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.users ADD CONSTRAINT uq_users_id UNIQUE (id);")
-                    ->is_success());
+        REQUIRE(
+            exec(dispatcher, "ALTER TABLE TestDatabase.users ADD CONSTRAINT uq_users_id UNIQUE (id);")->is_success());
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.users (id, name) VALUES (1, 'Alice');")->is_success());
     }
 
@@ -128,8 +128,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_creates_duplicat
     {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.seats (id bigint, row_no bigint);")->is_success());
-        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.seats ADD CONSTRAINT uq_seats_id UNIQUE (id);")
-                    ->is_success());
+        REQUIRE(
+            exec(dispatcher, "ALTER TABLE TestDatabase.seats ADD CONSTRAINT uq_seats_id UNIQUE (id);")->is_success());
         REQUIRE(exec(dispatcher, "INSERT INTO TestDatabase.seats (id, row_no) VALUES (1, 10), (2, 20);")->is_success());
     }
 
@@ -160,8 +160,8 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicat
     INFO("setup: tickets(code) UNIQUE with DEFAULT 5");
     {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
-        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.tickets (id bigint, code bigint DEFAULT 5);")
-                    ->is_success());
+        REQUIRE(
+            exec(dispatcher, "CREATE TABLE TestDatabase.tickets (id bigint, code bigint DEFAULT 5);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.tickets ADD CONSTRAINT uq_tickets_code UNIQUE (code);")
                     ->is_success());
     }
@@ -198,16 +198,14 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicat
 }
 
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_within_batch_duplicate") {
-    auto config =
-        make_test_config("/tmp/test_unique_constraint_e2e/default_column_within_batch", /*disk_on=*/true);
+    auto config = make_test_config("/tmp/test_unique_constraint_e2e/default_column_within_batch", /*disk_on=*/true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     INFO("setup: badges(code) UNIQUE with DEFAULT 5, no rows yet");
     {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
-        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.badges (id bigint, code bigint DEFAULT 5);")
-                    ->is_success());
+        REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.badges (id bigint, code bigint DEFAULT 5);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.badges ADD CONSTRAINT uq_badges_code UNIQUE (code);")
                     ->is_success());
     }
@@ -299,8 +297,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_ac
     {
         REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.big (id bigint, name text);")->is_success());
-        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.big ADD CONSTRAINT uq_big_id UNIQUE (id);")
-                    ->is_success());
+        REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.big ADD CONSTRAINT uq_big_id UNIQUE (id);")->is_success());
     }
 
     INFO("one >1024-row insert (NULLs interspersed, non-NULLs all distinct) is accepted");

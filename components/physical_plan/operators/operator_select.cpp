@@ -74,8 +74,8 @@ namespace components::operators {
                             case expressions::compare_type::lte:
                                 // A NULL operand makes the WHEN condition UNKNOWN, which (like FALSE)
                                 // falls through to the next clause / ELSE.
-                                matches = types::selects(
-                                    eval_compare_3vl(clause.cmp, cond_val, clause.condition_value));
+                                matches =
+                                    types::selects(eval_compare_3vl(clause.cmp, cond_val, clause.condition_value));
                                 break;
                             default:
                                 matches = true; // an unconditional clause (preserve prior behaviour)

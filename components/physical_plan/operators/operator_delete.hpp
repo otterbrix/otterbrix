@@ -65,9 +65,7 @@ namespace components::operators {
         // The executor mid-flushes await_async_and_resume once this crosses the
         // configured dml_flush_row_threshold. The catalog form buffers nothing
         // (buffered_rows()==0), so it is never mid-flushed.
-        [[nodiscard]] uint64_t buffered_rows() const noexcept override {
-            return modified_ ? modified_->size() : 0;
-        }
+        [[nodiscard]] uint64_t buffered_rows() const noexcept override { return modified_ ? modified_->size() : 0; }
 
     private:
         // Shared SIMPLE-path core. Matches expression_ (all-true when null — the

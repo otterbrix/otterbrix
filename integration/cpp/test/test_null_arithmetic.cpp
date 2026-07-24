@@ -114,8 +114,8 @@ TEST_CASE("integration::cpp::null_arith::arithmetic_in_where_excludes_null") {
     // form already isolates the arithmetic NULL propagation. The NOT form (where UNKNOWN and
     // FALSE diverge) is a property of the three-valued predicate evaluator, covered by the
     // in-memory predicate 3VL tests, not by arithmetic.
-    CHECK(rows(d, "SELECT id FROM na.t WHERE x + 1 = 1;") == 1);  // id=3 only
-    CHECK(rows(d, "SELECT id FROM na.t WHERE x * 2 = 0;") == 1);  // id=3 only
+    CHECK(rows(d, "SELECT id FROM na.t WHERE x + 1 = 1;") == 1); // id=3 only
+    CHECK(rows(d, "SELECT id FROM na.t WHERE x * 2 = 0;") == 1); // id=3 only
 }
 
 TEST_CASE("integration::cpp::null_arith::update_set_expression_keeps_null") {
@@ -150,11 +150,9 @@ TEST_CASE("integration::cpp::null_arith::aggregate_arithmetic_propagates_null") 
     REQUIRE(ok(d, "INSERT INTO na.g (k, a, b) VALUES (2, 5, 20);"));
 
     // SUM(b) over the all-NULL group is NULL, so SUM(a)+SUM(b) is NULL for group 1, 40 for group 2.
-    CHECK(read_col(d, "SELECT SUM(a) + SUM(b) FROM na.g GROUP BY k ORDER BY k;", 0) ==
-          std::vector<opt>{{}, 40});
+    CHECK(read_col(d, "SELECT SUM(a) + SUM(b) FROM na.g GROUP BY k ORDER BY k;", 0) == std::vector<opt>{{}, 40});
     // SUM(a) / SUM(b): group 1 divides by a NULL SUM -> NULL, not a crash; group 2 -> 10/30 = 0.
-    CHECK(read_col(d, "SELECT SUM(a) / SUM(b) FROM na.g GROUP BY k ORDER BY k;", 0) ==
-          std::vector<opt>{{}, 0});
+    CHECK(read_col(d, "SELECT SUM(a) / SUM(b) FROM na.g GROUP BY k ORDER BY k;", 0) == std::vector<opt>{{}, 0});
 }
 
 TEST_CASE("integration::cpp::null_arith::literal_null_folds_to_null") {

@@ -177,9 +177,9 @@ TEST_CASE("integration::cpp::pred3vl::check_not") {
 
     REQUIRE(okq(d, "CREATE TABLE m.t (id INT, x BIGINT);"));
     REQUIRE(okq(d, "ALTER TABLE m.t ADD CONSTRAINT cc CHECK (NOT (x = 5));"));
-    CHECK(okq(d, "INSERT INTO m.t (id, x) VALUES (1, 0);"));         // NOT(FALSE)=TRUE -> ok
-    CHECK_FALSE(okq(d, "INSERT INTO m.t (id, x) VALUES (2, 5);"));   // NOT(TRUE)=FALSE -> rejected
-    CHECK(okq(d, "INSERT INTO m.t (id, x) VALUES (3, NULL);"));      // NOT(UNKNOWN)=UNKNOWN -> ok
+    CHECK(okq(d, "INSERT INTO m.t (id, x) VALUES (1, 0);"));       // NOT(FALSE)=TRUE -> ok
+    CHECK_FALSE(okq(d, "INSERT INTO m.t (id, x) VALUES (2, 5);")); // NOT(TRUE)=FALSE -> rejected
+    CHECK(okq(d, "INSERT INTO m.t (id, x) VALUES (3, NULL);"));    // NOT(UNKNOWN)=UNKNOWN -> ok
     CHECK(ids(d, "SELECT id FROM m.t;") == L{1, 3});
 
     // Plain comparison CHECK: NULL passes, FALSE rejected.

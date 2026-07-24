@@ -58,7 +58,10 @@ namespace components::operators {
         }
 
     private:
-        void explain_impl(const explain_sink& s) const override { explain_begin(s, table_oid_); s.end(); }
+        void explain_impl(const explain_sink& s) const override {
+            explain_begin(s, table_oid_);
+            s.end();
+        }
 
         // Projected empty chunk (drained sentinel) carrying the table schema, so a downstream OUTER
         // join can NULL-pad and a scalar aggregate can emit COUNT=0.

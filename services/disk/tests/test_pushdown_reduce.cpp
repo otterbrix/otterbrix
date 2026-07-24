@@ -73,8 +73,7 @@ namespace {
 
     // A POD reduce spec: optional GROUP BY key column + SUM(val_col). group_col < 0 => scalar
     // aggregate (no GROUP BY). output_types stamped BIGINT so the scalar/empty result stays typed.
-    ops::pushed_aggregate_spec_t
-    build_sum_spec(std::pmr::memory_resource* r, int group_col, size_t val_col) {
+    ops::pushed_aggregate_spec_t build_sum_spec(std::pmr::memory_resource* r, int group_col, size_t val_col) {
         ops::pushed_aggregate_spec_t spec{r};
         if (group_col >= 0) {
             ops::pushed_group_key_t gk{r};
@@ -112,8 +111,10 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
     const auto txn = open_txn(88);
     components::execution_context_t append_ctx{session_id_t{}, txn, {}};
     append_ctx.table_oid = table_oid;
-    auto appended =
-        fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, batch_rows(&fx.resource, 1, {{10}, {20}, {30}}));
+    auto appended = fx.invoke(&manager_disk_t::storage_append,
+                              append_ctx,
+                              table_oid,
+                              batch_rows(&fx.resource, 1, {{10}, {20}, {30}}));
     REQUIRE_FALSE(appended.has_error());
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), txn);
@@ -147,7 +148,8 @@ TEST_CASE("pushdown_reduce: empty slice SUM emits one NULL scalar row") {
               catalog::well_known_oid::main_database,
               cols);
 
-    auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), open_txn(88));
+    auto partials =
+        fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), open_txn(88));
 
     uint64_t rows = 0;
     for (const auto& chunk : partials) {
@@ -244,7 +246,8 @@ TEST_CASE("pushdown_reduce: scalar reduce over a missing slice still emits its o
 
     // NEVER create a storage for this oid.
     const catalog::oid_t missing_oid{catalog::FIRST_USER_OID + 7};
-    auto partials = fx.drive_reduce(missing_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), open_txn(88));
+    auto partials =
+        fx.drive_reduce(missing_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), open_txn(88));
 
     uint64_t rows = 0;
     for (const auto& chunk : partials) {

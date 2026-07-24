@@ -151,8 +151,7 @@ namespace services::collection {
             if (n.loops == 0) {
                 return std::pmr::string("  (never executed)", mr);
             }
-            const double ms =
-                std::chrono::duration<double, std::milli>(n.time).count() / static_cast<double>(n.loops);
+            const double ms = std::chrono::duration<double, std::milli>(n.time).count() / static_cast<double>(n.loops);
             // PG rounds actual per-loop rows to nearest (rint); integer round-half-up avoids float drift.
             // loops>=1 here (loops==0 returned "(never executed)" above), so n.loops/2 < n.loops.
             const unsigned long long rows_per = static_cast<unsigned long long>((n.rows + n.loops / 2) / n.loops);

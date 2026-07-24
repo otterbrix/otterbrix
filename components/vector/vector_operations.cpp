@@ -176,8 +176,9 @@ namespace components::vector::vector_ops {
                     for (uint64_t i = 0; i < count; i++) {
                         auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
                         auto idx = idata.referenced_indexing->get_index(ridx);
-                        hd[ridx] = combine_hash_scalar(constant_hash,
-                                                       hash_128_value<T128>(ldata[idx], !idata.validity.row_is_valid(idx)));
+                        hd[ridx] =
+                            combine_hash_scalar(constant_hash,
+                                                hash_128_value<T128>(ldata[idx], !idata.validity.row_is_valid(idx)));
                     }
                 } else {
                     assert(hashes.get_vector_type() == vector_type::FLAT);
@@ -185,8 +186,9 @@ namespace components::vector::vector_ops {
                     for (uint64_t i = 0; i < count; i++) {
                         auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
                         auto idx = idata.referenced_indexing->get_index(ridx);
-                        hd[ridx] = combine_hash_scalar(hd[ridx],
-                                                       hash_128_value<T128>(ldata[idx], !idata.validity.row_is_valid(idx)));
+                        hd[ridx] =
+                            combine_hash_scalar(hd[ridx],
+                                                hash_128_value<T128>(ldata[idx], !idata.validity.row_is_valid(idx)));
                     }
                 }
             }

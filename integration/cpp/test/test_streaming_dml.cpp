@@ -578,8 +578,8 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
     {
         REQUIRE(exec(dispatcher, "CREATE TABLE LimDb.s (k bigint);")->is_success());
         REQUIRE(exec(dispatcher, "INSERT INTO LimDb.s (k) VALUES (0), (1), (2), (3), (4);")->is_success());
-        auto cur = exec(dispatcher,
-                        "DELETE FROM LimDb.t_src USING LimDb.s WHERE t_src.a = s.k LIMIT 2 RETURNING t_src.id;");
+        auto cur =
+            exec(dispatcher, "DELETE FROM LimDb.t_src USING LimDb.s WHERE t_src.a = s.k LIMIT 2 RETURNING t_src.id;");
         INFO("source delete limit: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);

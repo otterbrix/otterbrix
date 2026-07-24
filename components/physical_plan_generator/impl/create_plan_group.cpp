@@ -224,8 +224,7 @@ namespace services::planner::impl {
                                                                 context.log.clone(),
                                                                 internal_aggregate_count);
         } else {
-            group =
-                new components::operators::operator_group_t(node->resource(), log_t{}, internal_aggregate_count);
+            group = new components::operators::operator_group_t(node->resource(), log_t{}, internal_aggregate_count);
         }
 
         // Build group operator from node expressions

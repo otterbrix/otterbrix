@@ -266,9 +266,8 @@ namespace components::table {
             return set->contains(element_value) ? filter_match_t::yes : filter_match_t::no;
         }
         if (filter->filter_type == expressions::compare_type::regex) {
-            return filter->cast<regex_filter_t>().matches(element_value.value<std::string_view>())
-                       ? filter_match_t::yes
-                       : filter_match_t::no;
+            return filter->cast<regex_filter_t>().matches(element_value.value<std::string_view>()) ? filter_match_t::yes
+                                                                                                   : filter_match_t::no;
         }
         return filter->cast<constant_filter_t>().compare(element_value) ? filter_match_t::yes : filter_match_t::no;
     }
@@ -317,8 +316,8 @@ namespace components::table {
                 }
             }
             vector::data_chunk_t row{res, chunk_types, referenced, 1};
-            layout = &expression_layouts.insert(&filter,
-                                                {std::move(referenced), std::move(chunk_types), std::move(row)});
+            layout =
+                &expression_layouts.insert(&filter, {std::move(referenced), std::move(chunk_types), std::move(row)});
         }
         // fetch_row only flips validity valid->invalid (a reused slot would keep a previous row's
         // NULL sticky) and a LIST fetch appends to the child vector, so the referenced column
@@ -452,7 +451,10 @@ namespace components::table {
                     // array column to a struct (which would dereference a bogus sub-columns entry).
                     if (column->type().type() == types::logical_type::ARRAY ||
                         column->type().type() == types::logical_type::LIST) {
-                        return check_array_element_is_null(*column, row_id, null_filter.table_indices[i], want_null,
+                        return check_array_element_is_null(*column,
+                                                           row_id,
+                                                           null_filter.table_indices[i],
+                                                           want_null,
                                                            error);
                     }
                     column =

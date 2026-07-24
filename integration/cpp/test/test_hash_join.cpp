@@ -63,10 +63,8 @@ namespace {
     // Two-column (key,val) chunk with caller-chosen column names + row count. The
     // distinct column names let a create_plan-level test identify which source
     // table backs each physical join child (build vs probe) after a build-side swap.
-    vector::data_chunk_t build_named_chunk(std::pmr::memory_resource* res,
-                                           const char* key_name,
-                                           const char* val_name,
-                                           uint64_t rows) {
+    vector::data_chunk_t
+    build_named_chunk(std::pmr::memory_resource* res, const char* key_name, const char* val_name, uint64_t rows) {
         std::pmr::vector<types::complex_logical_type> types(res);
         types.emplace_back(types::logical_type::BIGINT, key_name);
         types.emplace_back(types::logical_type::BIGINT, val_name);
@@ -277,7 +275,7 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + mdb + ".mbl();")->is_success());
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + mdb + ".mbr();")->is_success());
 
-    const int n = 2500;   // > 2 * DEFAULT_VECTOR_CAPACITY → 3 chunks per side
+    const int n = 2500;     // > 2 * DEFAULT_VECTOR_CAPACITY → 3 chunks per side
     const int shift = 1250; // build keys start here → half the probe keys are left-only
     {
         std::stringstream l, r;
@@ -303,7 +301,7 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == static_cast<size_t>(matched));
         for (size_t row = 0; row < static_cast<size_t>(matched); ++row) {
-            const int64_t k = static_cast<int64_t>(row) + shift; // 1250, 1251, ...
+            const int64_t k = static_cast<int64_t>(row) + shift;     // 1250, 1251, ...
             REQUIRE(cur->value(0, row).value<int64_t>() == k);       // mbl.k
             REQUIRE(cur->value(1, row).value<int64_t>() == k * 100); // mbl.lv
             REQUIRE(cur->value(2, row).value<int64_t>() == k);       // mbr.k
@@ -319,7 +317,7 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == static_cast<size_t>(n)); // every left row once
         for (size_t row = 0; row < static_cast<size_t>(n); ++row) {
-            const int64_t k = static_cast<int64_t>(row); // 0, 1, ... (sorted probe key)
+            const int64_t k = static_cast<int64_t>(row);             // 0, 1, ... (sorted probe key)
             REQUIRE(cur->value(0, row).value<int64_t>() == k);       // mbl.k
             REQUIRE(cur->value(1, row).value<int64_t>() == k * 100); // mbl.lv
             if (k < shift) {
@@ -361,11 +359,8 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
     // counts, lower via create_plan, and return the key-column NAME of whichever
     // physical child became the hash build (right_). "lk" ⇒ the logical-left table
     // moved into the build slot (swapped); "rk" ⇒ default order (not swapped).
-    auto build_side_key_name = [&](join_type jt,
-                                   uint64_t left_rows,
-                                   uint64_t right_rows,
-                                   bool populate_counts,
-                                   bool same_oid) -> std::string {
+    auto build_side_key_name =
+        [&](join_type jt, uint64_t left_rows, uint64_t right_rows, bool populate_counts, bool same_oid) -> std::string {
         services::context_storage_t context(res, log_t{}, core::date::timezone_offset_t{});
         const oid_t l = left_table_oid;
         const oid_t r = same_oid ? left_table_oid : right_table_oid;
@@ -376,10 +371,11 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
             context.row_counts[r] = right_rows;
         }
 
-        auto cond = expressions::make_compare_expression(res,
-                                                         compare_type::eq,
-                                                         expressions::param_storage{make_key(res, "lk", side_t::left, 0)},
-                                                         expressions::param_storage{make_key(res, "rk", side_t::right, 0)});
+        auto cond =
+            expressions::make_compare_expression(res,
+                                                 compare_type::eq,
+                                                 expressions::param_storage{make_key(res, "lk", side_t::left, 0)},
+                                                 expressions::param_storage{make_key(res, "rk", side_t::right, 0)});
         auto join = logical_plan::make_node_join(res, core::dbname_t{}, core::relname_t{}, jt);
         auto left_child = logical_plan::make_node_raw_data(res, build_named_chunk(res, "lk", "lv", left_rows));
         auto right_child = logical_plan::make_node_raw_data(res, build_named_chunk(res, "rk", "rv", right_rows));
@@ -438,10 +434,9 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + sdb + ".large();")->is_success());
 
     // small: keys 1..3 (sv = k*100). large: keys 1..30 (lv = k). Overlap = {1,2,3}.
-    REQUIRE(dispatcher
-                ->execute_sql(session,
-                              "INSERT INTO " + sdb + ".small (k, sv) VALUES (1, 100), (2, 200), (3, 300);")
-                ->is_success());
+    REQUIRE(
+        dispatcher->execute_sql(session, "INSERT INTO " + sdb + ".small (k, sv) VALUES (1, 100), (2, 200), (3, 300);")
+            ->is_success());
     {
         std::stringstream l;
         l << "INSERT INTO " << sdb << ".large (k, lv) VALUES ";
@@ -460,7 +455,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         for (size_t row = 0; row < 3; ++row) {
-            const int64_t k = static_cast<int64_t>(row) + 1; // 1, 2, 3
+            const int64_t k = static_cast<int64_t>(row) + 1;         // 1, 2, 3
             REQUIRE(cur->value(0, row).value<int64_t>() == k);       // small.k
             REQUIRE(cur->value(1, row).value<int64_t>() == k * 100); // small.sv
             REQUIRE(cur->value(2, row).value<int64_t>() == k);       // large.k
@@ -471,8 +466,10 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
     INFO("SUM over each side after the swap is correct (catches a column inversion)");
     {
         auto cur = dispatcher->execute_sql(session,
-                                           "SELECT SUM(s.sv) AS ssv, SUM(l.lv) AS slv FROM " + sdb + ".small s "
-                                           "INNER JOIN " + sdb + ".large l ON s.k = l.k;");
+                                           "SELECT SUM(s.sv) AS ssv, SUM(l.lv) AS slv FROM " + sdb +
+                                               ".small s "
+                                               "INNER JOIN " +
+                                               sdb + ".large l ON s.k = l.k;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         // matched keys {1,2,3}: SUM(small.sv) = 100+200+300 = 600; SUM(large.lv) = 1+2+3 = 6.
@@ -500,10 +497,11 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
 
     INFO("empty build side under GROUP BY + ORDER BY (SSB shape) → 0 groups, no crash");
     {
-        auto cur = dispatcher->execute_sql(session,
-                                           "SELECT small.k, SUM(large.lv) AS s FROM " + sdb + ".large INNER JOIN " +
-                                               sdb + ".small ON large.k = small.k WHERE small.sv = 99999 "
-                                               "GROUP BY small.k ORDER BY small.k;");
+        auto cur =
+            dispatcher->execute_sql(session,
+                                    "SELECT small.k, SUM(large.lv) AS s FROM " + sdb + ".large INNER JOIN " + sdb +
+                                        ".small ON large.k = small.k WHERE small.sv = 99999 "
+                                        "GROUP BY small.k ORDER BY small.k;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
@@ -553,8 +551,7 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
     // Matches: l_pk=p_pk (all lo rows) then l_sk=s_sk drops the l_sk=30 row -> 4 rows.
     INFO("3-table comma join returns the correctly joined rows");
     {
-        auto cur =
-            run("SELECT * FROM " + wdb + ".lo, " + wdb + ".p, " + wdb + ".s WHERE l_pk = p_pk AND l_sk = s_sk;");
+        auto cur = run("SELECT * FROM " + wdb + ".lo, " + wdb + ".p, " + wdb + ".s WHERE l_pk = p_pk AND l_sk = s_sk;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         int64_t rev_sum = 0;
@@ -623,11 +620,11 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
         // The wrapper shape pushdown_filter synthesizes around a join input: an
         // oid-less aggregate holding [source, match]; the WHERE is a plain
         // col-vs-col compare (plan-time only — never executed here).
-        auto where = expressions::make_compare_expression(
-            res,
-            compare_type::gt,
-            expressions::param_storage{make_key(res, "bv", side_t::left, 1)},
-            expressions::param_storage{make_key(res, "bk", side_t::left, 0)});
+        auto where =
+            expressions::make_compare_expression(res,
+                                                 compare_type::gt,
+                                                 expressions::param_storage{make_key(res, "bv", side_t::left, 1)},
+                                                 expressions::param_storage{make_key(res, "bk", side_t::left, 0)});
         auto wrapper = logical_plan::make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
         wrapper->append_child(big_table);
         wrapper->append_child(logical_plan::make_node_match(res, core::dbname_t{}, core::relname_t{}, where));
@@ -646,8 +643,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
         join->append_expression(cond);
         join->set_equi_columns(0, 0); // post-rewrite_hash_joins state: algo -> hash
 
-        auto plan =
-            services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
+        auto plan = services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
         REQUIRE(plan);
         REQUIRE(plan->type() == operator_type::hash_join);
         REQUIRE(plan->right()); // physical build side
@@ -720,8 +716,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
     };
 
     // `filt` is filtered (x = 5); `pln` is not. `filt` is the logical-LEFT input.
-    const std::string q =
-        "SELECT * FROM " + sdb + ".filt JOIN " + sdb + ".pln ON filt.k = pln.k WHERE filt.x = 5";
+    const std::string q = "SELECT * FROM " + sdb + ".filt JOIN " + sdb + ".pln ON filt.k = pln.k WHERE filt.x = 5";
 
     INFO("EXPLAIN: the filtered relation (filt) is the hash BUILD side, rendered AFTER the probe (pln)");
     {
@@ -783,7 +778,8 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     REQUIRE(run("CREATE TABLE " + wdb + ".big ();")->is_success());  // (k, x)
     REQUIRE(run("CREATE TABLE " + wdb + ".tiny ();")->is_success()); // (k, y)
-    REQUIRE(run("INSERT INTO " + wdb + ".big (k, x) VALUES (1, 1), (2, 2), (3, 3), (4, 4), "
+    REQUIRE(run("INSERT INTO " + wdb +
+                ".big (k, x) VALUES (1, 1), (2, 2), (3, 3), (4, 4), "
                 "(5, 5), (6, 6), (7, 7), (8, 8);")
                 ->is_success());
     REQUIRE(run("INSERT INTO " + wdb + ".tiny (k, y) VALUES (1, 10), (2, 20);")->is_success());
@@ -800,8 +796,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
     };
 
     // Weak filter on the LEFT (keeps all 8 rows) -> pushdown wraps `big`.
-    const std::string q =
-        "SELECT * FROM " + wdb + ".big JOIN " + wdb + ".tiny ON big.k = tiny.k WHERE big.x < 100";
+    const std::string q = "SELECT * FROM " + wdb + ".big JOIN " + wdb + ".tiny ON big.k = tiny.k WHERE big.x < 100";
 
     INFO("EXPLAIN: live counts resolved through the wrapper -> tiny (2 rows) stays the build");
     {

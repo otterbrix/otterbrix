@@ -109,17 +109,15 @@ namespace services::planner::impl {
                 const auto t = comp_expr->type();
                 const bool plain_cmp = t == compare_type::eq || t == compare_type::ne || t == compare_type::lt ||
                                        t == compare_type::lte || t == compare_type::gt || t == compare_type::gte;
-                const bool col_op_col =
-                    no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
+                const bool col_op_col = no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
                 // (C) f(column...) OP constant: one operand a function/arithmetic expression over column(s),
                 // the other a bound parameter -> an expression_filter_t evaluated per row on the agent. Only
                 // when UDF-free (the disk agent cannot resolve a UDF, see
                 // components/expressions/udf_references.hpp).
-                const bool expr_op_const =
-                    ((is_expr(comp_expr->left()) && is_parameter(comp_expr->right())) ||
-                     (is_expr(comp_expr->right()) && is_parameter(comp_expr->left()))) &&
-                    !expr::param_references_udf(comp_expr->left()) &&
-                    !expr::param_references_udf(comp_expr->right());
+                const bool expr_op_const = ((is_expr(comp_expr->left()) && is_parameter(comp_expr->right())) ||
+                                            (is_expr(comp_expr->right()) && is_parameter(comp_expr->left()))) &&
+                                           !expr::param_references_udf(comp_expr->left()) &&
+                                           !expr::param_references_udf(comp_expr->right());
                 if (!col_op_const && !col_op_col && !expr_op_const) {
                     return false;
                 }
@@ -177,13 +175,13 @@ namespace services::planner::impl {
                                                                                          context.log.clone(),
                                                                                          expr,
                                                                                          limit));
-                    match_operator->set_children(
-                        boost::intrusive_ptr(new components::operators::full_scan(context.resource,
-                                                                                  context.log.clone(),
-                                                                                  table_oid,
-                                                                                  nullptr,
-                                                                                  components::logical_plan::limit_t::unlimit(),
-                                                                                  projected_cols)));
+                    match_operator->set_children(boost::intrusive_ptr(
+                        new components::operators::full_scan(context.resource,
+                                                             context.log.clone(),
+                                                             table_oid,
+                                                             nullptr,
+                                                             components::logical_plan::limit_t::unlimit(),
+                                                             projected_cols)));
                     return match_operator;
                 }
             } else {

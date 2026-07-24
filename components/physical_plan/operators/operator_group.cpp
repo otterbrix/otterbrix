@@ -70,8 +70,8 @@ namespace components::operators {
                             case expressions::compare_type::lt:
                             case expressions::compare_type::lte:
                                 // A NULL operand makes the WHEN condition UNKNOWN -> fall through.
-                                matches = types::selects(
-                                    eval_compare_3vl(clause.cmp, cond_val, clause.condition_value));
+                                matches =
+                                    types::selects(eval_compare_3vl(clause.cmp, cond_val, clause.condition_value));
                                 break;
                             default:
                                 matches = true;
@@ -165,9 +165,7 @@ namespace components::operators {
         }
     } // anonymous namespace
 
-    operator_group_t::operator_group_t(std::pmr::memory_resource* resource,
-                                       log_t log,
-                                       size_t internal_aggregate_count)
+    operator_group_t::operator_group_t(std::pmr::memory_resource* resource, log_t log, size_t internal_aggregate_count)
         : read_write_operator_t(resource, log, operator_type::aggregate)
         , keys_(resource_)
         , values_(resource_)

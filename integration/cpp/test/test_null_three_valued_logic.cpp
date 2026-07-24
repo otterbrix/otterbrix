@@ -64,13 +64,13 @@ TEST_CASE("integration::cpp::null_3vl::comparisons_exclude_null") {
     seed_plain(d, "n3.t");
 
     // The NULL row (id=2) must satisfy NO value comparison.
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0;").rows == 1);   // id=3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x <> 0;").rows == 1);  // id=1
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0;").rows == 2);  // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x > -1;").rows == 2);  // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x < 1;").rows == 1);   // id=3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x <= 5;").rows == 2);  // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 5;").rows == 1);   // id=1
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0;").rows == 1);  // id=3
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x <> 0;").rows == 1); // id=1
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0;").rows == 2); // id=1,3
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x > -1;").rows == 2); // id=1,3
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x < 1;").rows == 1);  // id=3
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x <= 5;").rows == 2); // id=1,3
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 5;").rows == 1);  // id=1
 
     // IS NULL / IS NOT NULL keep working — they are TRUE/FALSE, never UNKNOWN.
     CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL;").rows == 1);     // id=2
@@ -107,10 +107,10 @@ TEST_CASE("integration::cpp::null_3vl::and_or_propagate_unknown") {
     seed_plain(d, "n3.t");
 
     // OR: UNKNOWN or TRUE = TRUE; UNKNOWN or FALSE = UNKNOWN (excluded).
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR x = 5;").rows == 2);       // id=1,3
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 999 OR x = 5;").rows == 1);     // id=1
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR id = 2;").rows == 2);      // id=2,3 — TRUE rescues it
-    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL OR x = 0;").rows == 2);   // id=2,3
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR x = 5;").rows == 2);     // id=1,3
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 999 OR x = 5;").rows == 1);   // id=1
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x = 0 OR id = 2;").rows == 2);    // id=2,3 — TRUE rescues it
+    CHECK(run(d, "SELECT id FROM n3.t WHERE x IS NULL OR x = 0;").rows == 2); // id=2,3
 
     // AND: UNKNOWN and TRUE = UNKNOWN (excluded); UNKNOWN and FALSE = FALSE.
     CHECK(run(d, "SELECT id FROM n3.t WHERE x >= 0 AND x <= 9;").rows == 2);    // id=1,3

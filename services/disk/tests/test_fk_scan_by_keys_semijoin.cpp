@@ -118,7 +118,8 @@ namespace {
         table.finalize_append(state, transaction_data{0, 0});
     }
 
-    std::pmr::vector<std::uint64_t> key_indices(std::pmr::memory_resource* res, std::initializer_list<std::uint64_t> v) {
+    std::pmr::vector<std::uint64_t> key_indices(std::pmr::memory_resource* res,
+                                                std::initializer_list<std::uint64_t> v) {
         std::pmr::vector<std::uint64_t> out{res};
         for (auto x : v) {
             out.push_back(x);

@@ -168,11 +168,11 @@ namespace components::sql::transform {
         // are excluded -- exactly FILTER semantics -- and the predicate reuses the three-valued
         // CASE-WHEN evaluator (UNKNOWN excludes the row). `agg_filter` is FuncCall.agg_filter; a null
         // one returns `args` unchanged. On a parse error inside p, sets error_ and returns args as-is.
-        std::pmr::vector<expressions::param_storage> apply_aggregate_filter(
-            Node* agg_filter,
-            std::pmr::vector<expressions::param_storage> args,
-            const name_collection_t& names,
-            logical_plan::execution_plan_t* plan);
+        std::pmr::vector<expressions::param_storage>
+        apply_aggregate_filter(Node* agg_filter,
+                               std::pmr::vector<expressions::param_storage> args,
+                               const name_collection_t& names,
+                               logical_plan::execution_plan_t* plan);
 
         // HAVING clause: resolve aggregate references to aliases from group node
         expressions::expression_ptr transform_having_expr(Node* node,

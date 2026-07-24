@@ -112,9 +112,9 @@ TEST_CASE("integration::cpp::null_cmp::check_constraint_passes_null") {
     REQUIRE(ok(d, "CREATE TABLE nc.ck (id INT, x BIGINT);"));
     REQUIRE(ok(d, "ALTER TABLE nc.ck ADD CONSTRAINT ck_pos CHECK (x > 0);"));
 
-    CHECK(ok(d, "INSERT INTO nc.ck (id, x) VALUES (1, 5);"));      // 5 > 0 TRUE  -> accepted
+    CHECK(ok(d, "INSERT INTO nc.ck (id, x) VALUES (1, 5);"));        // 5 > 0 TRUE  -> accepted
     CHECK_FALSE(ok(d, "INSERT INTO nc.ck (id, x) VALUES (2, -1);")); // -1 > 0 FALSE -> rejected
-    CHECK(ok(d, "INSERT INTO nc.ck (id, x) VALUES (3, NULL);"));   // NULL > 0 UNKNOWN -> accepted
+    CHECK(ok(d, "INSERT INTO nc.ck (id, x) VALUES (3, NULL);"));     // NULL > 0 UNKNOWN -> accepted
     // Only rows 1 and 3 made it in.
     CHECK(rows(d, "SELECT id FROM nc.ck;") == 2);
     CHECK(rows(d, "SELECT id FROM nc.ck WHERE x IS NULL;") == 1);

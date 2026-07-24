@@ -32,13 +32,13 @@ namespace services::planner::impl {
         // reads its child DML's constraint_input(), exactly like an fk_check chain).
         // With no unique groups the check sink adopts the child directly.
         if (!n->unique_groups().empty()) {
-            auto unique = boost::intrusive_ptr(
-                new components::operators::operator_unique_constraint_t(context.resource,
-                                                                        context.log.clone(),
-                                                                        n->table_oid(),
-                                                                        n->unique_groups(),
-                                                                        n->column_defaults(),
-                                                                        n->write_set_named()));
+            auto unique =
+                boost::intrusive_ptr(new components::operators::operator_unique_constraint_t(context.resource,
+                                                                                             context.log.clone(),
+                                                                                             n->table_oid(),
+                                                                                             n->unique_groups(),
+                                                                                             n->column_defaults(),
+                                                                                             n->write_set_named()));
             if (child) {
                 unique->set_children(child);
             }

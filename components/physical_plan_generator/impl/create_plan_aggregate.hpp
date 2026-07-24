@@ -28,4 +28,4 @@ namespace services::planner::impl {
                            const components::logical_plan::node_ptr& agg_node,
                            std::pmr::memory_resource* resource,
                            components::operators::pushed_aggregate_spec_t& out);
-}
+} // namespace services::planner::impl

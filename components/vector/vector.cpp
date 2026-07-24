@@ -295,13 +295,11 @@ namespace components::vector {
         }
     }
 
-    const vector_t* vector_t::resolve_nested_location(const std::pmr::vector<uint64_t>& path,
-                                                      uint64_t* leaf_index,
-                                                      bool* contains_null) const {
-        assert(!path.empty());
-
+    vector_t::nested_element_t vector_t::resolve_nested_element(uint64_t row_index,
+                                                                const std::pmr::vector<size_t>& path,
+                                                                size_t element_start) const {
         const vector_t* vector = this;
-        uint64_t index = path[0];
+        uint64_t index = row_index;
         bool null_seen = false;
 
         // Resolve dictionary/constant layers so vector/index refer to the underlying flat storage.
@@ -321,21 +319,25 @@ namespace components::vector {
                         vector = &vector->child();
                         break;
                     default:
-                        throw std::runtime_error("unsupported vector type in nested null access");
+                        throw std::runtime_error("unsupported vector type in nested element access");
                 }
             }
         };
 
-        for (uint64_t step = 1; step < path.size(); ++step) {
+        for (size_t step = element_start; step < path.size(); ++step) {
             resolve_storage();
             if (!vector->validity_.row_is_valid(index)) {
                 null_seen = true;
             }
-            const uint64_t sub = path[step];
+            const size_t sub = path[step];
             switch (vector->type_.type()) {
                 case types::logical_type::LIST:
                 case types::logical_type::MAP: {
                     auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
+                    if (sub >= offlen.length) {
+                        // The element does not exist (also covers a NULL/empty list row, length 0): NULL.
+                        return {vector, index, true};
+                    }
                     index = offlen.offset + sub;
                     vector = &vector->entry();
                     break;
@@ -347,13 +349,13 @@ namespace components::vector {
                     vector = &vector->entry();
                     break;
                 }
+                case types::logical_type::STRUCT: {
+                    // Struct field: the row index stays the same, only the child changes.
+                    vector = vector->entries()[sub].get();
+                    break;
+                }
                 default:
-                    if (vector->type_.to_physical_type() == types::physical_type::STRUCT) {
-                        // Struct field: the row index stays the same, only the child changes.
-                        vector = vector->entries()[sub].get();
-                    } else {
-                        throw std::runtime_error("nested null access path is too deep for this type");
-                    }
+                    assert(false);
                     break;
             }
         }
@@ -362,34 +364,25 @@ namespace components::vector {
         if (!vector->validity_.row_is_valid(index)) {
             null_seen = true;
         }
-
-        *leaf_index = index;
-        if (contains_null) {
-            *contains_null = null_seen;
-        }
-        return vector;
+        return {vector, index, null_seen};
     }
 
-    bool vector_t::is_null(const std::pmr::vector<uint64_t>& path) const {
+    bool vector_t::is_null(const std::pmr::vector<size_t>& path) const {
         assert(!path.empty());
         if (path.size() == 1) {
             return is_null(path[0]);
         }
-        uint64_t leaf_index;
-        bool contains_null = false;
-        resolve_nested_location(path, &leaf_index, &contains_null);
-        return contains_null;
+        return resolve_nested_element(path[0], path, 1).is_null;
     }
 
-    void vector_t::set_null(const std::pmr::vector<uint64_t>& path, bool value) {
+    void vector_t::set_null(const std::pmr::vector<size_t>& path, bool value) {
         assert(!path.empty());
         if (path.size() == 1) {
             set_null(path[0], value);
             return;
         }
-        uint64_t leaf_index;
-        const vector_t* leaf = resolve_nested_location(path, &leaf_index, nullptr);
-        const_cast<vector_t*>(leaf)->set_null(leaf_index, value);
+        auto element = resolve_nested_element(path[0], path, 1);
+        const_cast<vector_t*>(element.leaf)->set_null(element.index, value);
     }
 
     void vector_t::find_resize_infos(std::vector<resize_info_t>& resize_infos, uint64_t multiplier) {

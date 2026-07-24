@@ -47,15 +47,15 @@ namespace {
     // one at a time, so one allocate() call == one node.
     constexpr std::size_t kNodeAlign = 128;
 
-    template <class T>
+    template<class T>
     struct counting_alloc {
         using value_type = T;
 
         counting_alloc() = default;
-        template <class U>
+        template<class U>
         counting_alloc(const counting_alloc<U>&) noexcept {}
 
-        template <class U>
+        template<class U>
         struct rebind {
             using other = counting_alloc<U>;
         };
@@ -69,19 +69,18 @@ namespace {
             ::operator delete(p, n * sizeof(T), std::align_val_t(kNodeAlign));
         }
 
-        template <class U>
+        template<class U>
         bool operator==(const counting_alloc<U>&) const noexcept {
             return true;
         }
-        template <class U>
+        template<class U>
         bool operator!=(const counting_alloc<U>&) const noexcept {
             return false;
         }
     };
 
     using node_ptr = components::table::storage::buffer_eviction_node_t*;
-    using counting_queue =
-        boost::lockfree::queue<node_ptr, boost::lockfree::allocator<counting_alloc<char>>>;
+    using counting_queue = boost::lockfree::queue<node_ptr, boost::lockfree::allocator<counting_alloc<char>>>;
 
 } // namespace
 

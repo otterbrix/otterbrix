@@ -166,7 +166,7 @@ namespace components::vector {
         // Set a nested element null/valid by path. The path is {row, sub, sub, ...}: the first
         // index is the row in this vector, each following index descends one level (list/array
         // element, or struct field). A single-element path is equivalent to set_null(row, value).
-        void set_null(const std::pmr::vector<uint64_t>& path, bool value);
+        void set_null(const std::pmr::vector<size_t>& path, bool value);
 
         void append(const vector_t& source, uint64_t source_size, uint64_t source_offset = 0);
         void append(const vector_t& source,
@@ -187,7 +187,7 @@ namespace components::vector {
         const indexing_vector_t& indexing() const;
         size_t size() const;
         bool is_null(uint64_t index = 0) const;
-        bool is_null(const std::pmr::vector<uint64_t>& path) const;
+        bool is_null(const std::pmr::vector<size_t>& path) const;
 
         void get_sequence(int64_t& start, int64_t& increment, int64_t& sequence_count) const;
         void get_sequence(int64_t& start, int64_t& increment) const;
@@ -200,14 +200,23 @@ namespace components::vector {
         template<typename T>
         requires non_logical_value_arg<T> void set_value(uint64_t row_index, T&& value);
 
+        // Location of a nested element: its leaf storage vector and flat index within it. When is_null,
+        // index is not meaningful but leaf still carries the element type.
+        struct nested_element_t {
+            const vector_t* leaf;
+            uint64_t index;
+            bool is_null;
+        };
+
+        // Walk path[element_start..] (struct fields / array-list element subscripts) from the element at
+        // row_index down to its leaf storage. Descends one level per step, so nested containers
+        // (array<array>, list<array>, ...) resolve. An out-of-range list subscript, or a NULL enclosing
+        // container, is a NULL element.
+        nested_element_t
+        resolve_nested_element(uint64_t row_index, const std::pmr::vector<size_t>& path, size_t element_start) const;
+
     private:
         const vector_t* resolve_value_location(uint64_t row_index, uint64_t* index) const;
-        // Walk a nested path to the leaf storage vector and its index. Resolves dictionary/constant
-        // layers at each level. Reports through contains_null (when non-null) whether the element or
-        // any enclosing container row is null. The returned vector is never null.
-        const vector_t* resolve_nested_location(const std::pmr::vector<uint64_t>& path,
-                                                uint64_t* leaf_index,
-                                                bool* contains_null) const;
         types::logical_value_t value_internal(uint64_t index) const;
 
         vector_type vector_type_;

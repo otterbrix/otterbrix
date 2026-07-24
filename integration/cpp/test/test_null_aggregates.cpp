@@ -69,8 +69,7 @@ TEST_CASE("integration::cpp::null_agg::count_over_all_null_group_is_zero") {
     // COUNT(*): counts rows including NULL rows: group 1 -> 2 ; group 2 -> 2.
     CHECK(read_col(d, "SELECT COUNT(*) FROM ag.t GROUP BY k ORDER BY k;") == std::vector<opt>{2, 2});
     // COUNT(DISTINCT x): group 1 -> 0 ; group 2 -> 1. Must agree with COUNT(x).
-    CHECK(read_col(d, "SELECT COUNT(DISTINCT x) FROM ag.t GROUP BY k ORDER BY k;") ==
-          std::vector<opt>{0, 1});
+    CHECK(read_col(d, "SELECT COUNT(DISTINCT x) FROM ag.t GROUP BY k ORDER BY k;") == std::vector<opt>{0, 1});
 
     // SUM/MIN/MAX/AVG skip NULLs and are NULL over the all-NULL group, defined over group 2.
     CHECK(read_col(d, "SELECT SUM(x) FROM ag.t GROUP BY k ORDER BY k;") == std::vector<opt>{{}, 7});

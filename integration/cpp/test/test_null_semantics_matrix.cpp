@@ -89,8 +89,8 @@ namespace {
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x = 5;") == 1);
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x = 10;") == 1);
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x = 7;") == 0);
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x <> 0;") == 2);  // 5,10
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x <> 5;") == 2);  // 0,10
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x <> 0;") == 2); // 5,10
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x <> 5;") == 2); // 0,10
         // ordering
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x > 0;") == 2);   // 5,10
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x >= 0;") == 3);  // 0,5,10
@@ -99,20 +99,20 @@ namespace {
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x < 0;") == 0);
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x > 10;") == 0);
         // NOT over a plain column comparison (storage-scan 3VL): NULL stays excluded.
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x = 0);") == 2);   // 5,10
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x = 5);") == 2);   // 0,10
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x <> 0);") == 1);  // 0
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x = 0);") == 2);  // 5,10
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x = 5);") == 2);  // 0,10
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x <> 0);") == 1); // 0
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x >= 0);") == 0);
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x < 10);") == 1);  // 10
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x > 0);") == 1);   // 0
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x < 10);") == 1); // 10
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE NOT (x > 0);") == 1);  // 0
         // IS NULL / IS NOT NULL
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x IS NULL;") == 2);
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x IS NOT NULL;") == 3);
         // AND
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x >= 0 AND x <= 5;") == 2);  // 0,5
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x > 0 AND x < 10;") == 1);   // 5
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x >= 0 AND id = 3;") == 1);  // 3
-        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x >= 0 AND id = 2;") == 0);  // NULL row
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x >= 0 AND x <= 5;") == 2); // 0,5
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x > 0 AND x < 10;") == 1);  // 5
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x >= 0 AND id = 3;") == 1); // 3
+        CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x >= 0 AND id = 2;") == 0); // NULL row
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x IS NULL AND id = 2;") == 1);
         // OR
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x = 0 OR x = 10;") == 2);
@@ -204,10 +204,10 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_text") {
     REQUIRE(okq(d, "INSERT INTO m.t (id, s) VALUES (5, NULL);"));
 
     CHECK(nrows(d, "SELECT id FROM m.t WHERE s = 'ann';") == 1);
-    CHECK(nrows(d, "SELECT id FROM m.t WHERE s <> 'ann';") == 2);   // bob,cat
-    CHECK(nrows(d, "SELECT id FROM m.t WHERE s > 'bob';") == 1);    // cat
-    CHECK(nrows(d, "SELECT id FROM m.t WHERE s >= 'bob';") == 2);   // bob,cat
-    CHECK(nrows(d, "SELECT id FROM m.t WHERE s < 'bob';") == 1);    // ann
+    CHECK(nrows(d, "SELECT id FROM m.t WHERE s <> 'ann';") == 2); // bob,cat
+    CHECK(nrows(d, "SELECT id FROM m.t WHERE s > 'bob';") == 1);  // cat
+    CHECK(nrows(d, "SELECT id FROM m.t WHERE s >= 'bob';") == 2); // bob,cat
+    CHECK(nrows(d, "SELECT id FROM m.t WHERE s < 'bob';") == 1);  // ann
     CHECK(nrows(d, "SELECT id FROM m.t WHERE NOT (s = 'ann');") == 2);
     CHECK(nrows(d, "SELECT id FROM m.t WHERE NOT (s <> 'ann');") == 1);
     CHECK(nrows(d, "SELECT id FROM m.t WHERE s IS NULL;") == 2);
@@ -293,9 +293,9 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_where_and_update") {
         REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (3, 0);"));
 
         // Positive arithmetic comparison in WHERE excludes the NULL row.
-        CHECK(nrows(d, "SELECT id FROM m.t WHERE x + 1 = 1;") == 1);  // id=3
-        CHECK(nrows(d, "SELECT id FROM m.t WHERE x * 2 = 0;") == 1);  // id=3
-        CHECK(nrows(d, "SELECT id FROM m.t WHERE x - 5 = 0;") == 1);  // id=1
+        CHECK(nrows(d, "SELECT id FROM m.t WHERE x + 1 = 1;") == 1); // id=3
+        CHECK(nrows(d, "SELECT id FROM m.t WHERE x * 2 = 0;") == 1); // id=3
+        CHECK(nrows(d, "SELECT id FROM m.t WHERE x - 5 = 0;") == 1); // id=1
         // Constant folding of a NULL literal makes the comparison UNKNOWN for all rows.
         CHECK(nrows(d, "SELECT id FROM m.t WHERE 1 + NULL = 1;") == 0);
         CHECK(nrows(d, "SELECT id FROM m.t WHERE x = 1 + NULL;") == 0);
@@ -389,12 +389,12 @@ TEST_CASE("integration::cpp::null_matrix::case_when") {
     REQUIRE(okq(d, "INSERT INTO m.t (id, x) VALUES (3, 1);"));
 
     // A NULL operand makes the WHEN condition UNKNOWN -> falls through to ELSE, for every operator.
-    CHECK(scal(d, "SELECT SUM(CASE WHEN x = 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{1});   // x=1
-    CHECK(scal(d, "SELECT SUM(CASE WHEN x <> 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{1});  // x=5
-    CHECK(scal(d, "SELECT SUM(CASE WHEN x > 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{1});   // x=5
-    CHECK(scal(d, "SELECT SUM(CASE WHEN x >= 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{2});  // x=5,1
-    CHECK(scal(d, "SELECT SUM(CASE WHEN x < 5 THEN 1 ELSE 0 END) FROM m.t;") == opt{1});   // x=1
-    CHECK(scal(d, "SELECT SUM(CASE WHEN x <= 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{1});  // x=1
+    CHECK(scal(d, "SELECT SUM(CASE WHEN x = 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{1});  // x=1
+    CHECK(scal(d, "SELECT SUM(CASE WHEN x <> 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{1}); // x=5
+    CHECK(scal(d, "SELECT SUM(CASE WHEN x > 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{1});  // x=5
+    CHECK(scal(d, "SELECT SUM(CASE WHEN x >= 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{2}); // x=5,1
+    CHECK(scal(d, "SELECT SUM(CASE WHEN x < 5 THEN 1 ELSE 0 END) FROM m.t;") == opt{1});  // x=1
+    CHECK(scal(d, "SELECT SUM(CASE WHEN x <= 1 THEN 1 ELSE 0 END) FROM m.t;") == opt{1}); // x=1
     // The NULL row never scores under any WHEN.
     CHECK(scal(d, "SELECT SUM(CASE WHEN x = 999 THEN 1 ELSE 0 END) FROM m.t;") == opt{0});
 }
@@ -405,19 +405,19 @@ TEST_CASE("integration::cpp::null_matrix::having") {
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
     REQUIRE(okq(d, "CREATE TABLE m.g (k INT, x BIGINT);"));
-    REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (1, NULL);"));  // group 1 SUM -> NULL
+    REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (1, NULL);")); // group 1 SUM -> NULL
     REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (1, NULL);"));
-    REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (2, 3);"));     // group 2 SUM -> 8
+    REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (2, 3);")); // group 2 SUM -> 8
     REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (2, 5);"));
-    REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (3, 1);"));     // group 3 SUM -> 1
+    REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (3, 1);")); // group 3 SUM -> 1
     REQUIRE(okq(d, "INSERT INTO m.g (k, x) VALUES (3, 0);"));
 
     // The all-NULL group's SUM is NULL -> UNKNOWN for every HAVING comparison -> always dropped.
-    CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) = 8;") == 1);   // group 2
-    CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) <> 8;") == 1);  // group 3 (1<>8)
-    CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) > 0;") == 2);   // groups 2,3
+    CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) = 8;") == 1);  // group 2
+    CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) <> 8;") == 1); // group 3 (1<>8)
+    CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) > 0;") == 2);  // groups 2,3
     CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) >= 1;") == 2);
-    CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) < 2;") == 1);   // group 3
+    CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) < 2;") == 1); // group 3
     CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) <= 8;") == 2);
     // The all-NULL group is never in the result regardless of operator.
     CHECK(nrows(d, "SELECT k FROM m.g GROUP BY k HAVING SUM(x) = 0;") == 0);
@@ -448,10 +448,10 @@ TEST_CASE("integration::cpp::null_matrix::check_constraints") {
         const std::string t = "m.ck" + std::to_string(n++);
         REQUIRE(okq(d, "CREATE TABLE " + t + " (id INT, x BIGINT);"));
         REQUIRE(okq(d, "ALTER TABLE " + t + " ADD CONSTRAINT cc CHECK (" + c.op + ");"));
-        CHECK(okq(d, "INSERT INTO " + t + " (id, x) VALUES (1, " + c.good + ");")); // accepted
+        CHECK(okq(d, "INSERT INTO " + t + " (id, x) VALUES (1, " + c.good + ");"));      // accepted
         CHECK_FALSE(okq(d, "INSERT INTO " + t + " (id, x) VALUES (2, " + c.bad + ");")); // rejected
-        CHECK(okq(d, "INSERT INTO " + t + " (id, x) VALUES (3, NULL);"));            // UNKNOWN -> accepted
-        CHECK(nrows(d, "SELECT id FROM " + t + ";") == 2);                           // rows 1 and 3
+        CHECK(okq(d, "INSERT INTO " + t + " (id, x) VALUES (3, NULL);"));                // UNKNOWN -> accepted
+        CHECK(nrows(d, "SELECT id FROM " + t + ";") == 2);                               // rows 1 and 3
         CHECK(nrows(d, "SELECT id FROM " + t + " WHERE x IS NULL;") == 1);
     }
 }
@@ -487,8 +487,8 @@ TEST_CASE("integration::cpp::null_matrix::array_element") {
     REQUIRE(okq(d, "CREATE DATABASE m;"));
     REQUIRE(okq(d, "CREATE TABLE m.a (id BIGINT, v INT[3]);"));
     REQUIRE(okq(d, "INSERT INTO m.a (id, v) VALUES (1, ARRAY[10, 20, 30]);"));
-    REQUIRE(okq(d, "INSERT INTO m.a (id, v) VALUES (2, NULL);"));       // whole cell NULL
-    REQUIRE(okq(d, "INSERT INTO m.a (id, v) VALUES (3, ARRAY[40]);"));  // v[2],v[3] NULL-padded
+    REQUIRE(okq(d, "INSERT INTO m.a (id, v) VALUES (2, NULL);"));      // whole cell NULL
+    REQUIRE(okq(d, "INSERT INTO m.a (id, v) VALUES (3, ARRAY[40]);")); // v[2],v[3] NULL-padded
     REQUIRE(okq(d, "INSERT INTO m.a (id, v) VALUES (4, ARRAY[50, 60, 70]);"));
 
     // Subscript of the NULL cell projects NULL (deep-path accessor).
@@ -497,14 +497,14 @@ TEST_CASE("integration::cpp::null_matrix::array_element") {
     CHECK(coli(d, "SELECT v[3] FROM m.a ORDER BY id;") == std::vector<opt>{30, {}, {}, 70});
 
     // Value comparison over the element excludes NULL cells / NULL elements.
-    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[1] = 10;") == 1);  // id=1
-    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[1] > 5;") == 3);   // id 1,3,4 (id=2 NULL cell out)
-    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[3] = 30;") == 1);  // id=1 only
+    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[1] = 10;") == 1); // id=1
+    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[1] > 5;") == 3);  // id 1,3,4 (id=2 NULL cell out)
+    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[3] = 30;") == 1); // id=1 only
     // IS NULL / IS NOT NULL over the element (previously a segfault).
-    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[1] IS NULL;") == 1);      // id=2
-    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[1] IS NOT NULL;") == 3);  // id 1,3,4
-    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[3] IS NULL;") == 2);      // id 2 (cell), 3 (padded)
-    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[3] IS NOT NULL;") == 2);  // id 1,4
+    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[1] IS NULL;") == 1);     // id=2
+    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[1] IS NOT NULL;") == 3); // id 1,3,4
+    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[3] IS NULL;") == 2);     // id 2 (cell), 3 (padded)
+    CHECK(nrows(d, "SELECT id FROM m.a WHERE v[3] IS NOT NULL;") == 2); // id 1,4
 }
 
 // ===========================================================================================
@@ -541,13 +541,13 @@ TEST_CASE("integration::cpp::null_matrix::jsonb_absent_key") {
     REQUIRE(okq(d, "CREATE DATABASE m;"));
     REQUIRE(okq(d, "CREATE TABLE m.j ();"));
     REQUIRE(okq(d, "INSERT INTO m.j (id, doc) VALUES (1, 5);"));
-    REQUIRE(okq(d, "INSERT INTO m.j (id) VALUES (2);"));         // doc absent -> NULL
+    REQUIRE(okq(d, "INSERT INTO m.j (id) VALUES (2);")); // doc absent -> NULL
     REQUIRE(okq(d, "INSERT INTO m.j (id, doc) VALUES (3, 0);"));
 
     // A comparison through a navigation to an absent key is UNKNOWN, exactly like a plain NULL.
-    CHECK(nrows(d, "SELECT id FROM m.j WHERE doc = 0;") == 1);      // id=3
-    CHECK(nrows(d, "SELECT id FROM m.j WHERE doc >= 0;") == 2);     // id 1,3
-    CHECK(nrows(d, "SELECT id FROM m.j WHERE NOT (doc = 0);") == 1);// id=1
-    CHECK(nrows(d, "SELECT id FROM m.j WHERE doc IS NULL;") == 1);  // id=2
+    CHECK(nrows(d, "SELECT id FROM m.j WHERE doc = 0;") == 1);       // id=3
+    CHECK(nrows(d, "SELECT id FROM m.j WHERE doc >= 0;") == 2);      // id 1,3
+    CHECK(nrows(d, "SELECT id FROM m.j WHERE NOT (doc = 0);") == 1); // id=1
+    CHECK(nrows(d, "SELECT id FROM m.j WHERE doc IS NULL;") == 1);   // id=2
     CHECK(scal(d, "SELECT COUNT(doc) FROM m.j;") == opt{2});
 }

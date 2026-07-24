@@ -66,9 +66,9 @@ namespace components::logical_plan {
 
         std::vector<std::string> not_null_cols_;
         std::vector<catalog::fk_info_t> outgoing_fks_;
-        std::vector<std::pair<std::string, std::string>> check_exprs_;  // (name, expr)
-        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
-        std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
+        std::vector<std::pair<std::string, std::string>> check_exprs_;                // (name, expr)
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
+        std::vector<std::vector<std::string>> unique_groups_;                         // UNIQUE / PK column groups
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
     };
 

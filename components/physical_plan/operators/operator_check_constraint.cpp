@@ -139,13 +139,15 @@ namespace components::operators {
                     if (after.size() >= 4 && after.substr(0, 4) == "AND ") {
                         std::pmr::vector<predicates::predicate_ptr> nested(r);
                         nested.push_back(build_check_predicate(r, expr.substr(1, close - 1), defaults, strict_absent));
-                        nested.push_back(build_check_predicate(r, strip_outer(after.substr(4)), defaults, strict_absent));
+                        nested.push_back(
+                            build_check_predicate(r, strip_outer(after.substr(4)), defaults, strict_absent));
                         return {new predicates::simple_predicate(r, std::move(nested), CT::union_and)};
                     }
                     if (after.size() >= 3 && after.substr(0, 3) == "OR ") {
                         std::pmr::vector<predicates::predicate_ptr> nested(r);
                         nested.push_back(build_check_predicate(r, expr.substr(1, close - 1), defaults, strict_absent));
-                        nested.push_back(build_check_predicate(r, strip_outer(after.substr(3)), defaults, strict_absent));
+                        nested.push_back(
+                            build_check_predicate(r, strip_outer(after.substr(3)), defaults, strict_absent));
                         return {new predicates::simple_predicate(r, std::move(nested), CT::union_or)};
                     }
                     if (close == expr.size() - 1)
@@ -228,11 +230,11 @@ namespace components::operators {
 
                 return {new predicates::simple_predicate(
                     r,
-                    [col_name, const_val, col_is_rhs, op_str, has_def, def_val](const vector::data_chunk_t& chunk,
-                                                                                const vector::data_chunk_t&,
-                                                                                size_t idx,
-                                                                                size_t)
-                        -> core::result_wrapper_t<types::tri_bool_t> {
+                    [col_name, const_val, col_is_rhs, op_str, has_def, def_val](
+                        const vector::data_chunk_t& chunk,
+                        const vector::data_chunk_t&,
+                        size_t idx,
+                        size_t) -> core::result_wrapper_t<types::tri_bool_t> {
                         // Raw three-valued result of the comparison: a NULL operand is UNKNOWN (not
                         // pre-folded to "passes"), so that a NOT wrapping it stays UNKNOWN rather
                         // than flipping to a violation. The consumer applies permits() -- a CHECK is

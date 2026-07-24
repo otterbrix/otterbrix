@@ -128,16 +128,15 @@ namespace components::operators {
             bool any_row = false;
             bool scan_ok = true;
             while (true) {
-                auto [_fb, fbf] =
-                    actor_zeta::send(ctx->disk_address,
-                                     &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                     ctx->session,
-                                     table_oid_,
-                                     cursor_id,
-                                     std::unique_ptr<components::table::table_filter_t>(nullptr),
-                                     int64_t{-1}, // unbounded — index every row
-                                     std::vector<size_t>{}, // empty == read all columns
-                                     ctx->txn);
+                auto [_fb, fbf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                   ctx->session,
+                                                   table_oid_,
+                                                   cursor_id,
+                                                   std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                   int64_t{-1},           // unbounded — index every row
+                                                   std::vector<size_t>{}, // empty == read all columns
+                                                   ctx->txn);
                 auto fetch_result = co_await std::move(fbf);
                 if (fetch_result.has_error()) {
                     set_error(fetch_result.error());
@@ -214,8 +213,7 @@ namespace components::operators {
                 // row-count). This single coalesced range is recorded for
                 // symmetry/observability only; its count does not gate the commit. Rows
                 // committed during the scan are caught by the catchup loop below.
-                ctx->dml_appends.push_back(
-                    components::table::dml_append_range_t{table_oid_, 0, backfilled_count});
+                ctx->dml_appends.push_back(components::table::dml_append_range_t{table_oid_, 0, backfilled_count});
             }
         }
 

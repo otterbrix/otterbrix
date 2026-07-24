@@ -46,13 +46,15 @@ namespace {
     // Run `SELECT id FROM <t> WHERE <pred>` against the indexed and the unindexed table.
     // Both must return `expected`.
     template<typename Dispatcher>
-    void both(Dispatcher* d, const std::string& idx_table, const std::string& plain_table,
-              const std::string& pred, size_t expected) {
+    void both(Dispatcher* d,
+              const std::string& idx_table,
+              const std::string& plain_table,
+              const std::string& pred,
+              size_t expected) {
         auto with_idx = run(d, "SELECT id FROM " + idx_table + " WHERE " + pred + ";");
         auto no_idx = run(d, "SELECT id FROM " + plain_table + " WHERE " + pred + ";");
         INFO("predicate: " << pred << "  indexed=" << idx_table << " rows=" << with_idx.rows
-                           << "  plain=" << plain_table << " rows=" << no_idx.rows
-                           << "  expected=" << expected);
+                           << "  plain=" << plain_table << " rows=" << no_idx.rows << "  expected=" << expected);
         CHECK(with_idx.ok);
         CHECK(no_idx.ok);
         CHECK(no_idx.rows == expected);   // the scan path (already fixed) is the oracle
@@ -62,14 +64,14 @@ namespace {
     // The full predicate battery over the standard shape: x=5 / x=NULL / x=0.
     template<typename Dispatcher>
     void battery(Dispatcher* d, const std::string& idx_table, const std::string& plain_table) {
-        both(d, idx_table, plain_table, "x = 0", 1);        // only the genuine 0
+        both(d, idx_table, plain_table, "x = 0", 1); // only the genuine 0
         both(d, idx_table, plain_table, "x = 5", 1);
-        both(d, idx_table, plain_table, "x < 1", 1);        // only the 0
+        both(d, idx_table, plain_table, "x < 1", 1); // only the 0
         both(d, idx_table, plain_table, "x <= 5", 2);
         both(d, idx_table, plain_table, "x > -1", 2);
         both(d, idx_table, plain_table, "x >= 0", 2);
         both(d, idx_table, plain_table, "x <> 0", 1);
-        both(d, idx_table, plain_table, "x IS NULL", 1);     // must not use the index
+        both(d, idx_table, plain_table, "x IS NULL", 1); // must not use the index
         both(d, idx_table, plain_table, "x IS NOT NULL", 2);
     }
 

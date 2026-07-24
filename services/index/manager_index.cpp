@@ -39,11 +39,7 @@ namespace {
     // rather than silent. Failing the statement outright would mean threading an error out through
     // these void coroutines and their callers, which is a larger change.
     template<typename Fn>
-    void guarded_index_row(log_t& log,
-                           const char* op,
-                           components::catalog::oid_t table_oid,
-                           int64_t row_id,
-                           Fn&& fn) {
+    void guarded_index_row(log_t& log, const char* op, components::catalog::oid_t table_oid, int64_t row_id, Fn&& fn) {
         try {
             fn();
         } catch (const std::exception& e) {

@@ -103,38 +103,12 @@ namespace components::vector {
     }
 
     types::logical_value_t data_chunk_t::value(const std::pmr::vector<size_t>& col_path, uint64_t index) const {
-        const vector_t* sub_column = &data[col_path.front()];
-        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            // Descending a path stops at the first NULL level: a NULL STRUCT/ARRAY/LIST cell has
-            // no interior to read. Without this, the ARRAY branch would index the flat child by a
-            // stride computed from a NULL row, and the LIST branch would read a garbage
-            // (offset,length) entry and return an arbitrary element of the flat child buffer.
-            if (!sub_column->validity().row_is_valid(index)) {
-                return types::logical_value_t{sub_column->resource(),
-                                              types::complex_logical_type{types::logical_type::NA}};
-            }
-            if (std::next(it) == col_path.end()) {
-                if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    auto stride =
-                        static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
-                    return sub_column->entry().value(index * stride + *it);
-                } else if (sub_column->type().type() == types::logical_type::LIST) {
-                    // LIST elements live in a single flat child vector addressed by a
-                    // per-row (offset,length) entry; *it is the 0-based element index.
-                    const auto& offlen = sub_column->data<types::list_entry_t>()[index];
-                    if (*it >= offlen.length) {
-                        return types::logical_value_t{sub_column->resource(),
-                                                      types::complex_logical_type{types::logical_type::NA}};
-                    }
-                    return sub_column->entry().value(offlen.offset + *it);
-                } else {
-                    return sub_column->entries()[*it]->value(index);
-                }
-            } else {
-                sub_column = sub_column->entries()[*it].get();
-            }
+        auto element = data[col_path.front()].resolve_nested_element(index, col_path, 1);
+        if (element.is_null) {
+            return types::logical_value_t{element.leaf->resource(),
+                                          types::complex_logical_type{types::logical_type::NA}};
         }
-        return sub_column->value(index);
+        return element.leaf->value(element.index);
     }
 
     void data_chunk_t::set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val) {
@@ -171,10 +145,10 @@ namespace components::vector {
     }
 
     bool data_chunk_t::is_null(uint64_t col_idx, uint64_t index) const { return data[col_idx].is_null(index); }
-    bool data_chunk_t::is_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path) const {
+    bool data_chunk_t::is_null(uint64_t col_idx, const std::pmr::vector<size_t>& path) const {
         return data[col_idx].is_null(path);
     }
-    void data_chunk_t::set_null(uint64_t col_idx, const std::pmr::vector<uint64_t>& path, bool value) {
+    void data_chunk_t::set_null(uint64_t col_idx, const std::pmr::vector<size_t>& path, bool value) {
         data[col_idx].set_null(path, value);
     }
 

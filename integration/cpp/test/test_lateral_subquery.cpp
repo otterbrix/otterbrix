@@ -118,8 +118,7 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
             }
         }
     };
-    insert_batched("INSERT INTO s.outer_big (id) VALUES ",
-                   [](int64_t i) { return "(" + std::to_string(i) + ")"; });
+    insert_batched("INSERT INTO s.outer_big (id) VALUES ", [](int64_t i) { return "(" + std::to_string(i) + ")"; });
     insert_batched("INSERT INTO s.inr (k, v) VALUES ",
                    [](int64_t i) { return "(" + std::to_string(i) + "," + std::to_string(i + 100000) + ")"; });
 

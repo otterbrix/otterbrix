@@ -218,9 +218,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::nonexistent_database_erro
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    for (const auto* sql : {"CREATE DATABASE db1;",
-                            "CREATE TABLE db1.t1 (id BIGINT);",
-                            "INSERT INTO db1.t1 (id) VALUES (1);"}) {
+    for (const auto* sql :
+         {"CREATE DATABASE db1;", "CREATE TABLE db1.t1 (id BIGINT);", "INSERT INTO db1.t1 (id) VALUES (1);"}) {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
     }

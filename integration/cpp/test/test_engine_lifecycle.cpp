@@ -551,18 +551,15 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_tear
         auto inst = otterbrix::make_otterbrix(config);
         auto* dispatcher = inst->dispatcher();
 
-        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE leakreprodb;")
-                    ->is_success());
-        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(),
-                                        "CREATE TABLE leakreprodb.t (g bigint, v bigint);")
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE leakreprodb;")->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE leakreprodb.t (g bigint, v bigint);")
                     ->is_success());
         REQUIRE(dispatcher
                     ->execute_sql(otterbrix::session_id_t(),
                                   "INSERT INTO leakreprodb.t (g, v) VALUES "
                                   "(1, 10), (1, 20), (2, 30), (2, 40), (2, 50);")
                     ->is_success());
-        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "SELECT g, v FROM leakreprodb.t;")
-                    ->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "SELECT g, v FROM leakreprodb.t;")->is_success());
     } // engine destroyed here; a clean teardown must free every boost freelist node
 
     SUCCEED("engine constructed, populated, and destroyed without an ASan/LSan error");
@@ -586,15 +583,12 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_n
 
         auto inst = otterbrix::make_otterbrix(config);
         auto* dispatcher = inst->dispatcher();
-        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE stressdb;")
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE stressdb;")->is_success());
+        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE stressdb.t (g bigint, v bigint);")
                     ->is_success());
-        REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(),
-                                        "CREATE TABLE stressdb.t (g bigint, v bigint);")
-                    ->is_success());
-        REQUIRE(dispatcher
-                    ->execute_sql(otterbrix::session_id_t(),
-                                  "INSERT INTO stressdb.t (g, v) VALUES (1, 10), (2, 20);")
-                    ->is_success());
+        REQUIRE(
+            dispatcher->execute_sql(otterbrix::session_id_t(), "INSERT INTO stressdb.t (g, v) VALUES (1, 10), (2, 20);")
+                ->is_success());
         // inst destroyed at the end of the iteration.
     }
     SUCCEED("engine survived repeated construct/destroy cycles without an ASan/LSan error");
@@ -653,9 +647,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::teardown_order_schedulers_ou
     { base_spaces_layout_model_t model(&order); }
 
     REQUIRE(order.size() == 8);
-    const auto pos = [&](const std::string& n) {
-        return std::find(order.begin(), order.end(), n) - order.begin();
-    };
+    const auto pos = [&](const std::string& n) { return std::find(order.begin(), order.end(), n) - order.begin(); };
 
     const std::array<const char*, 3> schedulers{"scheduler", "scheduler_dispatcher", "scheduler_disk"};
     const std::array<const char*, 5> managers{"manager_dispatcher",

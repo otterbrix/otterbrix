@@ -418,8 +418,11 @@ namespace components::expressions {
                     core::error_code_t::physical_plan_error,
                     std::pmr::string{"bitwise/shift operations are unsupported for non-integer types", resource}};
             }
-            owned_output_.emplace(
-                vector_ops::apply_binary_vector_op(resource, to_binary_vec_op(type_), *left_vec, *right_vec, vec_count));
+            owned_output_.emplace(vector_ops::apply_binary_vector_op(resource,
+                                                                     to_binary_vec_op(type_),
+                                                                     *left_vec,
+                                                                     *right_vec,
+                                                                     vec_count));
         }
 
         output_vec_ = &owned_output_.value();

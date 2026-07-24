@@ -185,8 +185,7 @@ namespace components::operators {
                         if (seg.size() == 0) {
                             continue;
                         }
-                        auto proj =
-                            evaluate_projection(resource_, returning_, &seg, ctx->parameters, ctx->session_tz);
+                        auto proj = evaluate_projection(resource_, returning_, &seg, ctx->parameters, ctx->session_tz);
                         if (proj.has_error()) {
                             // The rows ARE already appended (WAL-first): carry the range
                             // with the error so record_flush registers it and the failed-
@@ -238,8 +237,8 @@ namespace components::operators {
             if (affected_rows_ != 0) {
                 // No RETURNING: emit column-less chunks whose cardinalities sum to the
                 // affected-row count (the cursor totals chunk sizes).
-                set_output(make_operator_data(
-                    resource_, dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
+                set_output(make_operator_data(resource_,
+                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
             } else {
                 set_output(nullptr);
             }

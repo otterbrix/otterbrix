@@ -55,7 +55,11 @@ namespace pushdown_reduce_test {
                 c.path = reduce_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<services::disk::manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<services::disk::manager_disk_t>(&resource,
+                                                                        scheduler,
+                                                                        scheduler,
+                                                                        disk_config,
+                                                                        log)) {
             cleanup();
             std::filesystem::create_directories(reduce_dir());
             manager->bootstrap_system_tables_sync();

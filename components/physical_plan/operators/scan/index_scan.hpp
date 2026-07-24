@@ -61,7 +61,10 @@ namespace components::operators {
         }
 
     private:
-        void explain_impl(const explain_sink& s) const override { explain_begin(s, table_oid_); s.end(); }
+        void explain_impl(const explain_sink& s) const override {
+            explain_begin(s, table_oid_);
+            s.end();
+        }
 
         // Windowing core: run the one-shot index search (txn-aware visibility), store the matched
         // ids in row_ids_vec_, and compute the OFFSET/LIMIT window [pos_=start_, end_). If there is

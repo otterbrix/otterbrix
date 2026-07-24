@@ -61,8 +61,13 @@ namespace components::operators::predicates {
                 // types_left / types_right are unused by a compare predicate's value_getters (they key
                 // the chunk by column path), so empty type lists suffice.
                 std::pmr::vector<types::complex_logical_type> no_types{resource};
-                predicate_ =
-                    create_predicate(resource, &registry_->registry, expression, no_types, no_types, &params_, session_tz);
+                predicate_ = create_predicate(resource,
+                                              &registry_->registry,
+                                              expression,
+                                              no_types,
+                                              no_types,
+                                              &params_,
+                                              session_tz);
             }
 
             core::result_wrapper_t<types::tri_bool_t> evaluate(const vector::data_chunk_t& row,
@@ -73,8 +78,8 @@ namespace components::operators::predicates {
             }
 
         private:
-            shared_registry_ptr registry_;             // MUST precede predicate_ (getters cache function*)
-            logical_plan::storage_parameters params_;  // MUST precede predicate_ (getters cache &params_)
+            shared_registry_ptr registry_;            // MUST precede predicate_ (getters cache function*)
+            logical_plan::storage_parameters params_; // MUST precede predicate_ (getters cache &params_)
             predicate_ptr predicate_;
         };
 

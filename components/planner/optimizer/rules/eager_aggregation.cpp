@@ -242,8 +242,7 @@ namespace components::planner::optimizer {
             if (!join_key_covered) {
                 // Add the join key as an extra partial grouping column so a partial
                 // group maps 1:1 to the join key (inner-join drop commutes with reduce).
-                ce::key_t jk{resource,
-                             std::string{pushed->output_types()[join_key_local].alias()}};
+                ce::key_t jk{resource, std::string{pushed->output_types()[join_key_local].alias()}};
                 set_key_path(resource, jk, join_key_local);
                 partial_group->append_expression(
                     ce::make_scalar_expression(resource, ce::scalar_type::group_field, jk));

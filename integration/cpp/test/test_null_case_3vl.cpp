@@ -56,12 +56,10 @@ TEST_CASE("integration::cpp::case3vl::not_in_when") {
     // NOT (x > 0): only x=0 makes x>0 FALSE -> NOT TRUE.
     CHECK(coli(d, "SELECT CASE WHEN NOT (x > 0) THEN 1 ELSE 0 END FROM m.t ORDER BY id;") == L{0, 0, 1, 0});
     // NOT over OR: NOT (x=5 OR x=10) -> TRUE only for x=0; NULL row is (U OR U)=U -> ELSE.
-    CHECK(coli(d, "SELECT CASE WHEN NOT (x = 5 OR x = 10) THEN 1 ELSE 0 END FROM m.t ORDER BY id;") ==
-          L{0, 0, 1, 0});
+    CHECK(coli(d, "SELECT CASE WHEN NOT (x = 5 OR x = 10) THEN 1 ELSE 0 END FROM m.t ORDER BY id;") == L{0, 0, 1, 0});
     // NOT over AND: NOT (x=0 AND id=3) -> FALSE only for the id=3 row; the NULL row is
     // (U AND FALSE)=FALSE -> NOT TRUE -> THEN.
-    CHECK(coli(d, "SELECT CASE WHEN NOT (x = 0 AND id = 3) THEN 1 ELSE 0 END FROM m.t ORDER BY id;") ==
-          L{1, 1, 0, 1});
+    CHECK(coli(d, "SELECT CASE WHEN NOT (x = 0 AND id = 3) THEN 1 ELSE 0 END FROM m.t ORDER BY id;") == L{1, 1, 0, 1});
     // Positive control (no NOT): the plain WHEN still matches only the definitely-TRUE rows.
     CHECK(coli(d, "SELECT CASE WHEN x = 5 THEN 1 ELSE 0 END FROM m.t ORDER BY id;") == L{1, 0, 0, 0});
     CHECK(coli(d, "SELECT CASE WHEN x > 0 THEN 1 ELSE 0 END FROM m.t ORDER BY id;") == L{1, 0, 0, 1});

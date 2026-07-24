@@ -106,8 +106,8 @@ namespace components::operators {
             // the self-resolve read below.
             if (input_namespace_oid_ == catalog::INVALID_OID && !dbname_.empty() && target_node_) {
                 if (auto* ns = target_node_->target();
-                    ns && ns->kind() == components::logical_plan::resolve_kind::namespace_ &&
-                    ns->dbname() == dbname_ && ns->namespace_oid() != catalog::INVALID_OID) {
+                    ns && ns->kind() == components::logical_plan::resolve_kind::namespace_ && ns->dbname() == dbname_ &&
+                    ns->namespace_oid() != catalog::INVALID_OID) {
                     input_namespace_oid_ = ns->namespace_oid();
                 }
             }

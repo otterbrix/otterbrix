@@ -959,10 +959,9 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
 
         // An ARRAY key does not cast to BIGINT (cast_as errors): out-of-domain.
         // Pre-fix: assert-abort (Debug) / empty-optional deref (Release UB).
-        auto array_key = logical_value_t::create_array(
-            res,
-            complex_logical_type{logical_type::BIGINT},
-            std::vector<logical_value_t>{logical_value_t(res, int64_t{7})});
+        auto array_key = logical_value_t::create_array(res,
+                                                       complex_logical_type{logical_type::BIGINT},
+                                                       std::vector<logical_value_t>{logical_value_t(res, int64_t{7})});
         index.insert(array_key, components::index::index_value_t(int64_t{2}), tz);
 
         // In-domain lookups stay exact and unaffected.
@@ -1012,8 +1011,7 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
         auto* res = &arena;
 
         // Nullable int[3] column, no default.
-        auto arr_col_type =
-            complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 3);
+        auto arr_col_type = complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 3);
         components::table::column_definition_t col("arr", arr_col_type);
 
         // Source array whose single element is a STRUCT — cast_as(STRUCT -> INTEGER)
@@ -1021,8 +1019,7 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
         std::vector<logical_value_t> fields;
         fields.emplace_back(logical_value_t(res, int32_t{9}));
         auto struct_elem = logical_value_t::create_struct(res, "s", fields);
-        auto src =
-            logical_value_t::create_array(res, struct_elem.type(), std::vector<logical_value_t>{struct_elem});
+        auto src = logical_value_t::create_array(res, struct_elem.type(), std::vector<logical_value_t>{struct_elem});
 
         auto out = components::table::reconcile_to_fixed_array(res, src, col, core::date::timezone_offset_t{});
         REQUIRE(out.type().type() == logical_type::ARRAY);

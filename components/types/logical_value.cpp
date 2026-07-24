@@ -41,7 +41,7 @@ namespace components::types {
                     return false;
             }
         }
-    }
+    } // namespace
 
     logical_value_t::~logical_value_t() { destroy_heap(); }
 
@@ -387,9 +387,8 @@ namespace components::types {
             // Surface it as a conversion_failure error instead.
             if (!is_scalar_castable_physical_type(type.to_physical_type()) ||
                 !is_scalar_castable_physical_type(type_.to_physical_type())) {
-                std::string message = "cannot cast logical_type " +
-                                      std::to_string(static_cast<int>(type_.type())) + " to logical_type " +
-                                      std::to_string(static_cast<int>(type.type()));
+                std::string message = "cannot cast logical_type " + std::to_string(static_cast<int>(type_.type())) +
+                                      " to logical_type " + std::to_string(static_cast<int>(type.type()));
                 return core::error_t{core::error_code_t::conversion_failure,
                                      std::pmr::string{message.c_str(), resource_}};
             }
@@ -519,6 +518,12 @@ namespace components::types {
             std::vector<logical_value_t> elems;
             elems.reserve(src.size());
             for (const auto& child : src) {
+                // A NULL element (logical_type NA) stays a NULL slot; the scalar cast can not convert
+                // a NA source, and a NULL is representable only as NA (is_null() == (type == NA)).
+                if (child.type().type() == logical_type::NA) {
+                    elems.emplace_back(child);
+                    continue;
+                }
                 auto casted = child.cast_as(target_elem_type, session_tz);
                 if (casted.has_error()) {
                     return casted.error();
@@ -534,6 +539,12 @@ namespace components::types {
             std::vector<logical_value_t> elems;
             elems.reserve(children().size());
             for (const auto& child : children()) {
+                // A NULL element (logical_type NA) stays a NULL slot; the scalar cast can not convert
+                // a NA source, and a NULL is representable only as NA (is_null() == (type == NA)).
+                if (child.type().type() == logical_type::NA) {
+                    elems.emplace_back(child);
+                    continue;
+                }
                 auto casted = child.cast_as(target_elem_type, session_tz);
                 if (casted.has_error()) {
                     return casted.error();

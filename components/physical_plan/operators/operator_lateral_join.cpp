@@ -166,15 +166,15 @@ namespace components::operators {
         // they use the schema-free all_true predicate — the inner side of an EXISTS body
         // may project an alias-less constant, which the schema-bound predicate builder
         // would reject.
-        predicates::predicate_ptr predicate =
-            (on_expression_ && !semi_anti) ? predicates::create_predicate(res,
-                                                                          ctx->function_registry,
-                                                                          on_expression_,
-                                                                          outer_schema_,
-                                                                          inner_schema_,
-                                                                          &ctx->parameters,
-                                                                          ctx->session_tz)
-                                           : predicates::create_all_true_predicate(res);
+        predicates::predicate_ptr predicate = (on_expression_ && !semi_anti)
+                                                  ? predicates::create_predicate(res,
+                                                                                 ctx->function_registry,
+                                                                                 on_expression_,
+                                                                                 outer_schema_,
+                                                                                 inner_schema_,
+                                                                                 &ctx->parameters,
+                                                                                 ctx->session_tz)
+                                                  : predicates::create_all_true_predicate(res);
 
         auto outer_res = co_await ctx->runner->run_subplan(outer_, ctx);
         if (outer_res.has_error()) {

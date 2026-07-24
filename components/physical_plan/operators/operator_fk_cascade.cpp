@@ -255,8 +255,8 @@ namespace components::operators {
                 if (ctx->txn.transaction_id != 0) {
                     auto [upd_row_start, upd_row_count] = update_result.value();
                     if (upd_row_count > 0) {
-                        ctx->dml_appends.push_back(components::table::dml_append_range_t{
-                            fk_.child_table_oid, upd_row_start, upd_row_count});
+                        ctx->dml_appends.push_back(
+                            components::table::dml_append_range_t{fk_.child_table_oid, upd_row_start, upd_row_count});
                     }
                     ctx->dml_deletes.push_back(
                         components::table::dml_delete_range_t{fk_.child_table_oid, ctx->txn.transaction_id});

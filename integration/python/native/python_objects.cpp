@@ -5,7 +5,6 @@
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 
-
 #include <ctime>
 #include <limits>
 #include <memory_resource>

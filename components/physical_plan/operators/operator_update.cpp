@@ -491,8 +491,7 @@ namespace components::operators {
             // across all flushes (append ranges are per-flush via record_flush; the
             // delete marker is a single per-txn/table tombstone).
             if (!delete_marker_recorded_) {
-                ctx->dml_deletes.push_back(
-                    components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
+                ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
                 delete_marker_recorded_ = true;
             }
 
@@ -517,8 +516,8 @@ namespace components::operators {
             if (affected_rows_ > 0) {
                 // Column-less chunks whose cardinalities sum to the affected-row count
                 // (the cursor totals chunk sizes).
-                set_output(make_operator_data(
-                    resource_, dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
+                set_output(make_operator_data(resource_,
+                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
             } else {
                 set_output(nullptr);
             }

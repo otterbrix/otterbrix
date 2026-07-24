@@ -536,11 +536,9 @@ namespace services::collection::executor {
                 // own validation in the recursive execute_plan_full above).
                 const auto& sub_node = plan.sub_queries[i];
                 assert(sub_node->has_output_types() && "array-equality sub-query must be schema-stamped");
-                plan.parameters->set_parameter(mapping.id,
-                                               components::types::logical_value_t::create_array(
-                                                   resource(),
-                                                   sub_node->output_types().front(),
-                                                   {}));
+                plan.parameters->set_parameter(
+                    mapping.id,
+                    components::types::logical_value_t::create_array(resource(), sub_node->output_types().front(), {}));
                 continue;
             }
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
@@ -764,9 +762,9 @@ namespace services::collection::executor {
         // empty commit pipeline (WAL marker + ProcArray barrier for a zero-change txn). EXPLAIN
         // ANALYZE keeps needs_dml_txn true → commits normally.
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
-        const bool needs_dml_txn = !is_plan_only_explain &&
-                                   (original_type == node_type::insert_t || original_type == node_type::update_t ||
-                                    original_type == node_type::delete_t);
+        const bool needs_dml_txn =
+            !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
+                                      original_type == node_type::delete_t);
         // SET TIMEZONE and VACUUM are append/delete-shaped catalog writers that
         // are neither DDL nor DML but still produce committable pg_catalog
         // ranges (SET TIMEZONE → pg_settings append; VACUUM → pg_computed_column
@@ -1317,14 +1315,13 @@ namespace services::collection::executor {
                             overridden = true;
                         }
                         validate_params.parameters.find(m.id)->second =
-                            components::types::logical_value_t(resource(),
-                                                               plan.sub_queries[i]->output_types().front());
+                            components::types::logical_value_t(resource(), plan.sub_queries[i]->output_types().front());
                     }
-                    auto schema_res = services::dispatcher::validate_schema(resource(),
-                                                                            &dispatcher_idx,
-                                                                            plan.sub_queries.back().get(),
-                                                                            overridden ? validate_params
-                                                                                       : bound_params);
+                    auto schema_res =
+                        services::dispatcher::validate_schema(resource(),
+                                                              &dispatcher_idx,
+                                                              plan.sub_queries.back().get(),
+                                                              overridden ? validate_params : bound_params);
                     if (schema_res.has_error()) {
                         error = make_cursor(resource(), schema_res.error());
                     }
@@ -1415,8 +1412,10 @@ namespace services::collection::executor {
             // via self->resource() — the [this] capture is not visible to the
             // coroutine frame allocator, and without `self` extract_resource_or_abort
             // fires.
-            auto allocate_oids_inline = [this, session, &context_storage]([[maybe_unused]] executor_t* self, std::size_t count)
-                -> executor_t::unique_future<std::vector<components::catalog::oid_t>> {
+            auto allocate_oids_inline =
+                [this, session, &context_storage](
+                    [[maybe_unused]] executor_t* self,
+                    std::size_t count) -> executor_t::unique_future<std::vector<components::catalog::oid_t>> {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
                 services::context_storage_t cstor{resource(), log_.clone(), context_storage.session_timezone};
@@ -1666,10 +1665,8 @@ namespace services::collection::executor {
             std::pmr::set<components::catalog::oid_t> inner_hash_join_oids{resource()};
             collect_inner_hash_join_oids(plan.sub_queries.back(), inner_hash_join_oids);
             for (auto oid : inner_hash_join_oids) {
-                auto [_tr, trf] = actor_zeta::send(disk_address_,
-                                                   &services::disk::manager_disk_t::storage_total_rows,
-                                                   session,
-                                                   oid);
+                auto [_tr, trf] =
+                    actor_zeta::send(disk_address_, &services::disk::manager_disk_t::storage_total_rows, session, oid);
                 context_storage.row_counts[oid] = co_await std::move(trf);
             }
         }
@@ -2267,9 +2264,9 @@ namespace services::collection::executor {
             // — never via a push()/finalize record site — so without this its plan line would read
             // rows=0 / actual time=0.000ms regardless of what it produced. Time only the production.
             if (analyze) {
-                chain.front()->record_analyze(
-                    chain.front()->output() ? count_rows(chain.front()->output()->chunks()) : 0,
-                    front_scope.elapsed());
+                chain.front()->record_analyze(chain.front()->output() ? count_rows(chain.front()->output()->chunks())
+                                                                      : 0,
+                                              front_scope.elapsed());
             }
             // Stream any rows the bottom PRODUCED (recursive_cte's fixpoint output_) UP
             // through the ancestors chain[1..] (e.g. sort -> select, or match -> sort ->

@@ -211,6 +211,9 @@ namespace components::operators::aggregate {
 
         auto type = vec.type().type();
         switch (type) {
+            case types::logical_type::BOOLEAN:
+                update_loop<bool>(agg, vec.data<bool>(), vec, group_ids, count, states);
+                break;
             case types::logical_type::TINYINT:
                 update_loop<int8_t>(agg, vec.data<int8_t>(), vec, group_ids, count, states);
                 break;
@@ -293,6 +296,9 @@ namespace components::operators::aggregate {
 
         // SUM, MIN, MAX — return in the original column type
         switch (col_type) {
+            case types::logical_type::BOOLEAN:
+                // MIN/MAX over BOOLEAN: state.u64 holds the promoted 0/1 (see update_all).
+                return types::logical_value_t(resource, state.u64 != 0);
             case types::logical_type::TINYINT:
                 return types::logical_value_t(resource, static_cast<int8_t>(state.i64));
             case types::logical_type::SMALLINT:

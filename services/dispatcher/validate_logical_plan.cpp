@@ -723,9 +723,10 @@ namespace services::dispatcher {
                 } else if (sub->group() == expression_group::compare) {
                     auto* cmp = static_cast<compare_expression_t*>(sub.get());
                     if (cmp->is_union()) {
-                        // union_and / union_or / union_not: the operands are the children_; the
-                        // left()/right() slots are null sentinels and must not be dereferenced.
-                        // Recurse so keys nested arbitrarily deep (NOT (a AND b), ...) resolve.
+                        // Union compares (AND/OR/NOT — e.g. from IN, or the union_and(is_not_null,
+                        // union_not(regex)) that NOT LIKE expands into) carry their operands as CHILDREN
+                        // and have no left/right, so recurse into each child instead of touching left/right
+                        // (which are null for a union and would be dereferenced blindly).
                         for (auto& child : cmp->children()) {
                             param_storage child_param{child};
                             auto res = resolve_key_path(resource, child_param, schema);
@@ -734,7 +735,6 @@ namespace services::dispatcher {
                             }
                         }
                     } else {
-                        // Leaf comparison: the operands live in left()/right().
                         auto res = resolve_key_path(resource, cmp->left(), schema);
                         if (res.has_error()) {
                             return res;
@@ -857,14 +857,42 @@ namespace services::dispatcher {
                     break;
                 }
                 case scalar_type::case_expr: {
-                    // case_expr params layout (transform_select_case_expr): pairs of
-                    // [cond, result, ...]; the CASE return type is the first THEN
-                    // result (params[1]). Mirrors compute_type_entry's CASE branch.
-                    if (scalar_expr->params().size() < 2) {
+                    // case_expr params layout (transform_select_case_expr): pairs of [cond, result, ...]
+                    // plus an optional trailing ELSE. The CASE return type is the COMMON type across every
+                    // THEN result and the ELSE, so a wider later branch (e.g. a BIGINT ELSE after an INT
+                    // THEN) is not truncated. Numeric branches widen via promote_type; a NULL/untyped branch
+                    // is skipped. Mirrors evaluate_case_expr's result-type folding.
+                    auto& case_params = scalar_expr->params();
+                    if (case_params.size() < 2) {
                         return core::error_t(core::error_code_t::invalid_parameter,
                                              std::pmr::string{"CASE expression with no THEN branch", resource});
                     }
-                    result_type = resolve(scalar_expr->params()[1]);
+                    const bool has_default = (case_params.size() % 2 == 1);
+                    const size_t num_whens = case_params.size() / 2;
+                    result_type = components::types::complex_logical_type(logical_type::NA);
+                    auto fold_branch = [&](const components::types::complex_logical_type& branch_type) {
+                        if (resolve_error.contains_error()) {
+                            return;
+                        }
+                        if (branch_type.type() == logical_type::NA || branch_type.type() == logical_type::UNKNOWN) {
+                            return;
+                        }
+                        if (result_type.type() == logical_type::NA) {
+                            result_type = branch_type;
+                        } else if (result_type.type() != branch_type.type() && is_numeric(result_type.type()) &&
+                                   is_numeric(branch_type.type())) {
+                            auto promoted = promote_type(result_type.type(), branch_type.type());
+                            if (promoted != logical_type::NA) {
+                                result_type = components::types::complex_logical_type(promoted);
+                            }
+                        }
+                    };
+                    for (size_t when_index = 0; when_index < num_whens; when_index++) {
+                        fold_branch(resolve(case_params[when_index * 2 + 1]));
+                    }
+                    if (has_default) {
+                        fold_branch(resolve(case_params.back()));
+                    }
                     break;
                 }
                 case scalar_type::coalesce: {
@@ -1701,11 +1729,10 @@ namespace services::dispatcher {
                         }
                         auto* se = reinterpret_cast<scalar_expression_t*>(expr.get());
                         if (se->type() == scalar_type::jsonb_expand || se->type() == scalar_type::jsonb_delete) {
-                            return core::error_t(
-                                core::error_code_t::schema_error,
-                                std::pmr::string{"table-valued jsonb operator ('->'/'#>'/'-'/'#-') "
-                                                 "is not supported with GROUP BY or aggregation",
-                                                 resource});
+                            return core::error_t(core::error_code_t::schema_error,
+                                                 std::pmr::string{"table-valued jsonb operator ('->'/'#>'/'-'/'#-') "
+                                                                  "is not supported with GROUP BY or aggregation",
+                                                                  resource});
                         }
                     }
                 }
@@ -2067,7 +2094,8 @@ namespace services::dispatcher {
                             // complex_logical_type::alias() asserts on that, so guard it. An
                             // alias-less column keys on the empty string, which is correct for
                             // this duplicate-name check.
-                            std::string col_alias = col.type.has_alias() ? std::string(col.type.alias()) : std::string{};
+                            std::string col_alias =
+                                col.type.has_alias() ? std::string(col.type.alias()) : std::string{};
                             column_key key{col.result_alias, col_alias, col.type.type(), col.side};
                             if (!seen_cols.insert(std::move(key)).second) {
                                 return core::error_t(
@@ -2226,9 +2254,38 @@ namespace services::dispatcher {
                         };
                         complex_logical_type result_type;
                         if (scalar_expr->type() == scalar_type::case_expr) {
-                            result_type = (scalar_expr->params().size() >= 2)
-                                              ? resolve_type(scalar_expr->params()[1], resolve_type)
-                                              : complex_logical_type(logical_type::BIGINT);
+                            // CASE type = common type across every THEN result and the ELSE (issue #571 #2), so a
+                            // wider later branch is not truncated. Must match evaluate_case_expr / the aggregate-arg
+                            // resolver so the group output vector's declared type matches the computed value.
+                            auto& case_params = scalar_expr->params();
+                            if (case_params.size() < 2) {
+                                result_type = complex_logical_type(logical_type::BIGINT);
+                            } else {
+                                const bool has_default = (case_params.size() % 2 == 1);
+                                const size_t num_whens = case_params.size() / 2;
+                                result_type = complex_logical_type(logical_type::NA);
+                                auto fold_branch = [&](const complex_logical_type& branch_type) {
+                                    if (branch_type.type() == logical_type::NA ||
+                                        branch_type.type() == logical_type::UNKNOWN) {
+                                        return;
+                                    }
+                                    if (result_type.type() == logical_type::NA) {
+                                        result_type = branch_type;
+                                    } else if (result_type.type() != branch_type.type() &&
+                                               is_numeric(result_type.type()) && is_numeric(branch_type.type())) {
+                                        auto promoted = promote_type(result_type.type(), branch_type.type());
+                                        if (promoted != logical_type::NA) {
+                                            result_type = complex_logical_type(promoted);
+                                        }
+                                    }
+                                };
+                                for (size_t when_index = 0; when_index < num_whens; when_index++) {
+                                    fold_branch(resolve_type(case_params[when_index * 2 + 1], resolve_type));
+                                }
+                                if (has_default) {
+                                    fold_branch(resolve_type(case_params.back(), resolve_type));
+                                }
+                            }
                         } else {
                             auto lt = resolve_type(scalar_expr->params()[0], resolve_type);
                             auto rt = scalar_expr->params().size() > 1
@@ -2408,20 +2465,47 @@ namespace services::dispatcher {
                                                                                resolve_error};
                                         // CASE WHEN inside an aggregate (e.g. SUM(CASE WHEN cond THEN a ELSE b END)).
                                         // case_expr params layout (per transform_select_case_expr): pairs of
-                                        // [cond, result, cond, result, ..., default]. We take the type of the
-                                        // first THEN result (params[1]) as the CASE return type. Mixed branch
-                                        // result types would need a wider promote — deferred.
+                                        // [cond, result, cond, result, ..., default]. The CASE return type is the
+                                        // COMMON type across every THEN result and the ELSE (issue #571 #2), so a
+                                        // wider later branch is not truncated. This must match evaluate_case_expr
+                                        // and resolve_scalar_output_type, or the group output vector's declared type
+                                        // disagrees with the aggregated value and set_value asserts.
                                         if (sub_scalar->type() == scalar_type::case_expr) {
-                                            if (sub_scalar->params().size() < 2) {
+                                            auto& case_params = sub_scalar->params();
+                                            if (case_params.size() < 2) {
                                                 return core::error_t{
                                                     core::error_code_t::invalid_parameter,
                                                     std::pmr::string{"CASE expression with no THEN branch", resource}};
                                             }
-                                            auto rt = resolve_arith_type(sub_scalar->params()[1]);
+                                            const bool has_default = (case_params.size() % 2 == 1);
+                                            const size_t num_whens = case_params.size() / 2;
+                                            complex_logical_type case_type(logical_type::NA);
+                                            auto fold_branch = [&](const complex_logical_type& branch_type) {
+                                                if (branch_type.type() == logical_type::NA ||
+                                                    branch_type.type() == logical_type::UNKNOWN) {
+                                                    return;
+                                                }
+                                                if (case_type.type() == logical_type::NA) {
+                                                    case_type = branch_type;
+                                                } else if (case_type.type() != branch_type.type() &&
+                                                           is_numeric(case_type.type()) &&
+                                                           is_numeric(branch_type.type())) {
+                                                    auto promoted = promote_type(case_type.type(), branch_type.type());
+                                                    if (promoted != logical_type::NA) {
+                                                        case_type = complex_logical_type(promoted);
+                                                    }
+                                                }
+                                            };
+                                            for (size_t when_index = 0; when_index < num_whens; when_index++) {
+                                                fold_branch(resolve_arith_type(case_params[when_index * 2 + 1]));
+                                            }
+                                            if (has_default) {
+                                                fold_branch(resolve_arith_type(case_params.back()));
+                                            }
                                             if (resolve_error.type != core::error_code_t::none) {
                                                 return resolve_error;
                                             }
-                                            function_input_types.emplace_back(rt);
+                                            function_input_types.emplace_back(case_type);
                                         } else if (sub_scalar->params().size() >= 2) {
                                             auto lt = resolve_arith_type(sub_scalar->params()[0]);
                                             auto rt = resolve_arith_type(sub_scalar->params()[1]);
@@ -2749,7 +2833,8 @@ namespace services::dispatcher {
                 if (join_node->type() == join_type::semi || join_node->type() == join_type::anti) {
                     result = std::move(left_schema.value());
                 } else {
-                    result = impl::merge_schemas(resource, std::move(left_schema.value()), std::move(right_schema.value()));
+                    result =
+                        impl::merge_schemas(resource, std::move(left_schema.value()), std::move(right_schema.value()));
                 }
                 break;
             }

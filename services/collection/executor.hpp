@@ -21,6 +21,8 @@
 #include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
+#include <components/physical_plan_generator/create_plan.hpp>
+#include <components/planner/optimizer.hpp>
 #include <services/collection/explain/explain_renderer.hpp>
 #include <stack>
 #include <string>
@@ -192,7 +194,9 @@ namespace services::collection::executor {
                    actor_zeta::address_t disk_address,
                    actor_zeta::address_t index_address,
                    log_t&& log,
-                   uint64_t dml_flush_row_threshold = 0);
+                   uint64_t dml_flush_row_threshold = 0,
+                   planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
+                   components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass);
         ~executor_t() = default;
 
         // Operator-pipeline run over an already-rewritten plan. INTERNAL:
@@ -324,6 +328,13 @@ namespace services::collection::executor {
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
         log_t log_;
         components::compute::function_registry_t function_registry_;
+        // Host-injected customization, ctor-provided (dispatcher -> executor), forwarded
+        // to physgen / the optimizer. Never null (Null Object defaults):
+        //   create_plan_rule_ — lowers node_extension / any host-custom node to a host
+        //     operator (passed as an explicit arg into create_plan);
+        //   optimizer_pass_   — a final host rewrite passed into optimize().
+        planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
+        components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};
         // Config-gated bound on rows buffered by a streaming DML sink before the
         // execute_pipeline pump forces an incremental async flush. 0 = disabled
         // (the mid-pump gate never fires).

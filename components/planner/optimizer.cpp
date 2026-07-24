@@ -15,7 +15,8 @@ namespace components::planner {
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
-                                    bool can_push_to_agent) {
+                                    bool can_push_to_agent,
+                                    optimizer_pass_t host_pass) {
         if (!node) {
             return nullptr;
         }
@@ -97,6 +98,9 @@ namespace components::planner {
         // UNGATED: projected_cols is a scan projection HINT (empty = read all), valid
         // in in-memory mode too — it needs no owning agent, only the resolved paths.
         optimizer::prune_columns(node);
+
+        // Host-injected final pass on the fully-optimized tree (Null Object = no-op).
+        node = host_pass(resource, std::move(node));
 
         return node;
     }

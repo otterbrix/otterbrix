@@ -103,6 +103,11 @@ namespace services::collection {
                 case ops::operator_type::computed_field_register:
                     label = "Computed Fields";
                     break;
+                // Host-extension source (federated scan etc.) — reachable on an
+                // EXPLAINed SELECT spine when the plan carries extension leaves.
+                case ops::operator_type::extension:
+                    label = "Extension Scan";
+                    break;
                 // Proven unreachable on an EXPLAINed SELECT/INSERT/UPDATE/DELETE spine (DDL/txn/utility
                 // statements are rejected by transform_explain; resolve_* live in separate resolve
                 // subplans; sequence is flattened; empty/batch/unused are never rendered). Grouped so

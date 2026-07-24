@@ -22,7 +22,9 @@ namespace otterbrix {
 
     using services::dispatcher::manager_dispatcher_t;
 
-    base_otterbrix_t::base_otterbrix_t(const configuration::config& config)
+    base_otterbrix_t::base_otterbrix_t(const configuration::config& config,
+                                       services::planner::create_plan_rule_t create_plan_rule,
+                                       components::planner::optimizer_pass_t optimizer_pass)
         : main_path_(config.main_path)
         , resource()
         , scheduler_(new actor_zeta::shared_work(3, 1000))
@@ -114,8 +116,11 @@ namespace otterbrix {
         trace(log_, "spaces::manager_index finish");
 
         trace(log_, "spaces::manager_dispatcher start");
-        manager_dispatcher_ =
-            actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource, scheduler_dispatcher_.get(), log_);
+        manager_dispatcher_ = actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(&resource,
+                                                                                           scheduler_dispatcher_.get(),
+                                                                                           log_,
+                                                                                           create_plan_rule,
+                                                                                           optimizer_pass);
         trace(log_, "spaces::manager_dispatcher finish");
 
         wrapper_dispatcher_ = actor_zeta::spawn<wrapper_dispatcher_t>(&resource,

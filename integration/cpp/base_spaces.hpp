@@ -1,6 +1,9 @@
 #pragma once
 
 #include "wrapper_dispatcher.hpp"
+
+#include <components/physical_plan_generator/create_plan.hpp>
+#include <components/planner/optimizer.hpp>
 #include <actor-zeta/detail/memory.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
@@ -50,7 +53,21 @@ namespace otterbrix {
         ~base_otterbrix_t();
 
     protected:
-        explicit base_otterbrix_t(const configuration::config& config);
+        // CLOSED default surface: normal (non-federation) embeddings get the
+        // Null-Object hooks, hardcoded here — base_spaces exposes no customization.
+        explicit base_otterbrix_t(const configuration::config& config)
+            : base_otterbrix_t(config,
+                               &services::planner::no_custom_lowering,
+                               &components::planner::no_op_pass) {}
+
+        // Federation seam: a subclass injects host customization EXPLICITLY (no
+        // defaults) — threaded on through manager_dispatcher_t -> executor_t ctors:
+        //   create_plan_rule — lowers a node the engine does not lower itself
+        //     (node_extension / any host-custom node) to a host operator (physgen);
+        //   optimizer_pass   — a final host rewrite on the optimized logical tree.
+        base_otterbrix_t(const configuration::config& config,
+                         services::planner::create_plan_rule_t create_plan_rule,
+                         components::planner::optimizer_pass_t optimizer_pass);
         std::filesystem::path main_path_;
 #if defined(OTTERBRIX_TSAN_ENABLED)
         // TSAN cannot see through synchronized_pool_resource's internal mutex,

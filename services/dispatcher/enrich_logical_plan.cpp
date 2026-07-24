@@ -21,6 +21,7 @@
 #include <components/cursor/cursor.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
@@ -792,6 +793,14 @@ namespace services::dispatcher { namespace {
                 }
                 case node_type::having_t: {
                     auto* d = static_cast<node_having_t*>(root.get());
+                    db = d->dbname();
+                    rel = d->relname();
+                    break;
+                }
+                // Host-extension source: stamp table_oid from the resolved (db, rel)
+                // so the catalog identity is available to physgen / execution.
+                case node_type::extension_t: {
+                    auto* d = static_cast<node_extension_t*>(root.get());
                     db = d->dbname();
                     rel = d->relname();
                     break;

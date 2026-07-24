@@ -401,6 +401,15 @@ namespace services::planner::impl {
                                            child,
                                            components::logical_plan::limit_t::unlimit(),
                                            params);
+                    // A present source child that failed to lower (e.g. a
+                    // host-extension node with no injected create_plan rule) must
+                    // surface as an invalid plan — NOT fall through to the
+                    // transfer_scan branch below (which is only for an aggregate
+                    // with no explicit source child), which would silently
+                    // mis-execute over a synthetic single row.
+                    if (!child_op) {
+                        return nullptr;
+                    }
                     break;
             }
         }

@@ -104,6 +104,12 @@ namespace services::planner::impl {
                                     components::logical_plan::limit_t::unlimit(),
                                     params);
             }
+            // A null child means a term failed to lower (e.g. a host-extension node
+            // with no injected create_plan rule). Surface it as an invalid plan
+            // rather than driving a null child at execution (segfault).
+            if (!outer || !inner) {
+                return nullptr;
+            }
             lateral->set_lateral_terms(std::move(outer), std::move(inner));
             return lateral;
         }
@@ -218,6 +224,12 @@ namespace services::planner::impl {
                                          components::logical_plan::limit_t::unlimit(),
                                          params);
             }
+            // A null child means a side failed to lower (e.g. a host-extension node
+            // with no injected create_plan rule) → invalid plan, not a null-child
+            // deref at execution.
+            if (!hash_left || !hash_right) {
+                return nullptr;
+            }
             hash_join->set_children(std::move(hash_left), std::move(hash_right));
             return hash_join;
         }
@@ -260,6 +272,11 @@ namespace services::planner::impl {
                                 node->children().back(),
                                 components::logical_plan::limit_t::unlimit(),
                                 params);
+        }
+        // A null child means a side failed to lower (e.g. a host-extension node with
+        // no injected create_plan rule) → invalid plan, not a null-child deref.
+        if (!left || !right) {
+            return nullptr;
         }
         join->set_children(std::move(left), std::move(right));
         return join;

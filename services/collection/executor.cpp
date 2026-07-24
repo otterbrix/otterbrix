@@ -39,6 +39,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -184,7 +185,9 @@ namespace services::collection::executor {
                            actor_zeta::address_t disk_address,
                            actor_zeta::address_t index_address,
                            log_t&& log,
-                           uint64_t dml_flush_row_threshold)
+                           uint64_t dml_flush_row_threshold,
+                           planner::create_plan_rule_t create_plan_rule,
+                           components::planner::optimizer_pass_t optimizer_pass)
         : actor_zeta::basic_actor<executor_t>{resource}
         , parent_address_(std::move(parent_address))
         , wal_address_(std::move(wal_address))
@@ -192,6 +195,8 @@ namespace services::collection::executor {
         , index_address_(std::move(index_address))
         , log_(log)
         , function_registry_(resource)
+        , create_plan_rule_(create_plan_rule)
+        , optimizer_pass_(optimizer_pass)
         , dml_flush_row_threshold_(dml_flush_row_threshold)
         , explain_renderers_(resource) {
         register_default_functions(function_registry_);
@@ -278,6 +283,9 @@ namespace services::collection::executor {
         // pointer is consumed only at plan-build time (inside create_plan),
         // before the move into plan_data below.
         context_storage.parameters = &plan.parameters->parameters();
+        // Host-injected: create_plan reads this at its extension arm to lower a
+        // node_extension leaf through the host operator (ctor chain -> executor).
+        context_storage.create_plan_rule = create_plan_rule_;
         components::operators::operator_ptr node = planner::create_plan(context_storage,
                                                                         function_registry_,
                                                                         plan.sub_queries.back(),
@@ -332,6 +340,7 @@ namespace services::collection::executor {
                                                        false,
                                                        std::move(captured_subplans))};
         }
+
 
         auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
         plan_data.analyze = explain_analyze;
@@ -501,7 +510,8 @@ namespace services::collection::executor {
                 captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
             }
             if (plan_only) {
-                // Plan-only: the IR is captured; there is no data cursor to compact or param to bind.
+                // Plan-only EXPLAIN: no execution ran — there is no data cursor to
+                // compact or param to bind.
                 continue;
             }
             trace(log_,
@@ -640,6 +650,14 @@ namespace services::collection::executor {
                         auto* d = static_cast<const node_aggregate_t*>(n);
                         add_dbrel(static_cast<const std::string&>(d->dbname()),
                                   static_cast<const std::string&>(d->relname()));
+                        break;
+                    }
+                    // Host-extension source: a registered catalog table lowered by a
+                    // host operator — resolve its (db, rel) like any table so
+                    // validate/enrich can type + stamp it from the catalog.
+                    case node_type::extension_t: {
+                        auto* d = static_cast<const components::logical_plan::node_extension_t*>(n);
+                        add_dbrel(d->dbname(), d->relname());
                         break;
                     }
                     case node_type::match_t: {
@@ -1628,9 +1646,10 @@ namespace services::collection::executor {
         // a precondition, not a fallback.
         const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
         plan.sub_queries.back() = components::planner::optimize(resource(),
-                                                                std::move(plan.sub_queries.back()),
-                                                                plan.parameters.get(),
-                                                                can_push_to_agent);
+                                                               std::move(plan.sub_queries.back()),
+                                                               plan.parameters.get(),
+                                                               can_push_to_agent,
+                                                               optimizer_pass_);
 
         // Build-side selection: fetch live row counts for the child
         // tables of every INNER hash join so create_plan_join can put the smaller

@@ -818,13 +818,32 @@ namespace services::dispatcher {
                                                       std::pmr::string{"unary minus with no operand", resource});
                                     return components::types::complex_logical_type(logical_type::INVALID);
                                 }
-                                return (*this)(s->params()[0]);
+                                auto operand_type = (*this)(s->params()[0]);
+                                if (!resolve_error.contains_error() &&
+                                    !is_arithmetic_numeric(operand_type.type())) {
+                                    resolve_error =
+                                        core::error_t(core::error_code_t::schema_error,
+                                                      std::pmr::string{
+                                                          "unary minus requires a numeric operand",
+                                                          resource});
+                                    return components::types::complex_logical_type(logical_type::INVALID);
+                                }
+                                return operand_type;
                             }
                             if (!s->params().empty()) {
                                 auto lt = (*this)(s->params()[0]);
                                 auto rt = s->params().size() > 1 ? (*this)(s->params()[1]) : lt;
-                                return components::types::complex_logical_type(
-                                    arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(s->type())));
+                                auto result =
+                                    arithmetic_result_type(lt.type(), rt.type(), scalar_to_arith_op(s->type()));
+                                if (!resolve_error.contains_error() && result == logical_type::NA) {
+                                    resolve_error =
+                                        core::error_t(core::error_code_t::schema_error,
+                                                      std::pmr::string{
+                                                          "arithmetic requires numeric or compatible temporal operands",
+                                                          resource});
+                                    return components::types::complex_logical_type(logical_type::INVALID);
+                                }
+                                return components::types::complex_logical_type(result);
                             }
                         }
                         resolve_error =
@@ -925,6 +944,10 @@ namespace services::dispatcher {
                                              std::pmr::string{"unary minus with no operand", resource});
                     }
                     result_type = resolve(scalar_expr->params()[0]);
+                    if (!resolve_error.contains_error() && !is_arithmetic_numeric(result_type.type())) {
+                        return core::error_t(core::error_code_t::schema_error,
+                                             std::pmr::string{"unary minus requires a numeric operand", resource});
+                    }
                     break;
                 }
                 case scalar_type::add:

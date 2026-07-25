@@ -32,6 +32,21 @@ namespace components::operators {
             }
         }
 
+        types::logical_type operand_type(const resolved_operand& operand) {
+            return operand.vec ? operand.vec->type().type() : operand.scalar->type().type();
+        }
+
+        core::error_t unsupported_arithmetic_error(std::pmr::memory_resource* resource) {
+            return core::error_t(core::error_code_t::arithmetics_failure,
+                                 std::pmr::string{"arithmetic requires numeric or compatible temporal operands",
+                                                  resource});
+        }
+
+        core::error_t unsupported_unary_minus_error(std::pmr::memory_resource* resource) {
+            return core::error_t(core::error_code_t::arithmetics_failure,
+                                 std::pmr::string{"unary minus requires a numeric operand", resource});
+        }
+
         core::result_wrapper_t<resolved_operand> resolve_operand(const expressions::param_storage& param,
                                                                  vector::data_chunk_t& chunk,
                                                                  const logical_plan::storage_parameters& params,
@@ -80,6 +95,9 @@ namespace components::operators {
                         if (inner_op.has_error()) {
                             return inner_op;
                         }
+                        if (!types::is_arithmetic_numeric(operand_type(inner_op.value()))) {
+                            return unsupported_unary_minus_error(resource);
+                        }
 
                         uint64_t count = chunk.size();
                         vector::vector_t computed(resource,
@@ -121,6 +139,10 @@ namespace components::operators {
                     auto right_op = resolve_operand(operands[1], chunk, params, resource, sub_temps, session_tz);
                     if (right_op.has_error()) {
                         return right_op;
+                    }
+                    if (types::arithmetic_result_type(operand_type(left_op.value()), operand_type(right_op.value()), op) ==
+                        types::logical_type::NA) {
+                        return unsupported_arithmetic_error(resource);
                     }
                     uint64_t count = chunk.size();
 
@@ -229,6 +251,9 @@ namespace components::operators {
                         if (inner.has_error()) {
                             return inner;
                         }
+                        if (!types::is_arithmetic_numeric(inner.value().type().type())) {
+                            return unsupported_unary_minus_error(resource);
+                        }
                         return types::logical_value_t::subtract(types::logical_value_t(resource, int64_t(0)),
                                                                 inner.value());
                     }
@@ -245,6 +270,13 @@ namespace components::operators {
                     auto r = resolve_row_value(resource, scalar->params()[1], chunk, params, row_idx, session_tz);
                     if (r.has_error()) {
                         return r;
+                    }
+                    vector::arithmetic_op arithmetic_op;
+                    if (!scalar_to_arithmetic_op(scalar->type(), arithmetic_op) ||
+                        types::arithmetic_result_type(l.value().type().type(),
+                                                      r.value().type().type(),
+                                                      arithmetic_op) == types::logical_type::NA) {
+                        return unsupported_arithmetic_error(resource);
                     }
                     switch (scalar->type()) {
                         case expressions::scalar_type::add:
@@ -620,6 +652,9 @@ namespace components::operators {
             if (operand_res.has_error()) {
                 return operand_res.convert_error<vector::vector_t>();
             }
+            if (!types::is_arithmetic_numeric(detail::operand_type(operand_res.value()))) {
+                return detail::unsupported_unary_minus_error(resource);
+            }
             uint64_t count = chunk.size();
             if (operand_res.value().vec) {
                 return vector::compute_unary_neg(resource, *operand_res.value().vec, count);
@@ -653,6 +688,11 @@ namespace components::operators {
         if (!detail::scalar_to_arithmetic_op(op, arith_op)) {
             return core::error_t(core::error_code_t::arithmetics_failure,
                                  std::pmr::string{"Not an arithmetic scalar_type", resource});
+        }
+        if (types::arithmetic_result_type(detail::operand_type(left_op.value()),
+                                          detail::operand_type(right_op.value()),
+                                          arith_op) == types::logical_type::NA) {
+            return detail::unsupported_arithmetic_error(resource);
         }
 
         if (left_op.value().vec && right_op.value().vec) {

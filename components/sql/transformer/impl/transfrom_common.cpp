@@ -541,6 +541,15 @@ namespace components::sql::transform {
                         // that would turn match-nothing into match-everything.
                         return make_compare_expression(resource_, compare_type::all_false);
                     }
+                    // LIKE patterns are text-only. Reading a numeric/bool payload through
+                    // value<std::string_view>() below treats it as a std::string pointer and
+                    // crashes before the executor's regex operand guards can report an error.
+                    if (!types::is_string(raw_val.value().type().type())) {
+                        error_ =
+                            core::error_t(core::error_code_t::sql_parse_error,
+                                          std::pmr::string{"LIKE: right side must be a string", resource_});
+                        return nullptr;
+                    }
                     auto pattern = expressions::like_to_regex(std::string(raw_val.value().value<std::string_view>()));
                     auto param_id = plan->parameters->add_parameter(types::logical_value_t(resource_, pattern));
                     const bool icase = (op_str == "~~*" || op_str == "!~~*");  // ILIKE / NOT ILIKE

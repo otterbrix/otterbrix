@@ -89,6 +89,32 @@ namespace otterbrix {
         return wait_future(future);
     }
 
+    auto wrapper_dispatcher_t::register_cast(const session_id_t& session,
+                                             const components::types::complex_logical_type& source,
+                                             const components::types::complex_logical_type& target,
+                                             components::casts::cast_entry entry) -> bool {
+        trace(log_, "wrapper_dispatcher_t::register_cast session: {}", session.data());
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+                                                       &services::dispatcher::manager_dispatcher_t::register_cast,
+                                                       session,
+                                                       source,
+                                                       target,
+                                                       entry);
+        return wait_future(future);
+    }
+
+    auto wrapper_dispatcher_t::unregister_cast(const session_id_t& session,
+                                               const components::types::complex_logical_type& source,
+                                               const components::types::complex_logical_type& target) -> bool {
+        trace(log_, "wrapper_dispatcher_t::unregister_cast session: {}", session.data());
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
+                                                       &services::dispatcher::manager_dispatcher_t::unregister_cast,
+                                                       session,
+                                                       source,
+                                                       target);
+        return wait_future(future);
+    }
+
     auto wrapper_dispatcher_t::execute_plan(const session_id_t& session,
                                             components::logical_plan::execution_plan_t plan) -> cursor_t_ptr {
         using namespace components::logical_plan;

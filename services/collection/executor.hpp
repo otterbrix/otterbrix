@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/base/collection_full_name.hpp>
+#include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
@@ -120,6 +121,12 @@ namespace services::collection::executor {
         // safe: nothing copies it, the mailbox moves it. Appended LAST so every
         // aggregate-init brace that sets a prefix of members stays valid.
         std::optional<explain_plan_node> captured_explain_ir{};
+        // Set by the register/unregister-cast resolve+validate pass: the source and
+        // target types after catalog-resolve. The dispatcher reads these to fan the
+        // cast out to every executor registry and (for register) drive the pg_cast
+        // write — the pipeline itself touches neither registry nor pg_cast.
+        std::optional<std::pair<components::types::complex_logical_type, components::types::complex_logical_type>>
+            resolved_cast{};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -223,6 +230,17 @@ namespace services::collection::executor {
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
                                                                        components::compute::function_ptr function);
 
+        // Add / remove one cast in THIS executor's cast_registry_. Fanned out from
+        // the dispatcher so every per-executor registry stays identical — the
+        // registry is the sole runtime cast authority (there is no default one).
+        unique_future<bool> register_cast(components::session::session_id_t session,
+                                          components::types::complex_logical_type source,
+                                          components::types::complex_logical_type target,
+                                          components::casts::cast_entry entry);
+        unique_future<bool> unregister_cast(components::session::session_id_t session,
+                                            components::types::complex_logical_type source,
+                                            components::types::complex_logical_type target);
+
         // Register a host EXPLAIN renderer into this executor's registry at slot `id` (host
         // customization; fanned out from the dispatcher). POD fn-pointers stored per-executor — no
         // shared mutable state (Rule 10). Registration is rare; per-query selection is a local index.
@@ -243,6 +261,8 @@ namespace services::collection::executor {
 
         using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan_full,
                                                             &executor_t::register_udf,
+                                                            &executor_t::register_cast,
+                                                            &executor_t::unregister_cast,
                                                             &executor_t::set_explain_renderer,
                                                             &executor_t::poke_msg>;
 
@@ -324,6 +344,7 @@ namespace services::collection::executor {
         actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
         log_t log_;
         components::compute::function_registry_t function_registry_;
+        components::casts::cast_registry_t cast_registry_;
         // Config-gated bound on rows buffered by a streaming DML sink before the
         // execute_pipeline pump forces an incremental async flush. 0 = disabled
         // (the mid-pump gate never fires).

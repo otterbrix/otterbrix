@@ -614,6 +614,41 @@ namespace components::catalog {
         return result;
     }
 
+    std::vector<catalog_write_t> build_create_cast_writes(std::pmr::memory_resource* resource,
+                                                          oid_t cast_oid,
+                                                          oid_t source_type_oid,
+                                                          oid_t target_type_oid) {
+        std::vector<catalog_write_t> result;
+
+        // pg_cast row
+        if (const auto* def = find_system_table("pg_cast")) {
+            auto chunk =
+                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource*) {
+                    set_oid(c, 0, 0, cast_oid);
+                    set_oid(c, 1, 0, source_type_oid);
+                    set_oid(c, 2, 0, target_type_oid);
+                });
+            result.push_back(make_write(well_known_oid::pg_cast_table, std::move(chunk)));
+        }
+
+        // pg_depend rows: pg_cast_table, cast_oid → pg_type_table, {source,target}, 'n'
+        if (const auto* def = find_system_table("pg_depend")) {
+            for (const oid_t ref_type_oid : {source_type_oid, target_type_oid}) {
+                auto chunk =
+                    make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                        set_oid(c, 0, 0, well_known_oid::pg_cast_table);
+                        set_oid(c, 1, 0, cast_oid);
+                        set_oid(c, 2, 0, well_known_oid::pg_type_table);
+                        set_oid(c, 3, 0, ref_type_oid);
+                        set_str(c, 4, 0, "n", r);
+                    });
+                result.push_back(make_write(pg_depend_full, std::move(chunk)));
+            }
+        }
+
+        return result;
+    }
+
     std::vector<catalog_write_t> build_create_constraint_writes(std::pmr::memory_resource* resource,
                                                                 const std::string& constraint_name,
                                                                 oid_t table_oid,

@@ -110,6 +110,28 @@ namespace services::disk {
         co_return out;
     }
 
+    manager_disk_t::unique_future<components::catalog::oid_t>
+    manager_disk_t::find_cast_oid(execution_context_t /*ctx*/,
+                                  components::catalog::oid_t source_oid,
+                                  components::catalog::oid_t target_oid) {
+        auto batches = co_await scan_table(pg_cast_oid,
+                                           std::unique_ptr<components::table::table_filter_t>{},
+                                           std::vector<std::size_t>{0, 1, 2});
+        for (auto& chunk : batches) {
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.is_null(1, i) || chunk.is_null(2, i)) {
+                    continue;
+                }
+                const auto castsource = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                const auto casttarget = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
+                if (castsource == source_oid && casttarget == target_oid) {
+                    co_return static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                }
+            }
+        }
+        co_return components::catalog::INVALID_OID;
+    }
+
     manager_disk_t::unique_future<std::pmr::vector<std::string>>
     manager_disk_t::list_namespaces(execution_context_t /*ctx*/) {
         std::pmr::vector<std::string> out(resource());

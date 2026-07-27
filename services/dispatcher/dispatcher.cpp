@@ -1,11 +1,18 @@
 #include "dispatcher.hpp"
 
+#include <components/casts/default_casts.hpp>
 #include <components/context/context.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
+#include <components/logical_plan/node_sequence.hpp>
+#include <components/logical_plan/param_storage.hpp>
 #include <components/logical_plan/node_unregister_udf.hpp>
+#include <components/physical_plan/operators/operator_register_cast.hpp>
 #include <components/physical_plan/operators/operator_register_udf.hpp>
 #include <components/physical_plan/operators/operator_unregister_udf.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <components/physical_plan_generator/impl/create_plan_register_cast.hpp>
 #include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
 #include <core/executor.hpp>
 #include <core/tracy/tracy.hpp>
@@ -50,6 +57,8 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::execute_plan>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_udf>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_udf>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_cast>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_cast>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_explain_renderer>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_begin_session_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_mark_explicit_msg>,
@@ -95,9 +104,11 @@ namespace services::dispatcher {
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
         , txn_manager_(resource_ptr)
+        , cast_registry_(resource_ptr)
         , pending_void_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
+        components::casts::register_default_casts(cast_registry_);
 
         // Event-loop-in-thread model. enqueue_impl (any sender thread) only
         // pushes into the lock-free inbox_ and notifies pump_cv_; this thread
@@ -294,6 +305,14 @@ namespace services::dispatcher {
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_udf>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::unregister_udf, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_cast>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::register_cast, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_cast>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::unregister_cast, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_explain_renderer>: {
@@ -671,6 +690,204 @@ namespace services::dispatcher {
 
         auto* uu = static_cast<components::operators::operator_unregister_udf_t*>(op.get());
         co_return uu->success();
+    }
+
+    namespace {
+        // Wrap a register/unregister-cast leaf in a sequence that first resolves any
+        // UDT source/target type names against the catalog, so execute_plan_full's
+        // resolve/validate pass turns them into real types (or leaves UNKNOWN → rejected).
+        components::logical_plan::execution_plan_t
+        make_cast_resolve_plan(std::pmr::memory_resource* resource,
+                               components::logical_plan::node_ptr leaf,
+                               const components::types::complex_logical_type& source,
+                               const components::types::complex_logical_type& target) {
+            auto seq = boost::intrusive_ptr(new components::logical_plan::node_sequence_t(resource));
+            seq->append_child(components::logical_plan::make_node_catalog_resolve_namespace(
+                resource,
+                core::dbname_t{std::string{"public"}}));
+            for (const auto* type : {&source, &target}) {
+                if (type->type() == components::types::logical_type::UNKNOWN) {
+                    seq->append_child(components::logical_plan::make_node_catalog_resolve_type(
+                        resource,
+                        core::dbname_t{std::string{"public"}},
+                        core::typename_t{std::string(type->type_name())}));
+                }
+            }
+            seq->append_child(std::move(leaf));
+            return components::logical_plan::execution_plan_t{resource,
+                                                              seq,
+                                                              components::logical_plan::make_parameter_node(resource)};
+        }
+    } // namespace
+
+    manager_dispatcher_t::unique_future<bool>
+    manager_dispatcher_t::register_cast(components::session::session_id_t session,
+                                        components::types::complex_logical_type source,
+                                        components::types::complex_logical_type target,
+                                        components::casts::cast_entry entry) {
+        trace(log_, "dispatcher_t::register_cast session: {}", session.data());
+
+        // Step 1 — resolve + validate through the standard pipeline (read-only): an
+        // unregistered source/target type is rejected, as is an already-registered
+        // (source, target). The executor returns the resolved types on resolved_cast.
+        auto leaf = boost::intrusive_ptr(
+            new components::logical_plan::node_register_cast_t(resource(), source, target, entry));
+        auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
+        const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
+                                                              &collection::executor::executor_t::execute_plan_full,
+                                                              session,
+                                                              std::move(plan));
+        if (needs_sched && executors_[pool_idx]) {
+            scheduler_->enqueue(executors_[pool_idx].get());
+        }
+        auto res = co_await std::move(fut);
+        // The resolve/validate pass mutates nothing; end its implicit session txn.
+        if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
+            txn_manager_.abort(session);
+            try_trigger_cleanup_if_horizon_advanced();
+        }
+        if (!res.cursor || res.cursor->is_error() || !res.resolved_cast) {
+            co_return false;
+        }
+        const auto resolved_source = res.resolved_cast->first;
+        const auto resolved_target = res.resolved_cast->second;
+
+        // Step 2 — set the registries FIRST (fan-out to every executor + the
+        // dispatcher-side copy). Registry before catalog: a crash after this but
+        // before the pg_cast write can never leave a durable row with no live cast.
+        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
+        ack_futures.reserve(executor_addresses_.size());
+        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
+            auto [ns, ack] = actor_zeta::otterbrix::send(executor_addresses_[i],
+                                                         &collection::executor::executor_t::register_cast,
+                                                         session,
+                                                         resolved_source,
+                                                         resolved_target,
+                                                         entry);
+            if (ns && executors_[i]) {
+                scheduler_->enqueue(executors_[i].get());
+            }
+            ack_futures.push_back(std::move(ack));
+        }
+        bool fanout_ok = true;
+        for (auto& ack : ack_futures) {
+            if (!co_await std::move(ack)) {
+                fanout_ok = false;
+            }
+        }
+        if (!fanout_ok) {
+            co_return false;
+        }
+        cast_registry_.add(resolved_source, resolved_target, components::casts::cast_entry(entry));
+
+        // Step 3 — write the pg_cast row (catalog after registry).
+        auto write_leaf = boost::intrusive_ptr(
+            new components::logical_plan::node_register_cast_t(resource(), resolved_source, resolved_target, entry));
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        auto op = services::planner::impl::create_plan_register_cast(cstor, write_leaf);
+        if (!op) {
+            co_return false;
+        }
+        op->set_as_root();
+        components::logical_plan::storage_parameters params(resource());
+        components::compute::function_registry_t fn_registry{resource()};
+        components::pipeline::context_t pctx{session,
+                                             actor_zeta::address_t::empty_address(),
+                                             actor_zeta::address_t::empty_address(),
+                                             &fn_registry,
+                                             params};
+        pctx.disk_address = disk_address_;
+        pctx.txn = components::table::transaction_data{0, 0};
+        op->prepare();
+        co_await op->await_async_and_resume(&pctx);
+        if (pctx.has_pending_disk_futures()) {
+            auto futures = pctx.take_pending_disk_futures();
+            for (auto& f : futures) {
+                co_await std::move(f);
+            }
+        }
+        auto* rc = static_cast<components::operators::operator_register_cast_t*>(op.get());
+        co_return rc->success();
+    }
+
+    manager_dispatcher_t::unique_future<bool>
+    manager_dispatcher_t::unregister_cast(components::session::session_id_t session,
+                                          components::types::complex_logical_type source,
+                                          components::types::complex_logical_type target) {
+        trace(log_, "dispatcher_t::unregister_cast session: {}", session.data());
+
+        // Step 1 — resolve + validate: reject an unregistered type or a cast that
+        // does not exist; get the resolved types back.
+        auto leaf =
+            boost::intrusive_ptr(new components::logical_plan::node_unregister_cast_t(resource(), source, target));
+        auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
+        const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
+                                                              &collection::executor::executor_t::execute_plan_full,
+                                                              session,
+                                                              std::move(plan));
+        if (needs_sched && executors_[pool_idx]) {
+            scheduler_->enqueue(executors_[pool_idx].get());
+        }
+        auto res = co_await std::move(fut);
+        if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
+            txn_manager_.abort(session);
+            try_trigger_cleanup_if_horizon_advanced();
+        }
+        if (!res.cursor || res.cursor->is_error() || !res.resolved_cast) {
+            co_return false;
+        }
+        const auto resolved_source = res.resolved_cast->first;
+        const auto resolved_target = res.resolved_cast->second;
+
+        // Step 2 — remove from every registry FIRST.
+        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
+        ack_futures.reserve(executor_addresses_.size());
+        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
+            auto [ns, ack] = actor_zeta::otterbrix::send(executor_addresses_[i],
+                                                         &collection::executor::executor_t::unregister_cast,
+                                                         session,
+                                                         resolved_source,
+                                                         resolved_target);
+            if (ns && executors_[i]) {
+                scheduler_->enqueue(executors_[i].get());
+            }
+            ack_futures.push_back(std::move(ack));
+        }
+        for (auto& ack : ack_futures) {
+            co_await std::move(ack);
+        }
+        cast_registry_.remove(resolved_source, resolved_target);
+
+        // Step 3 — delete the pg_cast row (catalog after registry).
+        auto write_leaf = boost::intrusive_ptr(
+            new components::logical_plan::node_unregister_cast_t(resource(), resolved_source, resolved_target));
+        services::context_storage_t cstor{resource(), log_.clone(), session_tz(session)};
+        auto op = services::planner::impl::create_plan_unregister_cast(cstor, write_leaf);
+        if (!op) {
+            co_return false;
+        }
+        op->set_as_root();
+        components::logical_plan::storage_parameters params(resource());
+        components::compute::function_registry_t fn_registry{resource()};
+        components::pipeline::context_t pctx{session,
+                                             actor_zeta::address_t::empty_address(),
+                                             actor_zeta::address_t::empty_address(),
+                                             &fn_registry,
+                                             params};
+        pctx.disk_address = disk_address_;
+        pctx.txn = components::table::transaction_data{0, 0};
+        op->prepare();
+        co_await op->await_async_and_resume(&pctx);
+        if (pctx.has_pending_disk_futures()) {
+            auto futures = pctx.take_pending_disk_futures();
+            for (auto& f : futures) {
+                co_await std::move(f);
+            }
+        }
+        auto* uc = static_cast<components::operators::operator_unregister_cast_t*>(op.get());
+        co_return uc->success();
     }
 
     // ===== txn-state mailbox service =====

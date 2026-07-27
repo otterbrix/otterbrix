@@ -71,6 +71,7 @@ namespace components::catalog {
         inline constexpr oid_t pg_sequence_table = 37;
         inline constexpr oid_t pg_rewrite_table = 38;
         inline constexpr oid_t pg_settings_table = 39;
+        inline constexpr oid_t pg_cast_table = 40;
 
         // Built-in functions (pg_proc.oid) — subset.
         inline constexpr oid_t fn_count = 101;

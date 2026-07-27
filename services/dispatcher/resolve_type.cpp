@@ -22,21 +22,23 @@ namespace services::dispatcher {
     // transform_create_table / transform_types emit resolve_type per UDT
     // before Pass 1; we consume what Pass 1 stamped. Misses leave the type
     // as UNKNOWN — validate_types_sync surfaces "type not registered".
-    void resolve_one_type(components::types::complex_logical_type& ct, const impl::plan_resolve_index_t* idx) {
+    components::catalog::oid_t resolve_one_type(components::types::complex_logical_type& ct,
+                                                const impl::plan_resolve_index_t* idx) {
         if (ct.type() != components::types::logical_type::UNKNOWN)
-            return;
+            return components::catalog::builtin_type_to_oid(ct.type());
         if (resolve_builtin(ct))
-            return;
+            return components::catalog::builtin_type_to_oid(ct.type());
         const auto* md = impl::type_md_for(idx, "public", std::string_view(ct.type_name()));
         if (!md) {
             md = impl::type_md_for(idx, "pg_catalog", std::string_view(ct.type_name()));
         }
         if (!md)
-            return;
+            return components::catalog::INVALID_OID;
         const std::string alias = ct.has_alias() ? ct.alias() : std::string{};
         ct = md->type;
         if (!alias.empty())
             ct.set_alias(alias);
+        return md->type_oid;
     }
 
     void resolve_column_definitions(std::vector<components::table::column_definition_t>& cols,

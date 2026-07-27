@@ -21,6 +21,7 @@
 #include <list>
 #include <mutex>
 
+#include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/session_catalog.hpp>
 #include <components/compute/function.hpp>
@@ -117,6 +118,15 @@ namespace services::dispatcher {
         unique_future<bool> unregister_udf(components::session::session_id_t session,
                                            std::string function_name,
                                            std::pmr::vector<components::types::complex_logical_type> inputs);
+        // Fan a cast out to (register) / remove it from (unregister) every executor's
+        // cast_registry_, then write / delete the pg_cast row via the operator.
+        unique_future<bool> register_cast(components::session::session_id_t session,
+                                          components::types::complex_logical_type source,
+                                          components::types::complex_logical_type target,
+                                          components::casts::cast_entry entry);
+        unique_future<bool> unregister_cast(components::session::session_id_t session,
+                                            components::types::complex_logical_type source,
+                                            components::types::complex_logical_type target);
         // Fan a host-supplied EXPLAIN renderer out to every executor, registering it at registry
         // slot `id` (each keeps its own POD fn-pointer copy — no shared state). Pool-admin
         // op, like register_udf. Per-query selection then rides execution_plan_t::explain_render_id.
@@ -177,6 +187,8 @@ namespace services::dispatcher {
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::register_udf,
                                                             &manager_dispatcher_t::unregister_udf,
+                                                            &manager_dispatcher_t::register_cast,
+                                                            &manager_dispatcher_t::unregister_cast,
                                                             &manager_dispatcher_t::set_explain_renderer,
                                                             &manager_dispatcher_t::txn_begin_session_msg,
                                                             &manager_dispatcher_t::txn_mark_explicit_msg,
@@ -239,6 +251,7 @@ namespace services::dispatcher {
         std::condition_variable pump_cv_;
 
         components::table::transaction_manager_t txn_manager_;
+        components::casts::cast_registry_t cast_registry_;
         components::catalog::session_catalog_t default_tz_cat_;
 
         core::date::timezone_offset_t session_tz(components::session::session_id_t /*session*/) const {

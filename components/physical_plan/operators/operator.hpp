@@ -102,6 +102,8 @@ namespace components::operators {
         // operator_unregister_udf_t reverses the registry+pg_proc effects.
         register_udf,
         unregister_udf,
+        register_cast,
+        unregister_cast,
         // COMMIT / ROLLBACK — operator-pipeline replacement for inline
         // manager_dispatcher_t::{commit,abort}_transaction. The operator
         // drives txn_manager->{commit,abort}() and (for commit) the

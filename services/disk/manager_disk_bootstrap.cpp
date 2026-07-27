@@ -131,6 +131,8 @@ namespace services::disk {
                 return components::catalog::well_known_oid::pg_rewrite_table;
             if (name == "pg_settings")
                 return components::catalog::well_known_oid::pg_settings_table;
+            if (name == "pg_cast")
+                return components::catalog::well_known_oid::pg_cast_table;
             return components::catalog::INVALID_OID;
         }
     } // namespace

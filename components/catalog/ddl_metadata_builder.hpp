@@ -110,6 +110,14 @@ namespace components::catalog {
                                                               const std::string& proargmatchers,
                                                               const std::string& prorettype);
 
+    // Writes 1 row → pg_cast (oid, castsource, casttarget) + two pg_depend 'n'
+    // edges anchoring the cast on its source and target pg_type rows, so a
+    // DROP TYPE cascades to the cast.
+    std::vector<catalog_write_t> build_create_cast_writes(std::pmr::memory_resource* resource,
+                                                          oid_t cast_oid,
+                                                          oid_t source_type_oid,
+                                                          oid_t target_type_oid);
+
     // Writes pg_constraint + pg_depend(→table 'i') +
     //   N×pg_depend(→fk_col 'i') + if FK: pg_depend(→ref_table 'n').
     // ref_table_oid == INVALID_OID for non-FK constraints.

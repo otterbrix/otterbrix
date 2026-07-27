@@ -24,6 +24,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_join_raw.cpp
         test_connections.cpp
         test_udfs.cpp
+        test_register_cast.cpp
         test_batch_execution.cpp
         test_table_function.cpp
         test_lateral_subquery.cpp

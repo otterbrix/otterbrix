@@ -411,3 +411,41 @@ TEST_CASE("integration::cpp::order_by_expressions::null_literal_arithmetic_keys"
         REQUIRE(cur->size() == 2);
     }
 }
+
+TEST_CASE("integration::cpp::order_by_expressions::computed_key_over_group_output") {
+    auto config = test_create_config("/tmp/test_order_by_expressions/group_computed");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    setup(dispatcher);
+
+    // The grouped validation path used to cast every ORDER BY child to sort_expression_t;
+    // a computed key's direction encoding then reached column-path resolution and the
+    // whole statement crashed before execution. A computed key over a GROUP BY output
+    // column is valid SQL and must sort the aggregated rows.
+    auto session = otterbrix::session_id_t();
+    auto cur = dispatcher->execute_sql(session, "SELECT g, COUNT(*) FROM db.t GROUP BY g ORDER BY g + 0 DESC;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 2);
+    REQUIRE(cur->value(0, 0).value<int32_t>() == 2);
+    REQUIRE(cur->value(0, 1).value<int32_t>() == 1);
+}
+
+TEST_CASE("integration::cpp::order_by_expressions::computed_key_over_ungrouped_column_is_error") {
+    auto config = test_create_config("/tmp/test_order_by_expressions/group_computed_bad");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    setup(dispatcher);
+
+    // PostgreSQL parity: an ORDER BY expression over a column that is neither grouped nor
+    // aggregated must be rejected cleanly.
+    auto session = otterbrix::session_id_t();
+    auto cur = dispatcher->execute_sql(session, "SELECT g, COUNT(*) FROM db.t GROUP BY g ORDER BY v + 0 DESC;");
+    REQUIRE(cur->is_error());
+}
+

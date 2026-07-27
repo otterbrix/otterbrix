@@ -2689,6 +2689,12 @@ namespace services::dispatcher {
                 if (node_sort) {
                     // Add hidden columns for sort keys not in the GROUP output
                     for (auto& sort_child : node_sort->expressions()) {
+                        if (sort_child->group() != expression_group::sort) {
+                            // A computed (scalar) sort key has no column of its own — its key
+                            // carries the direction encoding, not a name. Its operands are
+                            // resolved against the GROUP output by validate_schema below.
+                            continue;
+                        }
                         auto* sort_expr = static_cast<sort_expression_t*>(sort_child.get());
                         auto& skey = sort_expr->key();
                         // Try resolving in the GROUP result schema first

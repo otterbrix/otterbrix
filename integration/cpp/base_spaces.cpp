@@ -250,7 +250,7 @@ namespace otterbrix {
                                 }
                                 // TODO: load timezone from settings?
                                 for (auto& chunk : r->physical_data) {
-                                    disk_ptr->direct_append_sync(table_oid, chunk, {});
+                                    disk_ptr->direct_append_sync(table_oid, chunk);
                                 }
                             }
                             break;

@@ -30,9 +30,23 @@
 #include <components/tests/generaty.hpp>
 #include <components/types/types.hpp>
 #include <services/collection/context_storage.hpp>
+#include <components/casts/default_casts.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include "pushdown_plan_builders.hpp"
+
+namespace {
+    // The resolver takes the cast registry unconditionally; these tests validate no DML node.
+    const components::casts::cast_registry_t* test_cast_registry() {
+        static components::casts::cast_registry_t registry{std::pmr::new_delete_resource()};
+        static const bool loaded = [] {
+            components::casts::register_default_casts(registry);
+            return true;
+        }();
+        (void) loaded;
+        return &registry;
+    }
+} // namespace
 
 using namespace components::logical_plan;
 using namespace components::expressions;
@@ -1301,7 +1315,7 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
         make_node_group(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, group_exprs));
 
     // Drive the REAL validator: stamps key.side()/key.path() and output_types().
-    auto validated = services::dispatcher::validate_schema(&resource, nullptr, outer.get(), params->parameters());
+    auto validated = services::dispatcher::validate_schema(&resource, nullptr, test_cast_registry(), outer.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
     // Precondition the promote rule relies on: the scans carry their columns in
     // output_types() (left_width == 2, right_width == 1).
@@ -1637,7 +1651,7 @@ namespace {
         outer->append_child(uni);
         outer->append_child(
             make_node_match(r, core::dbname_t{database_name}, core::relname_t{collection_name}, where));
-        auto validated = services::dispatcher::validate_schema(r, nullptr, outer.get(), params->parameters());
+        auto validated = services::dispatcher::validate_schema(r, nullptr, test_cast_registry(), outer.get(), params->parameters());
         REQUIRE_FALSE(validated.has_error());
         return outer;
     }

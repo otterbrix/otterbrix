@@ -11,6 +11,7 @@
 #include "plan_resolve_index.hpp"
 
 #include <atomic>
+#include <components/casts/cast_registry.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
@@ -1580,11 +1581,29 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
+    // Type as it should read in a user-facing message: the declared name for a named
+    // type (ENUM / STRUCT / UDT), the pg_type name for everything else.
+    static std::string describe_type(const components::types::complex_logical_type& type) {
+        switch (type.type()) {
+            case components::types::logical_type::ENUM:
+            case components::types::logical_type::STRUCT:
+            case components::types::logical_type::UNKNOWN:
+                if (!type.type_name().empty()) {
+                    return type.type_name();
+                }
+                break;
+            default:
+                break;
+        }
+        return std::string{components::catalog::logical_type_to_pg_name(type.type())};
+    }
+
     // Renamed body of the public validate_schema. All node recursion calls the public
     // wrapper below (which stamps), so every node's output schema is recorded.
     [[nodiscard]] static core::result_wrapper_t<named_schema>
     validate_schema_impl(std::pmr::memory_resource* resource,
                          const impl::plan_resolve_index_t* idx,
+                         const components::casts::cast_registry_t* cast_registry,
                          node_t* node,
                          const components::logical_plan::storage_parameters& parameters) {
         // `idx` is supplied by the dispatcher.
@@ -1672,7 +1691,7 @@ namespace services::dispatcher {
                 }
 
                 if (node_data) {
-                    auto node_data_res = validate_schema(resource, idx, node_data, parameters);
+                    auto node_data_res = validate_schema(resource, idx, cast_registry, node_data, parameters);
                     if (node_data_res.has_error()) {
                         return node_data_res;
                     } else {
@@ -2654,7 +2673,7 @@ namespace services::dispatcher {
                                          "appear on the right side of a RIGHT or FULL join",
                                          resource});
                 }
-                auto left_schema = validate_schema(resource, idx, node->children().front().get(), parameters);
+                auto left_schema = validate_schema(resource, idx, cast_registry, node->children().front().get(), parameters);
                 if (left_schema.has_error()) {
                     return left_schema;
                 }
@@ -2688,7 +2707,7 @@ namespace services::dispatcher {
                     }
                     inner_parameters = &lateral_parameters;
                 }
-                auto right_schema = validate_schema(resource, idx, node->children().back().get(), *inner_parameters);
+                auto right_schema = validate_schema(resource, idx, cast_registry, node->children().back().get(), *inner_parameters);
                 if (right_schema.has_error()) {
                     return right_schema;
                 }
@@ -2724,7 +2743,7 @@ namespace services::dispatcher {
                                          std::pmr::string{"INSERT target collection does not exist", resource});
                 }
 
-                auto incoming_schema = validate_schema(resource, idx, node->children().front().get(), parameters);
+                auto incoming_schema = validate_schema(resource, idx, cast_registry, node->children().front().get(), parameters);
                 if (incoming_schema.has_error()) {
                     return incoming_schema;
                 } else {
@@ -2824,6 +2843,8 @@ namespace services::dispatcher {
                                 unchecked_columns.emplace(i);
                             }
 
+                            components::logical_plan::insert_column_bindings_t bindings(insert_node->resource());
+                            bindings.reserve(incoming_schema.value().size());
                             for (size_t i = 0; i < incoming_schema.value().size(); i++) {
                                 // TODO: support partial inserts into complex types
                                 // for now only first order is checked
@@ -2832,17 +2853,41 @@ namespace services::dispatcher {
                                                    : insert_node->key_translation()[i].path().front();
                                 const auto& corresponding_table_type = table_schema[index].type;
                                 unchecked_columns.erase(index);
-                                if (incoming_schema.value()[i].type.type() != components::types::logical_type::NA &&
-                                    incoming_schema.value()[i].type.type() !=
-                                        components::types::logical_type::UNKNOWN &&
-                                    !incoming_schema.value()[i].type.is_convertable_to(corresponding_table_type)) {
-                                    return core::error_t(core::error_code_t::schema_error,
-                                                         std::pmr::string{"insert_node: can not convert data column[" +
-                                                                              std::to_string(i) +
-                                                                              "] type to table type",
-                                                                          resource});
+                                const auto& incoming_type = incoming_schema.value()[i].type;
+
+                                // The name the append routes on: the written key for an
+                                // explicit column list (it may address a nested field), the
+                                // catalog column name otherwise.
+                                std::string target_name =
+                                    insert_node->key_translation().empty()
+                                        ? tbl_ins->columns[index].attname
+                                        : insert_node->key_translation()[i].as_string();
+                                components::logical_plan::insert_column_binding_t binding{
+                                    .target_index = index,
+                                    .target_name =
+                                        std::pmr::string{target_name.c_str(), insert_node->resource()},
+                                    .target_type = corresponding_table_type,
+                                    .cast = {}};
+                                if (incoming_type != corresponding_table_type) {
+                                    auto cast = cast_registry->resolve(incoming_type,
+                                                                       corresponding_table_type,
+                                                                       components::casts::cast_type::assignment);
+                                    if (!cast.has_value()) {
+                                        return core::error_t(
+                                            core::error_code_t::conversion_failure,
+                                            std::pmr::string{"insert_node: column '" +
+                                                                 tbl_ins->columns[index].attname + "' is of type " +
+                                                                 describe_type(corresponding_table_type) +
+                                                                 " but the inserted value is of type " +
+                                                                 describe_type(incoming_type) +
+                                                                 "; no cast between them may be applied on assignment",
+                                                             resource});
+                                    }
+                                    binding.cast = std::move(cast.value());
                                 }
+                                bindings.emplace_back(std::move(binding));
                             }
+                            insert_node->set_column_bindings(std::move(bindings));
 
                             // validate_static_nulls: for literal VALUES, reject null in NOT NULL cols
                             if (node->children().front()->type() == node_type::data_t && tbl_ins) {
@@ -2979,7 +3024,7 @@ namespace services::dispatcher {
                     // carries from an internal join — otherwise a source column sharing a
                     // name with a target column would resolve to the target index and read
                     // OOB on the (differently shaped) source chunk at runtime.
-                    auto source_res = validate_schema(resource, idx, node_data, parameters);
+                    auto source_res = validate_schema(resource, idx, cast_registry, node_data, parameters);
                     if (source_res.has_error()) {
                         return source_res;
                     }
@@ -3096,11 +3141,11 @@ namespace services::dispatcher {
                     return core::error_t(core::error_code_t::sql_parse_error,
                                          std::pmr::string{"UNION requires both operands to be present", resource});
                 }
-                auto left_res = validate_schema(resource, idx, node->children()[0].get(), parameters);
+                auto left_res = validate_schema(resource, idx, cast_registry, node->children()[0].get(), parameters);
                 if (left_res.has_error()) {
                     return left_res;
                 }
-                auto right_res = validate_schema(resource, idx, node->children()[1].get(), parameters);
+                auto right_res = validate_schema(resource, idx, cast_registry, node->children()[1].get(), parameters);
                 if (right_res.has_error()) {
                     return right_res;
                 }
@@ -3149,7 +3194,7 @@ namespace services::dispatcher {
                     if (!*it)
                         continue;
                     if (!is_catalog_resolve((*it)->type())) {
-                        return validate_schema(resource, idx, it->get(), parameters);
+                        return validate_schema(resource, idx, cast_registry, it->get(), parameters);
                     }
                 }
                 // All children are catalog_resolve_* — no consumer, empty schema.
@@ -3162,7 +3207,7 @@ namespace services::dispatcher {
                         std::pmr::string{"recursive CTE requires both anchor and recursive members", resource});
                 }
                 const auto* cte_node = static_cast<const components::logical_plan::node_recursive_cte_t*>(node);
-                auto anchor_res = validate_schema(resource, idx, node->children()[0].get(), parameters);
+                auto anchor_res = validate_schema(resource, idx, cast_registry, node->children()[0].get(), parameters);
                 if (anchor_res.has_error()) {
                     return anchor_res;
                 }
@@ -3181,7 +3226,8 @@ namespace services::dispatcher {
                 }
                 // Validate recursive member — sets expression paths for SELECT/WHERE/JOIN ON.
                 // Errors here indicate a schema mismatch between anchor and recursive member.
-                auto recursive_res = validate_schema(resource, &idx_with_cte, node->children()[1].get(), parameters);
+                auto recursive_res =
+                    validate_schema(resource, &idx_with_cte, cast_registry, node->children()[1].get(), parameters);
                 if (recursive_res.has_error()) {
                     return recursive_res;
                 }
@@ -3237,9 +3283,10 @@ namespace services::dispatcher {
     core::result_wrapper_t<named_schema>
     validate_schema(std::pmr::memory_resource* resource,
                     const impl::plan_resolve_index_t* idx,
+                    const components::casts::cast_registry_t* cast_registry,
                     node_t* node,
                     const components::logical_plan::storage_parameters& parameters) {
-        auto res = validate_schema_impl(resource, idx, node, parameters);
+        auto res = validate_schema_impl(resource, idx, cast_registry, node, parameters);
         if (!res.has_error() && !res.value().empty()) {
             // Carry the resolved column types (the codebase idiom for a column-type list
             // is std::pmr::vector<complex_logical_type>). Keep each type's alias: it is the

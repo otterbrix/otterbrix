@@ -22,6 +22,8 @@ namespace components::casts {
     // Every external parameter casts may need
     struct cast_context {
         core::date::timezone_offset_t timezone_offset;
+        // Cast may fill values with that, instead of simply leaving a null
+        const types::logical_value_t* fill_value = nullptr;
     };
 
     // CAST: fails hard on a failed cast -> returns error_t

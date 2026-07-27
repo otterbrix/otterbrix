@@ -15,6 +15,10 @@ namespace components::catalog {
     class table_id;
 }
 
+namespace components::casts {
+    class cast_registry_t;
+}
+
 // Real type lives in services::catalog_resolve; impl::plan_resolve_index_t
 // below is an alias (see plan_resolve_index.hpp).
 namespace services::catalog_resolve {
@@ -65,9 +69,12 @@ namespace services::dispatcher {
                                                components::logical_plan::node_t* node,
                                                core::date::timezone_offset_t session_tz);
 
+    // `cast_registry` is the sole source of the casts INSERT/UPDATE column coercion is
+    // stamped from.
     [[nodiscard]] core::result_wrapper_t<named_schema>
     validate_schema(std::pmr::memory_resource* resource,
                     const impl::plan_resolve_index_t* idx,
+                    const components::casts::cast_registry_t* cast_registry,
                     components::logical_plan::node_t* node,
                     const components::logical_plan::storage_parameters& parameters);
 

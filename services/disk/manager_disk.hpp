@@ -505,8 +505,7 @@ namespace services::disk {
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
         uint64_t direct_append_sync(components::catalog::oid_t table_oid,
-                                    components::vector::data_chunk_t& data,
-                                    core::date::timezone_offset_t session_tz);
+                                    components::vector::data_chunk_t& data);
         void direct_delete_sync(components::catalog::oid_t table_oid,
                                 const std::pmr::vector<int64_t>& row_ids,
                                 uint64_t count);

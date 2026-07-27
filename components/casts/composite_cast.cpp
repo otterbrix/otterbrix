@@ -175,7 +175,11 @@ namespace components::casts {
                         target_child.set_value(row * stride + index, staged.value(span.offset + index));
                     }
                     for (uint64_t index = copy_length; index < stride; ++index) {
-                        target_child.set_null(row * stride + index, true); // null-pad the shortfall
+                        if (context.fill_value != nullptr) {
+                            target_child.set_value(row * stride + index, *context.fill_value);
+                        } else {
+                            target_child.set_null(row * stride + index, true);
+                        }
                     }
                 }
                 propagate_row_validity(source, result, count);

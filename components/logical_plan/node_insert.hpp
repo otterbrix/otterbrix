@@ -2,6 +2,7 @@
 
 #include "node.hpp"
 
+#include <components/casts/cast_function.hpp>
 #include <components/catalog/fk_info.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -9,6 +10,15 @@
 #include <utility>
 
 namespace components::logical_plan {
+
+    struct insert_column_binding_t {
+        uint64_t target_index{0};
+        std::pmr::string target_name;
+        types::complex_logical_type target_type;
+        casts::cast_t cast;
+    };
+
+    using insert_column_bindings_t = std::pmr::vector<insert_column_binding_t>;
 
     class node_insert_t final : public node_t {
     public:
@@ -57,6 +67,10 @@ namespace components::logical_plan {
             return column_defaults_;
         }
 
+        // One entry per incoming chunk column, in chunk order. Stamped by validate_schema.
+        void set_column_bindings(insert_column_bindings_t v) { column_bindings_ = std::move(v); }
+        const insert_column_bindings_t& column_bindings() const { return column_bindings_; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -70,6 +84,7 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
         std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
         std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_; // decoded DEFAULTs
+        insert_column_bindings_t column_bindings_;
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/logical_plan/node_insert.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
 
@@ -20,12 +21,13 @@ namespace components::operators {
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
-        // INSERT ... SELECT only: the target column names, in target order. The
-        // streamed SELECT columns are renamed to these before the (name-based)
-        // append, so 'INSERT INTO t (id, a.b) SELECT 5, 55' lands 5,55 in id,a/b
-        // rather than in projection-named columns that leave id/a.b null. Left
-        // empty for INSERT ... VALUES, whose raw-data columns are already named.
-        void set_rename_targets(std::pmr::vector<std::pmr::string> targets) { rename_targets_ = std::move(targets); }
+        // One entry per incoming chunk column, resolved by the validator: the name the
+        // (name-based) append routes on, and the cast that converts the column to its
+        // stored type. Renaming matters for 'INSERT INTO t (id, a.b) SELECT 5, 55',
+        // whose projection columns would otherwise leave id/a.b null.
+        void set_column_bindings(logical_plan::insert_column_bindings_t bindings) {
+            column_bindings_ = std::move(bindings);
+        }
 
         // STREAMING DML (STEP 3b). The insert is a SINK on its input: push() folds
         // each input batch into a bounded accumulator and emits nothing; the executor
@@ -60,8 +62,7 @@ namespace components::operators {
         // Both are materialized into output_ only on the final (is_final) drive.
         chunks_vector_t returning_accum_{resource_};
         uint64_t affected_rows_{0};
-        // Target column names for an INSERT ... SELECT rename (see set_rename_targets).
-        std::pmr::vector<std::pmr::string> rename_targets_{resource_};
+        logical_plan::insert_column_bindings_t column_bindings_{resource_};
     };
 
 } // namespace components::operators

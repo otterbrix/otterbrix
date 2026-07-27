@@ -77,6 +77,36 @@ To preserve uniform access all results are returned as `std::function`.
 Which of the two storage forms a cast takes is decided by whether its body has to capture — per-field and
 per-element casts do — and not by what it converts between.
 
+## Fixed arrays: length mismatch and DEFAULT (open)
+
+A `LIST` whose length differs from its fixed `ARRAY` target is reconciled at the storage append
+(`table::reconcile_to_fixed_array`): a short value is padded from the column DEFAULT position by
+position, or with nulls when there is none, and an over-long one is silently truncated. That is ours
+alone, and no reference agrees with it:
+
+| | short value | over-long value | DEFAULT |
+| --- | --- | --- | --- |
+| SQL standard | valid, stays short (`ARRAY[n]` is a *maximum* cardinality) | data exception, right truncation | whole-value, for an omitted column |
+| PostgreSQL | valid, stays short (declared dimensions ignored) | valid, stored as-is | whole-value |
+| DuckDB (fixed `ARRAY`) | cast error | cast error | whole-value |
+
+The standard has no fixed-length array type at all — its `ARRAY[n]` is our `LIST` with a bound — so it
+does not govern ours directly. But nothing anywhere fabricates missing elements or drops extra ones
+without a diagnostic, which makes the silent truncation the harder half to defend.
+
+The intended direction is **DuckDB's**: a length mismatch is a `conversion_failure` from the registry's
+`list_to_array` cast (already its behaviour under `cast_kind::cast`), and DEFAULT goes back to meaning
+what it means everywhere else — the value for an omitted column. That would let fixed-`ARRAY` columns be
+stamped like every other column and delete `reconcile_to_fixed_array` outright.
+
+Deferred, not decided. Until then those columns stay off the registry and keep reconciling at storage.
+The behaviour is pinned by `integration/cpp/test/test_list_array.cpp` (`array_default_padding`, plus the
+short/over-long/empty sections around `:246`) and `integration/cpp/test/test_index.cpp:1009`; switching
+means rewriting them to expect errors.
+
+`cast_context::fill_value` is unrelated to this decision. It replaces the nulls a cast would otherwise
+write, so it serves `try_cast` and user-defined casts; a plain `cast` produces no nulls to substitute.
+
 ## Current state
 
 Surely there are some bugs in the current version, and it is not complete. For example:

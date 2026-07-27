@@ -9,7 +9,8 @@ namespace components::logical_plan {
     node_insert_t::node_insert_t(std::pmr::memory_resource* resource)
         : node_t(resource, node_type::insert_t)
         , key_translation_(resource)
-        , returning_(resource) {}
+        , returning_(resource)
+        , column_bindings_(resource) {}
 
     std::pmr::vector<expressions::key_t>& node_insert_t::key_translation() { return key_translation_; }
 

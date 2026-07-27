@@ -19,12 +19,26 @@
 #include <components/planner/optimizer/rules/promote_cross_join.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/casts/default_casts.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
 #include <initializer_list>
 #include <memory_resource>
 #include <string>
 #include <vector>
+
+namespace {
+    // The resolver takes the cast registry unconditionally; these tests validate no DML node.
+    const components::casts::cast_registry_t* test_cast_registry() {
+        static components::casts::cast_registry_t registry{std::pmr::new_delete_resource()};
+        static const bool loaded = [] {
+            components::casts::register_default_casts(registry);
+            return true;
+        }();
+        (void) loaded;
+        return &registry;
+    }
+} // namespace
 
 using namespace components;
 using namespace components::logical_plan;
@@ -294,7 +308,7 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     agg->append_child(sort);
     agg->append_child(select);
 
-    auto validated = services::dispatcher::validate_schema(res, nullptr, agg.get(), params->parameters());
+    auto validated = services::dispatcher::validate_schema(res, nullptr, test_cast_registry(), agg.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
 
     node_ptr out = planner::optimizer::promote_cross_joins(res, agg);

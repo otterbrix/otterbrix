@@ -1256,6 +1256,7 @@ namespace services::collection::executor {
                         } else {
                             auto schema_res = services::dispatcher::validate_schema(resource(),
                                                                                     &dispatcher_idx,
+                                                                                    &cast_registry_,
                                                                                     plan.sub_queries.back().get(),
                                                                                     plan.parameters->parameters());
                             if (schema_res.has_error()) {
@@ -1365,6 +1366,7 @@ namespace services::collection::executor {
                     }
                     auto schema_res = services::dispatcher::validate_schema(resource(),
                                                                             &dispatcher_idx,
+                                                                            &cast_registry_,
                                                                             plan.sub_queries.back().get(),
                                                                             overridden ? validate_params
                                                                                        : bound_params);

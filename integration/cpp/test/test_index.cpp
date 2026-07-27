@@ -1006,32 +1006,6 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
         }
     }
 
-    INFO("unit: reconcile_to_fixed_array degrades a non-castable element to NULL");
-    {
-        std::pmr::monotonic_buffer_resource arena;
-        auto* res = &arena;
-
-        // Nullable int[3] column, no default.
-        auto arr_col_type =
-            complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 3);
-        components::table::column_definition_t col("arr", arr_col_type);
-
-        // Source array whose single element is a STRUCT — cast_as(STRUCT -> INTEGER)
-        // errors. Pre-fix: assert-abort (Debug) / empty-optional deref (Release UB).
-        std::vector<logical_value_t> fields;
-        fields.emplace_back(logical_value_t(res, int32_t{9}));
-        auto struct_elem = logical_value_t::create_struct(res, "s", fields);
-        auto src =
-            logical_value_t::create_array(res, struct_elem.type(), std::vector<logical_value_t>{struct_elem});
-
-        auto out = components::table::reconcile_to_fixed_array(res, src, col, core::date::timezone_offset_t{});
-        REQUIRE(out.type().type() == logical_type::ARRAY);
-        REQUIRE(out.children().size() == 3);
-        for (const auto& elem : out.children()) {
-            REQUIRE(elem.is_null()); // element 0 degraded to NULL; slots 1-2 padded NULL
-        }
-    }
-
     INFO("e2e: dynamic-schema INSERT with an out-of-domain indexed key neither aborts nor corrupts");
     {
         auto config = test_create_config("/tmp/otterbrix/integration/test_index/out_of_domain_key");

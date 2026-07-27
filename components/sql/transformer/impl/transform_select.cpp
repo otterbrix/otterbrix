@@ -811,6 +811,14 @@ namespace components::sql::transform {
         {
             for (auto target : node.targetList->lst) {
                 auto res = pg_ptr_cast<ResTarget>(target.data);
+                // `SELECT +x` projects x itself: peel the identity layers so the stripped
+                // node dispatches to its own arm (column, constant, expression) below.
+                res->val = strip_unary_plus(res->val);
+                if (!res->val) {
+                    error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                           std::pmr::string{"operator is missing its operand", resource_});
+                    return nullptr;
+                }
                 switch (nodeTag(res->val)) {
                     case T_FuncCall: {
                         // Aggregate function in SELECT

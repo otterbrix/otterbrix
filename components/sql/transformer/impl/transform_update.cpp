@@ -173,7 +173,12 @@ namespace components::sql::transform {
                 if (indirection->indirection->lst.empty()) {
                     return transform_update_expr(indirection->arg, names, params);
                 } else {
-                    auto key = indirection_to_field(resource_, indirection, names);
+                    auto res = indirection_to_field(resource_, indirection, names);
+                    if (res.has_error()) {
+                        error_ = res.error();
+                        return nullptr;
+                    }
+                    auto key = std::move(res.value());
                     key.deduce_side(names);
                     return {new update_expr_get_value_t(std::move(key.field))};
                 }

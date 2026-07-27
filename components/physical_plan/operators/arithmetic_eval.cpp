@@ -36,13 +36,14 @@ namespace components::operators {
                                                                  vector::data_chunk_t& chunk,
                                                                  const logical_plan::storage_parameters& params,
                                                                  std::pmr::memory_resource* resource,
-                                                                 std::deque<vector::vector_t>& temp_vecs,
+                                                                 std::deque<vector::data_chunk_t::at_aligned_t>& temp_vecs,
                                                                  core::date::timezone_offset_t session_tz) {
             resolved_operand result;
             if (std::holds_alternative<expressions::key_t>(param)) {
                 const auto& key = std::get<expressions::key_t>(param);
                 assert(!key.path().empty() && "key path must be resolved before execution");
-                result.vec = chunk.at(key.path());
+                temp_vecs.push_back(chunk.at_aligned(key.path(), resource));
+                result.vec = temp_vecs.back().get();
                 if (result.vec) {
                     return result;
                 } else {
@@ -65,7 +66,7 @@ namespace components::operators {
                             return computed.convert_error<resolved_operand>();
                         }
                         temp_vecs.emplace_back(std::move(computed.value()));
-                        result.vec = &temp_vecs.back();
+                        result.vec = temp_vecs.back().get();
                         return result;
                     }
 
@@ -75,7 +76,7 @@ namespace components::operators {
                             return core::error_t(core::error_code_t::arithmetics_failure,
                                                  std::pmr::string{"Unary minus requires 1 operand", resource});
                         }
-                        std::deque<vector::vector_t> sub_temps;
+                        std::deque<vector::data_chunk_t::at_aligned_t> sub_temps;
                         auto inner_op = resolve_operand(operands[0], chunk, params, resource, sub_temps, session_tz);
                         if (inner_op.has_error()) {
                             return inner_op;
@@ -97,7 +98,7 @@ namespace components::operators {
                             temp_vecs.emplace_back(std::move(t));
                         }
                         temp_vecs.emplace_back(std::move(computed));
-                        result.vec = &temp_vecs.back();
+                        result.vec = temp_vecs.back().get();
                         return result;
                     }
 
@@ -113,7 +114,7 @@ namespace components::operators {
                             std::pmr::string{"Arithmetic expression requires at least 2 operands", resource});
                     }
 
-                    std::deque<vector::vector_t> sub_temps;
+                    std::deque<vector::data_chunk_t::at_aligned_t> sub_temps;
                     auto left_op = resolve_operand(operands[0], chunk, params, resource, sub_temps, session_tz);
                     if (left_op.has_error()) {
                         return left_op;
@@ -155,7 +156,7 @@ namespace components::operators {
                         temp_vecs.emplace_back(std::move(t));
                     }
                     temp_vecs.emplace_back(std::move(computed));
-                    result.vec = &temp_vecs.back();
+                    result.vec = temp_vecs.back().get();
                     return result;
                 }
                 return core::error_t(core::error_code_t::arithmetics_failure,
@@ -176,12 +177,7 @@ namespace components::operators {
             if (std::holds_alternative<expressions::key_t>(param)) {
                 auto& key = std::get<expressions::key_t>(param);
                 assert(!key.path().empty() && "key path must be resolved before execution");
-                auto* vec = chunk.at(key.path());
-                if (vec) {
-                    return vec->value(row_idx);
-                }
-                return core::error_t(core::error_code_t::field_not_exists,
-                                     std::pmr::string{"CASE: column not found: " + key.as_string(), resource});
+                return chunk.value(key.path(), row_idx);
             } else if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
                 return params.parameters.at(id);
@@ -615,7 +611,7 @@ namespace components::operators {
 
                                      std::pmr::string{"unary minus requires 1 operand", resource});
             }
-            std::deque<vector::vector_t> temp_vecs;
+            std::deque<vector::data_chunk_t::at_aligned_t> temp_vecs;
             auto operand_res = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs, session_tz);
             if (operand_res.has_error()) {
                 return operand_res.convert_error<vector::vector_t>();
@@ -637,7 +633,7 @@ namespace components::operators {
                                  std::pmr::string{"arithmetic expression requires at least 2 operands", resource});
         }
 
-        std::deque<vector::vector_t> temp_vecs;
+        std::deque<vector::data_chunk_t::at_aligned_t> temp_vecs;
 
         auto left_op = detail::resolve_operand(operands[0], chunk, params, resource, temp_vecs, session_tz);
         if (left_op.has_error()) {

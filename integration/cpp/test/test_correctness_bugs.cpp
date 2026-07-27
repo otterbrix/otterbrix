@@ -956,3 +956,284 @@ TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descal
         REQUIRE(cur->value(1, 0).value<int64_t>() == payload_3_00);
     }
 }
+
+TEST_CASE("integration::cpp::correctness_bugs::having_binds_aggregate_by_arguments") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/having_binds_by_args");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (g bigint, v bigint);")->is_success());
+    // g=1: three rows, sum(g)=3, sum(v)=300.  g=10: one row, sum(g)=10, sum(v)=1.
+    // The two aggregates therefore disagree about which group passes the HAVING.
+    REQUIRE(
+        test_helpers::exec(dispatcher, "INSERT INTO db.t (g, v) VALUES (1,100),(1,100),(1,100),(10,1);")->is_success());
+
+    auto cur = test_helpers::exec(dispatcher, "SELECT g, sum(v) FROM db.t GROUP BY g HAVING sum(g) > 5;");
+    REQUIRE(cur->is_success());
+    // Matching a HAVING aggregate to a SELECT one by function name alone bound sum(g)
+    // to sum(v), which passes g=1 instead.
+    REQUIRE(cur->size() == 1);
+    CHECK(cur->value(0, 0).value<int64_t>() == 10);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::having_aggregate_over_expression") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/having_over_expression");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (g bigint);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (g) VALUES (1),(1),(10);")->is_success());
+
+    // An expression argument must resolve to the aggregate SELECT already registered:
+    // built as a constant parameter instead, it never matched and a second, broken
+    // aggregate was registered for the same expression.
+    auto cur = test_helpers::exec(dispatcher, "SELECT g, SUM(g + 0) AS s FROM db.t GROUP BY g HAVING SUM(g + 0) > 5;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    CHECK(cur->value(0, 0).value<int64_t>() == 10);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::update_division_by_zero_errors") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/update_div_zero");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (10);")->is_success());
+
+    // UPDATE computed x/0 through the unguarded kernel and stored a silent NULL over
+    // the row; the guarded path errors and leaves the value alone.
+    CHECK_FALSE(test_helpers::exec(dispatcher, "UPDATE db.t SET x = x / 0;")->is_success());
+
+    auto cur = test_helpers::exec(dispatcher, "SELECT x FROM db.t;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    CHECK_FALSE(cur->value(0, 0).is_null());
+    CHECK(cur->value(0, 0).value<int64_t>() == 10);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::field_selection_on_subquery_errors") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/field_select_subquery");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TYPE rec_t AS (f INT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.u (r rec_t);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.u (r) VALUES (ROW(1));")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (id) VALUES (1);")->is_success());
+
+    // The indirection base is a SubLink, not a column reference. Casting it to
+    // A_Indirection anyway read garbage and crashed; an unsupported base is an error.
+    auto cur = test_helpers::exec(dispatcher, "SELECT id FROM db.t WHERE ((SELECT r FROM db.u)).f = 1;");
+    CHECK_FALSE(cur->is_success());
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::varchar_and_text_column_types") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/varchar_text_types");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+
+    // varchar and text were unmapped builtins; the element type of varchar[] was built
+    // without an extension, and the type accessors dereferenced it.
+    CHECK(test_helpers::exec(dispatcher, "CREATE TABLE db.a (v varchar);")->is_success());
+    CHECK(test_helpers::exec(dispatcher, "CREATE TABLE db.c (v text);")->is_success());
+    CHECK(test_helpers::exec(dispatcher, "CREATE TABLE db.d (v varchar[]);")->is_success());
+    // CHAR without VARYING arrives as bpchar, which the catalog already seeds as a string
+    // type. It stays rejected in a column definition, but now for the true reason: the
+    // grammar attaches the implicit length of char(1), and the engine has only unbounded
+    // strings. Accepting it would store more than one character where postgres stores one.
+    CHECK_FALSE(test_helpers::exec(dispatcher, "CREATE TABLE db.e (v char[]);")->is_success());
+    CHECK_FALSE(test_helpers::exec(dispatcher, "CREATE TABLE db.f (v char);")->is_success());
+    CHECK_FALSE(test_helpers::exec(dispatcher, "CREATE TABLE db.g (v char(5));")->is_success());
+    // A length modifier is not supported, and says so instead of resolving to something else.
+    CHECK_FALSE(test_helpers::exec(dispatcher, "CREATE TABLE db.b (v varchar(5));")->is_success());
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::min_max_over_text") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/min_max_over_text");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.s (t TEXT);")->is_success());
+    REQUIRE(
+        test_helpers::exec(dispatcher, "INSERT INTO db.s (t) VALUES ('banana'), ('apple'), ('cherry');")->is_success());
+
+    // The aggregate switch had no string branch and threw inside a noexcept coroutine,
+    // which surfaces as a SIGSEGV rather than as an error.
+    auto mn = test_helpers::exec(dispatcher, "SELECT MIN(t) FROM db.s;");
+    REQUIRE(mn->is_success());
+    CHECK(mn->value(0, 0).value<std::string_view>() == "apple");
+
+    auto mx = test_helpers::exec(dispatcher, "SELECT MAX(t) FROM db.s;");
+    REQUIRE(mx->is_success());
+    CHECK(mx->value(0, 0).value<std::string_view>() == "cherry");
+
+    // An aggregate that genuinely does not apply to strings is a returned error.
+    CHECK_FALSE(test_helpers::exec(dispatcher, "SELECT SUM(t) FROM db.s;")->is_success());
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::array_subscript_in_expression") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/subscript_in_expression");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (v INT[3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (v) VALUES (ARRAY[10,20,30]);")->is_success());
+
+    // Resolving v[2] to the array's flat child dropped the element index, so the
+    // expression read element 0 of the row instead of element 2.
+    auto cur = test_helpers::exec(dispatcher, "SELECT v[2] + 0 FROM db.t;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    CHECK(cur->value(0, 0).value<int64_t>() == 20);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::order_by_array_subscript") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/order_by_subscript");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT, v INT[3]);")->is_success());
+    // Chosen so the two readings disagree: sorting on the real v[2] gives {30,10,20} and
+    // the order 2,3,1, while indexing the flat child by row number sees {10,30,0} -> 3,1,2.
+    // With v[1] both readings happen to agree, which is why that shape proves nothing.
+    REQUIRE(test_helpers::exec(dispatcher,
+                               "INSERT INTO db.t (id, v) VALUES (1, ARRAY[10,30,0]), (2, ARRAY[20,10,0]), "
+                               "(3, ARRAY[30,20,0]);")
+                ->is_success());
+
+    auto cur = test_helpers::exec(dispatcher, "SELECT id FROM db.t ORDER BY v[2] ASC;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 3);
+    CHECK(cur->value(0, 0).value<int64_t>() == 2);
+    CHECK(cur->value(0, 1).value<int64_t>() == 3);
+    CHECK(cur->value(0, 2).value<int64_t>() == 1);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::three_table_join_qualified_column") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/three_table_join");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (k bigint, v bigint);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.m (k bigint, v bigint);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.n (k bigint, v bigint);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (k, v) VALUES (1, 10);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.m (k, v) VALUES (1, 20);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.n (k, v) VALUES (1, 30);")->is_success());
+
+    // Three tables share the column name v across two JOIN sides, so a binary side plus
+    // the bare name cannot tell them apart: m.v used to resolve to the leftmost table's v.
+    auto cur = test_helpers::exec(dispatcher, "SELECT m.v FROM db.l JOIN db.m ON l.k = m.k JOIN db.n ON m.k = n.k;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    CHECK(cur->value(0, 0).value<int64_t>() == 20);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::cross_database_same_table_name_join") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/cross_database_join");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db1;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db2;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db1.t (id BIGINT, a BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db2.t (id BIGINT, b BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db1.t (id, a) VALUES (1, 100), (2, 200);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db2.t (id, b) VALUES (1, 111), (3, 333);")->is_success());
+
+    // Both sides answer to the bare relname t, so both resolved LEFT and the ON became
+    // always-true, returning the 2x2 cartesian product instead of the single match.
+    auto cur = test_helpers::exec(dispatcher, "SELECT * FROM db1.t JOIN db2.t ON db1.t.id = db2.t.id;");
+    REQUIRE(cur->is_success());
+    CHECK(cur->size() == 1);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::is_null_on_array_subscript") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/is_null_on_subscript");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT, v INT[3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (id, v) VALUES (1, ARRAY[10,20,30]);")->is_success());
+
+    // The element has no vector of its own, so reading a validity bitmap for it answered
+    // for the flat child at this row number instead — and once at() stopped resolving
+    // subscripts, dereferenced null.
+    auto present = test_helpers::exec(dispatcher, "SELECT id FROM db.t WHERE v[1] IS NULL;");
+    REQUIRE(present->is_success());
+    CHECK(present->size() == 0);
+
+    auto absent = test_helpers::exec(dispatcher, "SELECT id FROM db.t WHERE v[1] IS NOT NULL;");
+    REQUIRE(absent->is_success());
+    CHECK(absent->size() == 1);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::update_modulo_by_zero_errors") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/update_mod_zero");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (10);")->is_success());
+
+    // Same write path as division: the modulo kernel must not store a silent NULL either.
+    CHECK_FALSE(test_helpers::exec(dispatcher, "UPDATE db.t SET x = x % 0;")->is_success());
+
+    auto cur = test_helpers::exec(dispatcher, "SELECT x FROM db.t;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    CHECK_FALSE(cur->value(0, 0).is_null());
+    CHECK(cur->value(0, 0).value<int64_t>() == 10);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::min_max_over_text_computing_table") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/min_max_text_computing");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    // A computing (schemaless) table reaches the same aggregate path with a type that is
+    // only known per row, which is the second shape the crash was reported on.
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.s ();")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.s (t) VALUES ('banana'), ('apple');")->is_success());
+
+    auto mn = test_helpers::exec(dispatcher, "SELECT MIN(t) FROM db.s;");
+    REQUIRE(mn->is_success());
+    CHECK(mn->value(0, 0).value<std::string_view>() == "apple");
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::aggregate_over_array_subscript") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/aggregate_over_subscript");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (g BIGINT, v INT[3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher,
+                               "INSERT INTO db.t (g, v) VALUES (1, ARRAY[1,100,0]), (1, ARRAY[2,200,0]), "
+                               "(2, ARRAY[3,300,0]);")
+                ->is_success());
+
+    // The aggregate argument dispatch had no case for an indirection, so v[2] was read as
+    // a constant and the whole statement failed to parse. Reading the flat child by row
+    // number instead of the element would give 101 and 0.
+    auto cur = test_helpers::exec(dispatcher, "SELECT g, sum(v[2]) FROM db.t GROUP BY g ORDER BY g ASC;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 2);
+    CHECK(cur->value(1, 0).value<int64_t>() == 300);
+    CHECK(cur->value(1, 1).value<int64_t>() == 300);
+}

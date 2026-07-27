@@ -668,8 +668,9 @@ namespace components::operators::predicates {
                                     const vector::data_chunk_t&,
                                     size_t index_left,
                                     size_t) -> core::result_wrapper_t<types::tri_bool_t> {
-                            const bool valid = chunk_left.at(column_path)->validity().row_is_valid(index_left);
-                            return types::tri_of(want_null ? !valid : valid);
+                            const auto element =
+                                chunk_left.data[column_path.front()].resolve_nested_element(index_left, column_path, 1);
+                            return types::tri_of(want_null ? element.is_null : !element.is_null);
                         })};
                 }
                 auto getter = impl::create_value_getter(resource, function_registry, expr->left(), parameters);

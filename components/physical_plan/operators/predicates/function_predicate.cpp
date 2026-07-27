@@ -248,8 +248,8 @@ namespace components::operators::predicates {
                 if (std::holds_alternative<expressions::key_t>(arg)) {
                     const auto& key = std::get<expressions::key_t>(arg);
                     args.emplace_back(key.side() == expressions::side_t::left
-                                          ? left.at(key.path())->value(left_index)
-                                          : right.at(key.path())->value(right_index));
+                                          ? left.value(key.path(), left_index)
+                                          : right.value(key.path(), right_index));
                 } else {
                     args.emplace_back(parameters->parameters.at(std::get<core::parameter_id_t>(arg)));
                 }

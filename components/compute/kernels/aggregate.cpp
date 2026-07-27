@@ -1,11 +1,19 @@
 #include "../function.hpp"
 #include <components/types/logical_value.hpp>
 
+#include <string_view>
+
 using namespace components::compute;
 using namespace components::types;
 using namespace components::vector;
 
 namespace {
+    template<typename T>
+    concept addable = requires(T& a, const T& b) { a += b; };
+    template<typename T>
+    concept comparable = requires(const T& a, const T& b) { a < b; };
+    template<typename T>
+    concept dividable = requires(const T& a, const T& b) { a / b; };
 
     template<typename T = void>
     struct sum_operator_t;
@@ -18,7 +26,7 @@ namespace {
 
     template<>
     struct sum_operator_t<void> {
-        template<typename T>
+        template<addable T>
         auto operator()(const vector_t& v, size_t count) const {
             auto raw_sum = T();
             bool has_any = false;
@@ -50,7 +58,7 @@ namespace {
         }
         // Combine two partial sums (used to fold per-chunk states into one group state).
         // Callers must ensure neither operand is NA before dispatching here.
-        template<typename T>
+        template<addable T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
             return logical_value_t{v1.resource(), T(v1.value<T>() + v2.value<T>())};
         }
@@ -62,7 +70,7 @@ namespace {
 
     template<>
     struct divide_operator_t<void> {
-        template<typename T>
+        template<dividable T>
         auto operator()(const logical_value_t& v, size_t count) const {
             return logical_value_t{v.resource(), v.value<T>() / static_cast<T>(count)};
         }
@@ -74,7 +82,7 @@ namespace {
 
     template<>
     struct min_operator_t<void> {
-        template<typename T>
+        template<comparable T>
         auto operator()(const vector_t& v, size_t count) const {
             auto* data = v.data<T>();
             T best = T();
@@ -110,7 +118,7 @@ namespace {
             }
             return logical_value_t{v.resource(), T(best)};
         }
-        template<typename T>
+        template<comparable T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
             if (v1.type().type() == logical_type::NA) {
                 return v2;
@@ -134,7 +142,7 @@ namespace {
 
     template<>
     struct max_operator_t<void> {
-        template<typename T>
+        template<comparable T>
         auto operator()(const vector_t& v, size_t count) const {
             auto* data = v.data<T>();
             T best = T();
@@ -170,7 +178,7 @@ namespace {
             }
             return logical_value_t{v.resource(), T(best)};
         }
-        template<typename T>
+        template<comparable T>
         auto operator()(const logical_value_t& v1, const logical_value_t& v2) const {
             if (v1.type().type() == logical_type::NA) {
                 return v2;
@@ -193,7 +201,7 @@ namespace {
     };
 
     template<template<typename...> class OP>
-    logical_value_t operator_switch(const vector_t& v, size_t count) {
+    core::result_wrapper_t<logical_value_t> operator_switch(const vector_t& v, size_t count) {
         OP op{};
         switch (v.type().type()) {
             case logical_type::BOOLEAN:
@@ -218,6 +226,14 @@ namespace {
                 return op.template operator()<uint64_t>(v, count);
             case logical_type::UHUGEINT:
                 return op.template operator()<uint128_t>(v, count);
+            case logical_type::STRING_LITERAL:
+                if constexpr (requires { op.template operator()<std::string_view>(v, count); }) {
+                    return op.template operator()<std::string_view>(v, count);
+                } else {
+                    return core::error_t{
+                        core::error_code_t::physical_plan_error,
+                        std::pmr::string{"aggregate is not supported for string columns", v.resource()}};
+                }
             case logical_type::DECIMAL: {
                 // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
@@ -247,7 +263,9 @@ namespace {
                                                                int_sum.template value<int128_t>());
                     }
                     default:
-                        throw std::runtime_error("operators::aggregate::sum encountered incorrect decimal type");
+                        return core::error_t{
+                            core::error_code_t::physical_plan_error,
+                            std::pmr::string{"aggregate: unsupported decimal physical type", v.resource()}};
                 }
             }
             case logical_type::FLOAT:
@@ -255,13 +273,14 @@ namespace {
             case logical_type::DOUBLE:
                 return op.template operator()<double>(v, count);
             default:
-                throw std::runtime_error("operators::aggregate::sum unable to process given types");
+                return core::error_t{core::error_code_t::physical_plan_error,
+                                     std::pmr::string{"aggregate is not supported for this column type", v.resource()}};
         }
         return logical_value_t(v.resource(), logical_type::NA);
     }
 
     template<template<typename...> class OP>
-    logical_value_t operator_switch(const logical_value_t& v1, const logical_value_t& v2) {
+    core::result_wrapper_t<logical_value_t> operator_switch(const logical_value_t& v1, const logical_value_t& v2) {
         OP op{};
         switch (v1.type().type()) {
             case logical_type::BOOLEAN:
@@ -286,6 +305,14 @@ namespace {
                 return op.template operator()<uint64_t>(v1, v2);
             case logical_type::UHUGEINT:
                 return op.template operator()<uint128_t>(v1, v2);
+            case logical_type::STRING_LITERAL:
+                if constexpr (requires { op.template operator()<std::string_view>(v1, v2); }) {
+                    return op.template operator()<std::string_view>(v1, v2);
+                } else {
+                    return core::error_t{
+                        core::error_code_t::physical_plan_error,
+                        std::pmr::string{"aggregate is not supported for string columns", v1.resource()}};
+                }
             case logical_type::DECIMAL: {
                 // stored as int???_t, but this won't result in a proper type
                 // intermediate logical_value_t could be avoided, but convenient for templates
@@ -315,7 +342,9 @@ namespace {
                                                                int_sum.template value<int128_t>());
                     }
                     default:
-                        throw std::runtime_error("operators::aggregate::sum encountered incorrect decimal type");
+                        return core::error_t{
+                            core::error_code_t::physical_plan_error,
+                            std::pmr::string{"aggregate: unsupported decimal physical type", v1.resource()}};
                 }
             }
             case logical_type::FLOAT:
@@ -323,13 +352,15 @@ namespace {
             case logical_type::DOUBLE:
                 return op.template operator()<double>(v1, v2);
             default:
-                throw std::runtime_error("operators::aggregate::sum unable to process given types");
+                return core::error_t{
+                    core::error_code_t::physical_plan_error,
+                    std::pmr::string{"aggregate is not supported for this column type", v1.resource()}};
         }
         return logical_value_t(v1.resource(), logical_type::NA);
     }
 
     template<template<typename...> class OP>
-    logical_value_t operator_switch(const logical_value_t& v, size_t count) {
+    core::result_wrapper_t<logical_value_t> operator_switch(const logical_value_t& v, size_t count) {
         OP op{};
         switch (v.type().type()) {
             case logical_type::BOOLEAN:
@@ -383,7 +414,9 @@ namespace {
                                                                int_sum.template value<int128_t>());
                     }
                     default:
-                        throw std::runtime_error("operators::aggregate::sum encountered incorrect decimal type");
+                        return core::error_t{
+                            core::error_code_t::physical_plan_error,
+                            std::pmr::string{"aggregate: unsupported decimal physical type", v.resource()}};
                 }
             }
             case logical_type::FLOAT:
@@ -391,16 +424,23 @@ namespace {
             case logical_type::DOUBLE:
                 return op.template operator()<double>(v, count);
             default:
-                throw std::runtime_error("operators::aggregate::sum unable to process given types");
+                return core::error_t{core::error_code_t::physical_plan_error,
+                                     std::pmr::string{"aggregate is not supported for this column type", v.resource()}};
         }
         return logical_value_t(v.resource(), logical_type::NA);
     }
 
-    logical_value_t sum(const vector_t& v, size_t count) { return operator_switch<sum_operator_t>(v, count); }
+    core::result_wrapper_t<logical_value_t> sum(const vector_t& v, size_t count) {
+        return operator_switch<sum_operator_t>(v, count);
+    }
 
-    logical_value_t min(const vector_t& v, size_t count) { return operator_switch<min_operator_t>(v, count); }
+    core::result_wrapper_t<logical_value_t> min(const vector_t& v, size_t count) {
+        return operator_switch<min_operator_t>(v, count);
+    }
 
-    logical_value_t max(const vector_t& v, size_t count) { return operator_switch<max_operator_t>(v, count); }
+    core::result_wrapper_t<logical_value_t> max(const vector_t& v, size_t count) {
+        return operator_switch<max_operator_t>(v, count);
+    }
 
     struct sum_kernel_state : kernel_state {
         explicit sum_kernel_state(std::pmr::memory_resource* resource)
@@ -415,7 +455,11 @@ namespace {
 
     static core::error_t sum_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<sum_kernel_state*>(ctx.state());
-        acc->value = sum(in.data[0], in.size());
+        auto r = sum(in.data[0], in.size());
+        if (r.has_error()) {
+            return r.error();
+        }
+        acc->value = r.value();
         return core::error_t::no_error();
     }
 
@@ -430,7 +474,11 @@ namespace {
         if (acc.value.type().type() == logical_type::NA) {
             acc.value = src.value;
         } else {
-            acc.value = operator_switch<sum_operator_t>(acc.value, src.value);
+            auto r = operator_switch<sum_operator_t>(acc.value, src.value);
+            if (r.has_error()) {
+                return r.error();
+            }
+            acc.value = r.value();
         }
         return core::error_t::no_error();
     }
@@ -453,7 +501,11 @@ namespace {
 
     static core::error_t min_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<min_kernel_state*>(ctx.state());
-        acc->value = min(in.data[0], in.size());
+        auto r = min(in.data[0], in.size());
+        if (r.has_error()) {
+            return r.error();
+        }
+        acc->value = r.value();
         return core::error_t::no_error();
     }
 
@@ -466,7 +518,11 @@ namespace {
         if (acc.value.type().type() == logical_type::NA) {
             acc.value = src.value;
         } else {
-            acc.value = operator_switch<min_operator_t>(acc.value, src.value);
+            auto r = operator_switch<min_operator_t>(acc.value, src.value);
+            if (r.has_error()) {
+                return r.error();
+            }
+            acc.value = r.value();
         }
         return core::error_t::no_error();
     }
@@ -489,7 +545,11 @@ namespace {
 
     static core::error_t max_consume(kernel_context& ctx, const data_chunk_t& in) {
         auto* acc = static_cast<max_kernel_state*>(ctx.state());
-        acc->value = max(in.data[0], in.size());
+        auto r = max(in.data[0], in.size());
+        if (r.has_error()) {
+            return r.error();
+        }
+        acc->value = r.value();
         return core::error_t::no_error();
     }
 
@@ -502,7 +562,11 @@ namespace {
         if (acc.value.type().type() == logical_type::NA) {
             acc.value = src.value;
         } else {
-            acc.value = operator_switch<max_operator_t>(acc.value, src.value);
+            auto r = operator_switch<max_operator_t>(acc.value, src.value);
+            if (r.has_error()) {
+                return r.error();
+            }
+            acc.value = r.value();
         }
         return core::error_t::no_error();
     }
@@ -568,7 +632,11 @@ namespace {
             valid += !in.data[0].is_null(i);
         }
         acc->count = valid;
-        acc->value = sum(in.data[0], in.size());
+        auto r = sum(in.data[0], in.size());
+        if (r.has_error()) {
+            return r.error();
+        }
+        acc->value = r.value();
         return core::error_t::no_error();
     }
 
@@ -584,7 +652,11 @@ namespace {
         if (acc.value.type().type() == logical_type::NA) {
             acc.value = src.value;
         } else {
-            acc.value = operator_switch<sum_operator_t>(acc.value, src.value);
+            auto r = operator_switch<sum_operator_t>(acc.value, src.value);
+            if (r.has_error()) {
+                return r.error();
+            }
+            acc.value = r.value();
         }
         return core::error_t::no_error();
     }
@@ -595,7 +667,11 @@ namespace {
             ctx.batch_results.emplace_back(ctx.batch_results.get_allocator().resource(), logical_type::NA);
             return core::error_t::no_error();
         }
-        ctx.batch_results.push_back(operator_switch<divide_operator_t>(acc.value, acc.count));
+        auto r = operator_switch<divide_operator_t>(acc.value, acc.count);
+        if (r.has_error()) {
+            return r.error();
+        }
+        ctx.batch_results.push_back(r.value());
         return core::error_t::no_error();
     }
 

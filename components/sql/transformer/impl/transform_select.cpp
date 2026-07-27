@@ -672,7 +672,12 @@ namespace components::sql::transform {
                     if (nodeTag(sortby->node) == T_ColumnRef) {
                         field = columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), union_names);
                     } else if (nodeTag(sortby->node) == T_A_Indirection) {
-                        field = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), union_names);
+                        auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), union_names);
+                        if (res.has_error()) {
+                            error_ = res.error();
+                            return nullptr;
+                        }
+                        field = std::move(res.value());
                     } else if (nodeTag(sortby->node) == T_A_Const) {
                         // Positional `ORDER BY <n>`: map to the n-th UNION output column (the
                         // output names come from the first arm, node.larg's select list).
@@ -829,6 +834,18 @@ namespace components::sql::transform {
                                 } else {
                                     args.emplace_back(add_param_value(arg_value, plan->parameters.get()));
                                 }
+                            } else if (nodeTag(arg_value) == T_A_Indirection) {
+                                // sum(v[2]) / sum((s).f): an indirection over a column reference is
+                                // still a column, not a constant — reading it as one made the whole
+                                // statement fail to parse.
+                                auto key_res = node_to_field(resource_, arg_value, names);
+                                if (key_res.has_error()) {
+                                    error_ = key_res.error();
+                                    return nullptr;
+                                }
+                                auto key = std::move(key_res.value());
+                                key.deduce_side(names);
+                                args.emplace_back(std::move(key.field));
                             } else if (nodeTag(arg_value) == T_FuncCall) {
                                 args.emplace_back(transform_a_expr_func(pg_ptr_cast<FuncCall>(arg_value),
                                                                         names,
@@ -1485,8 +1502,12 @@ namespace components::sql::transform {
                         on_keys.emplace_back(
                             columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(on_it.data), names).field);
                     } else if (nodeTag(on_it.data) == T_A_Indirection) {
-                        on_keys.emplace_back(
-                            indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(on_it.data), names).field);
+                        auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(on_it.data), names);
+                        if (res.has_error()) {
+                            error_ = res.error();
+                            return nullptr;
+                        }
+                        on_keys.emplace_back(std::move(res.value().field));
                     } else {
                         // v1: only plain column references. DISTINCT ON (a + b) etc. is a follow-up.
                         error_ = core::error_t(
@@ -1506,9 +1527,12 @@ namespace components::sql::transform {
                                 columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(sortby->node), names)
                                     .field.as_pmr_string());
                         } else if (nodeTag(sortby->node) == T_A_Indirection) {
-                            lead_sort_names.emplace_back(
-                                indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names)
-                                    .field.as_pmr_string());
+                            auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names);
+                            if (res.has_error()) {
+                                error_ = res.error();
+                                return nullptr;
+                            }
+                            lead_sort_names.emplace_back(res.value().field.as_pmr_string());
                         } else {
                             lead_sort_names
                                 .emplace_back(); // empty sentinel: a non-column sort key can't match an ON key
@@ -1542,8 +1566,12 @@ namespace components::sql::transform {
                     sort_exprs.emplace_back(
                         make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc, null_ord));
                 } else if (nodeTag(sortby->node) == T_A_Indirection) {
-                    column_ref_t field =
-                        indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names);
+                    auto res = indirection_to_field(resource_, pg_ptr_cast<A_Indirection>(sortby->node), names);
+                    if (res.has_error()) {
+                        error_ = res.error();
+                        return nullptr;
+                    }
+                    column_ref_t field = std::move(res.value());
                     sort_exprs.emplace_back(
                         make_sort_expression(field.field, is_desc ? sort_order::desc : sort_order::asc, null_ord));
                 } else if (nodeTag(sortby->node) == T_A_Expr) {

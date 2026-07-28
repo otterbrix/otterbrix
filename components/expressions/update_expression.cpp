@@ -113,6 +113,10 @@ namespace components::expressions {
 
         assert(key_.path().front() != size_t(-1));
         auto* col_vec = to.at(key_.path());
+        if (!col_vec) {
+            return core::error_t{core::error_code_t::physical_plan_error,
+                                 std::pmr::string{"UPDATE target is not a writable column", resource}};
+        }
         auto* new_vec = left_->output_vec();
 
         // A bare NULL literal arrives as an NA-typed constant vector; there is
@@ -284,13 +288,10 @@ namespace components::expressions {
                                           core::date::timezone_offset_t) {
         auto side = key_.side();
         assert(side != side_t::undefined && "validation must resolve side before execution");
-        if (side == side_t::right) {
-            assert(key_.path().front() != size_t(-1));
-            output_vec_ = from.at(key_.path());
-        } else {
-            assert(key_.path().front() != size_t(-1));
-            output_vec_ = to.at(key_.path());
-        }
+        assert(key_.path().front() != size_t(-1));
+        const vector::data_chunk_t& source = (side == side_t::right) ? from : to;
+        column_ = source.at_aligned(key_.path(), resource);
+        output_vec_ = column_.get();
         return std::pmr::vector<bool>(resource);
     }
 
@@ -408,8 +409,18 @@ namespace components::expressions {
             }
             owned_output_.emplace(vector_ops::apply_unary_vector_op(resource, *unary_op, *left_vec, vec_count));
         } else if (auto arith_op = to_arith_op(type_)) {
-            owned_output_.emplace(
-                compute_binary_arithmetic(resource, *arith_op, *left_vec, *right_->output_vec(), vec_count));
+            auto* right_vec = right_->output_vec();
+            if (*arith_op == arithmetic_op::divide || *arith_op == arithmetic_op::mod) {
+                types::logical_value_t zero(resource, right_vec->type());
+                for (uint64_t i = 0; i < vec_count; ++i) {
+                    auto divisor = right_vec->value(i);
+                    if (!divisor.is_null() && divisor == zero) {
+                        return core::error_t{core::error_code_t::arithmetics_failure,
+                                             std::pmr::string{"division by zero", resource}};
+                    }
+                }
+            }
+            owned_output_.emplace(compute_binary_arithmetic(resource, *arith_op, *left_vec, *right_vec, vec_count));
         } else {
             auto* right_vec = right_->output_vec();
             if (is_non_integer(left_vec->type().to_physical_type()) ||

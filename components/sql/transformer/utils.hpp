@@ -92,11 +92,16 @@ namespace components::sql::transform {
 
         bool is_left_table(const std::string& name) const;
         bool is_right_table(const std::string& name) const;
+        bool is_left_table(const std::string& dbname, const std::string& name) const;
+        bool is_right_table(const std::string& dbname, const std::string& name) const;
     };
 
     expressions::side_t deduce_side(const name_collection_t& names, const std::string& target_name);
+    expressions::side_t
+    deduce_side(const name_collection_t& names, const std::string& dbname, const std::string& target_name);
 
     struct column_ref_t {
+        std::string db;
         std::string table;
         expressions::key_t field;
 
@@ -105,14 +110,20 @@ namespace components::sql::transform {
         column_ref_t(std::string table, expressions::key_t field)
             : table(std::move(table))
             , field(std::move(field)) {}
+        column_ref_t(std::string db, std::string table, expressions::key_t field)
+            : db(std::move(db))
+            , table(std::move(table))
+            , field(std::move(field)) {}
         void deduce_side(const name_collection_t& names);
     };
 
     column_ref_t
     columnref_to_field(std::pmr::memory_resource* resource, ColumnRef* ref, const name_collection_t& names);
-    column_ref_t indirection_to_field(std::pmr::memory_resource* resource,
-                                      A_Indirection* indirection,
-                                      const name_collection_t& names);
+    core::result_wrapper_t<column_ref_t> indirection_to_field(std::pmr::memory_resource* resource,
+                                                              A_Indirection* indirection,
+                                                              const name_collection_t& names);
+    core::result_wrapper_t<column_ref_t>
+    node_to_field(std::pmr::memory_resource* resource, Node* node, const name_collection_t& names);
 
     inline logical_plan::join_type jointype_to_ql(JoinExpr* join) {
         switch (join->jointype) {
@@ -180,6 +191,9 @@ namespace components::sql::transform {
             {"pointer", types::logical_type::POINTER},
             {"uuid", types::logical_type::UUID},
             {"string", types::logical_type::STRING_LITERAL},
+            {"varchar", types::logical_type::STRING_LITERAL},
+            {"text", types::logical_type::STRING_LITERAL},
+            {"bpchar", types::logical_type::STRING_LITERAL},
         };
 
         if (auto it = lookup.find(str); it != lookup.end()) {

@@ -192,7 +192,25 @@ namespace services::dispatcher {
             // First key is either table name or type name
             // Also we store number of keys used to get there and path
             std::pmr::list<type_match_t> matches(resource);
-            for (size_t i = 0; i < schema.size(); i++) {
+            // A qualified reference (m.v) names one table, so resolve it against that
+            // table's columns. side cannot do this: it is binary, and a chained JOIN puts
+            // three tables on two sides, so the qualifier is the only thing that tells
+            // the middle table from the leftmost one.
+            if (truncated_key.has_qualifier()) {
+                for (size_t i = 0; i < schema.size(); i++) {
+                    if (core::pmr::operator==(schema[i].result_alias, truncated_key.qualifier()) &&
+                        core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
+                        matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
+                    }
+                }
+            }
+            // Either unqualified, or the qualifier matched nothing because this schema
+            // carries no alias for it (raw node_data inputs have an empty result_alias):
+            // fall back to the by-name rules, which is what every key used to get. Decided
+            // once, before the loop: testing matches.empty() per iteration would stop at
+            // the first hit and hide the ambiguity that collecting every match detects.
+            const bool match_by_name = matches.empty();
+            for (size_t i = 0; match_by_name && i < schema.size(); i++) {
                 if (truncated_key.storage().size() > 2 &&
                     core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(1)) &&
                     core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(2))) {

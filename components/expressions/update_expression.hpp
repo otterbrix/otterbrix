@@ -130,6 +130,7 @@ namespace components::expressions {
 
     private:
         key_t key_;
+        vector::data_chunk_t::at_aligned_t column_;
     };
 
     using update_expr_get_value_ptr = boost::intrusive_ptr<update_expr_get_value_t>;

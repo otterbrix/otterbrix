@@ -256,16 +256,14 @@ namespace components::operators {
                                std::holds_alternative<expressions::key_t>(func_op->args()[0])) {
                         auto& key = std::get<expressions::key_t>(func_op->args()[0]);
                         const auto& path = key.path();
-                        if (!path.empty() && path.front() != SIZE_MAX) {
-                            const auto* arg_vec = probe.at(path);
-                            if (arg_vec) {
-                                auto col_type = arg_vec->type().type();
-                                if (types::is_numeric(col_type)) {
-                                    plan.kind = kind;
-                                    plan.col_type = col_type;
-                                    plan.arg_path.assign(path.begin(), path.end());
-                                    vectorizable = true;
-                                }
+                        if (!path.empty() && path.front() != SIZE_MAX && path.front() < probe.column_count()) {
+                            auto probe_types = probe.types();
+                            auto col_type = types::complex_logical_type::type_from_path(probe_types, path).type();
+                            if (types::is_numeric(col_type)) {
+                                plan.kind = kind;
+                                plan.col_type = col_type;
+                                plan.arg_path.assign(path.begin(), path.end());
+                                vectorizable = true;
                             }
                         }
                     }
@@ -290,12 +288,13 @@ namespace components::operators {
         uint64_t n = input.size();
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(keys_.size());
+        auto input_types = input.types();
         for (const auto& key : keys_) {
             if (key.type == group_key_t::kind::column && key.full_path.size() == 1) {
                 key_types.push_back(input.data[key.full_path.front()].type());
-            } else if (key.type == group_key_t::kind::column && !key.full_path.empty()) {
-                const auto* v = input.at(key.full_path);
-                key_types.push_back(v ? v->type() : types::complex_logical_type{types::logical_type::NA});
+            } else if (key.type == group_key_t::kind::column && !key.full_path.empty() &&
+                       key.full_path.front() < input.column_count()) {
+                key_types.push_back(types::complex_logical_type::type_from_path(input_types, key.full_path));
             } else {
                 // Derived key: resolve a single sample value to obtain the type.
                 key_types.push_back(types::complex_logical_type{types::logical_type::NA});
@@ -454,7 +453,7 @@ namespace components::operators {
                     states[gids[i]].update_count();
                 }
             } else {
-                const auto* arg_vec = input.at(plan.arg_path);
+                auto arg_vec = input.at_aligned(plan.arg_path, resource_);
                 if (arg_vec) {
                     aggregate::update_all(plan.kind, *arg_vec, gids, n, states);
                 }

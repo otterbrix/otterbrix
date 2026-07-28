@@ -87,6 +87,54 @@ TEST_CASE("integration::cpp::correctness_bugs::array_int_slot_width") {
     }
 }
 
+TEST_CASE("integration::cpp::correctness_bugs::unsupported_boolean_text_arithmetic") {
+    auto config = test_create_config("/tmp/test_correctness_bugs/unsupported_boolean_text_arithmetic");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.bad_arith (b BOOLEAN, s TEXT);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(
+            dispatcher->execute_sql(session, "INSERT INTO t.bad_arith (b, s) VALUES (true, 'hello');")->is_success());
+    }
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT b + 1 FROM t.bad_arith;");
+        INFO("BOOLEAN arithmetic error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == core::error_code_t::schema_error);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT -s FROM t.bad_arith;");
+        INFO("TEXT unary-minus error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == core::error_code_t::schema_error);
+    }
+
+    // Invalid expressions must not corrupt the engine process or session state.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT b, s FROM t.bad_arith;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<bool>());
+        REQUIRE(cur->value(1, 0).value<std::string_view>() == "hello");
+    }
+}
+
 TEST_CASE("integration::cpp::correctness_bugs::alias_collision") {
     auto config = test_create_config("/tmp/test_correctness_bugs/alias_collision");
     test_clear_directory(config);

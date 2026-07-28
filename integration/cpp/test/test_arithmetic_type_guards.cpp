@@ -141,3 +141,31 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::where_null_3vl_preserved") 
         REQUIRE(cur->value(0, 0).value<int32_t>() == 3);
     }
 }
+
+TEST_CASE("integration::cpp::arithmetic_type_guards::update_rejects_non_numeric_arithmetic") {
+    auto config = test_create_config("/tmp/test_arithmetic_type_guards/update_guard");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    setup(dispatcher);
+
+    // The UPDATE expression tree fed b + 1 straight into the binary kernel, whose
+    // unresolvable-pair result is an all-NULL vector: the column was silently overwritten
+    // with NULLs. The operand pair must be rejected and the data left intact.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "UPDATE db.t SET v = b + 1;");
+        REQUIRE(cur->is_error());
+        REQUIRE(cur->get_error().type == core::error_code_t::arithmetics_failure);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT v FROM db.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 7);
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
+    }
+}

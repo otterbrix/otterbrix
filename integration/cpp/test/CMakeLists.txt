@@ -19,6 +19,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_correctness_bugs.cpp
         test_order_by_nulls.cpp
         test_arithmetic_type_guards.cpp
+        test_like_type_guards.cpp
         test_unary_plus.cpp
         test_multi_database_isolation.cpp
         test_index_null_correctness.cpp

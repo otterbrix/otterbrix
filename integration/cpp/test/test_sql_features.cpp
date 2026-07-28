@@ -508,7 +508,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     }
 }
 
-TEST_CASE("integration::cpp::test_sql_features::like_non_string_subject_errors") {
+TEST_CASE("integration::cpp::test_sql_features::like_non_string_operand_errors") {
     // The RE2 migration dropped the old std::regex dispatcher's operand type guard: a non-string
     // LIKE subject reached value<std::string_view>() — *reinterpret_cast<std::string*> over an
     // integer payload — and SEGFAULTED (in-memory regex_predicate::check_impl) or reinterpreted the
@@ -560,6 +560,13 @@ TEST_CASE("integration::cpp::test_sql_features::like_non_string_subject_errors")
         auto cur = dispatcher->execute_sql(session,
                                            "SELECT t.id FROM regexdb.t t JOIN regexdb.d d ON t.id = d.id "
                                            "WHERE t.id LIKE '1%' OR d.k = 999;");
+        REQUIRE(cur->is_error());
+    }
+
+    INFO("non-string LIKE pattern must error before regex conversion, not crash");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM regexdb.t WHERE s LIKE 1;");
         REQUIRE(cur->is_error());
     }
 

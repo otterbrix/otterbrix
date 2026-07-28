@@ -263,3 +263,48 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_over_null_rows") {
     REQUIRE(cur->value(0, 1).value<int32_t>() == 1);
     REQUIRE(cur->value(0, 2).value<int32_t>() == 2);
 }
+
+TEST_CASE("integration::cpp::order_by_expressions::null_literal_arithmetic_keys") {
+    auto config = test_create_config("/tmp/test_order_by_expressions/null_literal_keys");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.n (id INT, v BIGINT);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, 7);")
+                    ->is_success());
+    }
+
+    // A NULL literal in arithmetic answers NULL (three-valued logic), never an operator
+    // error: every key compares equal and the statement succeeds with all rows.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY v + NULL;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY -(v + NULL);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY -(NULL);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 2);
+    }
+}

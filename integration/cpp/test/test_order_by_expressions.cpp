@@ -449,3 +449,82 @@ TEST_CASE("integration::cpp::order_by_expressions::computed_key_over_ungrouped_c
     REQUIRE(cur->is_error());
 }
 
+TEST_CASE("integration::cpp::order_by_expressions::unary_minus_nulls_first") {
+    auto config = test_create_config("/tmp/test_order_by_expressions/unary_nulls_first");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.n (id INT, v BIGINT);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, NULL), (3, 7);")
+                    ->is_success());
+    }
+
+    // Explicit NULLS FIRST rides key.path()[1] through the computed-key spec: the NULL row
+    // leads, then -v ascending = v descending (id 3 before id 1).
+    auto session = otterbrix::session_id_t();
+    auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY -v NULLS FIRST;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 3);
+    REQUIRE(cur->value(0, 0).value<int32_t>() == 2);
+    REQUIRE(cur->value(0, 1).value<int32_t>() == 3);
+    REQUIRE(cur->value(0, 2).value<int32_t>() == 1);
+}
+
+TEST_CASE("integration::cpp::order_by_expressions::computed_desc_nulls_placement") {
+    auto config = test_create_config("/tmp/test_order_by_expressions/computed_desc_nulls");
+    test_clear_directory(config);
+    config.disk.on = false;
+    config.wal.on = false;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.n (id INT, v BIGINT);")->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher
+                    ->execute_sql(session, "INSERT INTO db.n (id, v) VALUES (1, 5), (2, NULL), (3, 7);")
+                    ->is_success());
+    }
+
+    // v + 0 is NULL for the NULL row (three-valued logic); a descending computed key
+    // defaults to NULLS FIRST, and an explicit NULLS LAST overrides it.
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY v + 0 DESC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 2);
+        REQUIRE(cur->value(0, 1).value<int32_t>() == 3);
+        REQUIRE(cur->value(0, 2).value<int32_t>() == 1);
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY v + 0 DESC NULLS LAST;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->value(0, 0).value<int32_t>() == 3);
+        REQUIRE(cur->value(0, 1).value<int32_t>() == 1);
+        REQUIRE(cur->value(0, 2).value<int32_t>() == 2);
+    }
+}
+

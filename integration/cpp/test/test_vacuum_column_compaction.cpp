@@ -230,11 +230,10 @@ TEST_CASE("integration::cpp::vacuum_column_compaction::drops_the_dead_physical_c
 //
 //      DROP COLUMN writes its tombstone with dropped_at_commit_id = 0 and leaves a
 //      backfill marker, because the commit id does not exist until COMMIT. The
-//      backfill then patches the row — and it used to patch it under the txn-less
-//      "see all committed" view, which cannot see any row the committing transaction
-//      has just written. On an ADD that found nothing; on a DROP it found the DELETED
-//      original (still visible to a see-all view, and written first) and stamped that,
-//      leaving the tombstone at 0 permanently.
+//      backfill patch must run under the committing transaction's own view: a
+//      see-all-committed read cannot see the row that transaction just wrote, and on
+//      a DROP it stamps the DELETED original instead, leaving the tombstone at 0
+//      permanently.
 //
 //      Nothing noticed, because nothing read the fields: resolve_table hides a
 //      tombstone on attisdropped before it ever looks at the timestamp, and an
@@ -244,10 +243,10 @@ TEST_CASE("integration::cpp::vacuum_column_compaction::drops_the_dead_physical_c
 //      `dropped_at != 0 && dropped_at <= lowest_active_start_time`. A permanently-0
 //      field makes that test permanently false and the compaction permanently dead.
 //
-//      Only the DROP half is fixed. The ADD half is characterized below and handed
-//      back rather than fixed: making that patch land is a one-line change and it
-//      makes an ALTER-added column unresolvable to the next statement, for a reason
-//      that is not the added_at value itself. See the comment on `read_own_writes` in
+//      Only the DROP half is stamped today; the ADD half deliberately stays at 0.
+//      Making that patch land is a one-line change, but it makes an ALTER-added
+//      column unresolvable to the next statement, for a reason that is not the
+//      added_at value itself. See the comment on `read_own_writes` in
 //      agent_disk_t::update_pg_attribute_commit_id_field_inner.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::vacuum_column_compaction::pg_attribute_commit_ids_are_stamped") {
@@ -282,7 +281,7 @@ TEST_CASE("integration::cpp::vacuum_column_compaction::pg_attribute_commit_ids_a
             }
             ++tombstones;
             REQUIRE(row.attname == "b");
-            REQUIRE(row.dropped_at > 0); // pre-fix: 0, and the compaction never fires
+            REQUIRE(row.dropped_at > 0); // 0 = the backfill missed, and the compaction never fires
         }
         REQUIRE(tombstones == 1);
     }

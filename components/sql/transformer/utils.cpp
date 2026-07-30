@@ -552,8 +552,8 @@ namespace components::sql::transform {
             return right;
         }
 
-        // An operand pair the arithmetic has no arm for used to leave here as a throw out of the
-        // parser; it is now the error result_wrapper_t already carries, so it just propagates.
+        // An operand pair the arithmetic has no arm for comes back as an error in the
+        // result_wrapper_t and simply propagates — never a throw out of the parser.
         if (auto op = to_arithmetic_op(op_str)) {
             return types::logical_value_t::arithmetic(resource, *op, left.value(), right.value());
         }
@@ -575,10 +575,10 @@ namespace components::sql::transform {
             if (type.has_error()) {
                 return type.convert_error<std::vector<table::column_definition_t>>();
             }
-            // The column's name goes on the column DEFINITION, below — column_definition_t
-            // holds it in name_ and stamps the type itself if the type does not name itself
-            // (column_definition.cpp::with_name_alias). Naming the type here first was the
-            // same write done twice, by the site that has the weaker claim to it (M3-B5).
+            // The column's name goes on the column DEFINITION, below: column_definition_t
+            // holds it in name_, and data_table_t::stamp_column_identity carries it onto
+            // chunk columns from there. The type's name slot belongs to self-naming types
+            // (a STRUCT's own name) and is not written here (M3-B5).
             bool not_null = coldef->is_not_null;
             std::optional<types::logical_value_t> default_val;
 

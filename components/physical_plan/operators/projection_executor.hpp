@@ -20,9 +20,7 @@ namespace components::operators {
     // (COALESCE) the node was added rather than the struct rewritten.
     //
     // Every column's tree is bound and its executor built ONCE, in create(); evaluate() after that
-    // fills preallocated slots. The boxed path this replaces rebuilt a std::pmr::deque<vector_t> per
-    // chunk per arithmetic column, and materialised every COALESCE / CASE cell through a
-    // logical_value_t that it then also set an alias on.
+    // fills preallocated slots.
     class projection_executor_t {
     public:
         projection_executor_t(const projection_executor_t&) = delete;
@@ -34,8 +32,7 @@ namespace components::operators {
         // `left` / `right` are the input chunks' SCHEMAS -- {name, type} per column, which is what
         // a bind schema is, taken from the chunk that carries it rather than reconstructed out of
         // its types. A SELECT over a JOIN receives ONE merged chunk holding both sides' columns, so
-        // callers pass the same schema twice and a key's resolved side stops mattering -- which is
-        // exactly what the boxed projection did by passing the same chunk as both inputs.
+        // callers pass the same schema twice and a key's resolved side stops mattering.
         [[nodiscard]] static core::result_wrapper_t<projection_executor_t>
         create(std::pmr::memory_resource* resource,
                const std::pmr::vector<select_column_t>& columns,
@@ -77,21 +74,16 @@ namespace components::operators {
     // side, a sourceless match. There is nothing to project FROM, so nothing may be bound against
     // it: a resolved ordinal cannot address a schema with no entries. What the output must still
     // carry is the PLAN-RESOLVED type of every column, which is authoritative precisely because it
-    // was derived data-independently and therefore survives having no data. The boxed projection
-    // reached the same place by a different route: its `num_rows > 0` guard skipped the column
-    // reference entirely and left the per-row extractor to build an empty vector of col.result_type.
+    // was derived data-independently and therefore survives having no data.
     [[nodiscard]] vector::data_chunk_t empty_projection(std::pmr::memory_resource* resource,
                                                         const std::pmr::vector<select_column_t>& columns);
 
     // Evaluate ONE scalar expression (arithmetic, unary minus, CASE) over a chunk, answering the
-    // result column. The bound-layer replacement for evaluate_arithmetic, with the same shape so the
-    // four call sites read the same as before.
+    // result column.
     //
-    // Binds per call, as evaluate_arithmetic effectively did -- it walked the operand list and built
-    // a fresh std::pmr::deque<vector_t> on every invocation, plus a nested one per expression level.
-    // So this is not a regression, but it is not the "allocate once" the streaming operators get
-    // either: the callers here evaluate a whole chunk per call, and a cached executor would have to
-    // live on each of them. Worth doing when one of them shows up in a profile, not before.
+    // Binds per call -- not the "allocate once" the streaming operators get: a cached executor
+    // would have to live on each caller, and the callers evaluate a whole chunk per call. Worth
+    // caching when one of them shows up in a profile, not before.
     [[nodiscard]] core::result_wrapper_t<vector::vector_t>
     evaluate_scalar(std::pmr::memory_resource* resource,
                     expressions::scalar_type op,

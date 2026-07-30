@@ -79,11 +79,8 @@ namespace components::logical_plan {
         // logical_type::NA. Populated exactly when produces_rows() holds — see it for the
         // contract.
         //
-        // M3-B5 step 8: this used to be a bare vector<complex_logical_type> that carried
-        // each column's NAME only because the name happened to sit inside its type, which
-        // made it the last schema currency in the engine reading a name off a type. The
-        // record spells the name out, so a name read is TOTAL (an unnamed column answers
-        // with an empty string) where complex_logical_type::alias() asserted.
+        // The record spells each column's name out (M3-B5), so a name read is TOTAL: an
+        // unnamed column answers with an empty string.
         //
         // `attoid` is deliberately INVALID_OID on every record: a plan node's column list
         // is resolved from the plan and the catalog TYPES, and the validator's own
@@ -136,11 +133,11 @@ namespace components::logical_plan {
         // result set, DDL / control / catalog-plumbing nodes emit nothing. DML overrides.
         virtual bool produces_rows_impl() const noexcept;
 
-        // No hash_impl(): node_t::hash() was deleted along with operator== / node_hash / node_equal,
-        // all of which had zero callers, so the 45 overrides became dead weight and went with it.
-        // A future plan cache must write structural hashing FRESH and include types -- see the
-        // "hashing intent" note in docs/logical-plan-and-value-improvements.md for the eight nodes
-        // that used to fold discriminating fields in, so that knowledge is not lost.
+        // No hash_impl(): node_t::hash() / operator== / node_hash / node_equal had zero
+        // callers and were removed. A future plan cache must write structural hashing FRESH
+        // and include types -- see the "hashing intent" note in
+        // docs/logical-plan-and-value-improvements.md for the eight nodes that folded
+        // discriminating fields in, so that knowledge is not lost.
         virtual std::string to_string_impl() const = 0;
     };
 

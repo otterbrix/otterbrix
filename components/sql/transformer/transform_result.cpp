@@ -144,9 +144,8 @@ namespace components::sql::transform {
                     continue;
                 }
                 auto& chunk = param_insert_rows_[chunk_index];
-                // M3-B2/B3: the column's name is read from the chunk's schema record, which
-                // answers an empty name for an unnamed column instead of asserting the way
-                // complex_logical_type::alias() does (types.cpp:334-337).
+                // M3-B2/B3: the column's name is read from the chunk's schema record; a name
+                // read is total — an unnamed column answers with an empty name.
                 const auto& schema = chunk.schema();
                 size_t column_index = chunk.column_count();
                 for (size_t col = 0; col < chunk.column_count(); ++col) {
@@ -159,9 +158,7 @@ namespace components::sql::transform {
                 // (column_index is identical across chunks because they grow in lockstep).
                 if (column_index == chunk.column_count()) {
                     // Param-only column (no literal anywhere): append it to every chunk. The
-                    // name goes on the COLUMN (M3-B5), not through the bound value's type —
-                    // which is how it used to arrive, and which meant every bind carried a
-                    // heap-allocated name it did not need.
+                    // name goes on the COLUMN (M3-B5), not through the bound value's type.
                     for (auto& c : param_insert_rows_) {
                         c.data.emplace_back(c.resource(), value.type(), c.capacity());
                         c.set_column_name(c.column_count() - 1, param.second);

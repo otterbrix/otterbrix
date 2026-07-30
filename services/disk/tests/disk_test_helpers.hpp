@@ -117,7 +117,7 @@ namespace disk_test_helpers {
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
         // A computing table declares no columns at all; the named empty vector exists only
-        // because build_create_table_writes now takes its column list by non-const reference
+        // because build_create_table_writes takes its column list by non-const reference
         // (M3-B4 stamps the minted attoid back onto each definition).
         std::vector<components::table::column_definition_t> no_columns;
         auto writes = catalog::build_create_table_writes(&fx.resource,

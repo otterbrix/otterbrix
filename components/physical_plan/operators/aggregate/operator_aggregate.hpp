@@ -16,8 +16,8 @@ namespace components::operators::aggregate {
         //
         // operator_group_t asks in order to decide whether a group can take the vectorised
         // per-group path (a builtin SUM/MIN/MAX/COUNT/AVG over one plain column key) or must fall
-        // back to gathering rows. It used to ask with a dynamic_cast (rule 14); asking the object
-        // instead costs one virtual call per aggregate per PLAN and cannot answer wrongly.
+        // back to gathering rows. Asking the object, not RTTI (rule 14): one virtual call per
+        // aggregate per PLAN, and it cannot answer wrongly.
         //
         // NVI: this accessor is public and non-virtual, the customisation point is private.
         [[nodiscard]] const operator_func_t* as_function_call() const noexcept { return as_function_call_impl(); }

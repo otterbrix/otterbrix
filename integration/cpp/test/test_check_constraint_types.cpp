@@ -4,50 +4,21 @@
 // operator_check_constraint parses its CHECK text by hand and compares the column
 // value against a constant produced by parse_const, which can only ever answer one
 // of THREE types: STRING_LITERAL (quoted), DOUBLE (contains a '.'), or BIGINT
-// (everything else). The comparison itself goes through logical_value_t::compare_sql,
-// which does NO type promotion -- it forwards to compare(), and operator== opens with
+// (everything else). logical_value_t comparison does NO type promotion -- operator==
+// opens with
 //     assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same
 //                                   type before comparison");
+// so the operator must cast the literal to the column's DECLARED type before it
+// compares.
 //
-// So a CHECK over any column whose type is not one of those three compares two
-// differently-typed values. Every pre-existing CHECK test in the suite declares its
-// columns `bigint`, which is exactly the type parse_const yields for an integer
-// literal -- so the mismatch has never been exercised.
-//
-// These cases exercise it. They are characterization pins written BEFORE migrating
-// the operator onto the bound expression layer: whatever the engine answers today is
-// what it must still answer afterwards, and where today's answer is a crash rather
-// than an answer, that is a finding about the operator and not about the migration.
-//
-// ---------------------------------------------------------------------------
-// WHAT A RELEASE BUILD DOES, MEASURED
-//
-// With NDEBUG the assert is compiled out and the comparison proceeds on the two
-// differently-typed values. Measured by recompiling components/types/logical_value.cpp
-// with -DNDEBUG and driving compare_sql through this operator's own compare_tri:
-//
-//   column value        `x > 5` answers   row        correct?
-//   BIGINT 10 / 1       TRUE  / FALSE     ok         yes  (control)
-//   INTEGER 10 / 1      TRUE  / FALSE     ok         yes
-//   SMALLINT 10 / 1     TRUE  / FALSE     ok         yes
-//   DOUBLE 10.5         TRUE              accepted   yes
-//   DOUBLE 1.5          TRUE              accepted   *** NO -- VIOLATING ROW ACCEPTED ***
-//   REAL 1.5            TRUE              accepted   *** NO -- VIOLATING ROW ACCEPTED ***
-//   BOOLEAN true        TRUE              accepted   *** NO ***
-//
-// The integer widths survive by luck: logical_value_t keeps its payload in one 64-bit
-// data_, and the integer arms compare that payload, so INTEGER-vs-BIGINT reads the
-// right bits. The floating arms do not: operator< switches on the LEFT operand's type
-// and reads the RIGHT through it, so a BIGINT 5 is reinterpreted as a double --
-//
-//     BIGINT 5 payload reinterpreted as double = 2.47033e-323   (a denormal)
-//
-// -- and `CHECK (x > 5)` over a DOUBLE column is therefore evaluated as `x > ~0`.
-// Every positive value passes it. The constraint is not enforced, and nothing reports
-// that it was not: no crash, no error, no log line. That is strictly worse than the
-// Debug abort, and it is the reason this is a live engine defect rather than a
-// migration hazard.
-// ---------------------------------------------------------------------------
+// Every pre-existing CHECK test in the suite declares its columns `bigint`, which is
+// exactly the type parse_const yields for an integer literal -- so the mismatch was
+// never exercised. Unreconciled, it is not just a debug abort: with NDEBUG the
+// comparison switches on the LEFT operand's type and reads the RIGHT through it, so
+// a BIGINT 5 compared against a DOUBLE column is reinterpreted as the denormal
+// 2.47e-323 and `CHECK (x > 5)` accepts every positive value -- silently, with no
+// crash, no error, no log line. These cases pin the reconciliation across the column
+// types the DDL accepts.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -103,11 +74,9 @@ TEST_CASE("integration::cpp::check_types::bigint_column_is_the_covered_control")
     check_over_type(dispatcher, "t_bigint", "bigint", "1", "10");
 }
 
-// An INTEGER column against the BIGINT constant parse_const produces from `5`.
-//
-// UN-HIDDEN: it aborted until the comparison was taught to promote its operands, and it
-// is now the pin that proves it does. Left as its own case rather than folded into a
-// loop so a regression names the type it broke on.
+// An INTEGER column against the BIGINT constant parse_const produces from `5`: with
+// the literal left unreconciled this is a debug abort. Left as its own case rather
+// than folded into a loop so a regression names the type it broke on.
 TEST_CASE("integration::cpp::check_types::integer_column") {
     auto config = make_test_config(test_temp_path("check_types/integer"));
     test_spaces space(config);

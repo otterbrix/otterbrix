@@ -23,9 +23,7 @@ namespace components::expressions {
     // Everything the evaluation needs is decided in create(): the tree is flattened into a
     // post-order node list, one intermediate vector is allocated per computing node, and every
     // subtree whose inputs are already fixed (traits().foldable) is evaluated once, there and then.
-    // execute() after that touches no allocator: it fills the preallocated slots. The boxed path
-    // this replaces builds a fresh std::pmr::deque<vector_t> for every chunk, plus a nested one per
-    // expression level.
+    // execute() after that touches no allocator: it fills the preallocated slots.
     //
     // Invariant the whole layer rests on: EVERY result vector is FLAT. A reference to a non-flat
     // input column is materialised into that node's own slot, so no kernel downstream ever has to
@@ -60,21 +58,17 @@ namespace components::expressions {
             core::date::timezone_offset_t session_tz{};
             // The chunk a RIGHT-side reference reads from, when that is a DIFFERENT chunk.
             //
-            // bound_reference_t has carried a side since it was written and binder_context_t has
-            // carried two schemas, but the executor read every reference out of the single input --
-            // so a tree bound against two inputs silently read the left one. A SELECT over a join
-            // does receive ONE merged chunk (and leaves this null), but a DML RETURNING evaluates
-            // the target rows against a separately gathered USING/FROM chunk, and there the two are
-            // genuinely different objects.
+            // A SELECT over a join does receive ONE merged chunk (and leaves this null), but a DML
+            // RETURNING evaluates the target rows against a separately gathered USING/FROM chunk,
+            // and there the two are genuinely different objects.
             const vector::data_chunk_t* right_input = nullptr;
             // When set, EVERY left-side reference reads this one row of the left chunk, whatever
             // output row is being computed.
             //
             // This is the shape a join probe has: one outer/probe row tested against all N rows of
-            // the build side. The boxed layer spelled it batch_check_1vN, broadcasting the left
-            // index through an indexing vector; here the left operand simply becomes constant for
-            // the batch. Without it a two-input tree could only ever compare row k against row k,
-            // which is the filter shape, not the join shape.
+            // the build side -- the left operand simply becomes constant for the batch. Without it
+            // a two-input tree could only ever compare row k against row k, which is the filter
+            // shape, not the join shape.
             std::optional<uint64_t> left_row{};
         };
 
@@ -170,13 +164,11 @@ namespace components::expressions {
         std::pmr::vector<const vector::vector_t*> results_;   // node -> its result vector
         // One argument chunk per function node, allocated ONCE alongside the slots. Its columns are
         // re-POINTED at the argument results on every execution (vector_t::reference shares the
-        // buffer), so calling a function costs no per-chunk allocation and no per-cell copy -- the
-        // boxed path this replaces materialised every argument value into a fresh chunk per batch.
+        // buffer), so calling a function costs no per-chunk allocation and no per-cell copy.
         std::pmr::vector<vector::data_chunk_t> function_args_;
         std::pmr::vector<int32_t> arg_chunk_of_; // node -> index into function_args_ (-1: not a function)
         // One pattern cache per ANY/ALL node. It lives HERE and not on the node because a bound node
-        // is immutable and this fills as rows arrive -- the same reason the boxed layer had to make
-        // regex_any_predicate a class.
+        // is immutable and this fills as rows arrive.
         std::pmr::vector<regex_cache_t> regex_caches_;
         std::pmr::vector<int32_t> cache_of_; // node -> index into regex_caches_ (-1: not an ANY/ALL)
     };

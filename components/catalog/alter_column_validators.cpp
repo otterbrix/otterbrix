@@ -30,8 +30,8 @@ namespace components::catalog::alter_column_validators {
         if (default_value->is_null()) {
             return core::error_t::no_error();
         }
-        // The column type carries the column's name (column_definition.cpp:21) and the default
-        // is a bare literal, so this has to be the shape question or every default is rejected.
+        // The default is a bare literal, so this has to be the SHAPE question: a compare
+        // sensitive to a type's name extension would reject the default on any named type.
         if (default_value->type() != column_type) {
             std::pmr::string msg{resource};
             msg.append("default value type mismatch");

@@ -30,7 +30,7 @@ namespace {
 // ============================================================================
 // The binder resolves a NAME against the input schema once and hands the tree a
 // positional reference. Nothing downstream of it compares strings -- that is the
-// point of the layer, and it is what the 38 re-derivation sites are paying for.
+// point of the layer.
 // ============================================================================
 TEST_CASE("components::expressions::bound::binder_resolves_a_column_name_to_a_positional_reference") {
     std::pmr::monotonic_buffer_resource resource;
@@ -135,8 +135,8 @@ TEST_CASE("components::expressions::bound::binder_types_arithmetic_and_the_execu
 }
 
 // ============================================================================
-// A WHERE tree: AND of two comparisons, one against a plan parameter. Binding it
-// and selecting through it is the shape stage B migrates operator_match onto.
+// A WHERE tree: AND of two comparisons, one against a plan parameter -- the
+// shape operator_match selects with.
 // ============================================================================
 TEST_CASE("components::expressions::bound::binder_binds_a_conjunctive_predicate") {
     std::pmr::monotonic_buffer_resource resource;
@@ -339,13 +339,9 @@ TEST_CASE("components::expressions::bound::binder_binds_a_sort_key") {
 }
 
 // Everything the binder cannot express is REFUSED, loudly, through the error channel. No node is
-// emitted that claims a semantics the executor does not have.
-//
-// MIGRATED (rule 17): this case used to prove the refusal with `a regexp b`, because stage A bound
-// no regex at all. Stage B binds it -- a column pattern varies per row, so it becomes a DYNAMIC
-// regex node -- and the assertion below now pins that instead of dropping it. The refusal property
-// keeps its own example: a dotted NAME with no ordinals resolved into it, which needs the nested
-// column shape the validator owns and which this layer will not guess at.
+// emitted that claims a semantics the executor does not have. The refusal example is a dotted NAME
+// with no ordinals resolved into it, which needs the nested column shape the validator owns and
+// which this layer will not guess at.
 TEST_CASE("components::expressions::bound::binder_refuses_what_it_cannot_express") {
     std::pmr::monotonic_buffer_resource resource;
     auto schema = two_columns(&resource);

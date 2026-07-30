@@ -88,9 +88,8 @@ namespace components::operators {
                         break;
                     }
                     default:
-                        // An UNCONDITIONAL clause. The boxed extractor spelled this `matches = true`
-                        // for any non-comparison cmp; a constant TRUE says the same thing and, being
-                        // foldable, is evaluated once instead of per row.
+                        // An UNCONDITIONAL clause: any non-comparison cmp always fires. A constant
+                        // TRUE says that and, being foldable, is evaluated once instead of per row.
                         branches.push_back(expr::bound_expression_ptr{
                             expr::make_bound_constant(resource, types::logical_value_t{resource, true})});
                         break;
@@ -211,8 +210,7 @@ namespace components::operators {
                                           "projection: a constant parameter slot needs the parameter map");
                     }
                     const auto* value = logical_plan::get_parameter(context.parameters, *column.constant_param_id);
-                    // An UNBOUND slot keeps the column's own baked value, which is what the boxed
-                    // projection did (it looked the id up and fell back to constant_value on a miss).
+                    // An UNBOUND slot falls through to the column's own baked value below.
                     if (value) {
                         return expr::bound_expression_ptr{
                             expr::make_bound_parameter(resource,
@@ -224,7 +222,7 @@ namespace components::operators {
                 // authoritative even over zero rows, and the null lives in the validity mask.
                 if (column.constant_value.is_null()) {
                     // A NULL of result_type, not a value OF result_type: logical_value_t(resource, T)
-                    // is a ZERO of T (is_null() is `type == NA`, logical_value.cpp:325), so building
+                    // is a ZERO of T (is_null() is `type == NA`, logical_value.cpp), so building
                     // it that way would project 0 where the query asked for NULL.
                     return expr::bound_expression_ptr{expr::make_bound_null_constant(resource, column.result_type)};
                 }
@@ -242,7 +240,7 @@ namespace components::operators {
                                           const std::pmr::vector<select_column_t>& columns) {
         vector::data_chunk_t result(resource, {}, 1);
         for (const auto& column : columns) {
-            // Bare '*' over a chunk with no columns expands to no columns, as it did before.
+            // Bare '*' over a chunk with no columns expands to no columns.
             if (column.type == select_column_t::kind::star_expand) {
                 continue;
             }
@@ -266,11 +264,11 @@ namespace components::operators {
                                   const compute::function_registry_t* functions,
                                   const logical_plan::storage_parameters* parameters,
                                   core::date::timezone_offset_t session_tz) {
-        // Each column's name comes off its schema record. It used to be read out of the type's
-        // name slot behind a guard -- that read asserted on a type carrying no extension,
-        // which a computed column of a no-FROM projection does not have. An unnamed column's record
-        // answers with an empty name, and that costs nothing: every key that reaches an operator
-        // carries the ordinals validation resolved for it, so bind_key never needs the name.
+        // Each column's name comes off its schema record, not the type's name slot -- that read
+        // asserts on a type carrying no extension, which a computed column of a no-FROM projection
+        // does not have. An unnamed column's record answers with an empty name, and that costs
+        // nothing: every key that reaches an operator carries the ordinals validation resolved for
+        // it, so bind_key never needs the name.
         expressions::bind_schema_t left{resource};
         for (const auto& column : left_columns) {
             left.add(std::string_view{column.name}, column.type);

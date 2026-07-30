@@ -92,9 +92,8 @@ namespace components::operators {
             types.emplace_back(out_type);
             vector::data_chunk_t empty(resource_, types, 1);
             empty.set_cardinality(0);
-            // Named the same way as the non-empty branch below — on the COLUMN. The name used
-            // to be put inside out_type so that constructing this chunk from it would carry it,
-            // which named the column on one path and not the other (M3-B5).
+            // Named the same way as the non-empty branch below — on the COLUMN — so both
+            // paths name it identically (M3-B5).
             empty.set_column_name(0, result_alias_);
             chunks.emplace_back(std::move(empty));
         } else {

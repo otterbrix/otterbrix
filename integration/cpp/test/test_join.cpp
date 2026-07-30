@@ -500,19 +500,14 @@ TEST_CASE("integration::cpp::test_join::output_column_names") {
     }
 }
 
-// GUARD for the change this stage makes, not a characterization: the first assertion
-// below is RED on unchanged code.
-//
-// A join output column is its source column, gathered, so it now owes that column BOTH
-// halves of its identity — the name and the attoid (M3-B4/B5). Built from a bare type
-// list, as before, every joined column reached the world with attoid == INVALID_OID.
+// A join output column is its source column, gathered, so it owes that column BOTH
+// halves of its identity — the name and the attoid (M3-B4/B5).
 //
 // That is worth a guard because attoid is not inert at the storage boundary: the append
 // matcher resolves an incoming write-set column to a table column by attoid FIRST and
 // falls back to the name only for columns that have none (agent_disk.cpp, "identity
-// outranks name"). A join feeding an INSERT therefore now arrives carrying identities it
-// did not carry before, and the values still have to land where the target column list
-// says.
+// outranks name"). A join feeding an INSERT therefore arrives carrying identities, and
+// the values still have to land where the target column list says.
 //
 // They do, and the reason is structural rather than lucky: the identities a join emits
 // belong to its SOURCE tables, an INSERT target's attoids are allocated separately, and
@@ -537,9 +532,8 @@ TEST_CASE("integration::cpp::test_join::joined_write_set_column_routing") {
     REQUIRE(run("CREATE TABLE wsdb.u (x BIGINT, y BIGINT);")->is_success());
     REQUIRE(run("INSERT INTO wsdb.u (x, y) VALUES (1, 2);")->is_success());
 
-    // RED before this stage: every joined column answered INVALID_OID. The identity is
-    // compared against the same column read through a plain scan, so the assertion says
-    // "the join preserved it", not "it happens to be some number".
+    // The identity is compared against the same column read through a plain scan, so the
+    // assertion says "the join preserved it", not "it happens to be some number".
     INFO("a joined column carries the SAME catalog identity as the column it gathers");
     {
         auto scan_u = run("SELECT * FROM wsdb.u;");

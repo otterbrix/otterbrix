@@ -23,7 +23,7 @@
 //   * the fixed-ARRAY size requirement that must NOT be dropped by a name miss on an
 //     unnamed write-set -- test_list_array::array_size_unnamed_write_set
 // Those pin the IS-NULL family and the array requirement; this file pins the
-// COMPARISON family, which is the part the bound-layer migration rewrites.
+// COMPARISON family.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -162,11 +162,10 @@ TEST_CASE("integration::cpp::check_absence::mixed_tree_resolves_each_leaf") {
 // DELETE ... USING IS A SEMI-JOIN.
 //
 // A target row is deleted ONCE however many USING rows it matches, and RETURNING
-// yields one row per deleted target, not one per matched pair. The boxed path got
-// this from a `break` after the first matching right row; a restructure that
-// evaluates the whole right chunk at once has to take only the FIRST match and not
-// emit a row per match. Pinned here because the difference is invisible unless a
-// target matches MORE THAN ONE using row -- which is the case this sets up.
+// yields one row per deleted target, not one per matched pair. An implementation
+// that evaluates the whole right chunk at once has to take only the FIRST match
+// and not emit a row per match. Pinned here because the difference is invisible
+// unless a target matches MORE THAN ONE using row -- which is the case this sets up.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::dml_semijoin::delete_using_deletes_a_target_once_per_row") {
     auto config = make_test_config(test_temp_path("dml_semijoin/delete_using"), /*disk_on=*/true);

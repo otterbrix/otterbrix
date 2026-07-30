@@ -29,7 +29,7 @@ namespace components::operators {
     // positionally is what made `SELECT c` answer with b's values on (a,b,c) after dropping b.
     //
     // The join key is the attoid, never the position: identity is what survives the hole, and it
-    // is now durable across a restart on all three storage paths (.otbx column record, IN_MEMORY
+    // is durable across a restart on all three storage paths (.otbx column record, IN_MEMORY
     // rehydrate, and restamp_user_storage_attoids_sync after WAL replay). A logical column with no
     // identity match in the chunk is an ERROR (R6) — answering it by position is exactly the
     // silent wrong answer this exists to remove.

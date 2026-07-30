@@ -120,7 +120,7 @@ TEST_CASE("pushed_spec::field_fidelity") {
 
     // The schema the OWNING AGENT rebuilds the group operator from: same types, positionally,
     // with the names the spec already carries — group_keys[i].name then aggregates[j].alias.
-    // Nothing here recovers a name from a type (M3-B5 step 8).
+    // Nothing here recovers a name from a type (M3-B5).
     const auto out_schema = spec.output_schema(&spec_res);
     REQUIRE(out_schema.size() == 2);
     REQUIRE(out_schema[0].name == "g");

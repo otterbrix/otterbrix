@@ -287,8 +287,8 @@ TEST_CASE("components::types::logical_value::map_children_present") {
 }
 
 TEST_CASE("components::types::logical_value::string_children_safe") {
-    // Regression: children() guards only NULL, so a STRING_LITERAL value reinterprets its
-    // std::string payload as std::vector<logical_value_t> and reads the string's data/size
+    // Regression: children() used to guard only NULL, so a STRING_LITERAL value reinterpreted
+    // its std::string payload as std::vector<logical_value_t> and read the string's data/size
     // words as the vector's begin/end pointers. A string value has no children.
     // The literal is deliberately longer than the SSO buffer so the two reinterpreted words
     // are a heap pointer and a length -- never accidentally equal, which an empty or short
@@ -300,8 +300,8 @@ TEST_CASE("components::types::logical_value::string_children_safe") {
 }
 
 TEST_CASE("components::types::logical_value::scalar_children_safe") {
-    // Regression: for a scalar, data_ holds the payload itself, so children() reinterprets
-    // the integer as a std::vector pointer and dereferences it.
+    // Regression: for a scalar, data_ holds the payload itself, so an unguarded children()
+    // would reinterpret the integer as a std::vector pointer and dereference it.
     auto* resource = std::pmr::get_default_resource();
     logical_value_t big(resource, int64_t{0x7fff'ffff'ffff'ffff});
     REQUIRE_FALSE(big.is_null());
@@ -350,12 +350,11 @@ TEST_CASE("components::types::logical_value::cast_as_null_returns_error") {
 }
 
 // ---------------------------------------------------------------------------
-// Characterization: what complex_logical_type's single name slot currently means.
+// Characterization: what complex_logical_type's single name slot means.
 //
-// logical_type_extension holds ONE name string, and four different roles are read
-// out of it: a column's name, a STRUCT field's name, an ENUM entry's label, and a
-// value's label. These cases pin the observable answer for each role so a change
-// that re-routes any of them to separate storage is provably behaviour-preserving.
+// logical_type_extension holds ONE name string, read as a STRUCT field's name, an ENUM
+// entry's label, or a value's label; a COLUMN's name is no longer one of its roles
+// (M3-B5 — it lives on vector_t). These cases pin the observable answer for each role.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("components::types::name_roles::struct_field_names") {
@@ -395,12 +394,10 @@ TEST_CASE("components::types::name_roles::struct_field_names") {
 }
 
 TEST_CASE("components::types::name_roles::is_unnamed_answers_about_fields_and_never_dereferences_null") {
-    // M3-B5, RED before the change (this is the RED the plan lists for the stage).
-    //
     // is_unnamed() read `extension_->field_name().empty()` with no guard at all, so every type
     // without an extension — which is every scalar type nobody named — dereferenced null.
     // In a Debug build that is a segfault; in Release it reads a std::string out of address
-    // zero. Its one caller (struct_column_data.cpp:18) only ever passed struct types, which
+    // zero. Its one caller (struct_column_data.cpp) only ever passed struct types, which
     // is why it survived: latent, not unreachable.
     //
     // The question it was ASKING was wrong too, and B5 is what makes that visible. It asked
@@ -469,7 +466,7 @@ TEST_CASE("components::types::name_roles::enum_entry_labels") {
     CHECK(oddness.type_name() == "oddness_t");
 
     // Asserted through the label-consuming API only, never through the slot the label
-    // happens to live in -- which slot that is, is what this refactor is free to move.
+    // happens to live in.
     const auto* ext = static_cast<const enum_logical_type_extension*>(oddness.extension());
     REQUIRE(ext != nullptr);
     REQUIRE(ext->entries().size() == 2);
@@ -511,9 +508,9 @@ TEST_CASE("components::types::name_roles::enum_entry_labels") {
 TEST_CASE("components::types::name_roles::field_name_on_a_scalar_type") {
     std::pmr::monotonic_buffer_resource resource;
 
-    // The slot this used to pin held a COLUMN's name. M3-B5 moved that onto the column
-    // (vector_t::name()) and left the slot with the one role that is a property of a type:
-    // the name it answers to as a FIELD of the struct that contains it.
+    // M3-B5 moved the COLUMN's name onto the column (vector_t::name()) and left this slot
+    // with the one role that is a property of a type: the name it answers to as a FIELD of
+    // the struct that contains it.
     complex_logical_type field{logical_type::BIGINT};
     CHECK(field.field_name().empty());
     field.set_field_name("id");
@@ -539,9 +536,8 @@ TEST_CASE("components::types::name_roles::field_name_on_a_scalar_type") {
 
 TEST_CASE("components::types::name_roles::a_field_value_s_name_becomes_the_struct_s_field_name") {
     // logical_value_t::create_struct(name, fields) turns each field VALUE's name into the
-    // resulting struct type's FIELD name with no assignment in between. This chain was the
-    // reason the two roles could not be separated by renaming (M3-B0 refuted itself on it);
-    // it survives the split intact because both ends of it are the FIELD role.
+    // resulting struct type's FIELD name with no assignment in between. The chain survives
+    // the name split (M3-B5) intact because both ends of it are the FIELD role.
     std::pmr::monotonic_buffer_resource resource;
 
     logical_value_t first(&resource, int64_t{1});
@@ -558,11 +554,8 @@ TEST_CASE("components::types::name_roles::a_field_value_s_name_becomes_the_struc
 }
 
 TEST_CASE("components::types::name_roles::equality_is_the_shape_question") {
-    // M3-B5, and the end of a three-stage argument. B3 made operator== notice the name slot,
-    // because the slot then held a COLUMN's name and a BIGINT column called `a` is not a
-    // BIGINT column called `b`; the 32 production callers that were asking "can these carry
-    // the same values" moved to a separate same_shape(). B5 took the column's name off the
-    // type, so the two relations answer the same question and there is one of them again.
+    // M3-B5: with the column's name off the type, equality is the shape question — "can
+    // these carry the same values" — and names take no part in it.
     complex_logical_type left{logical_type::BIGINT, "a"};
     complex_logical_type right{logical_type::BIGINT, "b"};
     CHECK(left == right);
@@ -586,7 +579,7 @@ TEST_CASE("components::types::name_roles::equality_ignores_names_at_every_depth"
     // field name nor the names INSIDE a struct take part: what a struct's fields are called
     // does not change what values it can hold, which is the only question equality answers
     // now. (The struct's OWN registered name is a different slot and IS compared — see
-    // enum/struct type_name below.)
+    // enum/struct type_name above.)
     std::pmr::monotonic_buffer_resource resource;
 
     std::pmr::vector<complex_logical_type> left_fields{&resource};

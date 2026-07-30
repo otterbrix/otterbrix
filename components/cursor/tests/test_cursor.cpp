@@ -183,21 +183,20 @@ TEST_CASE("components::cursor::column_descriptor_per_constructor") {
 // they are not interchangeable.
 //
 //   * columns() — the cursor's own descriptor, deep-copied once at
-//     construction (cursor.cpp:44-45 / 64-65) and never re-synced. Everything a
-//     user can reach reads this one: column_count(), cursor_column_name and
-//     cursor_get_value_by_name in the C ABI (integration/c/main.cpp:364,395),
-//     and the python binding (wrapper_cursor.cpp:76,195,249,
-//     pyconnection.cpp:203). C# and Rust go through the C ABI.
+//     construction (cursor.cpp) and never re-synced. Everything a user can
+//     reach reads this one: column_count(), cursor_column_name and
+//     cursor_get_value_by_name in the C ABI (integration/c/main.cpp), and the
+//     python binding (wrapper_cursor.cpp, pyconnection.cpp). C# and Rust go
+//     through the C ABI.
 //
 //   * chunks().front().schema() — the chunk's own memo, derived from `data` and
 //     reconciled on every read (M3-B1).
 //
-// B2 moves readers onto the chunk's schema, and these readers deliberately do
-// NOT move: the two carriers answer differently on two reachable shapes, so
-// repointing them would change what a binding reports. Both shapes are pinned
-// here so B3/B5 — where the type stops carrying a name and a list of types can no
-// longer hold one — has to answer for the difference instead of tripping over it.
-// B5's answer: the descriptor is a list of {attoid, name, type} records of its own.
+// The bindings' readers deliberately stay on the descriptor: the two carriers
+// answer differently on two reachable shapes, so repointing them would change
+// what a binding reports. Both shapes are pinned here. The descriptor is a list
+// of {attoid, name, type} records of its own (M3-B5), so it does not depend on
+// the type carrying a name.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("components::cursor::two_sources_of_column_identity") {

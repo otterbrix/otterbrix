@@ -102,10 +102,10 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->column_count() == 1);
         REQUIRE(cur->chunks().front().data[0].name() == "QUERY PLAN");
-        // M3-B2: the same name off the chunk's own schema record. EXPLAIN never READS a
+        // The same name off the chunk's own schema record (M3-B2). EXPLAIN never READS a
         // column name — renderer_postgres.cpp writes "QUERY PLAN" once when it builds the
-        // result types, and this is the only place it is read back. Both carriers are pinned
-        // so B3/B5 cannot silently drop one of them.
+        // result types, and this is the only place it is read back. Both name carriers
+        // are pinned so neither can be dropped silently.
         REQUIRE(std::string{cur->chunks().front().schema()[0].name} == "QUERY PLAN");
         REQUIRE(cur->size() > 0);
         REQUIRE(contains(plan_text(cur), "orders"));

@@ -153,10 +153,9 @@ namespace services::planner::impl {
                             // An unbound parameter has no probe key, so there is nothing to look up
                             // in the index. Fall through to the full_scan below, whose filter
                             // lowering reports the missing binding as invalid_parameter — an
-                            // unbound parameter is an ERROR now, not an empty result. (It used to
-                            // probe the index with a NULL sentinel and yield no rows, before
-                            // absence moved outside the value domain; SQL statements cannot reach
-                            // this — the transformer registers a slot for every placeholder.)
+                            // unbound parameter is an ERROR, not an empty result. (SQL statements
+                            // cannot reach this — the transformer registers a slot for every
+                            // placeholder.)
                             if (const auto* value = get_parameter(context.parameters, param_id)) {
                                 auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
                                 auto preferred_index_type = context.preferred_index_type_for_compare(key, ctype);

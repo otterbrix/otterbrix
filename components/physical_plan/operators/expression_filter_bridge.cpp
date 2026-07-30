@@ -43,7 +43,7 @@ namespace components::operators::predicates {
         // yet -- attach_expression_evaluators runs over the filter tree before the scan starts. The
         // bound layer needs the input COLUMN TYPES, and the only place they become known is the
         // first row handed to evaluate(). The layout chunk is cached per filter and its types are
-        // fixed when it is built (row_group.cpp:310-318), so binding against the first row binds
+        // fixed when it is built (row_group.cpp), so binding against the first row binds
         // against every row. A bind that FAILS is remembered rather than retried per row: the answer
         // cannot change, and a scan should not pay for it a million times.
         //
@@ -159,9 +159,7 @@ namespace components::operators::predicates {
         // Dispatch on the filter's OWN tag, not on RTTI (rule 14). Every table_filter_t carries a
         // table_filter_type it was constructed with, and every subclass declares an
         // is_filter_class() predicate over it, so cast<TARGET>() is a checked downcast that asserts
-        // the tag agrees. This is the same move M8 used to remove 25 dynamic_cast sites in
-        // components/table -- the machinery was already there, this walk had simply not been
-        // converted. A tag the walk does not know is a leaf it has nothing to attach to.
+        // the tag agrees. A tag the walk does not know is a leaf it has nothing to attach to.
         void attach_recursive(std::pmr::memory_resource* resource,
                               table::table_filter_t* filter,
                               shared_registry_ptr& registry) {

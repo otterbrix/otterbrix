@@ -126,9 +126,9 @@ namespace services::dispatcher { namespace {
     // The constraint operators need it to type a CHECK's literal. operator_check_constraint parses
     // its CHECK text by hand, and its parse_const can only answer one of three types
     // (STRING_LITERAL / DOUBLE / BIGINT) -- so without the declared type it compares the column
-    // against a constant of some OTHER type. That mismatch used to abort with assertions on and,
-    // worse, silently accept violating rows without them. Every column is listed, not only the
-    // defaulted ones: a column with no DEFAULT is exactly the case that was broken.
+    // against a constant of some OTHER type: an abort with assertions on, silently accepted
+    // violating rows without them. Every column is listed, not only the defaulted ones — a
+    // column with no DEFAULT still needs its declared type here.
     std::vector<std::pair<std::string, components::types::complex_logical_type>>
     decode_column_types(const components::logical_plan::resolved_table_metadata_t& md) {
         std::vector<std::pair<std::string, components::types::complex_logical_type>> types;
@@ -243,9 +243,7 @@ namespace services::dispatcher { namespace {
                     //
                     // The coerced column is the SAME column, so the rebuild constructor gives it
                     // `col`'s name (storage_append matches on it) and `col`'s catalog identity,
-                    // which the append matcher prefers over the name (M3-B4/B5). The identity used
-                    // to be dropped here outright, and the name could only be carried by copying
-                    // it into the new TYPE after the fact.
+                    // which the append matcher prefers over the name (M3-B4/B5).
                     components::vector::vector_t replacement(col.resource(), *target_type, col, chunk.capacity());
                     const auto rows = chunk.size();
                     for (std::uint64_t row = 0; row < rows; ++row) {
@@ -1069,13 +1067,13 @@ namespace services::dispatcher { namespace {
                 //           catalog with its own attoids; operator_computed_field_unregister_t
                 //           matches those by attname. A pg_attribute attoid would mis-key it.
                 //
-                // DROP was gated off here until the read side could survive it: pg_attribute is
-                // the LOGICAL schema and shrinks on a drop, while the storage's PHYSICAL column
-                // list is a separate list that only ever grows, so a scan that projected a
-                // resolved column by its POSITION answered `SELECT c` with b's values on
-                // (a,b,c) after dropping b. The scan now joins the storage chunk to the logical
-                // schema on each column's catalog identity (scan_identity_projection_t), which
-                // is indifferent to the hole the tombstone leaves behind.
+                // DROP leans on identity projection at read time: pg_attribute is the LOGICAL
+                // schema and shrinks on a drop, while the storage's PHYSICAL column list is a
+                // separate list that only ever grows, so a scan that projected a resolved
+                // column by its POSITION would answer `SELECT c` with b's values on (a,b,c)
+                // after dropping b. The scan joins the storage chunk to the logical schema on
+                // each column's catalog identity (scan_identity_projection_t), which is
+                // indifferent to the hole the tombstone leaves behind.
                 auto* node = static_cast<node_alter_column_t*>(root.get());
                 if (node->computed()) {
                     break;
@@ -1140,7 +1138,7 @@ namespace services::dispatcher {
                                                          actor_zeta::address_t index_address,
                                                          services::context_storage_t* collections_ctx) {
         // disk_address is part of the enrich_plan signature but nothing in this pass talks to the
-        // disk manager any more: catalog metadata arrives pre-resolved in `idx`.
+        // disk manager: catalog metadata arrives pre-resolved in `idx`.
         if (!root)
             co_return core::error_t::no_error();
         // drop_* nodes no longer carry user-typed names; copy OIDs from their

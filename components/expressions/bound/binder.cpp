@@ -91,7 +91,7 @@ namespace components::expressions {
         }
         if (operand->kind() == bound_kind::constant) {
             // A NULL of `peer`, not a value OF peer: logical_value_t(resource, T) is a ZERO of T,
-            // never a null, because is_null() is `type == NA` (logical_value.cpp:325).
+            // never a null, because is_null() is `type == NA` (logical_value.cpp).
             return bound_expression_ptr{make_bound_null_constant(resource_, peer)};
         }
         return operand;
@@ -334,8 +334,7 @@ namespace components::expressions {
         }
         // THE point of the node: when the pattern is a bound parameter its bytes are known NOW, so
         // the regex is compiled once here rather than per row -- and, because a bound node is a class,
-        // the move-only compiled object is simply a member. That is what removes the predicate
-        // subclass whose only reason to exist was that a regex_t does not fit in a std::function.
+        // the move-only compiled object is simply a member.
         // An `x LIKE <column>` pattern genuinely varies per row and is bound as `dynamic`.
         if (is_parameter(expression.right())) {
             if (!context.parameters) {
@@ -460,8 +459,8 @@ namespace components::expressions {
             return make_bound_negate(resource_, std::move(operand.value()));
         }
         if (type == scalar_type::case_expr || type == scalar_type::case_when) {
-            // Same operand layout the boxed evaluator uses: when0, then0, when1, then1, ... and a
-            // trailing ELSE when the count is odd.
+            // Same operand layout the projection executor's CASE arm uses: when0, then0, when1,
+            // then1, ... and a trailing ELSE when the count is odd.
             const auto& operands = expression_params;
             if (operands.size() < 2) {
                 return bind_error(resource_,
@@ -557,11 +556,10 @@ namespace components::expressions {
             arguments.push_back(std::move(bound.value()));
         }
         // THE point of binding a call: the kernel is chosen HERE, from the argument types the tree
-        // promises, and its declared output type becomes the node's return type. The boxed path
-        // re-dispatched per batch off whatever the first row's value happened to be typed as, so a
-        // column whose first row was NULL could pick a different kernel than the same column with a
-        // non-null head. An argument set with no matching kernel is refused at bind time instead of
-        // failing on the first chunk that reaches it.
+        // promises, and its declared output type becomes the node's return type. Dispatching off
+        // values instead would let a column whose first row is NULL pick a different kernel than
+        // the same column with a non-null head. An argument set with no matching kernel is refused
+        // at bind time instead of failing on the first chunk that reaches it.
         auto kernel = function->dispatch_exact(resource_, argument_types);
         if (kernel.has_error()) {
             return kernel.convert_error<bound_expression_ptr>();

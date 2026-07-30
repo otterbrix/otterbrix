@@ -25,8 +25,7 @@ namespace components::expressions {
     // A bound expression is IMMUTABLE and TYPED. Everything an executor needs in order to evaluate
     // it over a chunk is decided once, here, at bind time:
     //   * kind_          -- the dispatch tag (no RTTI, no dynamic_cast)
-    //   * return_type_   -- mandatory; the parsed layer does not carry it, which is why 38 sites
-    //                       re-derive type information while executing
+    //   * return_type_   -- mandatory; the parsed layer does not carry it
     //   * physical_type_ -- cached, because complex_logical_type::to_physical_type() branches
     //                       (DECIMAL picks its storage width from its precision) and re-asking it
     //                       per row is a branch per cell
@@ -85,8 +84,6 @@ namespace components::expressions {
     //
     // path() is the FULL address. A single ordinal is a top-level column; more than one navigates
     // into a STRUCT field or an ARRAY/LIST element, exactly as data_chunk_t::value(path, row) does.
-    // The deep case is what key_t::path() already carried and the boxed value-getter already read
-    // already read -- keeping it means the layer refuses nothing that used to work.
     class bound_reference_t final : public bound_expression_t {
     public:
         bound_reference_t(std::pmr::memory_resource* resource,
@@ -133,7 +130,7 @@ namespace components::expressions {
         // A constant whose VALUE may be NULL while the node still carries a real result TYPE.
         //
         // logical_value_t has no way to be "a NULL of type T": is_null() is `type == NA`
-        // (logical_value.cpp:325), so a null value is ALWAYS NA-typed and a value of type T is never
+        // (logical_value.cpp), so a null value is ALWAYS NA-typed and a value of type T is never
         // null -- `logical_value_t(resource, BIGINT)` is a BIGINT ZERO. A tree that needs "this
         // operand is NULL for every row, and it is a BIGINT" therefore cannot say so through the
         // value alone; the type has to be carried beside it. The executor already does the right
@@ -177,11 +174,9 @@ namespace components::expressions {
         // engine pins both answers:
         //   * a SCALAR divisor that is zero  -> a query error   (`SELECT count / 0`)
         //   * a COLUMN divisor holding zero  -> that row is NULL (`SELECT 10 / x`)
-        // The boxed evaluator got this from which BRANCH it took -- resolve_operand answers a scalar
-        // for a parameter and a vector for a column, and only the scalar
-        // branches test the divisor. A bound tree materialises a parameter into a full vector, so
-        // the distinction has to be carried explicitly or both shapes take the vector kernel and the
-        // error silently becomes a NULL.
+        // A bound tree materialises a parameter into a full vector, so the distinction has to be
+        // carried explicitly or both shapes take the vector kernel and the error silently becomes
+        // a NULL.
         bool divisor_is_scalar() const noexcept { return divisor_is_scalar_; }
 
     private:
@@ -267,11 +262,6 @@ namespace components::expressions {
     };
 
     // `subject LIKE / ILIKE / regexp <pattern>`, with the pattern COMPILED HERE, at bind time.
-    //
-    // That is the whole point of the node. RE2's regex_t is move-only, which is why the boxed layer
-    // had to make it a predicate SUBCLASS -- a compiled regex does not fit in the std::function every
-    // other comparator was (simple_predicate.cpp:141). A bound node is a class already, so the
-    // compiled pattern is simply a member and the subclass has nothing left to exist for.
     //
     // Four states, all decided at bind time and none of them a throw:
     //   * compiled  -- the usual `col LIKE 'lit%'`; one child (the subject)
@@ -443,12 +433,12 @@ namespace components::expressions {
     [[nodiscard]] core::result_wrapper_t<bound_expression_ptr>
     make_bound_case(std::pmr::memory_resource* resource, std::pmr::vector<bound_expression_ptr> children);
 
-    // `result_type` is authoritative -- the plan resolved it data-independently, so a COALESCE over
-    // zero rows still produces a correctly-typed column. Every operand must agree with it physically.
     // The result type IS the operand's type -- negating never widens.
     [[nodiscard]] core::result_wrapper_t<bound_expression_ptr>
     make_bound_negate(std::pmr::memory_resource* resource, bound_expression_ptr operand);
 
+    // `result_type` is authoritative -- the plan resolved it data-independently, so a COALESCE over
+    // zero rows still produces a correctly-typed column. Every operand must agree with it physically.
     [[nodiscard]] core::result_wrapper_t<bound_expression_ptr>
     make_bound_coalesce(std::pmr::memory_resource* resource,
                         types::complex_logical_type result_type,

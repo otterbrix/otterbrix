@@ -7,13 +7,11 @@
 
 namespace components::table {
 
-    // M3-B5 step 9. These constructors used to copy `name` into the TYPE's name slot as
-    // well, because every downstream reader — scans, DML operators, the validator — took a
-    // column's name off its type. They no longer do: a chunk column carries its own name
-    // (vector_t::name(), stamped from here by data_table_t::stamp_column_identity), so this
-    // definition is the single place the name lives on the storage side. The old copy also
-    // had to skip a self-naming type (a STRUCT would have lost "test_struct" to the column's
-    // name), which is exactly the overload that made the slot unreadable.
+    // M3-B5: the column's name is NOT copied into the type's name slot — this definition
+    // is the single place the name lives on the storage side, and chunk columns carry
+    // their own name (vector_t::name(), stamped from here by
+    // data_table_t::stamp_column_identity). The type's name slot belongs to self-naming
+    // types (a STRUCT's own name) and must not be overloaded with the column's.
     column_definition_t::column_definition_t(std::string name, types::complex_logical_type type)
         : name_(std::move(name))
         , type_(std::move(type)) {}

@@ -3,7 +3,7 @@
 //
 // WHY THIS FILE EXISTS. Nothing else in the suite drives operator_match_t with a
 // LIMIT. The comments that claim otherwise are stale: filter pushdown
-// (create_plan_match_::is_pure_compare) has since claimed
+// (create_plan_match.cpp::is_pure_compare) has since claimed
 //   * column-vs-column  (`a < b`)      -> column_column_filter_t on the scan,
 //   * LIKE / regexp vs a literal        -> constant_filter_t on the scan,
 //   * a bare LIMIT with no WHERE        -> transfer_scan (the match node has no
@@ -11,7 +11,7 @@
 // so every one of those now caps inside the SCAN, never in operator_match.
 //
 // That is why EVERY case below first PROVES its own routing with an assertion on
-// "Filter" (the EXPLAIN label of operator_type::match, renderer_postgres.cpp:52)
+// "Filter" (the EXPLAIN label of operator_type::match, renderer_postgres.cpp)
 // appearing in the plan. Without that proof a test silently exercises the scan's
 // cap and stays green no matter what operator_match does with its counter.
 //
@@ -255,7 +255,7 @@ TEST_CASE("integration::cpp::match_limit::limit_zero_emits_nothing") {
 //
 // When a scanned vector has invisible (deleted) rows the row_group takes the
 // select_committed path, which ends in vector_t::slice() — that STAMPS the result
-// column DICTIONARY (vector.cpp:257). operator_match then filters a chunk whose
+// column DICTIONARY (vector.cpp). operator_match then filters a chunk whose
 // columns are not FLAT: the per-cell read has to go through the dictionary's
 // indexing, and so does anything that replaces it. Deleting the ids in [0,600)
 // leaves 1200 matches; the cap of 300 must count DICTIONARY rows, not slots.

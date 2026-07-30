@@ -21,8 +21,7 @@ namespace components::index {
     }
 
     // A btree position is only ever equal to another btree position: the tag check rejects a null
-    // or foreign body BEFORE the downcast, where the old dynamic_cast folded both cases into a
-    // nullptr that was dereferenced unchecked.
+    // or foreign body BEFORE the downcast.
     bool single_field_index_t::impl_t::equals(const iterator_impl_t* other) const {
         const auto* rhs = same_kind_as<impl_t>(other);
         return rhs != nullptr && iterator_ == rhs->iterator_;
@@ -48,10 +47,9 @@ namespace components::index {
     //
     // "Can not be" is NOT "cast_as reported an error". cast_as is a SQL CAST, not a domain check:
     // STRING -> BIGINT runs std::atoll, which maps every non-numeric string to 0 and reports
-    // success. Trusting it let 'hello' and 'world' both be indexed under the key 0, so an equality
-    // probe — which collapses the same way — matched rows that do not satisfy the predicate. That
-    // is an INVENTED key, and index_scan carries no operator_match above it, so the invention
-    // reached the caller as an answer.
+    // success — trusting it indexes 'hello' and 'world' both under the INVENTED key 0, and an
+    // equality probe (which collapses the same way) then matches rows that do not satisfy the
+    // predicate; index_scan carries no operator_match above it to catch the invention.
     //
     // in_domain() therefore accepts a conversion only when it is LOSSLESS: casting the result back
     // to the source type must reproduce the source value. Widening (INTEGER 5 -> BIGINT 5) passes;

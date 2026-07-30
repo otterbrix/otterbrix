@@ -345,10 +345,6 @@ namespace components::operators {
             // a name, so the type disambiguates. `claimed` prevents two variants
             // from binding to the same physical column. Falls back to the first
             // unclaimed same-name column when types don't compare exactly.
-            //
-            // The name comes off the schema record. It used to be read out of the storage
-            // TYPE's name slot behind a guard — one of the sites that had to ask
-            // whether a type happened to be carrying a name before it could compare one.
             std::vector<bool> claimed(storage_schema.size(), false);
             for (auto& r : rows) {
                 const types::complex_logical_type rtype =

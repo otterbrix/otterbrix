@@ -204,8 +204,7 @@ namespace components::operators {
 
         // Appends one column per post-aggregate expression (SUM(a) + SUM(b), -SUM(a), ...),
         // evaluated per group over the already-materialized aggregate columns. An operand pair
-        // the arithmetic has no arm for is a real failure, so it leaves through the return value
-        // instead of the throw it used to be.
+        // the arithmetic has no arm for is a real failure, so it leaves through the return value.
         [[nodiscard]] core::error_t calc_post_aggregates(pipeline::context_t* pipeline_context,
                                                          vector::data_chunk_t& result);
 

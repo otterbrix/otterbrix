@@ -494,10 +494,8 @@ TEST_CASE("aggregate func args: a column key survives an expression argument app
     //
     // Resolving the expression argument APPENDS its computed column to the input chunk, and
     // chunk.data is a plain std::vector that reallocates when it grows. The column key resolved
-    // BEFORE it must still address the same column afterwards. Pre-fix it was addressed by an
-    // ITERATOR taken before the append, so it pointed into the freed block: reading the type back
-    // out of it ABORTED the process every run (complex_logical_type::size "reached unsupported
-    // type", or validation.cpp's resource_ == other.resource_).
+    // BEFORE it must still address the same column afterwards — addressing it through an
+    // iterator taken before the append points into the freed block and aborts the process.
     //
     // The contract pinned here is that the operator ANSWERS -- no kernel accepts this argument
     // pair, so it answers a clean core::error_t (rules 2/9), which is a query error the caller can
@@ -546,15 +544,15 @@ namespace {
     }
 } // namespace
 
-// M3-B5 step 6 pin. operator_group_t builds its output column names from two
-// carriers at once: the plan-stamped output schema (positions the plan owns) and
-// the operator's own per-aggregate `values_[a].name` (positions past the plan's
-// end -- internal aggregates). Step 8 moves the first carrier off the type, so
-// this pins what a user actually sees, byte for byte, on every shape that reaches
-// the group operator: a plain GROUP BY key, an aliased aggregate, an unaliased
-// aggregate (the name the SQL layer synthesizes), a post-aggregate arithmetic
-// column, and the empty-group / global-aggregate-over-zero-rows path, which is a
-// SEPARATE emit site (empty_aggregate_result) with its own copy of the naming.
+// operator_group_t builds its output column names from two carriers at once: the
+// plan-stamped output schema (positions the plan owns) and the operator's own
+// per-aggregate `values_[a].name` (positions past the plan's end -- internal
+// aggregates). This pins what a user actually sees, byte for byte, on every shape
+// that reaches the group operator: a plain GROUP BY key, an aliased aggregate, an
+// unaliased aggregate (the name the SQL layer synthesizes), a post-aggregate
+// arithmetic column, and the empty-group / global-aggregate-over-zero-rows path,
+// which is a SEPARATE emit site (empty_aggregate_result) with its own copy of the
+// naming.
 TEST_CASE("group operator contracts: output column names", "[group_contracts]") {
     auto config = test_create_config(test_temp_path("test_group_operator_contracts/names"));
     test_clear_directory(config);
@@ -617,7 +615,7 @@ TEST_CASE("group operator contracts: output column names", "[group_contracts]") 
         // Today a keyed GROUP BY over zero rows answers with NO columns at all --
         // materialize_groups() never runs, so nothing names anything. That is the
         // known empty-result-schema hole, pinned here as current behaviour so that a
-        // step which changes it has to say so rather than change it in passing.
+        // change to it has to say so rather than happen in passing.
         auto cur = dispatcher->execute_sql(session, "SELECT k, COUNT(*) AS n FROM gnamedb.empty_t GROUP BY k;");
         REQUIRE(cur->is_success());
         CHECK(result_column_names(*cur) == std::vector<std::string>{});

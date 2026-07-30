@@ -247,10 +247,8 @@ namespace components::vector::arrow {
         return core::error_t::no_error();
     }
 
-    // M3-B5: the COLUMN names come from the schema, not from the types. They used to arrive
-    // inside the types, which is why the python binding had to fold the cursor's names into
-    // its type list before calling — the only production caller, and the reason this took a
-    // bare type list at all.
+    // M3-B5: the COLUMN names come from the schema, not from the types — a type no longer
+    // carries one.
     core::error_t to_arrow_schema(ArrowSchema* out_schema, const schema_t& schema) {
         assert(out_schema);
         uint64_t column_count = schema.size();

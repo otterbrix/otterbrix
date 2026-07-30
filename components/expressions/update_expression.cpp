@@ -419,8 +419,9 @@ namespace components::expressions {
         } else {
             auto binary_op = to_binary_vec_op(type_);
             if (!binary_op) {
-                // A node kind that computes nothing reached the calculate path. Was a throw,
-                // which under the executor's coroutines becomes an empty unhandled_exception().
+                // A node kind that computes nothing reached the calculate path. Must be an error,
+                // not a throw: under the executor's coroutines a throw becomes an empty
+                // unhandled_exception().
                 return core::error_t{
                     core::error_code_t::physical_plan_error,
                     std::pmr::string{"update expression: node kind carries no computation", resource}};

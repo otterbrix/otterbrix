@@ -176,8 +176,8 @@ namespace components::operators {
         }
 
         if (out_chunks.empty()) {
-            // An empty result still describes its columns: a zero-row answer that named
-            // nothing is what four "silent" drain sites used to hand a user.
+            // An empty result still describes its columns: a zero-row answer must name and
+            // type them for the user.
             out_chunks.emplace_back(vector::make_chunk(resource_, out_schema, 0));
         }
         return core::error_t::no_error();

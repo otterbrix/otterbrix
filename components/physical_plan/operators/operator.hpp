@@ -321,8 +321,8 @@ namespace components::operators {
         // order), forwarded by the physical-plan generator from the logical node's
         // output_schema(). Default no-op; operators that emit a typed result (group /
         // select / union) override it so a column produced over zero input rows stays
-        // correctly typed instead of the 0-byte logical_type::NA sentinel — and, since
-        // M3-B5 step 8, correctly NAMED without reading the name back out of the type.
+        // correctly typed instead of the 0-byte logical_type::NA sentinel — and correctly
+        // NAMED without reading the name back out of the type (M3-B5).
         virtual void set_output_schema(const vector::schema_t& schema);
 
         // --- EXPLAIN ANALYZE per-operator instrumentation ---

@@ -97,8 +97,8 @@ namespace components::index {
                 kind_t kind() const noexcept { return kind_; }
 
                 // Checked downcast for equals/not_equals. Returns nullptr when `other` is absent or
-                // belongs to a different implementation — the two cases dynamic_cast used to fold
-                // into a nullptr that the callers then dereferenced unchecked.
+                // belongs to a different implementation — callers must treat either as "not equal",
+                // never dereference.
                 template<class TARGET>
                 const TARGET* same_kind_as(const iterator_impl_t* other) const noexcept {
                     if (other == nullptr || other->kind_ != TARGET::iterator_kind) {

@@ -16,8 +16,8 @@ namespace components::index {
         return this;
     }
 
-    // Tag-checked downcast: a null or foreign body is rejected before the cast rather than
-    // dereferenced as a nullptr (what dynamic_cast produced here).
+    // Tag-checked downcast: a null or foreign body is rejected before the cast, never
+    // dereferenced.
     bool hash_single_field_index_t::impl_t::equals(const iterator_impl_t* other) const {
         const auto* rhs = same_kind_as<impl_t>(other);
         return rhs != nullptr && iterator_ == rhs->iterator_;

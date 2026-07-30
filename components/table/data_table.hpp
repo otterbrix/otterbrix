@@ -186,10 +186,9 @@ namespace components::table {
         // costs it a column.
         //
         // In place, NOT a rebuilt data_table_t: the storage adapter holds a data_table_t&
-        // and the append/scan states point into this object, so replacing it out from under
-        // them is what an earlier synchronous attempt did and is why it crashed
-        // row_group::append on a column-count mismatch. Only row_groups_ and
-        // column_definitions_ change, together, under the same swap compact() uses.
+        // and the append/scan states point into this object, so the object itself must not
+        // be replaced. Only row_groups_ and column_definitions_ change, together, under the
+        // same swap compact() uses.
         //
         // MVCC-gated exactly as compact() is, and for the same reason: the rebuild scans
         // the committed rows and re-stamps them with transaction_data{0,0}, collapsing the

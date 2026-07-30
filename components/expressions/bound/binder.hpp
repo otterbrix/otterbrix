@@ -21,10 +21,10 @@ namespace components::expressions {
     // The input columns a tree is bound against: name and type, positionally.
     //
     // Until the chunk carries its own schema (M3-B1) the names travel BESIDE the chunk, which is
-    // already the engine's convention -- operator_data.hpp says it in prose: "the chunk does not
-    // carry column names: callers pass them separately, so the arguments must go positionally".
-    // This is that convention given a name and one place to be wrong in. When M3 lands, this is the
-    // type that gets replaced by the chunk's own schema, and no caller of binder_t changes shape.
+    // already the engine's convention (operator_data.hpp: the chunk carries no column names, callers
+    // pass them separately and positionally). This is that convention given a name and one place to
+    // be wrong in. When M3 lands, this is the type that gets replaced by the chunk's own schema, and
+    // no caller of binder_t changes shape.
     class bind_schema_t {
     public:
         explicit bind_schema_t(std::pmr::memory_resource* resource);

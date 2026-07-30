@@ -10,12 +10,13 @@
 
 using namespace components::logical_plan;
 
-// node_check_constraint_t re-declares table_oid()/set_table_oid() and a private
-// table_oid_ (node_check_constraint.hpp:56-57,74) that SHADOW the non-virtual
-// node_t members (node.hpp:68-69,95). Every writer stamps through the derived
-// type (planner.cpp:73 rewrite_insert, :106 rewrite_update), so the base field
-// stays INVALID_OID and node_t::table_oid_dependencies_() (node.cpp:47-54),
-// which reads the base field, never sees the constraint node's table.
+// node_check_constraint_t once re-declared table_oid()/set_table_oid() and a
+// private table_oid_ that SHADOWED the non-virtual node_t members: every writer
+// (planner.cpp's rewrite_insert / rewrite_update) stamped through the derived
+// type, the base field stayed INVALID_OID, and node_t::table_oid_dependencies_()
+// — which reads the base field — never saw the constraint node's table. The node
+// now has only the base members; this pins that a stamped oid is visible through
+// the base sub-object and reaches the dependency walk.
 TEST_CASE("logical_plan::node_check_constraint_t reports its table oid as a dependency") {
     auto* resource = std::pmr::get_default_resource();
     constexpr components::catalog::oid_t table_oid = 16400;
@@ -28,7 +29,7 @@ TEST_CASE("logical_plan::node_check_constraint_t reports its table oid as a depe
     // derived pointer type the planner already holds.
     cc->set_table_oid(table_oid);
 
-    // Sanity: the derived accessor round-trips (this one passes today).
+    // Sanity: the derived accessor round-trips.
     CHECK(cc->table_oid() == table_oid);
 
     // The same oid read through the base sub-object -- the only field the

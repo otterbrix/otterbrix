@@ -29,7 +29,7 @@ namespace planner_test {
 
     // A plan-node output schema of BIGINT columns with the given names, in order — the
     // shape validate_schema stamps. Names live in the record, not inside the type
-    // (M3-B5 step 8), so a test that hand-stamps a node states the name where the
+    // (M3-B5), so a test that hand-stamps a node states the name where the
     // validator states it.
     inline components::vector::schema_t bigint_schema(std::pmr::memory_resource* r,
                                                       std::initializer_list<std::string_view> names) {

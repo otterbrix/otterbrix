@@ -33,7 +33,7 @@ TEST_CASE("components::expressions::bound::reference_carries_its_type") {
 TEST_CASE("components::expressions::bound::physical_type_is_cached_not_recomputed") {
     auto resource = std::pmr::monotonic_buffer_resource{};
 
-    // DECIMAL is the case the roadmap names: to_physical_type() branches on the
+    // DECIMAL is the case that matters: to_physical_type() branches on the
     // decimal width, so the answer must be materialised once at bind time.
     auto decimal = types::complex_logical_type::create_decimal(9, 2);
     auto ref = make_bound_reference(&resource, decimal, 0);
@@ -44,9 +44,8 @@ TEST_CASE("components::expressions::bound::physical_type_is_cached_not_recompute
 }
 
 // ============================================================================
-// A constant OWNS its value. Today the expression cannot: the value lives in the
-// shared parameter map and the expression only holds a slot id, which is the
-// root cause the roadmap names for the 11 NA placeholders in the transformer.
+// A constant OWNS its value. The parsed layer cannot say that: there the value
+// lives in the shared parameter map and the expression only holds a slot id.
 // ============================================================================
 TEST_CASE("components::expressions::bound::constant_owns_its_value") {
     auto resource = std::pmr::monotonic_buffer_resource{};

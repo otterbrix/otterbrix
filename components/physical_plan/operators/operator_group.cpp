@@ -299,10 +299,8 @@ namespace components::operators {
         probe.set_cardinality(n);
         for (size_t k = 0; k < keys_.size(); k++) {
             const auto& key = keys_[k];
-            // The probe column's NAME is set on the column (M3-B5). A derived key used to get
-            // it by stamping every extracted VALUE and letting the r == 0 retype below carry
-            // the stamp into the column's type — a per-row heap allocation for a name that is
-            // the same on every row, and one that the retype could only deliver by accident.
+            // The probe column's NAME is set once, on the column itself (M3-B5) — never
+            // stamped per extracted value.
             if (key.type == group_key_t::kind::column && key.full_path.size() == 1) {
                 probe.data[k].reference(input.data[key.full_path.front()]);
                 probe.data[k].set_name(input.data[key.full_path.front()].name());
@@ -747,7 +745,7 @@ namespace components::operators {
                 out_names.emplace_back(output_schema_[out_pos].name);
             } else {
                 // Trailing internal aggregate: no plan output column, so the aggregate's own
-                // name is the answer. It used to arrive by stamping every finalized VALUE.
+                // name is the answer.
                 out_types.push_back(agg_results[a].empty() ? types::complex_logical_type(types::logical_type::NA)
                                                            : agg_results[a][0].type());
                 out_names.emplace_back(values_[a].name);

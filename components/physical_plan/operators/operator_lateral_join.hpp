@@ -73,8 +73,8 @@ namespace components::operators {
         // comma / ON true forms; a real predicate filters each inner row per outer row.
         expressions::expression_ptr on_expression_;
         // Plan-time resolved output schemas of the two sides; the output layout is
-        // (outer_schema_ ++ inner_schema_). Each record carries its column's name, so
-        // the operator no longer recovers one from a type (M3-B5 step 8).
+        // (outer_schema_ ++ inner_schema_). Each record carries its column's name
+        // beside its type (M3-B5).
         vector::schema_t outer_schema_;
         vector::schema_t inner_schema_;
         operator_ptr outer_{nullptr};

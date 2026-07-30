@@ -41,8 +41,7 @@ namespace components::expressions {
 
         // The physical types the executor's typed comparison dispatch has an arm for. A LIST,
         // STRUCT, ARRAY or MAP is not among them -- simple_physical_type_switch would abort -- so a
-        // comparison over one must go through the value-level path instead, which is what the boxed
-        // comparator did for EVERY comparison.
+        // comparison over one must go through the value-level path instead.
         bool is_typed_comparable(types::physical_type type) noexcept {
             switch (type) {
                 case types::physical_type::BOOL:
@@ -192,8 +191,8 @@ namespace components::expressions {
     }
 
     namespace {
-        // "Scalar" in the sense resolve_operand meant it: an operand that does NOT read a row. A
-        // parameter and a constant are the two; a reference, and anything computed from one, is not.
+        // "Scalar" here means an operand that does NOT read a row. A parameter and a constant are
+        // the two; a reference, and anything computed from one, is not.
         bool reads_no_row(const bound_expression_ptr& operand) noexcept {
             return operand->kind() == bound_kind::parameter || operand->kind() == bound_kind::constant;
         }
@@ -507,8 +506,7 @@ namespace components::expressions {
         // PostgreSQL rejects an IMPLICIT boolean <-> numeric comparison ("operator does not exist:
         // boolean = integer"). is_numeric(BOOLEAN) is true, so without this the numeric side would be
         // silently coerced through the int->bool cast and compared -- asymmetric and surprising. The
-        // boxed comparator asked this PER ROW (simple_predicate.cpp:103-115) even though the answer
-        // depends only on the two types; asking it here is the same rejection, decided once.
+        // answer depends only on the two types, so it is decided once, here.
         {
             const bool left_bool = left->physical_type() == types::physical_type::BOOL;
             const bool right_bool = right->physical_type() == types::physical_type::BOOL;
@@ -525,8 +523,8 @@ namespace components::expressions {
         // the SHAPE question, which since M3-B5 is the only question equality answers.
         if (left->return_type() == right->return_type()) {
             // Same type, but the typed dispatch may still have no arm for it (a LIST / STRUCT /
-            // ARRAY column). Those go through the value-level comparison, which is what the boxed
-            // comparator used for everything and which handles a nested type correctly.
+            // ARRAY column). Those go through the value-level comparison, which handles a nested
+            // type correctly.
             const bool typed = is_typed_comparable(left->physical_type());
             return bound_expression_ptr{
                 new bound_comparison_t(resource, op, !typed, pair(resource, std::move(left), std::move(right)))};
@@ -534,9 +532,8 @@ namespace components::expressions {
         // The comparison kernels index BOTH operands as one C++ type, so a tree handing them an
         // INT32 column and an INT64 constant does not compare "approximately" -- it reads the wrong
         // bytes. Making a NUMERIC pair comparable is therefore part of BINDING: both sides promote
-        // UP to their common type, which is also strictly safer than what the boxed comparator did
-        // (it cast right->left first, so a value that did not fit the narrower side became NULL and
-        // needed a retry to find the answer this cast cannot lose).
+        // UP to their common type -- a cast that cannot lose a value, where a cast toward the
+        // narrower side would NULL whatever does not fit it.
         const auto left_type = left->return_type().type();
         const auto right_type = right->return_type().type();
         if (types::is_numeric(left_type) && types::is_numeric(right_type)) {
@@ -567,7 +564,7 @@ namespace components::expressions {
         // against a temporal -- keeps both operands as they are and is answered by the promoting
         // arm, which converts per row because the conversion is semantic, needs the session
         // timezone, and can succeed for one row and answer NULL for the next. Refusing here instead
-        // would break queries the boxed comparator answers today.
+        // would break queries that work today.
         return bound_expression_ptr{
             new bound_comparison_t(resource, op, true, pair(resource, std::move(left), std::move(right)))};
     }
@@ -653,7 +650,7 @@ namespace components::expressions {
         // the result slot through the physical switch, so an INTEGER branch under a BIGINT result
         // would copy 4 bytes into an 8-byte slot -- which is why the executor refuses the mismatch
         // rather than misreading it. `CASE WHEN x = 5 THEN x ELSE id END` over (BIGINT x, INTEGER
-        // id) is exactly that pair, and it is a shape the boxed extractor coerced per row.
+        // id) is exactly that pair.
         const types::complex_logical_type result_type{result};
         auto promote_branch = [&](bound_expression_ptr branch) -> core::result_wrapper_t<bound_expression_ptr> {
             if (branch->return_type().type() == result) {

@@ -615,9 +615,9 @@ namespace services::disk {
         // here is the PHYSICAL column list, and ALTER TABLE ... DROP COLUMN does not shorten it:
         // the tombstone removes the column from the logical schema and leaves its slot in place
         // until VACUUM rewrites the row groups (PostgreSQL keeps the same split). Skipping them
-        // rebuilt a NARROWER storage than the one the process was running with, so the very next
-        // WAL record — an INSERT written when the table was still wide — no longer fit it, and
-        // every surviving column past the hole silently shifted a slot left against the data
+        // would rebuild a NARROWER storage than the one the process was running with: the very
+        // next WAL record — an INSERT written when the table was still wide — no longer fits,
+        // and every surviving column past the hole silently shifts a slot left against the data
         // already on disk. A checkpointed .otbx keeps its columns for exactly this reason; this
         // path has to agree with it.
         //
@@ -693,11 +693,9 @@ namespace services::disk {
                                                   : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                         rc.type = components::types::complex_logical_type(catalog::oid_to_builtin_type(atttypid));
                     }
-                    // The column's name rides in rc.name, and column_definition_t's
-                    // constructor performs the identical guarded assignment into the type
-                    // (with_name_alias: set only when the type does not already name
-                    // itself), so naming the type a second time here would only duplicate
-                    // it — and only for as long as a name still lives in a type at all.
+                    // The column's name rides in rc.name and becomes column_definition_t's
+                    // own name_ (M3-B5); the type is deliberately NOT aliased with it —
+                    // a self-naming type (STRUCT) must keep its own name.
                     //
                     // ONE entry per attnum. A column that was altered has more than one row in
                     // this scan — DROP deletes the live row and appends a tombstone carrying the

@@ -160,9 +160,7 @@ TEST_CASE("integration::cpp::write_set_coercion::struct_row_literal_is_narrowed"
 // computing table (relkind='g'), a column whose every value is NULL is NA-typed
 // and carries no storable type, so it is an ABSENT key rather than a real column
 // and is dropped from the chunk. Handing an all-NA column to storage crashes the
-// append, so the drop is load-bearing. Pinned here because the surrounding
-// per-column loop was removed with the dead coercion arms and this is what was
-// left standing.
+// append, so the drop is load-bearing.
 TEST_CASE("integration::cpp::write_set_coercion::computing_table_drops_all_null_column") {
     auto config = make_test_config(test_temp_path("write_set_coercion/computing"));
     test_spaces space(config);

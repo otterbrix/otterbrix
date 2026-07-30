@@ -26,13 +26,10 @@ namespace components::index {
 
     // Which column of ONE data chunk feeds each of the engine's indexes.
     //
-    // The resolution rule is unchanged and ALIAS-based: an index key names a column by the alias
-    // its complex_logical_type carries, and an index applies to a chunk only when EVERY one of its
-    // keys is present. What this type changes is WHEN that is worked out. It used to be redone for
-    // every row — and twice per row, because the applies-at-all check and the value lookup each
-    // scanned keys x columns independently, comparing freshly built std::strings. A chunk's schema
-    // does not vary by row, so index_engine_t::bind() works it out once and the per-row calls then
-    // do no string work at all.
+    // The resolution rule is NAME-based: an index key names a column by the name the chunk
+    // column carries (vector_t::name()), and an index applies to a chunk only when EVERY one of
+    // its keys is present. A chunk's schema does not vary by row, so index_engine_t::bind()
+    // resolves it once per chunk and the per-row calls do no string work at all.
     //
     // Borrows from the chunk it was built for: it must not outlive that chunk, and the chunk must
     // not be re-shaped while it is alive.
@@ -50,8 +47,7 @@ namespace components::index {
         struct binding_t {
             index_t* index;
             // The chunk column the index's FIRST key resolved to. nullptr only for a key-less
-            // index, whose key value is NA and is dropped by index_t's NULL guard — the same
-            // outcome the per-row lookup produced for it.
+            // index, whose key value is NA and is dropped by index_t's NULL guard.
             const vector::vector_t* column;
         };
 

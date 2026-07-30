@@ -8,18 +8,14 @@
 
 namespace components::operators {
 
-    // ONE compiled predicate, shared by every operator that filters or joins on an expression.
-    //
-    // This replaces predicates::create_predicate, which five operators reached for independently
-    // (having, join, lateral_join, delete, update). They asked it three different questions -- filter
-    // a chunk against itself, test one probe row against a whole build side, test a single pair --
-    // and each had its own loop for reading the answer back. Those three questions live here, once,
-    // so the five callers cannot drift apart on 3VL, on NULL handling, or on what an evaluation
-    // error means.
+    // ONE compiled predicate, shared by every operator that filters or joins on an expression
+    // (having, join, lateral_join, delete, update). The callers ask three different questions --
+    // filter a chunk against itself, test one probe row against a whole build side, test a single
+    // pair -- and all three live here, once, so the callers cannot drift apart on 3VL, on NULL
+    // handling, or on what an evaluation error means.
     //
     // Built ONCE per execution from the input schemas; every intermediate the evaluation needs is
-    // allocated then. The boxed predicate rebuilt a std::function tree per operator and read every
-    // operand through a logical_value_t per row.
+    // allocated then.
     class predicate_executor_t {
     public:
         predicate_executor_t(const predicate_executor_t&) = delete;
@@ -33,15 +29,14 @@ namespace components::operators {
         // branch around the evaluation, so there is exactly one path below (rule 6) and, being
         // foldable, it is evaluated once at create() and never per chunk.
         //
-        // A single-input filter passes the same schema twice: the chunk is compared against
-        // itself, which is what the boxed callers expressed by passing the same chunk as both sides.
+        // A single-input filter passes the same schema twice: the chunk is compared against itself.
         //
         // The inputs are SCHEMAS, not type lists, because a bind schema is {name, type} per column
         // and every caller but one already holds a chunk that carries exactly that. Reading the name
-        // out of the type instead was a guess dressed as a lookup: it needed a guard in
-        // front of it (alias() asserts on a type with no extension), it could not tell a column's
-        // name from a STRUCT type's own, and it answers nothing at all once the name leaves the
-        // type. A chunk's schema() answers all three.
+        // out of the type instead is a guess dressed as a lookup: it needs a guard in front of it
+        // (alias() asserts on a type with no extension), it cannot tell a column's name from a
+        // STRUCT type's own, and it answers nothing at all once the name leaves the type. A chunk's
+        // schema() answers all three.
         [[nodiscard]] static core::result_wrapper_t<predicate_executor_t>
         create(std::pmr::memory_resource* resource,
                const expressions::expression_ptr& expression,
@@ -61,7 +56,7 @@ namespace components::operators {
                                                               vector::indexing_vector_t& selection);
 
         // JOIN: ONE row of `left` against `right[0 .. right_count)`. Writes the matching RIGHT row
-        // indices into `selection` and answers how many. This is what batch_check_1vN expressed.
+        // indices into `selection` and answers how many.
         [[nodiscard]] core::result_wrapper_t<uint64_t> select_matches(const vector::data_chunk_t& left,
                                                                       uint64_t left_row,
                                                                       const vector::data_chunk_t& right,

@@ -50,9 +50,9 @@ namespace services::disk {
             // storage created by CREATE TABLE does — but the chunk side never can, so there is
             // nothing to match on and the name is the identity of record here.
             //
-            // The claim is now explicit. It used to rest on the move: a moved-from vector_t
-            // takes its name away with it and so matched nothing. That happened
-            // to work for names and does not generalise, so it is stated rather than relied on.
+            // The claim is explicit rather than resting on the move itself (a moved-from
+            // vector_t answers with an empty name): that trick happens to work for names
+            // and does not generalise.
             std::vector<bool> claimed(local.column_count(), false);
             const auto& incoming_schema = local.schema();
             for (size_t t = 0; t < table_columns.size(); t++) {

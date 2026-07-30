@@ -105,8 +105,8 @@ namespace services::index {
         std::unique_ptr<index_disk_t> index_disk_;
         // The index_type the agent was built with. make_index_disk() picks the concrete
         // index_disk_t from it (hashed -> bitcask, everything else -> btree), so it is also the
-        // discriminator for the two places that need the bitcask-only txn-log API: keeping it
-        // removes the dynamic_cast that used to re-derive what construction already decided.
+        // discriminator for the two places that need the bitcask-only txn-log API — no RTTI
+        // re-derivation of what construction already decided.
         components::logical_plan::index_type index_type_;
         components::catalog::oid_t table_oid_;
         bool is_dropped_{false};

@@ -610,18 +610,15 @@ namespace services::disk {
 
             // M3-B4. Resolve every table column to its source chunk column BEFORE moving
             // anything, in three passes of decreasing authority: catalog identity, then name,
-            // then position. Two things changed here and they are linked.
+            // then position.
             //
-            // First, the claim is now EXPLICIT. What used to stop a second table column from
-            // claiming a chunk column already taken was the move itself: moving a vector_t
-            // takes its type with it, and complex_logical_type::extension_ is a unique_ptr, so
-            // a moved-from column answered with an empty name and matched nothing. That is
-            // an accident of how names are stored, and it does not extend to an attoid, which
-            // is a plain integer. `claimed` says out loud what was previously being inferred.
+            // The claim is EXPLICIT on purpose. Letting the move itself guard double claims
+            // (a moved-from vector_t answers with an empty name, because
+            // complex_logical_type::extension_ is a unique_ptr) is an accident of how names
+            // are stored and does not extend to an attoid, which is a plain integer.
             //
-            // Second, because nothing moves during resolution, the schema memo is read ONCE
-            // per pass instead of once per table column — the re-read that the old loop needed
-            // existed only to observe those moves.
+            // Because nothing moves during resolution, the schema memo is read ONCE per pass
+            // instead of once per table column.
             //
             // Resolving all of one kind before any of the next is what makes "identity
             // outranks name" true regardless of column order: in a single interleaved pass an
@@ -799,11 +796,10 @@ namespace services::disk {
                     // A whole-column NULL literal arrives as an NA-typed source vector, which
                     // carries no values (and no meaningful validity mask) — every row is null.
                     const bool src_is_null_type = src_vec.type().type() == components::types::logical_type::NA;
-                    // A promoted column is the SAME column, so it is BORN with both halves of its
-                    // identity. This used to copy the name into the target TYPE, which was the
-                    // only place a name could be put (M3-B5) — and the attoid was dropped
-                    // outright, silently demoting the column from identity routing to name
-                    // routing on every type promotion.
+                    // A promoted column is the SAME column, so it must be BORN with both
+                    // halves of its identity (name AND attoid, M3-B5); dropping the attoid
+                    // would silently demote the column from identity routing to name routing
+                    // on every type promotion.
                     components::vector::vector_t casted(resource(), target_type, src_vec, data->size());
                     for (uint64_t row = 0; row < data->size(); row++) {
                         if (!src_is_null_type && src_vec.validity().row_is_valid(row)) {
@@ -896,8 +892,7 @@ namespace services::disk {
                     added_schema.push_back(std::move(record));
                 }
                 // The WAL's ADD_COLUMN record identifies each added column by NAME, and the
-                // name is on the column now, so the chunk is built FROM the schema instead of
-                // from a type list that used to be carrying names inside its types.
+                // name lives on the column (M3-B5), so the chunk is built FROM the schema.
                 auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(
                     components::vector::make_chunk(resource(), added_schema, 0));
                 schema_chunk->set_cardinality(0);
@@ -1623,8 +1618,8 @@ namespace services::disk {
                     src.flatten(chunk_rows);
                 }
                 // The owning copy is the SAME column, so it says the same things about itself.
-                // Both halves used to ride along inside `types`; since M3-B5 neither does, and
-                // this chunk feeds the index engine, which resolves its keys BY NAME.
+                // Neither name nor attoid rides along inside `types` (M3-B5), and this chunk
+                // feeds the index engine, which resolves its keys BY NAME.
                 one.data[col].set_name(src.name());
                 one.data[col].set_attoid(src.attoid());
                 components::vector::vector_ops::copy(src, one.data[col], chunk_rows, 0, 0);
@@ -1943,9 +1938,9 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid));
             co_return components::vector::schema_t{resource()};
         }
-        // Built from the storage's OWN column list — the same list types() projects, plus the two
-        // things a projection of it drops: the column's name (which only reaches a caller today
-        // because it is smuggled inside the type) and its catalog identity (which reached nobody).
+        // Built from the storage's OWN column list — the same list copy_types() projects, plus the
+        // two things that projection drops: the column's name (which only reaches a caller today
+        // because it is smuggled inside the type) and its catalog identity (which reaches nobody).
         // It is the same source data_table_t::stamp_column_identity stamps onto a scanned chunk,
         // so a schema and a chunk of the same relation agree by construction.
         //
@@ -2475,9 +2470,8 @@ namespace services::disk {
                 // pg_catalog system tables, whose column_definition_t list is built by
                 // system_table_schemas.cpp at bootstrap and never passes through
                 // build_create_table_writes — so no attoid is ever minted for them, on either
-                // side. An identity pass here could not fire; what B4 does change is the claim,
-                // which is now explicit instead of relying on a moved-from column answering
-                // with an empty name.
+                // side, and an identity pass here could not fire. The claim is explicit rather
+                // than relying on a moved-from column answering with an empty name.
                 std::vector<bool> claimed(local.column_count(), false);
                 const auto& incoming_schema = local.schema();
                 for (size_t t = 0; t < table_columns.size(); t++) {
@@ -2636,21 +2630,21 @@ namespace services::disk {
         // sees its own writes and does not see its own deletes, so exactly ONE row for this
         // attoid is in front of the scan and it is the one this transaction just wrote.
         //
-        // added_at keeps reading the see-all view, and therefore keeps finding nothing and
-        // patching nothing, exactly as before. This is NOT the state it should be left in —
-        // it is a scoped hold. Switching it to ctx.txn makes the patch land (verified), and
-        // a column ADDed by ALTER TABLE then becomes unresolvable to the NEXT statement:
+        // added_at keeps reading the see-all view, and therefore finds nothing and patches
+        // nothing. This is NOT the state it should be left in — it is a deliberate hold.
+        // Switching it to ctx.txn makes the patch land, but a column ADDed by ALTER TABLE
+        // then becomes unresolvable to the NEXT statement:
         // `INSERT INTO t (id, name, a, b) ...` fails with "path: 'a' was not found"
         // (integration::cpp::streaming_ddl_leaf::multi_clause_alter_streams and
         // integration::cpp::idx_null::add_column_then_create_index). The added_at value
         // itself is not obviously the culprit — resolve_table hides a column only when
         // added_at > snapshot.start_time, and the commit id it writes (6 in that run) is
         // BELOW the next statement's start time (7) on the one clock both come from. So
-        // something else about writing that row in place breaks it, and finding out what is
-        // its own investigation, not a rider on this one. Handed back.
+        // something else about writing that row in place breaks resolution; why is still
+        // an open question.
         //
-        // Neither field was read by anything until now, which is why both could be wrong in
-        // silence: resolve_table hides a tombstone on attisdropped before it ever looks at
+        // Both fields could be wrong in silence because almost nothing reads them:
+        // resolve_table hides a tombstone on attisdropped before it ever looks at
         // dropped_at_commit_id, and added_at_commit_id at 0 reads as "added before every
         // snapshot" — which is what a visible column already implied. VACUUM's physical
         // column compaction is the first reader that needs one of them to be right.

@@ -324,10 +324,10 @@ TEST_CASE("components::table::column_compaction::the_table_still_takes_writes_af
 
     REQUIRE(table->compact_dropped_columns(dead_set(env, {kAttoid1}), 0).removed == 1);
 
-    // The append that follows a compaction is the one an earlier synchronous attempt at
-    // this crashed on, with a column-count mismatch inside row_group::append: it rebuilt a
-    // NEW data_table_t sharing the old one's row groups. This one narrows in place, so the
-    // row groups it appends into are the ones the new column list describes.
+    // An append after compaction must land in row groups the NEW column list describes.
+    // A compaction that rebuilt a separate data_table_t sharing the old one's row groups
+    // would fail here with a column-count mismatch inside row_group::append; narrowing in
+    // place is what keeps this working.
     {
         auto types = table->copy_types();
         REQUIRE(types.size() == 3);

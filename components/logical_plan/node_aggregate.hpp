@@ -80,8 +80,8 @@ namespace components::logical_plan {
         // at, for the plain-scan shape (no WHERE, no sort/group/non-scan source, NOT
         // is_distinct()) whose scan create_plan_aggregate builds directly. The
         // authoritative operator_limit above still windows [offset, offset+limit).
-        // unlimit() = no cap. Advisory only; EXCLUDED from hash_impl() —
-        // see node_match_t::read_cap_ for the rationale.
+        // unlimit() = no cap. Advisory only — see node_match_t::read_cap_ for the
+        // plan-cache rationale.
         void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
         const limit_t& read_cap() const noexcept { return read_cap_; }
 

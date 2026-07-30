@@ -383,8 +383,8 @@ namespace components::types {
     inline std::string_view logical_value_t::value<std::string_view>() const {
         return *str_ptr();
     }
-    // By value, for the STRING_LITERAL arm of sum() (string concatenation), which takes
-    // &value<std::string> as a member pointer and so cannot use the reference overload.
+    // By value, for the STRING_LITERAL `+` arm of arithmetic() (string concatenation), which
+    // takes &value<std::string> as a member pointer and so cannot use the reference overload.
     template<>
     inline std::string logical_value_t::value<std::string>() const {
         return *str_ptr();

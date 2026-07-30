@@ -2040,8 +2040,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     }
 
     // ================================================================
-    // N27. CASE WHEN with temporal arithmetic (exercises the bound layer's bound_case_t
-    //      resolve_row_value, which evaluates arithmetic branch-by-branch)
+    // N27. CASE WHEN with temporal arithmetic (exercises the bound layer's bound_case_t,
+    //      which evaluates arithmetic branch-by-branch)
     // ================================================================
     INFO("N27. CASE WHEN with DATE + INTERVAL exercises the bound CASE evaluator");
     {

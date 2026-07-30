@@ -8,11 +8,9 @@
 // columns, and their names are the names the cursor reports.
 //
 // Each scan builds that chunk in its own make_drain_chunk (full_scan,
-// transfer_scan, index_scan) from the schema it fetched from storage. While a
-// column's name still rides inside its TYPE, a chunk built out of a bare type
-// list carries the names by accident; these tests pin that a zero-row result
-// names its columns on purpose, so the day the name leaves the type the four
-// sites cannot go quiet.
+// transfer_scan, index_scan) from the schema it fetched from storage. These
+// tests pin that a zero-row result names its columns on purpose, per drain
+// site, rather than by whatever a bare type list happened to carry.
 //
 // The identity half is pinned too: the guard describes the RELATION's columns, so
 // each one answers with the attoid pg_attribute gave it — exactly as the

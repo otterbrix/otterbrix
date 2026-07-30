@@ -166,11 +166,9 @@ namespace components::operators {
         // Only propagate the input row_id when it is a REAL absolute id (the input is a scan
         // source's batch). Over a SINK (group/join) — or the sourceless no-table shape — the input's
         // row_ids are placeholders, so the gathered ones are OVERWRITTEN with the zero sentinel the
-        // out chunk was born with. Measured, this loop is dead: instrumenting every batch that
-        // reaches here with row_ids_meaningful false, over the whole integration suite, found 1528
-        // such batches and all-zero row_ids in every one. It is kept because that is a property of
-        // today's PLAN BUILDER, not of sinks — operator_sort::finalize copies its input's row_ids
-        // forward (operator_sort.cpp:155), so a plan shape that put a sort under a filter would
+        // out chunk was born with. Today's sinks already answer all-zero row_ids, but that is a
+        // property of the PLAN BUILDER, not of sinks — operator_sort::finalize copies its input's
+        // row_ids forward (operator_sort.cpp), so a plan shape that put a sort under a filter would
         // break the premise silently, and a downstream DML/index consumer would be handed a foreign
         // absolute id. One pass over the surviving rows buys that away.
         if (!row_ids_meaningful) {

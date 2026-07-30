@@ -38,8 +38,7 @@ using namespace components::sql::transform;
 
 namespace {
     // M3-B5: the column list a CREATE TABLE carries is a list of column DEFINITIONS, each of
-    // which states its own name. It used to be read as a bare type list whose entries named
-    // themselves through the alias slot — the overload this milestone removed.
+    // which states its own name.
     template<typename T>
     bool contains(const std::vector<components::table::column_definition_t>& columns, T&& pred) {
         return std::find_if(columns.begin(), columns.end(), std::move(pred)) != columns.end();

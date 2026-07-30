@@ -14,13 +14,10 @@
 // names the reason the shape is not pushable, so the list can be checked against
 // is_pure_compare by reading rather than by trusting.
 //
-// The enumeration was also taken empirically: instrumenting operator_match to print
-// a structural signature of every expression it receives, over the whole 611-case
-// integration suite, produced 31 distinct signatures. Every one of them is a case
-// below. Two facts from that census shaped the work: every key arrived with a
-// single resolved ordinal (so nested paths and '::?' are latent, not live), and
-// all_true / all_false arrived 48 times with a NULL expression in both operand
-// slots -- which is why they are answered before any operand is inspected.
+// Two empirical facts about what operator_match receives matter below: every key
+// arrives with a single resolved ordinal (so nested paths and '::?' are latent,
+// not live), and all_true / all_false arrive with a NULL expression in both
+// operand slots -- which is why they are answered before any operand is inspected.
 // ============================================================================
 
 #include <catch2/catch_test_macros.hpp>
@@ -134,8 +131,7 @@ TEST_CASE("components::expressions::bound::coverage_constant_predicates") {
 
     for (const auto op : {compare_type::all_true, compare_type::all_false}) {
         // Built by the one-argument factory, so BOTH operand slots hold a null expression -- the
-        // state the census found 48 times, and the reason this shape is decided before any operand
-        // is looked at.
+        // reason this shape is decided before any operand is looked at.
         auto expression = make_compare_expression(&resource, op);
         auto bound = fixture.binder.bind(expression, fixture.context());
         REQUIRE_FALSE(bound.has_error());
@@ -289,7 +285,7 @@ TEST_CASE("components::expressions::bound::coverage_null_tests_and_unions") {
 // (5) regex. A regex is not a `plain_cmp`, so (B) never accepts it: `col LIKE col`
 //     lands on the filter, and so does a regex whose subject is an expression.
 //     The pattern decides which of the two nodes is built, and a fixed pattern is
-//     COMPILED at bind time -- the move that deletes regex_predicate.
+//     COMPILED at bind time.
 // ---------------------------------------------------------------------------
 TEST_CASE("components::expressions::bound::coverage_regex_shapes") {
     std::pmr::monotonic_buffer_resource resource;
@@ -617,15 +613,15 @@ TEST_CASE("components::expressions::bound::coverage_mixed_type_comparisons") {
                                                   core::parameter_id_t{9});
         auto bound = fixture.binder.bind(expression, context);
         REQUIRE(bound.has_error());
-        // The same rejection the boxed comparator made per row, decided once from the types.
+        // The rejection is decided once, from the two types alone.
         CHECK(bound.error().type == core::error_code_t::sql_parse_error);
     }
 }
 
 // ---------------------------------------------------------------------------
-// (9) A nested key path. Latent rather than live -- the census found every key
-//     reaching operator_match resolving to a single ordinal -- but binding it
-//     means the layer refuses nothing the boxed value-getter accepted.
+// (9) A nested key path. Latent rather than live -- every key reaching
+//     operator_match resolves to a single ordinal -- but binding it keeps the
+//     deep-address shape expressible.
 // ---------------------------------------------------------------------------
 TEST_CASE("components::expressions::bound::coverage_nested_key_path") {
     std::pmr::monotonic_buffer_resource resource;
@@ -765,15 +761,13 @@ TEST_CASE("components::expressions::bound::coverage_coalesce_refuses_a_contradic
 // (11) DIVISION BY ZERO IS TWO DIFFERENT ANSWERS, AND THEY MUST NOT COLLAPSE.
 //
 // The engine pins both, and they disagree with each other on purpose:
-//   * a SCALAR divisor that is zero  -> a query ERROR   (test_arithmetic.cpp:1089,
+//   * a SCALAR divisor that is zero  -> a query ERROR   (test_arithmetic.cpp,
 //     `SELECT count / 0`, commented "PostgreSQL behavior")
-//   * a COLUMN divisor holding zero  -> that row is NULL (test_null_semantics_matrix.cpp:296,
+//   * a COLUMN divisor holding zero  -> that row is NULL (test_null_semantics_matrix.cpp,
 //     `SELECT 10 / x`, commented "no SIGFPE")
 //
-// evaluate_arithmetic got this from WHICH BRANCH it took: resolve_operand answers a
-// scalar for a parameter and a vector for a column, the scalar branches test the
-// divisor and error, the vector-vector kernel (arithmetic.cpp:88) sets the row NULL.
-// A bound tree materialises a parameter into a full vector, so without the flag under
+// The vector-vector kernel (arithmetic.cpp) sets a zero-divisor row NULL. A bound
+// tree materialises a parameter into a full vector, so without the flag under
 // test here EVERY divide takes the vector path and `count / 0` silently becomes NULL.
 //
 // This case fails if the two ever collapse into one answer, in either direction.
@@ -851,7 +845,7 @@ TEST_CASE("components::expressions::bound::coverage_division_by_zero_scalar_erro
 // CONSTANT, that constant has a type of its own, and arithmetic_result_type then
 // widens the pair -- a BIGINT zero against a FLOAT column answers DOUBLE. The
 // engine pins the opposite: `SELECT -r` over a REAL column stays FLOAT
-// (test_float_arithmetic.cpp:81). compute_unary_neg writes the operand's own
+// (test_float_arithmetic.cpp). compute_unary_neg writes the operand's own
 // width, so a node that wraps it cannot widen; a rewrite could, silently.
 // ---------------------------------------------------------------------------
 TEST_CASE("components::expressions::bound::coverage_unary_minus_keeps_the_operand_type") {
@@ -926,10 +920,9 @@ TEST_CASE("components::expressions::bound::coverage_unary_minus_keeps_the_operan
 // (13) THE JOIN SHAPE: one left row broadcast against N right rows.
 //
 // A filter compares row k of one chunk against row k of the same chunk. A JOIN
-// compares ONE probe row against every row of the build side -- which the boxed
-// layer spelled batch_check_1vN, broadcasting the left index through an indexing
-// vector. Without context_t::left_row a two-input bound tree could only express
-// the filter shape, and a join predicate would silently compare row k to row k.
+// compares ONE probe row against every row of the build side. Without
+// context_t::left_row a two-input bound tree could only express the filter
+// shape, and a join predicate would silently compare row k to row k.
 // ---------------------------------------------------------------------------
 TEST_CASE("components::expressions::bound::coverage_left_row_broadcasts_against_the_right_chunk") {
     std::pmr::monotonic_buffer_resource resource;

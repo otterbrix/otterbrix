@@ -19,8 +19,7 @@ namespace components::logical_plan {
         // (offset always 0) this FULL sort may truncate its OUTPUT to, so the
         // authoritative operator_limit above can still window [offset, offset+limit).
         // Stamped only when there is NO DISTINCT above the sort. unlimit() = no cap.
-        // Advisory only; EXCLUDED from hash_impl() — see
-        // node_match_t::read_cap_ for the rationale.
+        // Advisory only — see node_match_t::read_cap_ for the plan-cache rationale.
         void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
         const limit_t& read_cap() const noexcept { return read_cap_; }
 

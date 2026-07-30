@@ -26,9 +26,7 @@ namespace components::catalog {
     // column_definition_t. The same vector then becomes the physical storage's column list
     // (planner -> operator_create_collection_t -> create_storage_with_columns ->
     // data_table_t), so the storage layer learns the catalog identity of its own columns
-    // without a second lookup and without touching either on-disk format. Before this the
-    // builder read the vector const and the attoid existed only inside the pg_attribute row:
-    // column_definition_t::attoid_ had no production writer at all.
+    // without a second lookup and without touching either on-disk format.
     //
     // Preconditions:
     //   - Each column must have atttypid set. Columns with atttypid == INVALID_OID

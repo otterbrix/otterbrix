@@ -98,20 +98,17 @@ namespace components::vector {
             // M3-B4: the identity is DERIVED, like the name and the type, and assigned
             // OUTSIDE the guard below. It cannot ride inside it: two chunk columns may be
             // fully type-equal and still be different columns (duplicate names are legal —
-            // test_computed_schema.cpp:145), so after operator_group.cpp erases a positional
+            // test_computed_schema.cpp), so after operator_group.cpp erases a positional
             // range out of the middle, the column that slides into slot i can compare equal
             // to the record already there while carrying a different attoid. A guarded
-            // assignment would leave the old column's identity describing the new one, which
-            // is exactly the misalignment this stage exists to remove. A 4-byte store is
-            // cheaper than the comparison that would protect it.
+            // assignment would leave the old column's identity describing the new one. A
+            // 4-byte store is cheaper than the comparison that would protect it.
             record.attoid = data[i].attoid();
-            // Two checks again, and this time they really are two questions. B3 folded them
-            // into one because equality had just been made to notice the alias, so a rename
-            // could not pass a type comparison. B5 takes the name off the type, so a type
-            // comparison stops being able to see a rename at all: the name has to be
-            // reconciled against the column's own name. Each guard is here to skip a copy,
-            // not to decide anything — assigning both unconditionally would be correct and
-            // slower, since schema() is read per chunk on hot paths.
+            // Two questions, two checks: a type comparison cannot see a rename (the name is
+            // not on the type — M3-B5), so the name is reconciled against the column's own
+            // name. Each guard is here to skip a copy, not to decide anything — assigning
+            // both unconditionally would be correct and slower, since schema() is read per
+            // chunk on hot paths.
             if (record.name != column_name) {
                 record.name.assign(column_name.data(), column_name.size());
             }
@@ -156,9 +153,7 @@ namespace components::vector {
     }
 
     // Stamp the identity the constructors could not: the chunk was built out of types, and
-    // both halves of what a column IS live on the record. The name is written even when the
-    // column already answers with it, because that agreement is an accident of where the name
-    // currently lives, not a guarantee.
+    // both halves of what a column IS live on the record.
     static void stamp_schema(data_chunk_t& chunk, const schema_t& schema) {
         const auto width = std::min<uint64_t>(chunk.column_count(), schema.size());
         for (uint64_t i = 0; i < width; i++) {
@@ -345,11 +340,9 @@ namespace components::vector {
     // M3-B4. Column i of the destination IS column i of the source — the assert below says
     // so — and the engine's standard way to duplicate a chunk is to build a fresh one from
     // types() and copy into it (operator_insert.cpp's copy_of, manager_disk_impl.hpp's
-    // rebuild_chunk, partial_copy here). types() cannot carry the identity, and it cannot
-    // carry the NAME either for every column — a STRUCT column's type slot holds the TYPE's
-    // name, so a chunk rebuilt from types() answers "test_struct" where the column is called
-    // "struct_column" (M3-B5, pinned in test_table.cpp). Both halves therefore travel here,
-    // from the source COLUMN, or every rebuild would silently strip them.
+    // rebuild_chunk, partial_copy here). types() carries neither the identity nor the NAME
+    // (M3-B5) — a chunk rebuilt from types() starts nameless. Both halves therefore travel
+    // here, from the source COLUMN, or every rebuild would silently strip them.
     void data_chunk_t::copy(data_chunk_t& other, uint64_t offset) const {
         assert(column_count() == other.column_count());
         assert(other.size() == 0);

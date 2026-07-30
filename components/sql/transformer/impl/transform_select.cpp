@@ -985,8 +985,7 @@ namespace components::sql::transform {
                     // A positional parameter in the target list is a constant, exactly like the
                     // literal it stands in for -- it names no column and resolves against no
                     // schema. RETURNING has always grouped the three tags this way
-                    // (transform_returning.cpp); here T_ParamRef was left on the field-reference
-                    // path, where every reader then read its parameter slot as a key_t.
+                    // (transform_returning.cpp).
                     case T_ParamRef:
                     case T_A_Const: {
                         has_non_star = true;

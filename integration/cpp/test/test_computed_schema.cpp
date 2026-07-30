@@ -662,15 +662,13 @@ TEST_CASE("integration::cpp::test_computed_schema::unary_minus_not_jsonb_delete"
 //     is what keeps index_engine's first-alias-match key lookup out of reach of
 //     a duplicate-name chunk — the backfill never runs for such a field.
 //
-// (b) An index built BEFORE the type evolves does survive, and the planner still
-//     picks it for a '::?'-selected predicate (context_storage_t::has_index_on
-//     compares only key.as_string(), which is plain "val"). single_field_index_t
-//     locked stored_type_ to BIGINT when it was backfilled, so every later STRING
-//     value is cast into the BIGINT key domain on the way in — lossily, not
-//     rejected — and ALL of them collapse onto ONE key. The equality probe casts
-//     the same way and hits every one of them. index_scan carries no
-//     operator_match above it, so the surplus rows reach the caller unfiltered:
-//     `val::?string = 'hello'` also returns the row whose value is 'world'.
+// (b) An index built BEFORE the type evolves does survive. single_field_index_t
+//     locked stored_type_ to BIGINT when it was backfilled, so a later STRING
+//     value is OUT-OF-DOMAIN for it (the lossless round-trip check in
+//     single_field_index_t::in_domain) and stays un-indexed: the index is
+//     INCOMPLETE, never wrong. Completeness is the planner's side of the
+//     contract — a '::?'-selected type-variant of the evolved field is answered
+//     by a full scan, not by an index that cannot represent it.
 //
 // The unindexed twin holds the identical data and is the oracle: adding an index
 // must never change an answer.
@@ -744,9 +742,9 @@ TEST_CASE("integration::cpp::test_computed_schema::index_over_evolving_multitype
             REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
         }
 
-        // Index parity for the evolved STRING variant. Today the index scan also
-        // yields the 'world' row, because both strings were folded into the same
-        // BIGINT-domain key.
+        // Index parity for the evolved STRING variant: the BIGINT-locked index cannot
+        // represent it, so a full scan answers — exactly the 'hello' row, never a
+        // neighbour folded onto the same key.
         {
             auto cur = exec("SELECT id FROM cs_testdb.q WHERE val::?string = 'hello';");
             INFO("indexed, string variant: " << (cur->is_error() ? cur->get_error().what : "ok"));

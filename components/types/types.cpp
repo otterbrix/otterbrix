@@ -193,13 +193,10 @@ namespace components::types {
         return *this;
     }
 
-    // Equality is shape equality. It used to be shape PLUS the outermost name, because that
-    // slot held the COLUMN's name and a BIGINT column called `a` is not a BIGINT column
-    // called `b`; a separate same_shape() then existed for the 32 production callers that
-    // were asking "can these carry the same values" and had no business with the name.
-    // M3-B5 moved the column's name onto the column, so the two relations became the same
-    // relation and same_shape() folded back in here. A struct's FIELD names are still
-    // compared — they are what address its sub-columns — through the extensions' operator==.
+    // Equality is shape equality — "can these carry the same values". The column's name
+    // lives on the column (M3-B5), not on the type, so there is no name-aware twin relation
+    // (same_shape() folded back in here). A struct's FIELD names are still compared — they
+    // are what address its sub-columns — through the extensions' operator==.
     bool complex_logical_type::operator==(const complex_logical_type& rhs) const {
         if (type_ != rhs.type_) {
             return false;
@@ -675,7 +672,6 @@ namespace components::types {
         , items_type_(type)
         , size_(size) {}
 
-    // Extension comparison is the SHAPE half of complex_logical_type::operator==, so every
     // Extension comparison IS complex_logical_type::operator==, one level down: since M3-B5
     // took the column's name off the type, equality is shape equality at every depth, and the
     // field names a struct carries take no part in it (a struct's fields can be renamed

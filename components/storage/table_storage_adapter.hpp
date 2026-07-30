@@ -135,7 +135,7 @@ namespace components::storage {
             table_.scan_batched(types, projected_cols, batches, state, resource_);
             // M3-B4: every batch leaves the storage carrying its columns' catalog identity.
             // Stamped here rather than inside scan_batched so the empty-batch case emitted
-            // below goes through the same single line.
+            // below is stamped the same way.
             for (auto& batch : batches) {
                 table_.stamp_column_identity(batch);
             }

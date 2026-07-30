@@ -9,9 +9,8 @@ namespace components::operators {
         // fallback for binding, because every key reaching an operator already carries the ordinals
         // validate_logical_plan resolved for it and binder_t::bind_key uses those first.
         //
-        // This used to read the name out of the type's name slot behind a guard —
-        // alias() asserts on a type carrying no extension, which was reached for real three times
-        // while migrating the earlier operators. Reading a record needs no guard and cannot assert.
+        // The record, not the type's name slot: alias() asserts on a type carrying no extension;
+        // a record read needs no guard and cannot assert.
         expressions::bind_schema_t schema_of(std::pmr::memory_resource* resource, const vector::schema_t& columns) {
             expressions::bind_schema_t schema{resource};
             for (const auto& column : columns) {

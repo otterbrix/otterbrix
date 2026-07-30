@@ -202,7 +202,7 @@ TEST_CASE("components::index::engine_binding::every_row_of_a_chunk_is_resolved")
     }
     chunk.set_cardinality(4);
 
-    // ONE binding, reused for every row of the chunk — the shape the callers now use.
+    // ONE binding, reused for every row of the chunk — the shape the callers use.
     const auto bindings = engine->bind(chunk);
     for (size_t r = 0; r < 4; ++r) {
         engine->insert_row(bindings, r, static_cast<int64_t>(r), 1, core::date::timezone_offset_t{});

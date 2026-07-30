@@ -21,8 +21,8 @@ namespace components::operators {
     // itself is positional — a table_filter_t addresses storage columns by ordinal, and every key
     // reaching here already carries the ordinals validation resolved — so what it reads out of the
     // schema is the column's TYPE. It takes the schema rather than a projection of it because that
-    // is what its callers hold: extracting a type list to pass here would rebuild, per scan open,
-    // exactly the compensator this stage removes.
+    // is what its callers hold; extracting a type list to pass here would be a per-scan-open
+    // rebuild for nothing.
     core::result_wrapper_t<std::unique_ptr<table::table_filter_t>>
     transform_predicate(std::pmr::memory_resource* resource,
                         const expressions::compare_expression_ptr& expression,

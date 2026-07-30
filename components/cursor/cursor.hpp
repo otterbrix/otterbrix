@@ -36,13 +36,12 @@ namespace components::cursor {
         // ABI's cursor_column_name / cursor_column_logical_type / cursor_get_value_by_name,
         // the python wrapper, and rust and C# through the C ABI.
         //
-        // It is the cursor's OWN carrier, and it has to be (M3-B5). Until B5 the descriptor
-        // was a list of types and a column's name was inside its type, which meant the cursor
-        // could not name a column whose type named itself — a STRUCT column answered with the
-        // type's name — and could not name one at all once the name left the type. It is a
-        // deep copy taken once at construction and never re-synced, which is deliberate and
-        // pinned: chunks() hands out a NON-const reference, so a rename after construction
-        // moves the chunk's schema and not this (test_cursor.cpp).
+        // It is the cursor's OWN carrier, and it has to be (M3-B5): a bare type list cannot
+        // name a column — the type's name slot belongs to self-naming types, so a STRUCT
+        // column would answer with the type's name. It is a deep copy taken once at
+        // construction and never re-synced, which is deliberate and pinned: chunks() hands
+        // out a NON-const reference, so a rename after construction moves the chunk's
+        // schema and not this (test_cursor.cpp).
         const std::pmr::vector<vector::column_schema_t>& columns() const;
 
         std::size_t size() const;

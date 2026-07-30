@@ -69,11 +69,11 @@ namespace components::operators {
                                                                      const logical_plan::storage_parameters& parameters,
                                                                      core::date::timezone_offset_t session_tz,
                                                                      vector::data_chunk_t* right_input) {
-        // The RETURNING path: one projection over one already-gathered chunk. It binds per call, as
-        // it did before -- a RETURNING list is evaluated once per DML statement, not per streamed
-        // batch, so there is no per-chunk rebuild to remove here. What matters is that the meaning
-        // of a select_column_t is defined in ONE place, projection_executor_t, so the streamed and
-        // the one-shot projection cannot drift.
+        // The RETURNING path: one projection over one already-gathered chunk. It binds per call --
+        // a RETURNING list is evaluated once per DML statement, not per streamed batch, so a cached
+        // executor would buy nothing. What matters is that the meaning of a select_column_t is
+        // defined in ONE place, projection_executor_t, so the streamed and the one-shot projection
+        // cannot drift.
         if (input->column_count() == 0 && input->size() == 0) {
             return empty_projection(resource, columns);
         }

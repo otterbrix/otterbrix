@@ -97,8 +97,7 @@ namespace components::expressions {
 
     // THE scalar_type -> vector::arithmetic_op mapping. nullopt for a scalar_type that is
     // not one of the five binary arithmetic operators. Lives beside the enum so a sixth
-    // operator is added in ONE switch — the binder, the validator and the group operator
-    // each used to keep a private copy that had to agree by hand.
+    // operator is added in ONE switch.
     constexpr std::optional<vector::arithmetic_op> to_arithmetic_op(scalar_type type) noexcept {
         switch (type) {
             case scalar_type::add:

@@ -490,19 +490,14 @@ TEST_CASE("components::table::data_table") {
     }
 }
 
-// RED before the fix. adopt_schema used to name each storage column from the incoming type's
-// alias() — unguarded. complex_logical_type::alias() asserts on extension_ and dereferences
-// null in release (types.cpp:334-337), and a scalar type built with an empty alias has NO
-// extension at all (types.cpp:76-81), so an unnamed column reaching this path aborted in a
-// debug build and read through a null pointer in a release one.
-//
-// This is reachable, not hypothetical: adopt_schema is called with a live chunk's types at
-// agent_disk.cpp:527/2289 and manager_disk_storage.cpp:34, and the WAL decoder rebuilds a
-// column with no name as exactly that extension-less type (data_chunk_binary.cpp:207) — so a
-// replayed chunk carrying one unnamed column crashes recovery on the way into storage.
+// An unnamed column must be adoptable: reading a name off the incoming TYPE instead asserts
+// on the missing extension and dereferences null in release (types.cpp), and the WAL decoder
+// rebuilds a column with no name as exactly that extension-less type (data_chunk_binary.cpp).
+// adopt_schema sits on the recovery path (agent_disk.cpp, manager_disk_storage.cpp), so a
+// replayed chunk carrying one unnamed column would crash recovery on the way into storage.
 //
 // M3-B2: the name a chunk's schema record answers for an unnamed column is "", and that is
-// what the storage column is now given.
+// what the storage column is given.
 TEST_CASE("components::table::adopt_schema accepts a column with no name") {
     using namespace components::types;
     using namespace components::vector;
@@ -541,20 +536,11 @@ TEST_CASE("components::table::adopt_schema accepts a column with no name") {
     REQUIRE(table.columns()[2].name() == "label");
 }
 
-// M3-B4, and the stage's whole argument in one test.
-//
-// A column's name is stored in the alias slot of its TYPE, and for a self-naming complex
-// type that slot is already taken by the type's own name — so column_definition_t's
-// constructor refuses to write the column name there rather than destroy the type name
-// (column_definition.cpp:20-25, "the real fix is to stop overloading one field for two
-// names"). The column definition still knows its name in name_, but everything downstream
-// reads names off the type: copy_types() is what a scan chunk is built from, and the chunk's
-// schema memo derives each name from the column's type.
-//
-// The consequence used to be that a STRUCT column had NO recoverable column name once its
-// data was in a chunk — reproducible exactly, and B4 did not repair it. B5 does: the name
-// stops depending on the type's spare slot and is stamped onto the column from the definition
-// that knows it, alongside the attoid, by the same one line of the same scan path.
+// M3-B4/B5: a scan chunk carries BOTH halves of a column's identity — attoid and name —
+// stamped from the column definition (data_table_t::stamp_column_identity). The pin matters
+// most for a STRUCT column: its type's name slot holds the TYPE's own name, so no bare list
+// of types can name the column; only the definition knows the column's name and the type's
+// name apart.
 TEST_CASE("components::table::a STRUCT column recovers its own name and its identity") {
     using namespace components::types;
     using namespace components::vector;
@@ -569,15 +555,14 @@ TEST_CASE("components::table::a STRUCT column recovers its own name and its iden
     std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::BOOLEAN, "flag");
     fields.emplace_back(logical_type::INTEGER, "number");
-    // create_struct's FIRST argument is the TYPE's own name. It used to be the slot a column
-    // name had to share, which is why a struct column could not be named at all.
+    // create_struct's FIRST argument is the TYPE's own name, not a column name.
     auto struct_type = complex_logical_type::create_struct("struct", fields);
 
     std::vector<column_definition_t> columns;
     columns.emplace_back("plain_column", complex_logical_type{logical_type::BIGINT});
     columns.emplace_back("struct_column", struct_type);
 
-    // Stand in for the catalog: this is what build_create_table_writes now does for every
+    // Stand in for the catalog: this is what build_create_table_writes does for every
     // column of a CREATE TABLE (ddl_metadata_builder.cpp), and it is the only reason a
     // storage column knows its own attoid.
     constexpr components::catalog::oid_t plain_attoid = components::catalog::FIRST_USER_OID + 11;
@@ -587,9 +572,8 @@ TEST_CASE("components::table::a STRUCT column recovers its own name and its iden
 
     data_table_t table(&resource, block_manager, std::move(columns));
 
-    // M3-B5: the definition is the ONE place a column's name lives. Both columns answer the
-    // same way now — the scalar column's name used to be copied into its type as well, and
-    // the struct column's could not be, because that slot was already holding the TYPE's name.
+    // M3-B5: the definition is the ONE place a column's name lives — neither column's type
+    // carries it, and the struct type's slot holds the TYPE's own name.
     REQUIRE(table.columns()[0].name() == "plain_column");
     REQUIRE(table.columns()[0].type().field_name().empty());
     REQUIRE(table.columns()[1].name() == "struct_column");
@@ -600,13 +584,13 @@ TEST_CASE("components::table::a STRUCT column recovers its own name and its iden
     data_chunk_t chunk(&resource, scan_types, 4);
     chunk.set_cardinality(0);
 
-    // A bare list of types names nothing, and that is the point: it never could name both
-    // kinds of column, and now it names neither.
+    // A bare list of types names nothing: a type cannot name both kinds of column, so it
+    // names neither.
     REQUIRE(std::string{chunk.schema()[0].name}.empty());
     REQUIRE(std::string{chunk.schema()[1].name}.empty());
 
-    // GREEN (M3-B5): what a scan hands out carries BOTH halves of the column's identity, and
-    // for the struct column too. The name is stamped from the column definition, which is the
+    // M3-B5: what a scan hands out carries BOTH halves of the column's identity, and for
+    // the struct column too. The name is stamped from the column definition, which is the
     // one place that knows the column's name and the type's name apart.
     table.stamp_column_identity(chunk);
     REQUIRE(chunk.schema()[0].attoid == plain_attoid);

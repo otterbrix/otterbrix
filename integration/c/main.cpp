@@ -363,8 +363,7 @@ extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
         auto storage = convert_cursor(ptr);
         const auto& columns = storage->cursor->columns();
         if (static_cast<size_t>(column_index) < columns.size()) {
-            // The descriptor's name is TOTAL — an unnamed result column answers "" instead of
-            // asserting the way complex_logical_type::alias() did (M3-B5).
+            // The descriptor's name is TOTAL — an unnamed result column answers "" (M3-B5).
             const auto& name = columns[static_cast<size_t>(column_index)].name;
             char* str_ptr = new char[name.size() + 1];
             std::memcpy(str_ptr, name.data(), name.size());

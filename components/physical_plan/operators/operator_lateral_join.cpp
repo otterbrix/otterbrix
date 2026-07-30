@@ -79,11 +79,10 @@ namespace components::operators {
         // The output layout is assembled from the PLAN-TIME side schemas rather than from
         // input chunks — the inner sub-plan may yield no chunk at all, for every outer row,
         // so there is nothing to learn a column's name or type from at runtime. Each side
-        // schema already spells its columns out ({name, type}); this operator was the LAST
-        // consumer that had to recover a name from a type, and it no longer does (M3-B5
-        // step 8). The concatenation is cloned onto `res` because that is where the emitted
-        // chunks live; the side schemas themselves are read where they lie (they belong to
-        // the plan node's resource, which outlives this drive).
+        // schema already spells its columns out ({name, type}) (M3-B5). The concatenation is
+        // cloned onto `res` because that is where the emitted chunks live; the side schemas
+        // themselves are read where they lie (they belong to the plan node's resource, which
+        // outlives this drive).
         const bool semi_anti = (type_ == join_type::semi || type_ == join_type::anti);
 
         join_detail::output_schema_t out_schema(res);
@@ -226,8 +225,7 @@ namespace components::operators {
                     // ctx->parameters is passed HERE, per row-check, and never captured at build
                     // time: the loop above rebinds the correlation slots into that very map before
                     // each inner run, so the compiled ON must read them live to see the current
-                    // outer row. This is the contract the boxed predicate kept by holding a pointer;
-                    // the facade keeps it by taking the map as an argument.
+                    // outer row.
                     inner_matches.reset(inner_chunk.size());
                     auto mask_res = compiled.value().select_matches(outer_chunk,
                                                                     row,

@@ -30,7 +30,7 @@ static const core::relname_t rel{"t"};
 
 // A plan-node output schema of BIGINT columns with the given names, in the order the
 // validator would stamp them. An EMPTY name is a nameless column (a projected constant)
-// and is spelled with an empty string, where it used to be a type with no alias.
+// and is spelled with an empty string.
 static components::vector::schema_t node_schema(std::pmr::memory_resource* r,
                                                 std::initializer_list<std::string_view> col_names) {
     components::vector::schema_t schema(r);
@@ -54,10 +54,10 @@ static node_data_ptr make_data(std::pmr::memory_resource* r, std::initializer_li
     // optimizer only looks at the schema, so one row is enough
     auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, schema, r);
     auto node = make_node_raw_data(r, std::move(chunk));
-    // collect_subtree_columns() now reads a node's output_schema() (the
-    // node_data_t column-name branch was removed). Stamp it here so a scan used
-    // under a join exposes its columns to pushdown exactly as validate_schema would
-    // — otherwise the columns come back empty and nothing is pushed.
+    // collect_subtree_columns() reads a node's output_schema(). Stamp it here so a
+    // scan used under a join exposes its columns to pushdown exactly as
+    // validate_schema would — otherwise the columns come back empty and nothing is
+    // pushed.
     node->set_output_schema(node_schema(r, col_names));
     return node;
 }
@@ -743,14 +743,12 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch_under_group_and_sort")
 // union_pos_of / branch_identity / collect_subtree_columns must skip it — it can
 // never match a WHERE column name.
 //
-// This began as the pin for a CRASH: the name used to live inside the type, the
-// column had no type extension, and complex_logical_type::alias() asserts on that
-// (nullptr deref in Release), so optimize() SIGABRTed inside the union pushdown.
-// Since M3-B5 step 8 the name is a std::pmr::string in the plan node's schema
-// record, so "no name" is an empty string and the crash shape is gone by
-// construction. What the case still pins is the BEHAVIOUR the crash-fix bought:
-// the WHERE on "id" is pushed into both branches and the nameless column is
-// simply ignored.
+// (When the name lived inside the type, a nameless column made
+// complex_logical_type::alias() assert — a nullptr deref in Release — inside the
+// union pushdown; since M3-B5 the name is a std::pmr::string in the plan node's
+// schema record, "no name" is an empty string, and that crash shape is gone by
+// construction.) The pin: the WHERE on "id" is pushed into both branches and the
+// nameless column is simply ignored.
 TEST_CASE("logical_plan::pushdown_filter_union_skips_nameless_output_column") {
     auto resource = core::pmr::otterbrix_resource();
 

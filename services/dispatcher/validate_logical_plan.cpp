@@ -405,10 +405,9 @@ namespace services::dispatcher {
                 if (column_path_left.has_error() && column_path_right.has_error()) {
                     // Both sides failed, but not necessarily for the same reason: a name that
                     // resolves to SEVERAL columns on one side fails as ambiguous_name, and
-                    // flattening that into field_not_exists told the user "was not found" about
-                    // a key that exists twice -- the opposite diagnosis. With one schema (a
-                    // single-relation statement, e.g. CREATE INDEX) both sides carry that same
-                    // ambiguity, so the flattening hit every such key. Keep the specific answer.
+                    // flattening that into field_not_exists would tell the user "was not found"
+                    // about a key that exists twice -- the opposite diagnosis. Keep the
+                    // specific answer.
                     if (column_path_left.error().type == core::error_code_t::ambiguous_name) {
                         return column_path_left.error();
                     }
@@ -1265,9 +1264,8 @@ namespace services::dispatcher {
 
         // The column key a get_field reads through: the expression's own key when it has no
         // params, else the key operand. A bound parameter or a nested expression in that slot
-        // is not a column reference — the ONE copy of the guard every get_field reader in this
-        // file used to repeat verbatim. Returns a mutable pointer because several readers
-        // resolve the key's path in place (validate_key / find_types).
+        // is not a column reference and is refused. Returns a mutable pointer because several
+        // readers resolve the key's path in place (validate_key / find_types).
         [[nodiscard]] core::result_wrapper_t<components::expressions::key_t*>
         get_field_key(std::pmr::memory_resource* resource, scalar_expression_t* scalar_expr) {
             if (!scalar_expr->params().empty() &&
@@ -1472,14 +1470,9 @@ namespace services::dispatcher {
             // Coercing a write-set value to its column's DECLARED type is NOT done here.
             // enrich_insert_sync (services/dispatcher/enrich_logical_plan.cpp) does it
             // unconditionally, per column and per row, through logical_value_t::cast_as,
-            // for every non-computing target. Four arms here used to duplicate part of
-            // that — DATE/duration, DECIMAL, STRUCT, ENUM — behind a gate asking whether a
-            // TYPE was registered under the catalog COLUMN TYPE's alias; operator_resolve_
-            // table_t stamps that alias with the COLUMN's name, so the gate asked about a
-            // name no type ever carries and all four measured a hit count of 0 over the
-            // whole suite. They are gone. The one capability they had that cast_as does
-            // not is parsing a string into a temporal value (core::date::parse_date and
-            // friends) — reinstating it is a semantics change, pinned as rejected in
+            // for every non-computing target. The one thing cast_as does not do is parse a
+            // string into a temporal value (core::date::parse_date and friends) — adding
+            // that here is a semantics change, pinned as rejected in
             // integration/cpp/test/test_write_set_type_coercion.cpp.
             if (node->type() == node_type::data_t && insert_target_relkind == 'g') {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
@@ -2852,9 +2845,9 @@ namespace services::dispatcher {
                         // exactly one source expression per target column, and the per-column
                         // loops below walk key_translation()[i] for every incoming column.
                         // Admitting a SHORTER key_translation because the source width
-                        // happened to equal the TABLE width read past its end — reachable
-                        // from `INSERT INTO t (p) SELECT x, y FROM s`, whose arity the
-                        // transformer only checks on the VALUES path.
+                        // happens to equal the TABLE width would read past its end —
+                        // reachable from `INSERT INTO t (p) SELECT x, y FROM s`, whose
+                        // arity the transformer only checks on the VALUES path.
                         const bool arity_ok = insert_node->key_translation().empty()
                                                   ? table_schema.size() == incoming_schema.value().size()
                                                   : insert_node->key_translation().size() ==
@@ -2904,9 +2897,9 @@ namespace services::dispatcher {
                             // retypes the write-set (enrich_insert_sync) goes through
                             // logical_value_t::cast_as, which reports an unmatched label as an NA
                             // VALUE rather than an error, and enrich has no error channel to tell an
-                            // NA result from a converted one. So an unknown label used to be stored
+                            // NA result from a converted one. Unrefused, an unknown label is stored
                             // as NULL with nothing reported, while the SAME label in a WHERE clause
-                            // errored. Refuse it here, where the declared type and the literal rows
+                            // errors. Refuse it here, where the declared type and the literal rows
                             // are both in hand.
                             if (node->children().front()->type() == node_type::data_t) {
                                 const auto* dat = reinterpret_cast<const node_data_t*>(node->children().front().get());
@@ -3246,8 +3239,7 @@ namespace services::dispatcher {
                     if (left_schema[i].from_null_literal) {
                         // left branch is NULL -> adopt the right TYPE. The left column's output
                         // name — PostgreSQL takes a union's column names from the FIRST SELECT —
-                        // is untouched because it lives on the record, not inside the type; this
-                        // used to have to copy it back out and stamp it on the adopted type.
+                        // is untouched because it lives on the record, not inside the type.
                         left_schema[i].type = right_schema[i].type;
                         continue;
                     }
@@ -3363,12 +3355,9 @@ namespace services::dispatcher {
         auto res = validate_schema_impl(resource, idx, node, parameters);
         if (!res.has_error()) {
             // Carry the resolved column list. The NAME comes from type_from_t::name, the
-            // validator's own record of the column's own name — not from the type's alias,
-            // which is where the plan node used to read it. Measured over the whole suite
-            // before the move: the two never disagreed on a single column, which is what
-            // makes this a port and not a behaviour change. attoid stays INVALID_OID:
-            // type_from_t has none to give and nothing downstream routes this by identity
-            // (see node_t::output_schema()).
+            // validator's own record of the column's own name — not from the type's alias.
+            // attoid stays INVALID_OID: type_from_t has none to give and nothing downstream
+            // routes this by identity (see node_t::output_schema()).
             components::vector::schema_t schema{node->resource()};
             schema.reserve(res.value().size());
             for (const auto& c : res.value()) {

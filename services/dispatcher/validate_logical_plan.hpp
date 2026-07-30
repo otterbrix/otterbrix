@@ -31,9 +31,8 @@ namespace services::dispatcher {
     struct type_from_t {
         // The SOURCE relation this column is visible under — a table name or its AS-alias.
         std::string result_alias;
-        // The column's OWN name. It used to be read out of `type` via
-        // complex_logical_type::alias(); a bare vector of types cannot carry a column name
-        // without overloading the type with an identity that is not part of it (M3-B5).
+        // The column's OWN name — carried here because a type cannot carry a column name
+        // without being overloaded with an identity that is not part of it (M3-B5).
         // Empty means the column genuinely has no name (a projected constant, `SELECT 1`).
         std::string name;
         components::types::complex_logical_type type;
@@ -75,10 +74,8 @@ namespace services::dispatcher {
     //
     // It does NOT coerce write-set values to their columns' declared types: that is
     // enrich_insert_sync's job, and it runs after validate_schema. `session_tz` is
-    // unused today — it was consumed only by four coercion arms that were removed
-    // after measuring a hit count of 0 (see validate_logical_plan.cpp) — and is kept
-    // so a value-level check that needs a timezone can be added without a signature
-    // change rippling through the executor.
+    // unused today; it is kept so a value-level check that needs a timezone can be
+    // added without a signature change rippling through the executor.
     [[nodiscard]] core::error_t validate_types(std::pmr::memory_resource* resource,
                                                const impl::plan_resolve_index_t* idx,
                                                components::logical_plan::node_t* node,

@@ -313,7 +313,7 @@ TEST_CASE("c-api: cursor_column_name publishes the query's column names", "[c-ap
 
     INFO("EXPLAIN publishes a single QUERY PLAN column");
     {
-        // EXPLAIN's column name is WRITTEN once, at renderer_postgres.cpp:210, and read
+        // EXPLAIN's column name is WRITTEN once, in renderer_postgres.cpp, and read
         // back only here — the renderer itself reads no column name at all.
         cursor_ptr cur = execute_sql(t.ptr, sv(std::string("EXPLAIN SELECT id FROM namesdb.t;")));
         REQUIRE(cur != nullptr);
@@ -474,7 +474,7 @@ TEST_CASE("c-api: cursor_get_value returns nullptr for OOB row/column", "[c-api]
 // matches, or nullptr when no column carries the name. The python binding
 // (integration/python/sql/wrapper_cursor.cpp, wrapper_cursor::get_) runs the
 // same loop and returns py::none() in the same "no such name" case, pinned by
-// integration/python/tests/test_dynamic_schema.py:114.
+// integration/python/tests/test_dynamic_schema.py.
 // --------------------------------------------------------------------------
 
 TEST_CASE("c-api: cursor_get_value_by_name resolves a present name and rejects an absent one",

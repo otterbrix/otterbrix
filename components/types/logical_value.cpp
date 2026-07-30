@@ -1455,10 +1455,9 @@ namespace components::types {
         // share this guard: without it `%` executed an integer remainder by zero, which is UB --
         // SIGFPE on x86, a silent wrong answer on AArch64.
         //
-        // Only a NUMBER can be a zero divisor. The guard used to build a typed default of the
-        // divisor's type and compare against it whatever that type was, and for an INTERVAL
-        // divisor that default carries an EMPTY child vector while interval equality reads
-        // children [0..2] -- so `5 / INTERVAL` crashed inside the guard meant to protect it.
+        // Only a NUMBER can be a zero divisor: comparing a typed default against a
+        // non-numeric divisor is unsafe (an INTERVAL default carries an EMPTY child vector
+        // while interval equality reads children [0..2]).
         if ((op == vector::arithmetic_op::divide || op == vector::arithmetic_op::mod) &&
             is_numeric(rhs.type().type())) {
             const logical_value_t zero{resource, rhs.type()};

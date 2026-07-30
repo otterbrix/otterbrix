@@ -100,8 +100,8 @@ namespace components::vector {
                         auto* out = output.data<OutT>();
                         Op<void> op{};
                         for (uint64_t i = 0; i < count; i++) {
-                            // The zero test reads the untouched divisor, as it did before the
-                            // store type was decoupled from the operand types.
+                            // The zero test reads the untouched divisor, not the converted
+                            // store type.
                             if (detail::is_zero(rhs[i])) {
                                 output.validity().set_invalid(i);
                                 if constexpr (std::is_floating_point_v<OutT>) {

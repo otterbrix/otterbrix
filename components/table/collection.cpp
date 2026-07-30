@@ -300,9 +300,9 @@ namespace components::table {
 
     namespace {
         // The SHAPE question over two column lists: the two collections' column names are not
-        // what makes their storage mergeable. A free function rather than a local, so the
-        // operand does not become an unused variable once NDEBUG compiles the assert out.
-        // maybe_unused: its only caller is the assert below, which NDEBUG compiles out.
+        // what makes their storage mergeable. A free function rather than a local so nothing
+        // becomes an unused variable under NDEBUG; maybe_unused because its only caller is
+        // the assert below.
         [[maybe_unused]] bool same_shapes(const std::pmr::vector<types::complex_logical_type>& lhs,
                                           const std::pmr::vector<types::complex_logical_type>& rhs) {
             return std::equal(lhs.begin(),

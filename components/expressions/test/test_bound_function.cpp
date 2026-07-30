@@ -70,11 +70,9 @@ namespace {
 // ============================================================================
 // WHICH KERNEL, AND WHAT TYPE IT PRODUCES, ARE DECIDED AT BIND TIME.
 //
-// The boxed path re-dispatched per batch off whatever the first row's VALUE was
-// typed as (function_predicate.cpp:47-58 types each argument column from its
-// first non-NULL cell), so the same column could pick a different kernel
-// depending on whether its head row happened to be NULL. Here the kernel is
-// chosen once from the types the tree PROMISES, and the kernel's own declared
+// Dispatching off values instead would let the same column pick a different
+// kernel depending on whether its head row happened to be NULL. Here the kernel
+// is chosen once from the types the tree PROMISES, and the kernel's own declared
 // output type becomes the node's return type -- so the node cannot claim a type
 // the kernel does not write.
 // ============================================================================
@@ -135,8 +133,8 @@ TEST_CASE("components::expressions::bound::binder_refuses_an_unregistered_functi
     CHECK(bound.error().type == core::error_code_t::unrecognized_function);
 }
 
-// A call whose uid was never resolved is a wiring bug, and it must be NAMED. The boxed path
-// dereferenced whatever get_function(invalid_uid) answered.
+// A call whose uid was never resolved is a wiring bug, and it must be NAMED -- never a
+// dereference of whatever get_function(invalid_uid) answers.
 TEST_CASE("components::expressions::bound::binder_refuses_a_function_call_with_no_resolved_uid") {
     std::pmr::monotonic_buffer_resource resource;
     compute::function_registry_t registry{&resource};
@@ -234,14 +232,12 @@ TEST_CASE("components::expressions::bound::executor_keeps_a_function_result_null
 }
 
 // ============================================================================
-// The argument chunk is allocated ONCE, in create(): the boxed path built a fresh
-// data_chunk_t for every batch and wrote every argument cell into it through a
-// logical_value_t (function_predicate.cpp:60-66).
+// The argument chunk is allocated ONCE, in create().
 //
 // This does NOT make a call allocation-free, and the test says so rather than
 // pretending otherwise. compute::function::execute builds a fresh
 // function_executor_impl_t on the resource it is handed FOR EVERY CALL
-// (function.cpp:208-222), and a row kernel boxes its output into a fresh
+// (function.cpp), and a row kernel boxes its output into a fresh
 // std::pmr::vector<logical_value_t>. Both live behind the registry's API, which
 // this layer only consumes. What the expression layer OWNS -- the result slots
 // and the argument chunk -- costs nothing after create(), and the way to see that

@@ -192,9 +192,9 @@ namespace {
         }
     };
 
-    // A column type with no arm is a real failure, not an empty aggregate: it used to throw,
-    // which under the executor's coroutines lands in an empty unhandled_exception() -> SIGABRT
-    // on the aggregate hot path. Both consume and merge already return core::error_t.
+    // A column type with no arm is a real failure, not an empty aggregate — and a throw here
+    // would land in an empty unhandled_exception() -> SIGABRT under the executor's coroutines,
+    // so it leaves through the result instead (consume and merge return core::error_t).
     template<template<typename...> class OP>
     core::result_wrapper_t<logical_value_t> operator_switch(const vector_t& v, size_t count) {
         OP op{};
@@ -578,7 +578,7 @@ namespace {
         }
         // AVG = sum / count is a RATIO: the mean of an integral column is a real
         // number (mean of {1,2} is 1.5), so the result is always a DOUBLE. Two traps
-        // this avoids, both of which produced a wrong answer before:
+        // this avoids:
         //  (1) operator_switch<divide_operator_t> dispatches on acc.value's type
         //      (int64 for a BIGINT sum) and performs INTEGER division, truncating
         //      the mean towards zero;

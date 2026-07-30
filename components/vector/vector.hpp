@@ -97,12 +97,11 @@ namespace components::vector {
         // type promotion wants. A promoted column is not a new column, it is the column it
         // came from in a different type, so it owes that column both halves of its identity:
         // the attoid the storage matcher prefers, and the name the matcher falls back to.
-        // A vector_t built the plain way owes them nothing — it is born INVALID_OID and takes
-        // whatever name `type` happens to carry — which is why every rebuild written as a
-        // plain construction is a place the identity gets dropped, silently demoting the
-        // column from identity routing to name routing (nine such sites have been found in
-        // this tree, and on the INSERT write-set path a column that arrives nameless is not a
-        // missing header: it is a column the append matcher fills with NULLs).
+        // A vector_t built the plain way owes them nothing — it is born INVALID_OID and
+        // nameless — which is why every rebuild written as a plain construction is a place
+        // the identity gets dropped, silently demoting the column from identity routing to
+        // name routing (and on the INSERT write-set path a column that arrives nameless is
+        // not a missing header: it is a column the append matcher fills with NULLs).
         // Carrying it by CONSTRUCTION is the point: a rebuild cannot forget to do afterwards
         // what it has already done.
         explicit vector_t(std::pmr::memory_resource* resource,
@@ -132,7 +131,7 @@ namespace components::vector {
         // has no version field).
         //
         // It lives on the COLUMN, not on the column's type and not in a side table on the
-        // chunk, and that is the whole point of the stage. data_chunk_t::schema() is a memo
+        // chunk. data_chunk_t::schema() is a memo
         // DERIVED from `data`, which is a public field structurally mutated at thirty sites
         // — including operator_group.cpp, which erases a positional RANGE out of the middle.
         // A record preserved by position would hand column i's identity to whatever column
@@ -145,13 +144,7 @@ namespace components::vector {
         void set_attoid(catalog::oid_t attoid) noexcept { attoid_ = attoid; }
 
         // M3-B5. The column's NAME, on the column — the same carrier and the same argument as
-        // attoid above. It used to live inside the column's TYPE, in
-        // logical_type_extension::alias_, which is why a scalar column needed a heap-allocated
-        // extension for one string and why copying a type was an allocation.
-        //
-        // A name cannot be keyed by position on the chunk for the reason attoid cannot: `data`
-        // is a public field that thirty production sites mutate structurally, including an
-        // erase of a positional range out of the middle (operator_group.cpp). It moves with the
+        // attoid above: it cannot be keyed by position on the chunk, and it moves with the
         // column because it belongs to the column.
         //
         // An empty name is an answer, not a missing value: an expression result, a temporary
@@ -201,9 +194,8 @@ namespace components::vector {
         [[nodiscard]] core::error_t push_back(types::logical_value_t logical_value);
         // Stores val at index. A value the vector cannot hold -- a mistyped one, or a nested
         // value with fewer children than the column's shape -- is answered as an error instead
-        // of being dropped: this used to assert(false) and then silently `return`, so in a
-        // release build the row kept whatever the buffer already held while validity claimed
-        // it had been written.
+        // of being dropped (dropping it would leave the row holding whatever the buffer
+        // already held while validity claims it was written).
         core::error_t set_value(uint64_t index, const types::logical_value_t& val);
 
         void set_auxiliary(std::shared_ptr<vector_buffer_t> new_buffer) { auxiliary_ = std::move(new_buffer); }

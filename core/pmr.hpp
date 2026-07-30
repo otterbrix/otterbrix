@@ -14,9 +14,9 @@
 //
 // The three spellings below are not redundant: gcc defines __SANITIZE_ADDRESS__,
 // MSVC defines _ADDRESS_SANITIZER, and clang defines NEITHER -- it only answers
-// __has_feature(address_sanitizer). Without the clang arm this guard silently
-// evaluated false on every clang ASAN build, leaving the pool (and therefore the
-// blindness described above) in place while the build still looked sanitized.
+// __has_feature(address_sanitizer). Without the clang arm the guard is silently
+// false on clang ASAN builds, leaving the pool (and the blindness above) in
+// place while the build still looks sanitized.
 // __has_feature must be probed in a nested #if: gcc 11 does not define it at all,
 // and an unguarded call would not preprocess there.
 #if defined(__SANITIZE_ADDRESS__) || defined(_ADDRESS_SANITIZER)

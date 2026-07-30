@@ -17,10 +17,6 @@ using components::vector::arithmetic_op;
 // most and are asserted throughout:
 //   * a NULL operand yields NA -- three-valued logic, NOT an error;
 //   * an operand pair no arm handles is a real failure -- it used to throw.
-//
-// Written first against the five entry points (a local shim turning their throw
-// into the error the new signature returns), run green, and only then re-pointed
-// at logical_value_t::arithmetic -- so the assertions below are the OLD answers.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -207,7 +203,7 @@ TEST_CASE("components::types::logical_value::arithmetic_temporal_arms") {
 }
 
 TEST_CASE("components::types::logical_value::arithmetic_numeric_times_interval_is_an_interval") {
-    // RED: `3 * INTERVAL` answered a garbage INTEGER. The per-type switch dispatches on
+    // Regression: `3 * INTERVAL` answered a garbage INTEGER. The per-type switch dispatches on
     // the LEFT operand and then reads BOTH operands through that type, so an INTEGER left
     // operand read the INTERVAL's heap-vector POINTER as an int32 -- and the commutative
     // `numeric * INTERVAL` arm below the switch was unreachable. Reading the result back as
@@ -232,9 +228,8 @@ TEST_CASE("components::types::logical_value::arithmetic_numeric_times_interval_i
 
 TEST_CASE("components::types::logical_value::arithmetic_by_a_zero_divisor_yields_a_zero_of_the_type") {
     // Pinned as-is, NOT endorsed: SQL says division by zero is an error, this answers 0.
-    // That answer predates this milestone and does not throw, so changing it is out of scope.
     //
-    // RED for `%`: the zero-divisor guard covered `/` only, so `6 % 0` reached `std::modulus<>`
+    // Regression for `%`: the zero-divisor guard covered `/` only, so `6 % 0` reached `std::modulus<>`
     // and executed an integer remainder by zero -- undefined behaviour, which is SIGFPE on x86
     // and answered 6 on the AArch64 this was found on. `%` needs the same guard `/` has: the two
     // share one divisor, so they share one answer for a zero one.

@@ -27,10 +27,8 @@ namespace components::operators::join_detail {
     //
     // A join is the one operator that MERGES two inputs into a single chunk, and the
     // merged chunk records the split nowhere — which side a column came from survives
-    // only as its name. A bare `vector<complex_logical_type>` used to carry that name
-    // implicitly, inside the type's alias slot, which is exactly the slot this stage
-    // takes away; the same list would then arrive at the output chunk naming nothing.
-    // Carrying `{attoid, name, type}` says out loud what was being smuggled.
+    // only as its name, so the schema carries `{attoid, name, type}` out loud instead of
+    // smuggling the name inside the type's alias slot.
     //
     // column_schema_t is move-only by design (a defaulted copy would take the string's
     // allocator from std::pmr's DEFAULT resource), so a record is never copied out of an

@@ -422,9 +422,8 @@ namespace components::types {
         // vector::column_schema_t::name), which is what M3-B5 moved and why this slot could
         // be narrowed to one meaning.
         //
-        // TOTAL: a type that names no field answers with an empty string. It used to assert
-        // on the extension and dereference null in release, which is why ~24 call sites
-        // carried a defensive guard in front of it — every one of them now gone.
+        // TOTAL: a type that names no field answers with an empty string — no defensive
+        // guard is needed in front of it.
         void set_field_name(const std::string& field_name);
         const std::string& field_name() const;
         // A label names a VALUE, not a column: today the entries of an ENUM type, each of
@@ -444,10 +443,6 @@ namespace components::types {
         // Does this type name its FIELDS? A positional STRUCT — ROW(1, 2) — does not, and a
         // table column cannot be built from one, because its sub-columns would have nothing to
         // be addressed by. Total on every type: anything that is not a struct names no fields.
-        //
-        // It used to read the type's own name slot without guarding the extension, which
-        // dereferenced null on every extension-less type and, worse, asked about the COLUMN's
-        // name — the slot column_definition_t stamps — rather than about the fields.
         bool is_unnamed() const;
         bool is_nested() const;
 
@@ -560,12 +555,9 @@ namespace components::types {
     protected:
         extension_type type_ = extension_type::GENERIC;
         // The name this type carries as a FIELD of its containing struct — and nothing else.
-        // It used to be `alias_` and to hold a COLUMN's name as well, which is why a scalar
-        // table column needed a heap-allocated extension for one string and why copying its
-        // type was an allocation. M3-B5 moved the column's name onto the column
-        // (vector_t::name()), leaving the one name that a type genuinely owns: the field
-        // names are what address a struct's sub-columns, so they are part of its shape and
-        // are compared by operator==.
+        // M3-B5 moved the column's name onto the column (vector_t::name()), leaving the one
+        // name that a type genuinely owns: the field names are what address a struct's
+        // sub-columns, so they are part of its shape and are compared by operator==.
         std::string field_name_;
         // label_ carries a value's own spelling — currently an ENUM entry's label.
         std::string label_;

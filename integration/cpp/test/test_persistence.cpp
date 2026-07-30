@@ -2391,7 +2391,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_in_memory_reinsert_visible
 // manager_disk_t::restamp_user_storage_attoids_sync; what this pins is that the real
 // bootstrap in base_spaces actually calls it.
 //
-// The case driven here is the one every existing database is in the moment this ships:
+// The case driven here is the upgrade case every pre-existing database is in:
 // an .otbx written before the table-metadata record carried an identity. Such a file
 // must keep loading (it does, by design), and its columns therefore come back
 // identity-less — and they stay that way forever unless recovery re-stamps them,

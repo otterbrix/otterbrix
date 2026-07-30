@@ -264,8 +264,8 @@ TEST_CASE("components::expressions::bound::executor_folds_a_constant_subtree_onc
 }
 
 // ============================================================================
-// Intermediates are allocated ONCE, in create(). Today the boxed path builds a
-// fresh std::pmr::deque<vector_t> for every chunk, plus a nested one per level.
+// Intermediates are allocated ONCE, in create(): a second chunk through the
+// same executor costs no allocation of the executor's own.
 // ============================================================================
 TEST_CASE("components::expressions::bound::executor_allocates_its_intermediates_once") {
     std::pmr::monotonic_buffer_resource arena;
@@ -391,7 +391,7 @@ TEST_CASE("components::expressions::bound::executor_forwards_a_conversion_failur
     REQUIRE_FALSE(executor.has_error());
 
     // A slot bound to a value the cast kernel refuses outright: an ARRAY source into a numeric
-    // target trips cast_as's explicit guard (logical_value.cpp:403) and comes back as
+    // target trips cast_as's explicit guard (logical_value.cpp) and comes back as
     // conversion_failure through result_wrapper_t. The executor must forward it, not throw.
     auto node = logical_plan::make_parameter_node(&resource);
     std::vector<types::logical_value_t> elements{types::logical_value_t{&resource, static_cast<int64_t>(1)}};
@@ -413,7 +413,7 @@ TEST_CASE("components::expressions::bound::executor_forwards_a_conversion_failur
 }
 
 // cast_as does NOT answer an error for a conversion it has no implementation for: it
-// answers an NA VALUE (logical_value.cpp:667, where the assert is commented out). Writing
+// answers an NA VALUE (logical_value.cpp, where the assert is commented out). Writing
 // that NA into the slot would null the parameter for every row and call it success, so the
 // executor names the mismatch instead. Rule 6: no silent degradation.
 TEST_CASE("components::expressions::bound::executor_refuses_to_silently_null_an_unconvertible_parameter") {

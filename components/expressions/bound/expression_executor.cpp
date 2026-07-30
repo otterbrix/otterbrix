@@ -143,7 +143,7 @@ namespace components::expressions {
 
         // The six operators applied to two values KNOWN to share a type.
         //
-        // A deliberate duplicate of table::compare_same_type_matches (column_state.hpp:339), and the
+        // A deliberate duplicate of table::compare_same_type_matches (column_state.hpp), and the
         // duplication is forced: components/table already includes components/expressions, so
         // calling the canonical one from here would close an expressions <-> table cycle, and moving
         // it somewhere both can see means editing components/table. The two must stay in step --
@@ -225,7 +225,7 @@ namespace components::expressions {
             core::error_t operator()(const vector::data_chunk_t& produced) const {
                 // The LENGTH check is on the column, not on produced.size(). vector_executor::execute
                 // builds its answer as `data_chunk_t out(resource, {})` and only pushes the result
-                // vector into out.data (kernel_executor.cpp:85-86), so the chunk's CARDINALITY is
+                // vector into out.data (kernel_executor.cpp), so the chunk's CARDINALITY is
                 // never set and reads as 0 however many rows the kernel actually wrote. The column
                 // itself is sized by prepare_vector_output(inputs.size()), i.e. to exactly the count
                 // this executor handed in.
@@ -485,16 +485,15 @@ namespace components::expressions {
                               "expression executor: reference addresses an unprojected placeholder column");
         }
         // The load-bearing invariant of a typed layer: what the node PROMISED is what the chunk
-        // carries. Reading an INT64 column through a node that claims FLOAT is the shape of the
-        // overflow the demotion fix removed, so it is answered instead of misread.
+        // carries. Reading an INT64 column through a node that claims FLOAT would misread the
+        // bytes, so a mismatch is answered instead.
         if (column.type().to_physical_type() != node->physical_type()) {
             return exec_error(resource_,
                               core::error_code_t::schema_error,
                               "expression executor: chunk column type contradicts the bound reference type");
         }
         // A BROADCAST left operand: one row of the left chunk, repeated for the whole batch. The
-        // typed copy switch writes it, so no cell is boxed -- the boxed layer read the same value
-        // through a logical_value_t once per output row.
+        // typed copy switch writes it, so no cell goes through a logical_value_t (rule 1).
         if (context.left_row.has_value() && node->side() != side_t::right) {
             const uint64_t source_row = *context.left_row;
             if (source_row >= input.size()) {
@@ -541,10 +540,8 @@ namespace components::expressions {
     // through (offset, length). The one accessor that understands all three is
     // data_chunk_t::value(path, row), and it answers a boxed value.
     //
-    // So this arm boxes, per row, exactly as the boxed value-getter did. That is deliberate:
-    // it PRESERVES an existing round-trip for a shape the census found nowhere in the suite (every
-    // key reaching operator_match resolves to a single ordinal), rather than introducing a new one
-    // on a hot path -- and it means the bound layer refuses nothing the boxed layer accepted.
+    // So this arm boxes, per row, deliberately: the shape is cold (every key reaching
+    // operator_match resolves to a single ordinal), so the round-trip lands on no hot path.
     // Making it columnar needs a strided nested gather in components/vector, which is where that
     // work belongs.
     core::error_t expression_executor_t::eval_nested_reference(size_t index,
@@ -645,7 +642,7 @@ namespace components::expressions {
             return converted.error();
         }
         // cast_as answers an NA VALUE, not an error, for a conversion it has no implementation for
-        // (logical_value.cpp:667 -- the `assert(false && "cast to value is not implemented")` there is
+        // (logical_value.cpp -- the `assert(false && "cast to value is not implemented")` there is
         // commented out). Writing that NA would silently null the parameter for every row, so the
         // mismatch is named here instead. Rule 6: no silent degradation.
         if (converted.value().type().to_physical_type() != node->physical_type()) {
@@ -677,13 +674,12 @@ namespace components::expressions {
         const auto& left = *results_[children_[begin]];
         const auto& right = *results_[children_[begin + 1]];
         // A SCALAR zero divisor is a query ERROR; a COLUMN divisor holding zero NULLs that row. The
-        // boxed evaluator got the difference from which branch it took; here the node carries it.
+        // node carries the difference (divisor_is_scalar).
         //
-        // The test is the boxed one verbatim: compare the divisor against a DEFAULT-CONSTRUCTED
-        // value of its own type. That is not the same as "== 0" -- a
-        // NULL divisor also compares equal to it, so `x / NULL` keeps answering exactly what it
-        // answered before, whichever of the two that is. Every row of a scalar operand holds the
-        // same value, so row 0 decides for the batch.
+        // The divisor is compared against a DEFAULT-CONSTRUCTED value of its own type, which is not
+        // the same as "== 0": a NULL divisor also compares equal to it, so a scalar `x / NULL`
+        // errors here too. Every row of a scalar operand holds the same value, so row 0 decides for
+        // the batch.
         if (node->divisor_is_scalar() && count > 0) {
             const types::logical_value_t divisor = right.validity().row_is_valid(0)
                                                        ? right.value(0)
@@ -794,18 +790,17 @@ namespace components::expressions {
     }
 
     // Operand types that differ and are not both numeric. This is a faithful port of
-    // table::compare_values_promoting (column_state.hpp:367) INCLUDING its retry: cast right to
+    // table::compare_values_promoting (column_state.hpp) INCLUDING its retry: cast right to
     // left's type; when that answers NULL (a value the narrower side cannot hold, or a conversion
     // that direction has no implementation for) cast left to right's type instead; and when neither
     // direction lands, answer a definite FALSE -- not UNKNOWN, which would let a NOT above resurrect
     // the row.
     //
     // Boxed per row, and it has to be: cast_vector is a physical-width reinterpretation
-    // (vector_operations.cpp:1072, it asserts on strings and never answers NULL), while this
+    // (vector_operations.cpp, it asserts on strings and never answers NULL), while this
     // conversion is SEMANTIC and needs the session timezone. logical_value_t::cast_as is the only
-    // thing that performs it. This preserves an existing round-trip for a rare shape rather than
-    // adding one: the typed dispatch above still takes every same-type and every numeric pair, which
-    // is what the shape census found operator_match actually receives.
+    // thing that performs it. The round-trip stays confined to a rare shape: the typed dispatch
+    // above still takes every same-type and every numeric pair.
     core::error_t expression_executor_t::eval_promoting_comparison(size_t index,
                                                                    const vector::vector_t& left,
                                                                    const vector::vector_t& right,
@@ -918,9 +913,6 @@ namespace components::expressions {
         return core::error_t::no_error();
     }
 
-    // First operand that is VALID, per row. Typed: the chosen cell is copied through the physical
-    // switch, never boxed into a logical_value_t (the group_key_t extractor this replaces built one
-    // per row per column, and set an alias on it besides).
     // Unary minus. compute_unary_neg answers a fresh vector IN THE OPERAND'S TYPE; it is moved into
     // the preallocated slot rather than kept, so the slot identity survives -- the same shape
     // eval_arithmetic and eval_cast use.
@@ -941,6 +933,8 @@ namespace components::expressions {
         return core::error_t::no_error();
     }
 
+    // First operand that is VALID, per row. Typed: the chosen cell is copied through the physical
+    // switch, never boxed into a logical_value_t.
     core::error_t expression_executor_t::eval_coalesce(size_t index, uint64_t count) {
         const auto begin = child_begin_[index];
         const auto arity = nodes_[index]->children().size();
@@ -989,10 +983,9 @@ namespace components::expressions {
             }
             return core::error_t::no_error();
         }
-        // types::is_string on the LOGICAL type, which is the test regex_predicate::check_impl made
-        // (simple_predicate.cpp:178) -- NOT physical_type == STRING. The two disagree: a type can be
-        // physically STRING without being one of the string logical types, and narrowing to the
-        // physical test rejected subjects the boxed predicate accepted.
+        // types::is_string on the LOGICAL type -- NOT physical_type == STRING. The two disagree: a
+        // type can be physically STRING without being one of the string logical types, and the
+        // narrower physical test would reject such subjects.
         if (!types::is_string(subject.type().type())) {
             // `int_col LIKE 'p'`: the validator does not type-check a regex, so this is where it is
             // caught -- and it is an ERROR, never a read of a non-string payload as a std::string*.
@@ -1191,11 +1184,9 @@ namespace components::expressions {
         //
         // Not vector_t::reference(), which would be free: it assigns the source's validity mask, and
         // validity_mask_t::operator= asserts both masks live on the SAME resource
-        // (validation.cpp:45). The executor's resource and the input chunk's are routinely different
+        // (validation.cpp). The executor's resource and the input chunk's are routinely different
         // -- over a sink the operator's resource outlives batches allocated on another arena -- so
-        // referencing here aborts the moment those two differ. One columnar copy per argument is
-        // still a whole order of magnitude below the boxed path, which built a fresh chunk per batch
-        // AND wrote every argument cell through a logical_value_t.
+        // referencing here aborts the moment those two differ.
         auto& arguments = function_args_[static_cast<size_t>(arg_chunk_of_[index])];
         const auto begin = child_begin_[index];
         const auto arity = node->children().size();
@@ -1215,7 +1206,7 @@ namespace components::expressions {
         arguments.set_cardinality(count);
 
         // The executor's OWN resource, never default_exec_context(): that one is a function-local
-        // static over std::pmr::get_default_resource() (kernel_utils.cpp:16), which rule 8 keeps out
+        // static over std::pmr::get_default_resource() (kernel_utils.cpp), which rule 8 keeps out
         // of an operator's allocation path.
         compute::exec_context_t context{resource_};
         auto produced = node->function()->execute(arguments, nullptr, context);

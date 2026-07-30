@@ -63,8 +63,8 @@ TEST_CASE_METHOD(manager_index_fixture_t, "services::index::manager_index::enque
     auto [needs_schedule, delivery] = manager_->enqueue_impl(std::move(msg));
 
     REQUIRE_FALSE(needs_schedule);
-    // RED before the fix: enqueue_impl released the message into inbox_ and returned `success`
-    // unconditionally, so a caller could not tell an accepted message from a dropped one.
+    // The pin: without the closed-loop check, enqueue_impl releases the message into inbox_
+    // and returns `success` — a caller cannot tell an accepted message from a dropped one.
     REQUIRE(delivery == actor_zeta::detail::enqueue_result::queue_closed);
     // And the refusal must have destroyed the message, which is what cancels the slot. Without
     // that the future stays neither ready nor failed — the shape of an await that never returns.

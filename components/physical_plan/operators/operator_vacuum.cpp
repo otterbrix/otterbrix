@@ -141,9 +141,8 @@ namespace components::operators {
         // Until that rewrite happens the relation is DISPLACED — it holds a storage slot the
         // logical schema no longer names — and plan generation refuses column pruning,
         // filter pushdown, aggregate pushdown and index probes on it, because all four
-        // address a storage column by the logical ordinal the validator resolved. Nothing
-        // ever performed the rewrite, so one dropped column cost the relation those four
-        // optimisations permanently. This is the rewrite.
+        // address a storage column by the logical ordinal the validator resolved. This
+        // block performs that rewrite.
         //
         // THE GATE: a column is eligible only when NO SNAPSHOT CAN STILL RESOLVE IT, i.e.
         // `dropped_at != 0 && dropped_at <= lowest_active_start_time`. dropped_at_commit_id
@@ -480,7 +479,7 @@ namespace components::operators {
                     // normal answer (DISK-backed table, nothing stale, oid on another agent), and
                     // the whole path is assert-terminal on real failure. So there is nothing here
                     // to route into set_error — what the count is good for is saying what VACUUM
-                    // actually reclaimed, which until now went nowhere.
+                    // actually reclaimed.
                     const std::uint64_t dropped_columns = co_await std::move(dcf);
                     trace(log(),
                           "operator_vacuum::compact_relkind_g_storage: table oid {} dropped {} stale storage columns",

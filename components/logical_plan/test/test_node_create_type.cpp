@@ -12,10 +12,10 @@ using namespace components::logical_plan;
 using namespace components::types;
 
 // node_create_type_t::to_string() renders an ENUM's entry labels and a STRUCT's field
-// names. Both come out of a name slot on the member's type, and the two slots are being
-// separated, so the rendered text is pinned here — it had no coverage at all: the
-// transformer wraps create_type in a sequence, and node_sequence_t::to_string_impl()
-// prints only "$sequence[N]", so test_create_drop.cpp:294 never reaches this node.
+// names — two DIFFERENT name slots on the member's type (label_ vs field_name_), so
+// the rendered text is pinned here. It has no other coverage: the transformer wraps
+// create_type in a sequence, and node_sequence_t::to_string_impl() prints only
+// "$sequence[N]", so test_create_drop.cpp never reaches this node.
 
 TEST_CASE("logical_plan::node_create_type_t renders enum entry labels") {
     std::pmr::monotonic_buffer_resource resource;

@@ -17,9 +17,9 @@ namespace components::logical_plan {
         // (offset always 0) capping this WHERE scan's POST-filter output at
         // limit+offset rows, so the authoritative operator_limit above can still
         // window [offset, offset+limit). unlimit() = no cap. Advisory only, no
-        // semantics change. Deliberately EXCLUDED from hash_impl()
-        // (like node_group_t::pushdown_): safe only while no logical-plan-hash-keyed
-        // plan cache exists — fold it into hash_impl() if one is introduced.
+        // semantics change. If a logical-plan-hash-keyed plan cache is ever
+        // introduced, this field (like node_group_t::pushdown_) must be folded
+        // into its hash.
         void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
         const limit_t& read_cap() const noexcept { return read_cap_; }
 

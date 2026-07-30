@@ -5920,18 +5920,9 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
 
 // ALTER TABLE ... RENAME COLUMN and DROP COLUMN on a regular (relkind='r') table. Both
 // operators key their pg_attribute rewrite off a pre-stamped attoid and treat INVALID_OID
-// as "column not found -> no-op"; nothing stamped it, so both reported success and changed
-// nothing.
-//
-// DROP was the later of the two to be enabled, and the DROP section below used to be a
-// CHARACTERIZATION of that: pg_attribute is the LOGICAL schema while the physical storage
-// columns are a separate list that only ever grows, and a scan projected a resolved column
-// by its POSITION in the logical schema — so tombstoning a middle column shifted every later
-// column one slot left against unchanged storage (measured on (a,b,c) with b dropped,
-// `SELECT c` returned b's value). The scan now joins the storage chunk to the logical schema
-// on each column's catalog identity (scan_identity_projection_t), which is indifferent to the
-// hole the tombstone leaves, so the section is a real assertion. The three-column /
-// middle-column / across-a-restart cases live in the two dedicated tests below.
+// as "column not found -> no-op" — left unstamped, both report success and change nothing,
+// which is the silent failure this test pins. The three-column / middle-column /
+// across-a-restart drop cases live in the two dedicated tests below.
 TEST_CASE("integration::cpp::test_sql_features::alter_rename_column_takes_effect") {
     auto config = test_create_config(test_temp_path("test_sql_features/alter_rename_effect"));
     test_clear_directory(config);
@@ -6059,8 +6050,8 @@ TEST_CASE("integration::cpp::test_sql_features::alter_drop_middle_column_of_thre
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         REQUIRE(cur->column_count() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 30); // pre-fix: 20 (b's value, one slot left)
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 31); // pre-fix: 21
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 30); // a positional projection answers 20 (b, one slot left)
+        REQUIRE(cur->value(0, 1).value<int64_t>() == 31); // ... and 21 here
     }
     INFO("both survivors together, in logical order");
     {
@@ -6281,10 +6272,10 @@ TEST_CASE("integration::cpp::test_sql_features::alter_drop_then_add_column_chara
 }
 
 // The same drop, ACROSS A RESTART. The projection joins the scan chunk to the logical
-// schema on the column's catalog identity, and that identity's durability is new — a
-// projection that resolves in-process and silently reverts to position after a reopen is
-// exactly the failure the durable-identity precondition existed to prevent. Disk + WAL on,
-// so the reopen goes through rehydrate + replay + restamp_user_storage_attoids_sync().
+// schema on the column's catalog identity — a projection that resolves in-process but
+// silently reverts to position after a reopen is exactly the failure the durable-identity
+// precondition exists to prevent. Disk + WAL on, so the reopen goes through rehydrate +
+// replay + restamp_user_storage_attoids_sync().
 TEST_CASE("integration::cpp::test_sql_features::alter_drop_middle_column_survives_restart") {
     auto config = test_create_config(test_temp_path("test_sql_features/alter_drop_middle_restart"));
     test_clear_directory(config);
@@ -6330,9 +6321,9 @@ TEST_CASE("integration::cpp::test_sql_features::alter_drop_middle_column_survive
             REQUIRE(cur->size() == 3);
             REQUIRE(cur->column_count() == 2);
             REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 99); // pre-fix: 20 (b, one slot left)
+            REQUIRE(cur->value(1, 0).value<int64_t>() == 99); // a positional projection answers 20 (b, one slot left)
             REQUIRE(cur->value(0, 1).value<int64_t>() == 11);
-            REQUIRE(cur->value(1, 1).value<int64_t>() == 31); // pre-fix: 21
+            REQUIRE(cur->value(1, 1).value<int64_t>() == 31); // ... and 21 here
             REQUIRE(cur->value(0, 2).value<int64_t>() == 12);
             REQUIRE(cur->value(1, 2).value<int64_t>() == 32);
         }

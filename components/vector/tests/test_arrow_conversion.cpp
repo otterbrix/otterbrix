@@ -523,17 +523,13 @@ TEST_CASE("components::vector::to_arrow_array round-trips every DECIMAL storage 
     schema.release(&schema);
 }
 
-// M3-B2 characterization, carried through B5: the column names an Arrow consumer sees. They
-// are the ONLY user-visible product of the export that comes from column identity rather than
-// from the values, so they are what a reader migration has to leave untouched.
-//
-// B2 could only pin that the exported name of column i already EQUALLED the chunk's own
-// record for column i, because to_arrow_schema took a bare type list and read the name out of
-// the type. B5 made that the definition: the export takes the schema, so the pin below is now
-// the contract rather than a coincidence the migration had to preserve.
+// M3-B2/B5 characterization: the column names an Arrow consumer sees. They are the ONLY
+// user-visible product of the export that comes from column identity rather than from the
+// values. The export takes the chunk's schema, so the pin below is the contract: the
+// exported name of column i is the chunk's own record for column i.
 //
 // Note what is NOT a column name here: the child names inside a STRUCT column
-// (arrow_converter.cpp:202) are STRUCT FIELD names, a different role that stays on the type.
+// (arrow_converter.cpp) are STRUCT FIELD names, a different role that stays on the type.
 // Both are pinned so the two cannot be confused.
 TEST_CASE("components::vector::arrow export names columns as the chunk's schema does") {
     auto resource = core::pmr::otterbrix_resource();
@@ -601,7 +597,7 @@ TEST_CASE("components::vector::arrow export leaves a STRUCT type name out of the
     schema.release(&schema);
 }
 
-// RED before the fix, and it stays a pin. complex_logical_type::alias() used to assert on
+// Regression pin: complex_logical_type::alias() used to assert on
 // extension_ and dereference null in release, so exporting a chunk with any unnamed column
 // aborted in a debug build and read through a null pointer in a release one. An unnamed
 // column is not exotic: an expression output need not be aliased at all, and the one

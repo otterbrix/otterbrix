@@ -12,17 +12,13 @@
 
 using namespace components;
 
-// Characterization pin for M3-B1: a data_chunk_t's column identity.
-//
-// Today a chunk carries no schema at all — the name of column i is
-// data[i].type().field_name(), a std::string buried in a heap-allocated
-// logical_type_extension. These tests pin the name every chunk shape answers
-// with, so that adding data_chunk_t::schema() cannot change any of them.
+// Characterization pins for a data_chunk_t's column identity (M3-B1): the name, type and
+// attoid every chunk shape answers with.
 //
 // The shapes are the ones a chunk actually takes in this engine:
 //   * scan result       — built from a list of named types
 //   * DML write-set     — built column by column through the public `data`
-//                         field, then renamed in place (operator_insert.cpp:41)
+//                         field, then renamed in place (operator_insert.cpp)
 //   * projected         — the projected constructor's placeholder columns
 //   * fused / split / sliced / partial_copy / drop_unprojected_placeholders
 //   * 0 columns and 0 rows, both of which exist here and have each already
@@ -30,17 +26,16 @@ using namespace components;
 namespace {
 
     // M3-B1/B5: the chunk's schema record must agree with the COLUMN on every shape a chunk
-    // takes. The record is redundant by construction — this checks that "redundant" rather
-    // than assuming it. In B1 the reference answer was the type's alias slot; since B5 it is
-    // the column itself, which is where all three halves of the record now come from.
+    // takes. The record is redundant by construction — all three halves come from the column
+    // itself — and this checks that "redundant" rather than assuming it.
     void require_schema_matches_columns(const vector::data_chunk_t& chunk) {
         const auto& schema = chunk.schema();
         REQUIRE(schema.size() == chunk.data.size());
         for (size_t i = 0; i < chunk.data.size(); ++i) {
             REQUIRE(std::string{schema[i].name} == std::string{chunk.data[i].name()});
             REQUIRE(schema[i].type == chunk.data[i].type());
-            // M3-B4 filled `attoid`: the record must answer with the identity of the column
-            // that is in that slot right now, whatever has been done to `data` since.
+            // The record must answer with the identity of the column that is in that slot
+            // right now, whatever has been done to `data` since (M3-B4).
             REQUIRE(schema[i].attoid == chunk.data[i].attoid());
         }
     }
@@ -58,9 +53,8 @@ namespace {
         return names;
     }
 
-    // One column record: name beside the type, not inside it (M3-B5). This used to be a
-    // `named(type, name)` that stamped the name into the type's alias slot — the whole point
-    // of the stage is that a type list can no longer say what its columns are called.
+    // One column record: name beside the type, not inside it (M3-B5) — a type list can no
+    // longer say what its columns are called.
     vector::column_schema_t named(std::pmr::memory_resource* resource,
                                   types::logical_type type,
                                   std::string_view name) {
@@ -91,7 +85,7 @@ TEST_CASE("data_chunk schema: scan-result shape") {
 
 TEST_CASE("data_chunk schema: DML write-set shape, columns pushed then renamed in place") {
     auto resource = core::pmr::otterbrix_resource();
-    // transform_insert.cpp:414/445 builds a write-set chunk exactly this way: an
+    // transform_insert.cpp builds a write-set chunk exactly this way: an
     // empty chunk that grows one column at a time through the public `data` field.
     std::pmr::vector<types::complex_logical_type> empty(&resource);
     vector::data_chunk_t chunk(&resource, empty, 4);
@@ -103,8 +97,8 @@ TEST_CASE("data_chunk schema: DML write-set shape, columns pushed then renamed i
 
     REQUIRE(column_names(chunk) == std::vector<std::string>{"a", "b"});
 
-    // operator_insert.cpp:41 renames the write-set's columns in place, AFTER the
-    // chunk was built: `input.data[i].set_name(rename_targets_[i])`.
+    // operator_insert.cpp renames the write-set's columns in place, AFTER the
+    // chunk was built (set_column_name against rename_targets_).
     chunk.data[1].set_name("renamed_b");
     REQUIRE(column_names(chunk) == std::vector<std::string>{"a", "renamed_b"});
 }
@@ -242,13 +236,13 @@ TEST_CASE("data_chunk schema: an already-read schema follows every mutation of d
     }
 
     SECTION("erase a range by position") {
-        // operator_group.cpp:657-663 erases a positional range out of the middle.
+        // operator_group.cpp erases a positional range out of the middle.
         chunk.data.erase(chunk.data.begin(), chunk.data.begin() + 1);
         REQUIRE(column_names(chunk) == std::vector<std::string>{"name", "price"});
     }
 
     SECTION("truncate the computed tail") {
-        // operator_sort.cpp:172 / operator_func.cpp:178 drop everything past a base width.
+        // operator_sort.cpp / operator_func.cpp drop everything past a base width.
         chunk.data.erase(chunk.data.begin() + 1, chunk.data.end());
         REQUIRE(column_names(chunk) == std::vector<std::string>{"id"});
     }
@@ -287,17 +281,14 @@ TEST_CASE("data_chunk schema: move keeps the names with the chunk") {
     REQUIRE(column_names(assigned) == std::vector<std::string>{"id", "name", "price"});
 }
 
-// M3-B2. The storage append matcher (agent_disk.cpp:585-599, its twin at :2284-2292 and
-// manager_disk_storage.cpp:48-56) walks the TABLE's columns and, for each, scans the chunk
-// for a column of that name and MOVES the vector out of `data`. Nothing marks the column as
-// taken, and `data` keeps its width — so what stops the next table column from claiming the
-// same chunk column a second time is the move itself: vector_t's move takes the type with
-// it, and complex_logical_type::extension_ is a unique_ptr, so a moved-from column answers
-// with an empty name and matches nothing at all.
+// M3-B2. The storage append matcher (agent_disk.cpp, manager_disk_storage.cpp) walks the
+// TABLE's columns and, for each, claims a chunk column and MOVES the vector out of `data`,
+// which keeps its width. vector_t's move takes the name and identity with it, so a
+// moved-from column answers with an empty name and matches nothing.
 //
-// That is load-bearing, and B2 puts the schema memo in the matcher's path. Pinned here
-// because a memo that answered from before the move would let one chunk column be moved
-// into two output slots — the second of them empty.
+// B2 put the schema memo in the matcher's path. Pinned here because a memo that answered
+// from before the move would let one chunk column be moved into two output slots — the
+// second of them empty.
 TEST_CASE("data_chunk schema: a column moved out of data loses its name") {
     auto resource = core::pmr::otterbrix_resource();
     auto chunk = vector::make_chunk(&resource, scan_schema(&resource), 8);
@@ -310,11 +301,10 @@ TEST_CASE("data_chunk schema: a column moved out of data loses its name") {
         vector::vector_t taken = std::move(chunk.data[1]);
         REQUIRE(std::string{taken.name()} == "name");
         // M3-B5: the same answer asked of the column instead of its type, and asked without a
-        // guard — vector_t::name() is total where complex_logical_type::alias() asserts. The
-        // matchers no longer LEAN on a moved-from column losing its name (they carry an
-        // explicit claimed mask since B4), but it still has to be true: the memo derives both
-        // the name and the identity from the column, and they must not disagree about whether
-        // the column is still there.
+        // guard — vector_t::name() is total. The matchers no longer LEAN on a moved-from
+        // column losing its name (they carry an explicit claimed mask since B4), but it
+        // still has to be true: the memo derives both the name and the identity from the
+        // column, and they must not disagree about whether the column is still there.
         REQUIRE_FALSE(chunk.data[1].has_name());
         REQUIRE(chunk.data[1].name().empty());
         REQUIRE(chunk.data[1].attoid() == catalog::INVALID_OID);
@@ -362,9 +352,9 @@ TEST_CASE("data_chunk schema: identity tells apart two columns a name can not") 
     auto resource = core::pmr::otterbrix_resource();
 
     // Two columns with the SAME name and the SAME type. This is legal — duplicate names
-    // reach a result (test_computed_schema.cpp:145, test_collection_sql.cpp:75-82) — and it
-    // is the case the (name, type) composite key that computing tables use was invented for
-    // and still can not resolve, because neither half of the key differs.
+    // reach a result (test_computed_schema.cpp, test_collection_sql.cpp) — and it is the
+    // case the (name, type) composite key that computing tables use was invented for and
+    // still can not resolve, because neither half of the key differs.
     vector::schema_t twins(&resource);
     twins.push_back(named(&resource, types::logical_type::BIGINT, "val"));
     twins.push_back(named(&resource, types::logical_type::BIGINT, "val"));
@@ -450,7 +440,7 @@ TEST_CASE("data_chunk schema: identity tells apart two columns a name can not") 
 // harmless for `name` and `type`, which are read back out of the column that is in slot i.
 // It is NOT harmless for an identity, because an identity is not derivable from anything a
 // column carries in its type, and `data` is a public field that thirty production sites
-// mutate structurally. operator_group.cpp:657-663 is the sharp one: it erases a positional
+// mutate structurally. operator_group.cpp is the sharp one: it erases a positional
 // RANGE out of the MIDDLE, so every later column slides left. A record that kept its attoid
 // across that would describe a different column than the one it names.
 //
@@ -511,7 +501,7 @@ TEST_CASE("data_chunk schema: every surviving column keeps its own attoid across
     REQUIRE(column_attoids(chunk) == std::vector<catalog::oid_t>{kIdOid, kNameOid, kPriceOid});
 
     SECTION("erase the middle column — the operator_group shape") {
-        // operator_group.cpp:657-663 erases a positional range out of the middle. "price"
+        // operator_group.cpp erases a positional range out of the middle. "price"
         // slides from slot 2 into slot 1; the record in slot 1 previously described "name".
         chunk.data.erase(chunk.data.begin() + 1, chunk.data.begin() + 2);
 
@@ -529,7 +519,7 @@ TEST_CASE("data_chunk schema: every surviving column keeps its own attoid across
     }
 
     SECTION("two identically-typed columns — the case a guarded carry would miss") {
-        // Duplicate names are legal (test_computed_schema.cpp:145), so two chunk columns can
+        // Duplicate names are legal (test_computed_schema.cpp), so two chunk columns can
         // be entirely type-equal and still be different columns. Erasing slot 0 slides an
         // equal-typed column into it: a reconcile that only refreshed the record when the
         // TYPE changed would see no change and keep the wrong identity.
@@ -550,7 +540,7 @@ TEST_CASE("data_chunk schema: every surviving column keeps its own attoid across
     }
 
     SECTION("truncate the computed tail") {
-        // operator_sort.cpp:172 / operator_func.cpp:178 drop everything past a base width.
+        // operator_sort.cpp / operator_func.cpp drop everything past a base width.
         chunk.data.erase(chunk.data.begin() + 1, chunk.data.end());
         REQUIRE(column_attoids(chunk) == std::vector<catalog::oid_t>{kIdOid});
     }
@@ -601,12 +591,11 @@ TEST_CASE("data_chunk schema: identity travels with the column through every chu
     }
 
     SECTION("rebuild-from-types + copy keeps the name a list of types can not carry") {
-        // M3-B5, and now literally true: a chunk rebuilt from types() has NO names, because a
-        // type list no longer carries any. The rebuild gets its names from copy(), which
-        // carries them from the source COLUMN — the same channel the identity travels on.
-        // Before the move a scalar column's name came back inside its type while a STRUCT
-        // column's did not (the slot was spoken for by the type's own name), so the rebuild
-        // silently renamed exactly one kind of column.
+        // M3-B5: a chunk rebuilt from types() has NO names, because a type list no longer
+        // carries any. The rebuild gets its names from copy(), which carries them from the
+        // source COLUMN — the same channel the identity travels on. The STRUCT column is
+        // here because its type DOES carry a name of its own ("point"), which must not leak
+        // into the column's.
         std::pmr::vector<types::complex_logical_type> struct_fields(&resource);
         struct_fields.emplace_back(types::logical_type::BIGINT, "x");
         vector::schema_t mixed(&resource);
@@ -628,8 +617,8 @@ TEST_CASE("data_chunk schema: identity travels with the column through every chu
     }
 
     SECTION("rebuild-from-types + copy keeps the identity") {
-        // The engine's standard duplication: operator_insert.cpp:111-115 copy_of and
-        // manager_disk_impl.hpp:76-87 rebuild_chunk both build a fresh chunk from types()
+        // The engine's standard duplication: operator_insert.cpp copy_of and
+        // manager_disk_impl.hpp rebuild_chunk both build a fresh chunk from types()
         // — which carries neither the name nor the identity — and copy into it. If copy()
         // did not propagate both, no write-set would ever reach storage identifiable.
         auto chunk = vector::make_chunk(&resource, scan_schema(&resource), 8);
@@ -654,7 +643,7 @@ TEST_CASE("data_chunk schema: identity travels with the column through every chu
     }
 
     SECTION("a column moved out of data leaves no identity behind") {
-        // The other half of the B2 pin below: a moved-from column answers with an empty name,
+        // The other half of the B2 pin above: a moved-from column answers with an empty name,
         // and it must answer INVALID_OID for the same reason — otherwise an identity matcher
         // could claim the same column twice. (The matchers no longer LEAN on this; they carry
         // an explicit claimed mask. It still has to be true, because the memo derives both
@@ -672,15 +661,14 @@ TEST_CASE("data_chunk schema: identity travels with the column through every chu
 }
 
 // ---------------------------------------------------------------------------
-// M3-B3: the per-cell allocation.
+// M3-B3: the per-cell allocation, pinned at zero.
 //
-// vector_t::value() stamps the COLUMN's name onto every value it hands out
-// (vector.cpp:1104-1112). On a scalar column that name has nowhere to live, so
-// complex_logical_type::set_alias heap-allocates a logical_type_extension for it — through
-// the GLOBAL operator new (std::make_unique, types.cpp:318-325), not through the chunk's
-// pmr resource. Reading an M-row, N-column result through any binding therefore costs M*N
-// global allocations, and the bindings then throw the name away: the cursor, the C ABI,
-// python and arrow all read column names from the cursor's own descriptor.
+// vector_t::value() used to stamp the COLUMN's name onto every value it handed out. On a
+// scalar column that name had nowhere to live, so a logical_type_extension was
+// heap-allocated for it — through the GLOBAL operator new, not through the chunk's pmr
+// resource. Reading an M-row, N-column result through any binding cost M*N global
+// allocations, and the bindings then threw the name away: the cursor, the C ABI, python
+// and arrow all read column names from the cursor's own descriptor.
 //
 // Counting them needs the global operator new itself, so this TU replaces it. The
 // replacement is a counted pass-through to malloc and is program-wide by definition
@@ -737,7 +725,7 @@ TEST_CASE("data_chunk schema: reading a named scalar column allocates nothing gl
 }
 
 // ---------------------------------------------------------------------------
-// M3-B5 step 9: the price the column name used to charge the type, measured.
+// M3-B5: the price the column name used to charge the type, measured.
 //
 // A column of BIGINT called "id" is the overwhelmingly common shape in this engine, and it
 // used to need a heap-allocated logical_type_extension (64 bytes, through the GLOBAL

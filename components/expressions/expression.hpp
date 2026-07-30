@@ -190,8 +190,7 @@ namespace components::expressions {
 
 namespace std {
     // Lives in the header, not beside compare_expression_t, so every hash_impl that folds a
-    // param_storage calls THIS one. While it was a .cpp-local definition, scalar_expression
-    // and aggregate_expression could not see it and each re-implemented the same mapping.
+    // param_storage calls THIS one instead of re-implementing the mapping locally.
     template<>
     struct hash<components::expressions::param_storage> {
         std::size_t operator()(const components::expressions::param_storage& arg) const noexcept {

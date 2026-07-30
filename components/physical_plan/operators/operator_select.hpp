@@ -96,7 +96,7 @@ namespace components::operators {
     private:
         std::pmr::vector<select_column_t> columns_;
         // Built on the first batch and reused: the projection depends only on the (stable) chunk
-        // schema. The boxed path rebuilt a std::pmr::deque<vector_t> per chunk per arithmetic column.
+        // schema.
         std::unique_ptr<projection_executor_t> stream_executor_;
     };
 

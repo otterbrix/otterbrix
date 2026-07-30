@@ -248,9 +248,7 @@ namespace {
                                                 components::types::logical_type promoted,
                                                 uint64_t capacity) {
         // The promoted column is the same column: name and identity travel with it, carried by
-        // the rebuild constructor (M3-B4/B5). They used to be carried by building the new TYPE
-        // with the old one's name inside the new TYPE, behind a guard because reading that slot
-        // asserted on a column nobody named.
+        // the rebuild constructor (M3-B4/B5).
         components::vector::vector_t new_col(resource,
                                              components::types::complex_logical_type{promoted},
                                              col,

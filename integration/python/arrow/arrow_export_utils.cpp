@@ -30,8 +30,7 @@ namespace otterbrix {
             auto schema_import_func = pyarrow_lib_module.attr("Schema").attr("_import_from_c");
 
             // The cursor's names and its types are two lists; to_arrow_schema takes the one
-            // record that carries both. They used to be folded into the types' name slot,
-            // which is the overload M3-B5 removed.
+            // record that carries both (M3-B5).
             auto* resource = std::pmr::get_default_resource();
             components::vector::schema_t export_schema(resource);
             export_schema.reserve(types.size());

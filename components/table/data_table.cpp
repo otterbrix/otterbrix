@@ -92,13 +92,10 @@ namespace components::table {
         const auto width = std::min<uint64_t>(chunk.column_count(), column_definitions_.size());
         for (uint64_t i = 0; i < width; i++) {
             chunk.set_column_attoid(i, column_definitions_[i].attoid());
-            // M3-B5: the NAME is stamped from the same source as the attoid, and it has to be,
-            // because a chunk built from copy_types() cannot carry one for every column. A
-            // scalar column's name used to ride along inside its type; a STRUCT column's never
-            // did — column_definition_t refuses to overwrite a self-naming type, so the type
-            // answers with the TYPE's name ("test_struct") and the column's name
-            // ("struct_column") had nowhere to be. The definition is the one place that knows
-            // both, so it is the one place that says both. (test_table.cpp pins the struct case.)
+            // M3-B5: the name is stamped from the definition, not the type — a chunk built
+            // from copy_types() cannot carry a name for every column, because a STRUCT's type
+            // answers with the TYPE's name, not the column's. The definition is the one place
+            // that knows both. (test_table.cpp pins the struct case.)
             chunk.set_column_name(i, column_definitions_[i].name());
         }
     }
@@ -131,9 +128,8 @@ namespace components::table {
         for (const auto& record : schema) {
             // M3-B2/B5: a storage column's name is column identity, so it comes from the
             // incoming chunk's schema record, where it is TOTAL — an unnamed column is named
-            // "". Read off the type instead, this asserted on a missing extension and
-            // dereferenced null in release for exactly the shape the WAL decoder produces for
-            // an unnamed column (data_chunk_binary.cpp), i.e. on the recovery path.
+            // "". Reading it off the type instead dereferences null for exactly the shape the
+            // WAL decoder produces for an unnamed column (data_chunk_binary.cpp).
             column_definitions_.emplace_back(std::string{record.name}, record.type);
             types.push_back(record.type);
         }

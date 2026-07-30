@@ -121,8 +121,7 @@ namespace components::operators {
                 expressions::make_bound_constant(r, types::logical_value_t{r, v})};
         }
 
-        // First name match, exactly as find_col does -- the write-set may legally carry duplicate
-        // column names and the boxed path took the first, so this must too.
+        // First name match wins: the write-set may legally carry duplicate column names.
         // has_name() stays in front of the comparison: it is not a guard against a crashing
         // accessor (name() is total), it is the question "is this column named at all". A
         // malformed constraint can hand us an empty `name` -- " = 5" trims to no left operand --
@@ -267,8 +266,8 @@ namespace components::operators {
                 auto const_val = parse_const(b.r, col_is_rhs ? lhs : rhs);
                 // The literal is typed from the column's DECLARED type, once. parse_const can only
                 // answer STRING_LITERAL / DOUBLE / BIGINT, so over any other column type it produces
-                // a constant of the wrong type -- which used to abort with assertions on and, worse,
-                // silently accept violating rows without them.
+                // a constant of the wrong type -- which aborts with assertions on and silently
+                // accepts violating rows without them.
                 if (const auto* declared = find_column_type(b.column_types, col_name)) {
                     if (const_val.type() != *declared) {
                         auto typed = const_val.cast_as(*declared, core::date::timezone_offset_t{});
@@ -296,7 +295,7 @@ namespace components::operators {
                     } else {
                         // Stores NULL (or a positional write-set proves nothing): a NULL of the
                         // literal's own type, so the comparison propagates it to UNKNOWN and
-                        // permits() lets the row through -- what the boxed path answered directly.
+                        // permits() lets the row through.
                         //
                         // It must be a real NULL and not a constant TRUE, even though a lone
                         // UNKNOWN and a lone TRUE both permit: under `NOT (x > 5)` they diverge.
@@ -376,13 +375,11 @@ namespace components::operators {
                 continue;
             }
 
-            // M3-B2/B3: the write-set's column names come from the chunk's schema record.
-            // Both loops below used to read complex_logical_type::alias() straight off the
-            // column type, which asserts on its extension and dereferences null in release
-            // (types.cpp:334-337) — and a write-set column built with no name has no
-            // extension at all. The schema record answers an empty name instead, so the
-            // match is total over every chunk shape. One read covers both loops: nothing
-            // here mutates `chunk` (it is const).
+            // M3-B2/B3: the write-set's column names come from the chunk's schema record,
+            // not complex_logical_type::alias() — alias() asserts on a missing extension and
+            // dereferences null in release (types.cpp), and a write-set column built with no
+            // name has no extension at all. The schema record answers an empty name instead,
+            // so the match is total over every chunk shape.
             const auto& schema = chunk.schema();
 
             // NOT NULL checks. A column ABSENT from the write-set stores the table
@@ -491,8 +488,7 @@ namespace components::operators {
                     continue;
                 }
                 auto produced = check_executors_[i]->execute(chunk, chunk.size(), execution);
-                // An evaluation error is a violation, not a propagated error -- the same collapse
-                // the boxed path made (`check_result.has_error() || !permits(...)`).
+                // An evaluation error is a violation, not a propagated error.
                 bool violated = produced.has_error();
                 if (!violated) {
                     const auto* answer = produced.value();

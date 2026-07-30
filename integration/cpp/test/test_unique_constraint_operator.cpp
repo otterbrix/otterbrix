@@ -72,7 +72,7 @@ namespace {
 
     // A chunk's columns are named ON THE COLUMNS (M3-B5), and the unique-constraint operator
     // resolves its groups BY NAME — so a write-set built from a bare type list has to be named
-    // here, where a type list used to carry the names itself.
+    // here.
     void name_columns(vector::data_chunk_t& chunk, std::initializer_list<std::string_view> names) {
         uint64_t index = 0;
         for (const auto name : names) {

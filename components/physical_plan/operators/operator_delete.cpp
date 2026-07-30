@@ -104,8 +104,8 @@ namespace components::operators {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
         // The key is (column name, column type), and both halves come off the chunk's schema —
-        // where the name is total. Read from the type, alias() asserted on its extension and
-        // dereferenced null in release for any column nobody had named (M3-B5).
+        // where the name is total. Read from the type, alias() asserts on its extension and
+        // dereferences null in release for any column nobody has named (M3-B5).
         for (const auto& record : chunk.schema()) {
             modified_->updated_types_map()[{std::pmr::string(record.name, resource_), record.type}] += index;
         }
@@ -222,10 +222,9 @@ namespace components::operators {
                 if (chunk_right.size() == 0) {
                     continue;
                 }
-                // ONE left row against the whole right chunk, replacing a per-PAIR boxed check.
-                // DELETE ... USING is a SEMI-join -- the target is deleted once however many USING
-                // rows it matches -- so only the FIRST match is consumed, which is what the previous
-                // `break` expressed.
+                // ONE left row against the whole right chunk. DELETE ... USING is a SEMI-join --
+                // the target is deleted once however many USING rows it matches -- so only the
+                // FIRST match is consumed.
                 right_matches.reset(chunk_right.size());
                 auto matches = compiled.value().select_matches(chunk_left,
                                                                i,
@@ -261,8 +260,7 @@ namespace components::operators {
                     // Semi-join: this target row is done, however many USING rows matched.
                     row_matched = true;
                 }
-                // Leaving the right-CHUNK loop is what the old inner `break` plus this one achieved
-                // together: the first match anywhere in the USING side finishes the target row.
+                // The first match anywhere in the USING side finishes the target row.
                 if (row_matched) {
                     break;
                 }

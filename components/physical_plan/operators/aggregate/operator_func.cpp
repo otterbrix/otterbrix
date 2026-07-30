@@ -233,9 +233,9 @@ namespace components::operators::aggregate {
 
         // The function's name is NOT stamped onto the values it returns. A value is not a
         // column and has no column name (M3-B3). The only consumer of these values is
-        // operator_group (take_batch_values at :605 and :729), and it names the output column
-        // from the plan's output schema or from the aggregate's own `name` — never from the
-        // value's type. Stamping it here allocated a name per value that nobody read.
+        // operator_group (take_batch_values), and it names the output column from the
+        // plan's output schema or from the aggregate's own `name` — never from the
+        // value's type.
         return std::move(res.value());
     }
 

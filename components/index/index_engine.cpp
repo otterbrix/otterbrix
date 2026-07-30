@@ -64,7 +64,6 @@ namespace components::index {
 
         // Resolve one index against one chunk in a SINGLE pass over its keys:
         //   applies == every key has a column; column == the FIRST key's column (todo: multi-key).
-        // The old pair of helpers answered these two questions with two independent scans.
         bool resolve_index(const vector::data_chunk_t& chunk, index_t* index, const vector::vector_t*& column_out) {
             column_out = nullptr;
             auto keys = index->keys();

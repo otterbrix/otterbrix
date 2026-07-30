@@ -1147,13 +1147,10 @@ namespace components::vector {
     }
 
     // A cell is a VALUE. It has no column, so it has no column name — and stamping one on it
-    // used to cost a trip to the GLOBAL operator new per cell: a scalar column's type has no
-    // extension, so set_alias had to heap-allocate one (types.cpp:318-325), outside the pmr
-    // resource this vector was built with. Reading an M-row, N-column result through any
-    // binding paid M*N of those, and every binding then dropped the name on the floor — the
-    // cursor, the C ABI, python and arrow all read column names from the cursor's own
-    // descriptor, and the chunk's schema record (M3-B1) answers the same question for
-    // everyone else.
+    // used to cost a trip to the GLOBAL operator new per cell, M*N of them for an M-row,
+    // N-column result, with every binding then dropping the name on the floor: the cursor,
+    // the C ABI, python and arrow all read column names from the cursor's own descriptor,
+    // and the chunk's schema record (M3-B1) answers the same question for everyone else.
     types::logical_value_t vector_t::value(uint64_t index) const {
         if (!validity_.row_is_valid(index)) {
             return types::logical_value_t{resource(), types::complex_logical_type{types::logical_type::NA}};

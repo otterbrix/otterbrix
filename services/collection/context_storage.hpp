@@ -99,16 +99,15 @@ namespace services {
         // Name equality is NOT enough. A '::?' type-variant selection picks, among the several
         // same-name columns of a multi-type dynamic-schema field, the one whose type matches —
         // so `val` and `val::?string` denote DIFFERENT columns while both stringify to "val".
-        // Matching on as_string() alone handed `val::?string = 'hello'` to an index built on
-        // `val` back when it was still a single BIGINT column; index_scan carries no
-        // operator_match above it, so whatever that index answered was returned unfiltered.
+        // index_scan carries no operator_match above it, so an index matched on as_string()
+        // alone would have its answer returned unfiltered.
         //
         // The selection annotation is therefore part of the key's identity here. A CREATE INDEX
         // key never carries one, so today this only ever refuses; the comparison is written
         // symmetrically so that an index on a variant-selected key would match its own predicate
         // if such an index ever becomes creatable.
         //
-        // NOT replaceable by key_t::operator==, even though that now folds cast_type_ and
+        // NOT replaceable by key_t::operator==, even though it folds cast_type_ and
         // variant_select_ into key identity. operator== is an EQUALITY: `val` and `val::string`
         // are different keys because they denote differently-typed values. This predicate asks a
         // weaker, directional question — "does the index on `indexed` ANSWER a predicate on

@@ -28,8 +28,8 @@ using ekey = components::expressions::key_t;
 
 TEST_CASE("components::expressions::param_storage::layout_and_default") {
     // The union is sized by key_t; the tag lands in its tail padding, so the whole thing is
-    // exactly the 112 bytes the std::variant occupied.
-    STATIC_REQUIRE(sizeof(param_storage) == 112);
+    // exactly what the equivalent std::variant would occupy.
+    STATIC_REQUIRE(sizeof(param_storage) == 104);
     STATIC_REQUIRE(alignof(param_storage) == 8);
     // std::pmr::vector<param_storage> reallocates by moving only while this holds.
     STATIC_REQUIRE(std::is_nothrow_move_constructible_v<param_storage>);
@@ -280,12 +280,13 @@ TEST_CASE("components::expressions::param_storage::survives_vector_growth") {
     }
 
     REQUIRE(params.size() == 192);
-    for (uint16_t i = 0; i < 64; ++i) {
-        REQUIRE(is_parameter(params[3 * i]));
-        REQUIRE(as_parameter(params[3 * i]) == core::parameter_id_t{i});
-        REQUIRE(is_key(params[3 * i + 1]));
-        REQUIRE(as_key(params[3 * i + 1]).as_string() == "col");
-        REQUIRE(is_expr(params[3 * i + 2]));
-        REQUIRE(as_expr(params[3 * i + 2]) == nullptr);
+    for (size_t i = 0; i < 64; ++i) {
+        const size_t base = 3 * i;
+        REQUIRE(is_parameter(params[base]));
+        REQUIRE(as_parameter(params[base]) == core::parameter_id_t{static_cast<uint16_t>(i)});
+        REQUIRE(is_key(params[base + 1]));
+        REQUIRE(as_key(params[base + 1]).as_string() == "col");
+        REQUIRE(is_expr(params[base + 2]));
+        REQUIRE(as_expr(params[base + 2]) == nullptr);
     }
 }

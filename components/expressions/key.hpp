@@ -4,7 +4,6 @@
 #include <boost/container_hash/hash.hpp>
 #include <components/types/types.hpp>
 #include <core/pmr.hpp>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -117,9 +116,9 @@ namespace components::expressions {
 
         void set_path(std::pmr::vector<size_t> path) { path_ = std::move(path); }
 
-        bool has_cast_type() const { return cast_type_.has_value(); }
+        bool has_cast_type() const { return cast_type_.type() != types::logical_type::NA; }
 
-        const types::complex_logical_type& cast_type() const { return *cast_type_; }
+        const types::complex_logical_type& cast_type() const { return cast_type_; }
 
         void set_cast_type(types::complex_logical_type type) { cast_type_ = std::move(type); }
 
@@ -176,8 +175,8 @@ namespace components::expressions {
             // as it always did. Hashing the logical type alone (not the full extension) is
             // enough: equal keys still hash equal, which is the only contract a hash owes
             // operator==.
-            if (cast_type_.has_value()) {
-                boost::hash_combine(hash_, static_cast<size_t>(cast_type_->type()));
+            if (has_cast_type()) {
+                boost::hash_combine(hash_, static_cast<size_t>(cast_type_.type()));
                 boost::hash_combine(hash_, variant_select_);
             }
             return hash_;
@@ -189,7 +188,13 @@ namespace components::expressions {
         side_t side_;
         std::pmr::vector<std::pmr::string> storage_;
         std::pmr::vector<size_t> path_;
-        std::optional<types::complex_logical_type> cast_type_;
+        // NA means "no cast": always a fully-initialized value, never an optional. An
+        // optional's disengaged payload is uninitialized bytes by design, and gcc's
+        // -Wmaybe-uninitialized cannot correlate the engaged flag with the payload read
+        // once the move is inlined into a larger frame (param_storage's union
+        // construction) — a false positive with no clean suppression. No production
+        // caller ever casts TO NA, so absence maps onto it losslessly.
+        types::complex_logical_type cast_type_{};
         bool variant_select_ = false;
         bool absent_ok_ = false;
     };

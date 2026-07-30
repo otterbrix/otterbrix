@@ -45,7 +45,7 @@ namespace components::expressions {
 
     // The operand of a compare/scalar/aggregate/function expression: a bound parameter slot,
     // a column reference, or a nested expression. A hand-written tagged union rather than a
-    // std::variant (rule 14); the layout is the same 112/8 the variant had, since the union
+    // std::variant (rule 14); the layout matches what the variant's would be, since the union
     // is sized by key_t and the tag lands in its padding.
     //
     // Its observable behaviour is deliberately the variant's, including the two surprising
@@ -131,9 +131,9 @@ namespace components::expressions {
         };
     };
 
-    // Layout guard: libc++ std::pmr::vector == 32 and std::optional<complex_logical_type> == 24
-    // make key_t 104/8, which sizes the union; the tag byte lands in its tail padding.
-    static_assert(sizeof(param_storage) == 112);
+    // Layout guard: libc++ std::pmr::vector == 32 and complex_logical_type == 16 make
+    // key_t 96/8, which sizes the union; the tag byte lands in its tail padding.
+    static_assert(sizeof(param_storage) == 104);
     static_assert(alignof(param_storage) == 8);
     // std::pmr::vector<param_storage> reallocates by MOVING only while this holds.
     static_assert(std::is_nothrow_move_constructible_v<param_storage>);

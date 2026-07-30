@@ -42,6 +42,11 @@ namespace components::vector {
         constexpr Result to_result(From val) {
             if constexpr (std::is_same_v<std::decay_t<From>, std::decay_t<Result>>) {
                 return val;
+            } else if constexpr (std::is_same_v<std::decay_t<Result>, bool> && std::is_floating_point_v<From>) {
+                // static_cast<bool>(floating) is an implicit `!= 0` float comparison (gcc
+                // -Werror=float-equal). Spelled with <=/>= it is exactly equivalent for every
+                // input, NaN included (NaN -> true).
+                return !(val >= From{0} && val <= From{0});
             } else if constexpr (std::is_floating_point_v<From> || std::is_floating_point_v<Result>) {
                 return static_cast<Result>(val);
             } else if constexpr (std::is_same_v<From, bool> ||

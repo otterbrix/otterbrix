@@ -836,11 +836,19 @@ namespace services::disk {
         // would seed the index with deleted rows whose column data is still present,
         // and index_scan + fetch + WHERE would then return them. scan_batched emits the
         // table as ≤DEFAULT_VECTOR_CAPACITY chunks, so no oversized chunk is built.
-        entry->storage->scan_batched(batches,
-                                     /*filter=*/nullptr,
-                                     /*limit=*/-1,
-                                     /*projected_cols=*/nullptr,
-                                     components::table::transaction_data{});
+        auto scan_res = entry->storage->scan_batched(batches,
+                                                     /*filter=*/nullptr,
+                                                     /*limit=*/-1,
+                                                     /*projected_cols=*/nullptr,
+                                                     components::table::transaction_data{});
+        if (scan_res.has_error()) {
+            // No error channel on this sync path: an empty batch list rebuilds an empty
+            // index, which the caller treats like an empty table — never a PARTIAL one
+            // silently missing rows the scan failed to deliver.
+            auto log = log_.clone();
+            trace(log, "manager_disk_t::scan_storage_for_rebuild_sync : scan failed: {}", scan_res.error().what);
+            batches.clear();
+        }
         return batches;
     }
 

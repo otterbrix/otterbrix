@@ -311,8 +311,12 @@ namespace components::expressions {
         size_t function_nodes = 0;
         size_t any_all_nodes = 0;
         for (const auto* node : nodes_) {
-            function_nodes += node->kind() == bound_kind::function ? 1 : 0;
-            any_all_nodes += node->kind() == bound_kind::any_all ? 1 : 0;
+            if (node->kind() == bound_kind::function) {
+                ++function_nodes;
+            }
+            if (node->kind() == bound_kind::any_all) {
+                ++any_all_nodes;
+            }
         }
         function_args_.reserve(function_nodes);
         regex_caches_.reserve(any_all_nodes);
